@@ -1,0 +1,157 @@
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn, spawnSync } from "node:child_process";
+import type { LocalConfig } from "./config.js";
+import { resolveLocalPath } from "./config.js";
+
+export type ServiceName = "bus" | "bridge" | "web";
+
+type ServiceRecord = {
+  pid: number;
+  started_at: string;
+  command: string;
+  args: string[];
+  log_file: string;
+};
+
+type ServiceRecords = Partial<Record<ServiceName, ServiceRecord>>;
+
+export function repoRoot(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+export function recordsPath(configPath: string, config: LocalConfig): string {
+  return join(resolveLocalPath(configPath, config.home, "."), "services.json");
+}
+
+export function readRecords(configPath: string, config: LocalConfig): ServiceRecords {
+  const path = recordsPath(configPath, config);
+  if (!existsSync(path)) return {};
+  return JSON.parse(readFileSync(path, "utf8")) as ServiceRecords;
+}
+
+export function writeRecords(configPath: string, config: LocalConfig, records: ServiceRecords): void {
+  const path = recordsPath(configPath, config);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(records, null, 2), "utf8");
+}
+
+export function serviceLogPath(configPath: string, config: LocalConfig, service: ServiceName): string {
+  const dir = service === "bus"
+    ? config.bus.log_dir
+    : service === "bridge"
+      ? config.bridge.log_dir
+      : config.web.log_dir;
+  return join(resolveLocalPath(configPath, config.home, dir), `${service}.log`);
+}
+
+export function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function npmCommand(): string {
+  return "npm";
+}
+
+function commandForNpm(args: string[]): { command: string; args: string[] } {
+  if (process.platform !== "win32") return { command: "npm", args };
+  return {
+    command: process.env.ComSpec ?? "cmd.exe",
+    args: ["/d", "/s", "/c", ["npm", ...args.map(quoteCmdArg)].join(" ")]
+  };
+}
+
+function quoteCmdArg(value: string): string {
+  if (/^[A-Za-z0-9_./:=@\\-]+$/.test(value)) return value;
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+export async function startService(configPath: string, config: LocalConfig, service: ServiceName): Promise<ServiceRecord> {
+  const records = readRecords(configPath, config);
+  const existing = records[service];
+  if (existing && isPidRunning(existing.pid)) return existing;
+
+  const root = repoRoot();
+  const workspace = service === "bus" ? "floe-bus" : service === "bridge" ? "floe-bridge" : "floe-web";
+  const webListen = parseListen(config.web.listen);
+  const args = service === "web"
+    ? ["run", "dev", "--workspace", workspace, "--", "--host", webListen.host, "--port", String(webListen.port)]
+    : ["run", "dev", "--workspace", workspace, "--", "--config", configPath];
+  const commandLine = commandForNpm(args);
+  const logFile = serviceLogPath(configPath, config, service);
+  mkdirSync(dirname(logFile), { recursive: true });
+  writeFileSync(logFile, `\n[${new Date().toISOString()}] starting ${service}\n`, { flag: "a" });
+  const logFd = openSync(logFile, "a");
+  const child = spawn(commandLine.command, commandLine.args, {
+    cwd: root,
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    windowsHide: true,
+    env: {
+      ...process.env,
+      FLOE_CONFIG: configPath,
+      FLOE_BUS_HTTP_URL: config.bus.http_base_url,
+      FLOE_BUS_WS_URL: config.bus.ws_base_url
+    }
+  });
+  closeSync(logFd);
+  child.unref();
+
+  const record: ServiceRecord = {
+    pid: child.pid ?? 0,
+    started_at: new Date().toISOString(),
+    command: commandLine.command,
+    args: commandLine.args,
+    log_file: logFile
+  };
+  records[service] = record;
+  writeRecords(configPath, config, records);
+  return record;
+}
+
+function parseListen(value: string): { host: string; port: number } {
+  const index = value.lastIndexOf(":");
+  if (index < 0) return { host: "127.0.0.1", port: Number(value) };
+  return {
+    host: value.slice(0, index),
+    port: Number(value.slice(index + 1))
+  };
+}
+
+export function stopService(configPath: string, config: LocalConfig, service: ServiceName): boolean {
+  const records = readRecords(configPath, config);
+  const record = records[service];
+  if (!record) return false;
+  let stopped = false;
+  if (isPidRunning(record.pid)) {
+    try {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/PID", String(record.pid), "/T", "/F"], { stdio: "ignore" });
+      } else {
+        process.kill(-record.pid, "SIGTERM");
+      }
+      stopped = true;
+    } catch {
+      try {
+        process.kill(record.pid);
+        stopped = true;
+      } catch {
+        stopped = false;
+      }
+    }
+  }
+  delete records[service];
+  writeRecords(configPath, config, records);
+  return stopped;
+}
+
+export function clearRecords(configPath: string, config: LocalConfig): void {
+  const path = recordsPath(configPath, config);
+  if (existsSync(path)) unlinkSync(path);
+}

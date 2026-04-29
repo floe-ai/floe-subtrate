@@ -1,0 +1,25 @@
+{
+  "name": "floe-root",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "floe-bus",
+    "floe-bridge",
+    "floe-cli",
+    "floe-web",
+    "tests"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspace tests",
+    "dev:bus": "npm run dev --workspace floe-bus",
+    "dev:bridge": "npm run dev --workspace floe-bridge",
+    "dev:web": "npm run dev --workspace floe-web",
+    "floe": "tsx floe-cli/src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}
