@@ -97,7 +97,7 @@ describe("Floe local vertical slice", () => {
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
     const agentFile = readFileSync(join(projectPath, ".floe", "agents", "floe.md"), "utf8");
     expect(agentFile).not.toContain("endpoint_id");
-    expect(agentFile).toContain("auth_profile");
+    expect(agentFile).not.toContain("auth_profile: default");
 
     const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
     const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
@@ -105,6 +105,12 @@ describe("Floe local vertical slice", () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
       return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId);
     }, "agent endpoint registration");
+    await waitFor(async () => {
+      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return endpoints.endpoints.some(
+        (endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "runtime_unconfigured"
+      );
+    }, "runtime unconfigured status");
 
     await post("/v1/endpoints/register", {
       endpoint_id: humanEndpointId,
@@ -113,6 +119,15 @@ describe("Floe local vertical slice", () => {
       name: "Operator",
       status: "online"
     });
+    await post("/v1/runtime/bindings", {
+      scope: "workspace_default",
+      workspace_id: workspaceId,
+      auth_profile: "copilot-atvi"
+    });
+    await waitFor(async () => {
+      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "idle");
+    }, "runtime configured status");
 
     await post("/v1/events/emit", {
       type: "message",

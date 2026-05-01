@@ -88,6 +88,13 @@ export type AgentRuntimeConfig = {
   auth_profile?: string;
 };
 
+export type RuntimeAuthErrorCode =
+  | "runtime_profile_required"
+  | "provider_auth_missing"
+  | "runtime_provider_required"
+  | "runtime_model_required"
+  | "runtime_model_unknown";
+
 export type RuntimeAuthResolved = {
   provider: string;
   model: Model<any>;
@@ -96,6 +103,13 @@ export type RuntimeAuthResolved = {
   authProfileId: string | null;
   usedEnvFallback: boolean;
 };
+
+export class RuntimeAuthError extends Error {
+  constructor(readonly code: RuntimeAuthErrorCode, message: string) {
+    super(message);
+    this.name = "RuntimeAuthError";
+  }
+}
 
 class BridgeAuthStorage {
   private data: AuthStorageData = {};
@@ -132,7 +146,8 @@ class BridgeAuthStorage {
         return undefined;
       }
     }
-    return getEnvApiKey(provider);
+    if (process.env.FLOE_ALLOW_ENV_AUTH_FALLBACK === "1") return getEnvApiKey(provider);
+    return undefined;
   }
 
   drainErrors(): Error[] {
@@ -225,12 +240,24 @@ export function createBridgeAuthRuntime(configPath: string, config: LocalConfig)
 
 export async function resolveRuntimeAuth(
   runtime: BridgeAuthRuntime,
-  runtimeConfig: AgentRuntimeConfig | undefined
+  runtimeConfig: AgentRuntimeConfig | undefined,
+  options?: {
+    defaultAuthProfile?: string;
+  }
 ): Promise<RuntimeAuthResolved> {
-  const profileId = cleanValue(runtimeConfig?.auth_profile);
+  const profileId = cleanValue(runtimeConfig?.auth_profile) ?? cleanValue(options?.defaultAuthProfile);
+  if (!profileId) {
+    throw new RuntimeAuthError(
+      "runtime_profile_required",
+      "Runtime auth profile is required. Select an auth profile for this workspace or agent."
+    );
+  }
   const profile = resolveProfile(runtime.profiles, profileId);
-  if (profileId && !profile) {
-    throw new Error(`Unknown auth profile '${profileId}'. Run 'floe auth list' or 'floe login --profile ${profileId}'.`);
+  if (!profile) {
+    throw new RuntimeAuthError(
+      "runtime_profile_required",
+      `Unknown auth profile '${profileId}'. Run 'floe auth list' or 'floe login --profile ${profileId}'.`
+    );
   }
 
   let provider = cleanValue(runtimeConfig?.provider);
@@ -258,10 +285,16 @@ export async function resolveRuntimeAuth(
   }
 
   if (!provider) {
-    throw new Error("No runtime provider configured. Set runtime.provider or runtime.auth_profile, or FLOE_PI_PROVIDER.");
+    throw new RuntimeAuthError(
+      "runtime_provider_required",
+      "No runtime provider configured. Set runtime.provider or configure it in the selected auth profile."
+    );
   }
   if (!modelId) {
-    throw new Error(`No runtime model configured for provider '${provider}'. Set runtime.model or FLOE_PI_MODEL.`);
+    throw new RuntimeAuthError(
+      "runtime_model_required",
+      `No runtime model configured for provider '${provider}'. Set runtime.model or configure it in the selected auth profile.`
+    );
   }
 
   let model = runtime.modelRegistry.find(provider, modelId);
@@ -273,13 +306,19 @@ export async function resolveRuntimeAuth(
     }
   }
   if (!model) {
-    throw new Error(`Model '${provider}/${modelId}' is not present in local model registry.`);
+    throw new RuntimeAuthError(
+      "runtime_model_unknown",
+      `Model '${provider}/${modelId}' is not present in local model registry.`
+    );
   }
 
   const apiKey = await runtime.modelRegistry.getApiKeyForProvider(provider);
   if (!apiKey) {
-    const profileHint = runtimeConfig?.auth_profile ? ` for profile '${runtimeConfig.auth_profile}'` : "";
-    throw new Error(`Missing provider auth for '${provider}'${profileHint}. Run 'floe login --provider ${provider}'.`);
+    const profileHint = profileId ? ` for profile '${profileId}'` : "";
+    throw new RuntimeAuthError(
+      "provider_auth_missing",
+      `Missing provider auth for '${provider}'${profileHint}. Run 'floe login --provider ${provider}'.`
+    );
   }
 
   return {

@@ -41,7 +41,10 @@ const LocalConfigSchema = z.object({
     extensions_dir: z.string(),
     mcp_dir: z.string(),
     templates_dir: z.string()
-  })
+  }),
+  runtime: z.object({
+    default_auth_profile: z.string().optional()
+  }).optional()
 });
 
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;

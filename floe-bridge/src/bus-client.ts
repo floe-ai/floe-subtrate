@@ -32,6 +32,12 @@ export type DeliveryBundle = {
   delivered_at: string;
 };
 
+export type RuntimeBindingResolution = {
+  endpoint_auth_profile: string | null;
+  workspace_auth_profile: string | null;
+  global_auth_profile: string | null;
+};
+
 export type EventCommand = Omit<EventEnvelope, "event_id" | "created_at" | "metadata" | "correlation_id" | "destination_json" | "response"> & {
   destination: EventEnvelope["destination_json"];
   correlation_id?: string | null;
@@ -94,7 +100,7 @@ export class BusClient {
   async reportDeliveryStatus(
     bridgeId: string,
     deliveryId: string,
-    state: "injected_to_runtime" | "acknowledged" | "failed" | "dead_lettered",
+    state: "injected_to_runtime" | "acknowledged" | "failed" | "dead_lettered" | "deferred",
     error?: string
   ): Promise<void> {
     await this.post(`/v1/delivery/${encodeURIComponent(deliveryId)}/status`, {
@@ -120,6 +126,10 @@ export class BusClient {
     payload: Record<string, unknown>;
   }): Promise<void> {
     await this.post("/v1/runtime/telemetry", input);
+  }
+
+  async resolveRuntimeBinding(workspaceId: string, endpointId: string): Promise<RuntimeBindingResolution> {
+    return this.get(`/v1/runtime/bindings/resolve?workspace_id=${encodeURIComponent(workspaceId)}&endpoint_id=${encodeURIComponent(endpointId)}`) as Promise<RuntimeBindingResolution>;
   }
 
   private async get(path: string): Promise<unknown> {

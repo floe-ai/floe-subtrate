@@ -84,7 +84,13 @@ describe("PiAgentCoreAdapter", () => {
         } as any,
         profiles: {
           version: 1,
-          profiles: []
+          profiles: [
+            {
+              id: "test-profile",
+              provider: "mock-provider",
+              model: "mock-model"
+            }
+          ]
         }
       } as any,
       {
@@ -108,12 +114,12 @@ describe("PiAgentCoreAdapter", () => {
     await adapter.handleBundle(
       context,
       makeDelivery("del-1", "thread-1", "First prompt"),
-      { provider: "mock-provider", model: "mock-model" }
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
     await adapter.handleBundle(
       context,
       makeDelivery("del-2", "thread-2", "Second prompt"),
-      { provider: "mock-provider", model: "mock-model" }
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
     const telemetryDel1 = telemetryCalls.filter((item) => item.delivery_id === "del-1");

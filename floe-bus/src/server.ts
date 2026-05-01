@@ -1,9 +1,12 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
+import YAML from "yaml";
 import type { LocalConfig } from "./config.js";
-import { parseListen } from "./config.js";
+import { parseListen, resolveLocalPath } from "./config.js";
 import { BusStore, type EventCommand } from "./store.js";
 
 const EventCommandSchema = z.object({
@@ -33,6 +36,19 @@ const EventCommandSchema = z.object({
   }).optional(),
   metadata: z.record(z.unknown()).optional(),
   idempotency_key: z.string().nullable().optional()
+});
+
+const RuntimeBindingUpsertSchema = z.object({
+  scope: z.enum(["agent", "workspace_default", "global_default"]),
+  workspace_id: z.string().nullable().optional(),
+  endpoint_id: z.string().nullable().optional(),
+  auth_profile: z.string().min(1)
+});
+
+const RuntimeBindingClearSchema = z.object({
+  scope: z.enum(["agent", "workspace_default", "global_default"]),
+  workspace_id: z.string().nullable().optional(),
+  endpoint_id: z.string().nullable().optional()
 });
 
 type SocketLike = {
@@ -176,6 +192,75 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return store.requestApplyConfig(params.workspace_id, body.config_id ?? null, broadcast);
   });
 
+  app.get("/v1/runtime/bindings", async (request) => {
+    const query = z.object({ workspace_id: z.string().optional() }).parse(request.query);
+    return { bindings: store.listRuntimeBindings(query.workspace_id) };
+  });
+
+  app.post("/v1/runtime/bindings", async (request, reply) => {
+    const body = RuntimeBindingUpsertSchema.parse(request.body);
+    const binding = store.upsertRuntimeBinding({
+      scope: body.scope,
+      workspace_id: body.workspace_id ?? null,
+      endpoint_id: body.endpoint_id ?? null,
+      auth_profile: body.auth_profile
+    }, broadcast);
+    if (body.scope === "agent" && body.endpoint_id) {
+      const endpoint = store.getEndpoint(body.endpoint_id) as any;
+      if (endpoint && String(endpoint.status) === "runtime_unconfigured") {
+        store.updateEndpointStatus(body.endpoint_id, "idle", broadcast);
+      }
+    }
+    if (body.scope === "workspace_default" && body.workspace_id) {
+      const endpoints = store.listEndpoints(body.workspace_id) as any[];
+      for (const endpoint of endpoints) {
+        if (endpoint.actor_type === "agent" && String(endpoint.status) === "runtime_unconfigured") {
+          store.updateEndpointStatus(String(endpoint.endpoint_id), "idle", broadcast);
+        }
+      }
+    }
+    return reply.code(201).send({ binding });
+  });
+
+  app.post("/v1/runtime/bindings/clear", async (request) => {
+    const body = RuntimeBindingClearSchema.parse(request.body);
+    const result = store.clearRuntimeBinding({
+      scope: body.scope,
+      workspace_id: body.workspace_id ?? null,
+      endpoint_id: body.endpoint_id ?? null
+    }, broadcast);
+    if (body.scope === "agent" && body.endpoint_id) {
+      store.updateEndpointStatus(body.endpoint_id, "runtime_unconfigured", broadcast);
+    }
+    if (body.scope === "workspace_default" && body.workspace_id) {
+      const endpoints = store.listEndpoints(body.workspace_id) as any[];
+      for (const endpoint of endpoints) {
+        if (endpoint.actor_type === "agent") {
+          store.updateEndpointStatus(String(endpoint.endpoint_id), "runtime_unconfigured", broadcast);
+        }
+      }
+    }
+    return result;
+  });
+
+  app.get("/v1/runtime/bindings/resolve", async (request) => {
+    const query = z.object({
+      workspace_id: z.string().min(1),
+      endpoint_id: z.string().min(1)
+    }).parse(request.query);
+    return store.getRuntimeBindingResolution(query.workspace_id, query.endpoint_id);
+  });
+
+  app.get("/v1/auth/profiles", async () => {
+    const profiles = loadAuthProfiles(configPath, config);
+    return {
+      profiles,
+      default_auth_profile: typeof config.runtime?.default_auth_profile === "string"
+        ? config.runtime.default_auth_profile
+        : null
+    };
+  });
+
   app.post("/v1/bridges/register", async (request, reply) => {
     const body = z.object({
       bridge_id: z.string().min(1),
@@ -194,7 +279,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const params = z.object({ delivery_id: z.string() }).parse(request.params);
     const body = z.object({
       bridge_id: z.string(),
-      state: z.enum(["injected_to_runtime", "acknowledged", "failed", "dead_lettered"]),
+      state: z.enum(["injected_to_runtime", "acknowledged", "failed", "dead_lettered", "deferred"]),
       error: z.string().nullable().optional()
     }).parse(request.body);
     return {
@@ -337,4 +422,29 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       await app.listen({ host, port });
     }
   };
+}
+
+function loadAuthProfiles(configPath: string, config: LocalConfig): Array<{
+  id: string;
+  provider: string;
+  model?: string;
+  label?: string;
+}> {
+  const home = resolveLocalPath(configPath, config.home, ".");
+  const path = join(home, "auth", "profiles.yaml");
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = YAML.parse(readFileSync(path, "utf8")) as any;
+    const profiles = Array.isArray(parsed?.profiles) ? parsed.profiles : [];
+    return profiles
+      .filter((profile: any) => typeof profile?.id === "string" && typeof profile?.provider === "string")
+      .map((profile: any) => ({
+        id: String(profile.id),
+        provider: String(profile.provider),
+        model: typeof profile.model === "string" ? profile.model : undefined,
+        label: typeof profile.label === "string" ? profile.label : undefined
+      }));
+  } catch {
+    return [];
+  }
 }

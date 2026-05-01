@@ -32,6 +32,22 @@ type Endpoint = {
   name: string;
   status: string;
   agent_id?: string | null;
+  metadata_json?: string;
+};
+
+type AuthProfile = {
+  id: string;
+  provider: string;
+  model?: string;
+  label?: string;
+};
+
+type RuntimeBinding = {
+  binding_key: string;
+  scope: "agent" | "workspace_default" | "global_default";
+  workspace_id: string | null;
+  endpoint_id: string | null;
+  auth_profile: string;
 };
 
 type EventEnvelope = {
@@ -68,6 +84,8 @@ function App() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("");
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [events, setEvents] = useState<EventEnvelope[]>([]);
+  const [authProfiles, setAuthProfiles] = useState<AuthProfile[]>([]);
+  const [runtimeBindings, setRuntimeBindings] = useState<RuntimeBinding[]>([]);
   const [configs, setConfigs] = useState<SavedConfig[]>([]);
   const [selectedConfigId, setSelectedConfigId] = useState("");
   const [configName, setConfigName] = useState("Local agent config");
@@ -91,12 +109,20 @@ function App() {
   const humanEndpoint = selectedWorkspace ? humanEndpointId(selectedWorkspace.workspace_id) : "";
   const selectedAgent = agents[0];
   const threadId = selectedWorkspace ? `thread:${selectedWorkspace.workspace_id}:operator` : "";
+  const workspaceBinding = selectedWorkspace
+    ? runtimeBindings.find((binding) => binding.scope === "workspace_default" && binding.workspace_id === selectedWorkspace.workspace_id)
+    : undefined;
+  const agentBinding = selectedAgent
+    ? runtimeBindings.find((binding) => binding.scope === "agent" && binding.endpoint_id === selectedAgent.endpoint_id)
+    : undefined;
 
   const refresh = useCallback(async (preferredWorkspaceId?: string) => {
     try {
       setError(null);
       const workspaceResult = await api<{ workspaces: Workspace[] }>(busUrl, "/v1/workspaces");
       setWorkspaces(workspaceResult.workspaces);
+      const authResult = await api<{ profiles: AuthProfile[] }>(busUrl, "/v1/auth/profiles");
+      setAuthProfiles(authResult.profiles);
       const configResult = await api<{ configs: SavedConfig[] }>(busUrl, "/v1/configs");
       setConfigs(configResult.configs);
       setSelectedConfigId((current) => current || configResult.configs[0]?.config_id || "");
@@ -112,10 +138,16 @@ function App() {
       if (nextWorkspaceId) {
         const endpointResult = await api<{ endpoints: Endpoint[] }>(busUrl, `/v1/workspaces/${encodeURIComponent(nextWorkspaceId)}/endpoints`);
         setEndpoints(endpointResult.endpoints);
+        const bindingResult = await api<{ bindings: RuntimeBinding[] }>(
+          busUrl,
+          `/v1/runtime/bindings?workspace_id=${encodeURIComponent(nextWorkspaceId)}`
+        );
+        setRuntimeBindings(bindingResult.bindings);
         const eventResult = await api<{ events: EventEnvelope[] }>(busUrl, `/v1/events?workspace_id=${encodeURIComponent(nextWorkspaceId)}&limit=200`);
         setEvents(eventResult.events);
       } else {
         setEndpoints([]);
+        setRuntimeBindings([]);
         setEvents([]);
       }
       setStatus("Connected");
@@ -209,6 +241,54 @@ function App() {
         }
       }
     });
+  }
+
+  async function setWorkspaceProfile(profileId: string) {
+    if (!selectedWorkspace) return;
+    if (!profileId) {
+      await api(busUrl, "/v1/runtime/bindings/clear", {
+        method: "POST",
+        body: {
+          scope: "workspace_default",
+          workspace_id: selectedWorkspace.workspace_id
+        }
+      });
+    } else {
+      await api(busUrl, "/v1/runtime/bindings", {
+        method: "POST",
+        body: {
+          scope: "workspace_default",
+          workspace_id: selectedWorkspace.workspace_id,
+          auth_profile: profileId
+        }
+      });
+    }
+    await refresh(selectedWorkspace.workspace_id);
+  }
+
+  async function setAgentProfile(profileId: string) {
+    if (!selectedWorkspace || !selectedAgent) return;
+    if (!profileId) {
+      await api(busUrl, "/v1/runtime/bindings/clear", {
+        method: "POST",
+        body: {
+          scope: "agent",
+          workspace_id: selectedWorkspace.workspace_id,
+          endpoint_id: selectedAgent.endpoint_id
+        }
+      });
+    } else {
+      await api(busUrl, "/v1/runtime/bindings", {
+        method: "POST",
+        body: {
+          scope: "agent",
+          workspace_id: selectedWorkspace.workspace_id,
+          endpoint_id: selectedAgent.endpoint_id,
+          auth_profile: profileId
+        }
+      });
+    }
+    await refresh(selectedWorkspace.workspace_id);
   }
 
   async function sendMessage() {
@@ -363,6 +443,12 @@ function App() {
             ))}
             {sortedEvents.length === 0 && <div className="empty">No events yet.</div>}
           </div>
+          {selectedAgent?.status === "runtime_unconfigured" && (
+            <div className="warning">
+              Agent runtime is unconfigured.
+              <span>Select a runtime auth profile in the Runtime Auth panel.</span>
+            </div>
+          )}
           <div className="composer">
             <input
               value={message}
@@ -396,6 +482,48 @@ function App() {
             ))}
             {endpoints.length === 0 && <div className="empty">No endpoints registered.</div>}
           </div>
+
+          <div className="panel-heading lower">
+            <PlugZap size={17} />
+            <h2>Runtime Auth</h2>
+          </div>
+          {authProfiles.length === 0 ? (
+            <div className="warning">
+              No local auth profiles found.
+              <span>Run <code>npm run floe -- login</code> to create one.</span>
+            </div>
+          ) : (
+            <div className="config-tools">
+              <label htmlFor="workspace-profile">Workspace profile</label>
+              <select
+                id="workspace-profile"
+                value={workspaceBinding?.auth_profile ?? ""}
+                onChange={(event) => void setWorkspaceProfile(event.target.value)}
+                disabled={!selectedWorkspace}
+              >
+                <option value="">Unconfigured</option>
+                {authProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.id} ({profile.provider})
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="agent-profile">Agent override ({selectedAgent?.name ?? "no agent"})</label>
+              <select
+                id="agent-profile"
+                value={agentBinding?.auth_profile ?? ""}
+                onChange={(event) => void setAgentProfile(event.target.value)}
+                disabled={!selectedWorkspace || !selectedAgent}
+              >
+                <option value="">Use workspace default</option>
+                {authProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.id} ({profile.provider})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="panel-heading lower">
             <FileJson size={17} />

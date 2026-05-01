@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentRuntimeConfig } from "./auth.js";
+import { RuntimeAuthError } from "./auth.js";
 import { createBridgeAuthRuntime } from "./auth.js";
 import type { LocalConfig } from "./config.js";
 import { bridgeHttpBase, bridgeWsBase } from "./config.js";
@@ -75,9 +76,12 @@ export class BridgeDaemon {
             message.type === "workspace_registered" ||
             message.type === "workspace_selected" ||
             message.type === "workspace_attachment_requested" ||
-            message.type === "config_snapshot_requested"
+            message.type === "config_snapshot_requested" ||
+            message.type === "runtime_binding_updated" ||
+            message.type === "runtime_binding_cleared"
           ) {
             void this.attachKnownWorkspaces();
+            void this.processDeliveries();
           }
           if (message.type === "config_apply_requested" && message.payload?.workspace_id) {
             void this.applySavedConfig(String(message.payload.workspace_id), message.payload?.config_id ? String(message.payload.config_id) : null);
@@ -162,7 +166,9 @@ export class BridgeDaemon {
 
       for (const agent of project.agents) {
         const endpointId = agentEndpointId(workspace.workspace_id, agent.agent_id);
-        this.endpointRuntime.set(endpointId, extractRuntimeConfig(agent.frontmatter));
+        const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
+        this.endpointRuntime.set(endpointId, runtimeConfig);
+        const resolvedAuth = await this.resolveAuthProfile(workspace.workspace_id, endpointId, runtimeConfig);
         await this.bus.registerEndpoint({
           endpoint_id: endpointId,
           workspace_id: workspace.workspace_id,
@@ -170,11 +176,13 @@ export class BridgeDaemon {
           name: agent.name,
           agent_id: agent.agent_id,
           bridge_id: this.bridgeId,
-          status: "idle",
+          status: resolvedAuth.auth_profile ? "idle" : "runtime_unconfigured",
           metadata: {
             file: agent.file,
             runtime_adapter: this.adapter.name,
-            frontmatter: agent.frontmatter
+            frontmatter: agent.frontmatter,
+            runtime_auth_profile: resolvedAuth.auth_profile ?? null,
+            runtime_auth_source: resolvedAuth.source
           }
         });
       }
@@ -254,7 +262,9 @@ export class BridgeDaemon {
     const project = materializeSavedConfig(locator, configJson);
     for (const agent of project.agents) {
       const endpointId = agentEndpointId(workspaceId, agent.agent_id);
-      this.endpointRuntime.set(endpointId, extractRuntimeConfig(agent.frontmatter));
+      const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
+      this.endpointRuntime.set(endpointId, runtimeConfig);
+      const resolvedAuth = await this.resolveAuthProfile(workspaceId, endpointId, runtimeConfig);
       await this.bus.registerEndpoint({
         endpoint_id: endpointId,
         workspace_id: workspaceId,
@@ -262,11 +272,13 @@ export class BridgeDaemon {
         name: agent.name,
         agent_id: agent.agent_id,
         bridge_id: this.bridgeId,
-        status: "idle",
+        status: resolvedAuth.auth_profile ? "idle" : "runtime_unconfigured",
         metadata: {
           file: agent.file,
           runtime_adapter: this.adapter.name,
-          frontmatter: agent.frontmatter
+          frontmatter: agent.frontmatter,
+          runtime_auth_profile: resolvedAuth.auth_profile ?? null,
+          runtime_auth_source: resolvedAuth.source
         }
       });
     }
@@ -302,18 +314,52 @@ export class BridgeDaemon {
 
   private async handleDelivery(delivery: DeliveryBundle): Promise<void> {
     try {
+      const runtimeConfig = this.endpointRuntime.get(delivery.endpoint_id);
+      const resolvedAuth = await this.resolveAuthProfile(delivery.workspace_id, delivery.endpoint_id, runtimeConfig);
+      const effectiveRuntime: AgentRuntimeConfig = {
+        ...runtimeConfig,
+        auth_profile: resolvedAuth.auth_profile ?? undefined
+      };
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "injected_to_runtime");
       await this.adapter.handleBundle({
         bridge_id: this.bridgeId,
         bus: this.bus
-      }, delivery, this.endpointRuntime.get(delivery.endpoint_id));
+      }, delivery, effectiveRuntime);
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
       await this.bus.reportTurnEnd(delivery.endpoint_id);
     } catch (error) {
       console.error("[bridge] adapter failed", error);
+      if (error instanceof RuntimeAuthError && (error.code === "runtime_profile_required" || error.code === "provider_auth_missing")) {
+        await this.bus.appendRuntimeTelemetry({
+          workspace_id: delivery.workspace_id,
+          endpoint_id: delivery.endpoint_id,
+          delivery_id: delivery.delivery_id,
+          kind: error.code,
+          payload: {
+            code: error.code,
+            message: error.message
+          }
+        });
+        await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "deferred", `${error.code}: ${error.message}`);
+        return;
+      }
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", (error as Error).message);
       await this.bus.updateEndpointStatus(delivery.endpoint_id, "error");
     }
+  }
+
+  private async resolveAuthProfile(
+    workspaceId: string,
+    endpointId: string,
+    runtimeConfig: AgentRuntimeConfig | undefined
+  ): Promise<{ auth_profile: string | null; source: string | null }> {
+    const bindings = await this.bus.resolveRuntimeBinding(workspaceId, endpointId);
+    if (bindings.endpoint_auth_profile) return { auth_profile: bindings.endpoint_auth_profile, source: "agent_binding" };
+    if (bindings.workspace_auth_profile) return { auth_profile: bindings.workspace_auth_profile, source: "workspace_binding" };
+    if (runtimeConfig?.auth_profile?.trim()) return { auth_profile: runtimeConfig.auth_profile.trim(), source: "project_runtime" };
+    if (bindings.global_auth_profile) return { auth_profile: bindings.global_auth_profile, source: "runtime_binding_global" };
+    if (this.config.runtime?.default_auth_profile?.trim()) return { auth_profile: this.config.runtime.default_auth_profile.trim(), source: "config_global_default" };
+    return { auth_profile: null, source: null };
   }
 }
 

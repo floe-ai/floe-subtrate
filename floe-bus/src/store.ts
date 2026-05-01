@@ -59,6 +59,18 @@ export type DeliveryBundle = {
   delivered_at: string;
 };
 
+export type RuntimeBindingScope = "agent" | "workspace_default" | "global_default";
+
+export type RuntimeBindingRecord = {
+  binding_key: string;
+  scope: RuntimeBindingScope;
+  workspace_id: string | null;
+  endpoint_id: string | null;
+  auth_profile: string;
+  created_at: string;
+  updated_at: string;
+};
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -214,6 +226,19 @@ export class BusStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS runtime_bindings (
+        binding_key TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        workspace_id TEXT,
+        endpoint_id TEXT,
+        auth_profile TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_runtime_bindings_workspace
+        ON runtime_bindings(workspace_id, scope, endpoint_id);
     `);
     this.addColumnIfMissing("events", "destination_endpoint_id", "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing("events", "destination_json", "TEXT");
@@ -286,6 +311,84 @@ export class BusStore {
     return this.db.prepare("SELECT * FROM workspaces WHERE workspace_id = ?").get(workspaceId);
   }
 
+  listRuntimeBindings(workspaceId?: string): RuntimeBindingRecord[] {
+    const rows = workspaceId
+      ? this.db.prepare("SELECT * FROM runtime_bindings WHERE workspace_id = ? OR scope = 'global_default' ORDER BY scope, endpoint_id").all(workspaceId) as any[]
+      : this.db.prepare("SELECT * FROM runtime_bindings ORDER BY scope, workspace_id, endpoint_id").all() as any[];
+    return rows.map((row) => this.rowToRuntimeBinding(row));
+  }
+
+  getRuntimeBindingResolution(workspaceId: string, endpointId: string): {
+    endpoint_auth_profile: string | null;
+    workspace_auth_profile: string | null;
+    global_auth_profile: string | null;
+  } {
+    const endpoint = this.db.prepare(`
+      SELECT auth_profile
+      FROM runtime_bindings
+      WHERE scope = 'agent' AND workspace_id = ? AND endpoint_id = ?
+      LIMIT 1
+    `).get(workspaceId, endpointId) as { auth_profile: string } | undefined;
+    const workspace = this.db.prepare(`
+      SELECT auth_profile
+      FROM runtime_bindings
+      WHERE scope = 'workspace_default' AND workspace_id = ?
+      LIMIT 1
+    `).get(workspaceId) as { auth_profile: string } | undefined;
+    const global = this.db.prepare(`
+      SELECT auth_profile
+      FROM runtime_bindings
+      WHERE scope = 'global_default'
+      LIMIT 1
+    `).get() as { auth_profile: string } | undefined;
+    return {
+      endpoint_auth_profile: endpoint?.auth_profile ?? null,
+      workspace_auth_profile: workspace?.auth_profile ?? null,
+      global_auth_profile: global?.auth_profile ?? null
+    };
+  }
+
+  upsertRuntimeBinding(input: {
+    scope: RuntimeBindingScope;
+    workspace_id?: string | null;
+    endpoint_id?: string | null;
+    auth_profile: string;
+  }, broadcast: Broadcast): RuntimeBindingRecord {
+    const timestamp = now();
+    const bindingKey = runtimeBindingKey(input.scope, input.workspace_id ?? null, input.endpoint_id ?? null);
+    this.db.prepare(`
+      INSERT INTO runtime_bindings (
+        binding_key, scope, workspace_id, endpoint_id, auth_profile, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(binding_key) DO UPDATE SET
+        auth_profile = excluded.auth_profile,
+        updated_at = excluded.updated_at
+    `).run(
+      bindingKey,
+      input.scope,
+      input.workspace_id ?? null,
+      input.endpoint_id ?? null,
+      input.auth_profile,
+      timestamp,
+      timestamp
+    );
+    const row = this.db.prepare("SELECT * FROM runtime_bindings WHERE binding_key = ?").get(bindingKey) as any;
+    const binding = this.rowToRuntimeBinding(row);
+    broadcast("runtime_binding_updated", { binding });
+    return binding;
+  }
+
+  clearRuntimeBinding(input: {
+    scope: RuntimeBindingScope;
+    workspace_id?: string | null;
+    endpoint_id?: string | null;
+  }, broadcast: Broadcast): { ok: true; binding_key: string } {
+    const bindingKey = runtimeBindingKey(input.scope, input.workspace_id ?? null, input.endpoint_id ?? null);
+    this.db.prepare("DELETE FROM runtime_bindings WHERE binding_key = ?").run(bindingKey);
+    broadcast("runtime_binding_cleared", { binding_key: bindingKey });
+    return { ok: true, binding_key: bindingKey };
+  }
+
   deleteWorkspace(workspaceId: string, options: { delete_locator?: boolean }, broadcast: Broadcast): {
     ok: true;
     workspace_id: string;
@@ -305,6 +408,7 @@ export class BusStore {
       this.db.prepare("DELETE FROM runtime_telemetry WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM events WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM endpoints WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM runtime_bindings WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM workspaces WHERE workspace_id = ?").run(workspaceId);
     });
     const payload = {
@@ -459,6 +563,11 @@ export class BusStore {
   }
 
   reportTurnEnd(endpointId: string, broadcast: Broadcast): unknown {
+    const current = this.getEndpoint(endpointId);
+    if (current?.status === "runtime_unconfigured") {
+      broadcast("turn_end_observed", { endpoint_id: endpointId, status: "runtime_unconfigured" });
+      return current;
+    }
     const openPending = this.db.prepare(`
       SELECT count(*) AS c
       FROM pending_responses
@@ -500,12 +609,39 @@ export class BusStore {
   reportDeliveryStatus(input: {
     bridge_id: string;
     delivery_id: string;
-    state: "injected_to_runtime" | "acknowledged" | "failed" | "dead_lettered";
+    state: "injected_to_runtime" | "acknowledged" | "failed" | "dead_lettered" | "deferred";
     error?: string | null;
   }, broadcast: Broadcast): unknown {
     const delivery = this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id) as any;
     if (!delivery) throw new Error(`Unknown delivery_id: ${input.delivery_id}`);
     if (delivery.state === "acknowledged") return delivery;
+
+    if (input.state === "deferred") {
+      this.db.prepare("UPDATE delivery_bundles SET state = 'deferred', last_error = ? WHERE delivery_id = ?")
+        .run(input.error ?? null, input.delivery_id);
+      this.db.prepare(`
+        UPDATE event_queue
+        SET state = 'queued',
+            delivery_id = NULL,
+            lease_expires_at = NULL,
+            last_error = ?
+        WHERE delivery_id = ?
+      `).run(input.error ?? null, input.delivery_id);
+      this.db.prepare(`
+        UPDATE endpoints
+        SET status = CASE WHEN actor_type = 'agent' THEN 'runtime_unconfigured' ELSE status END,
+            updated_at = ?
+        WHERE endpoint_id = ?
+      `).run(now(), delivery.endpoint_id);
+      const endpoint = this.getEndpoint(delivery.endpoint_id);
+      broadcast("delivery_deferred", {
+        bridge_id: input.bridge_id,
+        delivery_id: input.delivery_id,
+        error: input.error ?? null
+      });
+      broadcast("status_changed", { endpoint });
+      return this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id);
+    }
 
     if (input.state === "failed") {
       const attempts = Number(delivery.attempt_count ?? 1);
@@ -778,8 +914,12 @@ export class BusStore {
       INSERT INTO event_queue (queue_id, event_id, workspace_id, destination_endpoint_id, state, created_at)
       VALUES (?, ?, ?, ?, 'queued', ?)
     `).run(`q_${randomUUID()}`, eventId, workspaceId, destinationEndpointId, now());
-    this.db.prepare("UPDATE endpoints SET status = 'queued', updated_at = ? WHERE endpoint_id = ?")
-      .run(now(), destinationEndpointId);
+    this.db.prepare(`
+      UPDATE endpoints
+      SET status = CASE WHEN status = 'runtime_unconfigured' THEN status ELSE 'queued' END,
+          updated_at = ?
+      WHERE endpoint_id = ?
+    `).run(now(), destinationEndpointId);
   }
 
   private createPendingResponse(event: EventEnvelope): void {
@@ -836,7 +976,7 @@ export class BusStore {
   private tryCreateDeliveryForEndpoint(endpointId: string, broadcast: Broadcast): DeliveryBundle | null {
     const endpoint = this.getEndpoint(endpointId);
     if (!endpoint || endpoint.actor_type !== "agent") return null;
-    if (endpoint.status === "active" || endpoint.status === "error") return null;
+    if (endpoint.status === "active" || endpoint.status === "error" || endpoint.status === "runtime_unconfigured") return null;
 
     const queuedRows = this.db.prepare(`
       SELECT q.*, e.*
@@ -955,6 +1095,18 @@ export class BusStore {
     };
   }
 
+  private rowToRuntimeBinding(row: any): RuntimeBindingRecord {
+    return {
+      binding_key: String(row.binding_key),
+      scope: row.scope as RuntimeBindingScope,
+      workspace_id: row.workspace_id ?? null,
+      endpoint_id: row.endpoint_id ?? null,
+      auth_profile: String(row.auth_profile),
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at)
+    };
+  }
+
   private transaction<T>(work: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -966,6 +1118,14 @@ export class BusStore {
       throw error;
     }
   }
+}
+
+function runtimeBindingKey(scope: RuntimeBindingScope, workspaceId: string | null, endpointId: string | null): string {
+  if (scope === "global_default") return "runtime:global:default";
+  if (!workspaceId) throw new Error(`workspace_id is required for scope '${scope}'`);
+  if (scope === "workspace_default") return `runtime:${workspaceId}:default`;
+  if (!endpointId) throw new Error("endpoint_id is required for scope 'agent'");
+  return `runtime:${workspaceId}:endpoint:${endpointId}`;
 }
 
 function deleteWorkspaceLocator(locator: string): boolean {
