@@ -1,5 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import type { AgentRuntimeConfig } from "./auth.js";
+import { createBridgeAuthRuntime } from "./auth.js";
 import type { LocalConfig } from "./config.js";
 import { bridgeHttpBase, bridgeWsBase } from "./config.js";
 import { BusClient, type DeliveryBundle } from "./bus-client.js";
@@ -14,15 +16,16 @@ export class BridgeDaemon {
   readonly bridgeId: string;
   readonly bus: BusClient;
   readonly adapter: RuntimeAdapter;
+  private endpointRuntime = new Map<string, AgentRuntimeConfig>();
   private timers: Timer[] = [];
   private attaching = false;
   private processing = false;
   private reportedAttachments = new Map<string, string>();
 
-  constructor(readonly config: LocalConfig) {
+  constructor(readonly configPath: string, readonly config: LocalConfig) {
     this.bridgeId = process.env.FLOE_BRIDGE_ID ?? "bridge:local";
     this.bus = new BusClient(bridgeHttpBase(config));
-    this.adapter = chooseAdapter();
+    this.adapter = chooseAdapter(configPath, config);
   }
 
   async start(): Promise<void> {
@@ -158,8 +161,10 @@ export class BridgeDaemon {
       }
 
       for (const agent of project.agents) {
+        const endpointId = agentEndpointId(workspace.workspace_id, agent.agent_id);
+        this.endpointRuntime.set(endpointId, extractRuntimeConfig(agent.frontmatter));
         await this.bus.registerEndpoint({
-          endpoint_id: agentEndpointId(workspace.workspace_id, agent.agent_id),
+          endpoint_id: endpointId,
           workspace_id: workspace.workspace_id,
           actor_type: "agent",
           name: agent.name,
@@ -248,8 +253,10 @@ export class BridgeDaemon {
     const configJson = typeof record.config_json === "string" ? JSON.parse(record.config_json) : record.config_json;
     const project = materializeSavedConfig(locator, configJson);
     for (const agent of project.agents) {
+      const endpointId = agentEndpointId(workspaceId, agent.agent_id);
+      this.endpointRuntime.set(endpointId, extractRuntimeConfig(agent.frontmatter));
       await this.bus.registerEndpoint({
-        endpoint_id: agentEndpointId(workspaceId, agent.agent_id),
+        endpoint_id: endpointId,
         workspace_id: workspaceId,
         actor_type: "agent",
         name: agent.name,
@@ -299,7 +306,7 @@ export class BridgeDaemon {
       await this.adapter.handleBundle({
         bridge_id: this.bridgeId,
         bus: this.bus
-      }, delivery);
+      }, delivery, this.endpointRuntime.get(delivery.endpoint_id));
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
       await this.bus.reportTurnEnd(delivery.endpoint_id);
     } catch (error) {
@@ -310,9 +317,9 @@ export class BridgeDaemon {
   }
 }
 
-function chooseAdapter(): RuntimeAdapter {
+function chooseAdapter(configPath: string, config: LocalConfig): RuntimeAdapter {
   const selected = process.env.FLOE_RUNTIME_ADAPTER ?? "fake";
-  if (selected === "pi" || selected === "pi-agent-core") return new PiAgentCoreAdapter();
+  if (selected === "pi" || selected === "pi-agent-core") return new PiAgentCoreAdapter(createBridgeAuthRuntime(configPath, config));
   return new FakeRuntimeAdapter();
 }
 
@@ -322,4 +329,13 @@ function agentEndpointId(workspaceId: string, agentId: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractRuntimeConfig(frontmatter: Record<string, unknown>): AgentRuntimeConfig {
+  const runtime = (frontmatter.runtime ?? {}) as Record<string, unknown>;
+  return {
+    provider: typeof runtime.provider === "string" ? runtime.provider : undefined,
+    model: typeof runtime.model === "string" ? runtime.model : undefined,
+    auth_profile: typeof runtime.auth_profile === "string" ? runtime.auth_profile : undefined
+  };
 }

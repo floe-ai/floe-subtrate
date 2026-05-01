@@ -1,10 +1,11 @@
+import type { AgentRuntimeConfig } from "../auth.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 import type { DeliveryBundle, EventEnvelope } from "../bus-client.js";
 
 export class FakeRuntimeAdapter implements RuntimeAdapter {
   readonly name = "fake";
 
-  async handleBundle(context: RuntimeContext, bundle: DeliveryBundle): Promise<void> {
+  async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, _runtimeConfig?: AgentRuntimeConfig): Promise<void> {
     const trigger = bundle.events[0];
     const destination = chooseReplyDestination(trigger);
     const text = firstText(trigger);

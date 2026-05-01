@@ -6,6 +6,19 @@ import { stdin as input, stdout as output } from "node:process";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
 import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./config.js";
+import type { OAuthProviderId } from "@mariozechner/pi-ai";
+import {
+  createAuthRuntime,
+  findProfile,
+  getAuthStatusLabel,
+  listProviderOptions,
+  removeProfile,
+  saveProfiles,
+  suggestProfileId,
+  type ProfilesDocument,
+  upsertProfile,
+  validateProfileId
+} from "./auth.js";
 import {
   clearRecords,
   isPidRunning,
@@ -89,6 +102,144 @@ program
     }
   });
 
+program
+  .command("login")
+  .description("Configure a Floe auth profile")
+  .option("--provider <provider>", "provider id")
+  .option("--profile <profile>", "profile id")
+  .option("--model <model>", "default model id for this profile")
+  .option("--api-key-env <name>", "read API key from environment variable")
+  .action(async (options) => {
+    const { configPath, config } = ensureConfig(program.opts().config);
+    const runtime = createAuthRuntime(configPath, config);
+    const providerOptions = listProviderOptions(runtime);
+    if (providerOptions.length === 0) {
+      throw new Error("No providers are available in the local model registry.");
+    }
+
+    const providerOption = await resolveProviderOption(providerOptions, options.provider);
+    const profileId = await resolveProfileId(runtime.profiles, providerOption.id, options.profile);
+    const model = typeof options.model === "string" && options.model.trim().length > 0 ? options.model.trim() : undefined;
+
+    if (providerOption.auth_type === "oauth") {
+      await loginWithOAuth(runtime, providerOption.id, providerOption.name);
+    } else {
+      const apiKey = await resolveApiKey(options.apiKeyEnv);
+      runtime.authStorage.set(providerOption.id, { type: "api_key", key: apiKey });
+    }
+
+    upsertProfile(runtime.profiles, {
+      id: profileId,
+      provider: providerOption.id,
+      model,
+      label: providerOption.name
+    });
+    saveProfiles(runtime.paths.profilesYamlPath, runtime.profiles);
+    runtime.modelRegistry.refresh();
+    console.log(`Saved profile '${profileId}' for provider '${providerOption.id}'.`);
+    if (model) console.log(`Default model: ${model}`);
+  });
+
+const authCommand = program.command("auth").description("Inspect Floe auth profiles");
+authCommand.command("list").description("List configured Floe auth profiles").action(() => {
+  const { configPath, config } = ensureConfig(program.opts().config);
+  const runtime = createAuthRuntime(configPath, config);
+  if (runtime.profiles.profiles.length === 0) {
+    console.log("No Floe auth profiles are configured.");
+    return;
+  }
+  for (const profile of runtime.profiles.profiles) {
+    const status = runtime.modelRegistry.getProviderAuthStatus(profile.provider);
+    const configured = status.configured ? "configured" : "missing";
+    const modelText = profile.model ? profile.model : "(default)";
+    console.log(
+      `${profile.id} | provider=${profile.provider} | model=${modelText} | auth=${configured} (${getAuthStatusLabel(status)})`
+    );
+  }
+});
+
+authCommand.command("doctor").description("Validate Floe auth/profile setup").action(async () => {
+  const { configPath, config } = ensureConfig(program.opts().config);
+  const runtime = createAuthRuntime(configPath, config);
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const providersInRegistry = new Set(runtime.modelRegistry.getAll().map((model) => model.provider));
+
+  if (!existsSync(runtime.paths.authJsonPath)) errors.push(`Missing auth file: ${runtime.paths.authJsonPath}`);
+  if (!existsSync(runtime.paths.modelsJsonPath)) errors.push(`Missing model config file: ${runtime.paths.modelsJsonPath}`);
+  if (!existsSync(runtime.paths.profilesYamlPath)) errors.push(`Missing profiles file: ${runtime.paths.profilesYamlPath}`);
+
+  if (runtime.modelRegistry.getError()) {
+    warnings.push(`models.json warning: ${runtime.modelRegistry.getError()}`);
+  }
+  if (runtime.profilesLoadError) {
+    errors.push(`profiles.yaml parse/schema error: ${runtime.profilesLoadError}`);
+  }
+
+  for (const profile of runtime.profiles.profiles) {
+    if (!providersInRegistry.has(profile.provider)) {
+      errors.push(`Profile '${profile.id}' uses unknown provider '${profile.provider}'.`);
+      continue;
+    }
+    if (profile.model && !runtime.modelRegistry.find(profile.provider, profile.model)) {
+      errors.push(`Profile '${profile.id}' references unknown model '${profile.provider}/${profile.model}'.`);
+    }
+  }
+
+  const profileProviders = new Set(runtime.profiles.profiles.map((profile) => profile.provider));
+  for (const provider of profileProviders) {
+    try {
+      const apiKey = await runtime.authStorage.getApiKey(provider);
+      if (!apiKey) {
+        errors.push(`Provider '${provider}' has no usable auth. Run 'floe login --provider ${provider}'.`);
+      }
+    } catch (error) {
+      errors.push(`Provider '${provider}' auth check failed: ${(error as Error).message}`);
+    }
+  }
+
+  for (const authError of runtime.authStorage.drainErrors()) {
+    warnings.push(`Auth refresh warning: ${authError.message}`);
+  }
+
+  if (errors.length === 0 && warnings.length === 0) {
+    console.log("Auth doctor: OK");
+    return;
+  }
+
+  if (errors.length > 0) {
+    console.log("Auth doctor errors:");
+    for (const error of errors) console.log(`- ${error}`);
+  }
+  if (warnings.length > 0) {
+    console.log("Auth doctor warnings:");
+    for (const warning of warnings) console.log(`- ${warning}`);
+  }
+  if (errors.length > 0) process.exitCode = 1;
+});
+
+program
+  .command("logout")
+  .argument("<profile>", "profile id")
+  .description("Remove a Floe auth profile")
+  .action((profile) => {
+    const { configPath, config } = ensureConfig(program.opts().config);
+    const runtime = createAuthRuntime(configPath, config);
+    const existing = findProfile(runtime.profiles, profile);
+    if (!existing) {
+      throw new Error(`Unknown profile '${profile}'.`);
+    }
+    removeProfile(runtime.profiles, profile);
+    saveProfiles(runtime.paths.profilesYamlPath, runtime.profiles);
+    const providerStillReferenced = runtime.profiles.profiles.some((item) => item.provider === existing.provider);
+    if (!providerStillReferenced) {
+      runtime.authStorage.logout(existing.provider);
+      console.log(`Removed profile '${profile}' and provider auth '${existing.provider}'.`);
+      return;
+    }
+    console.log(`Removed profile '${profile}'. Provider auth '${existing.provider}' is still used by other profiles.`);
+  });
+
 program.command("doctor").description("Diagnose local Floe setup").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
   await printStatus(configPath, config);
@@ -151,6 +302,88 @@ program.action(async () => {
 });
 
 await program.parseAsync(process.argv);
+
+async function resolveProviderOption(
+  options: Array<{ id: string; name: string; auth_type: "oauth" | "api_key" }>,
+  providerFlag?: string
+): Promise<{ id: string; name: string; auth_type: "oauth" | "api_key" }> {
+  if (providerFlag) {
+    const explicit = options.find((option) => option.id === providerFlag);
+    if (!explicit) {
+      throw new Error(`Unknown provider '${providerFlag}'. Run 'floe auth list' and 'floe auth doctor' for details.`);
+    }
+    return explicit;
+  }
+
+  const rl = createInterface({ input, output });
+  try {
+    console.log("Select provider:");
+    for (const [index, option] of options.entries()) {
+      console.log(`  ${index + 1}. ${option.name} (${option.id}, ${option.auth_type})`);
+    }
+    const answer = (await rl.question(`Enter number (1-${options.length}): `)).trim();
+    const parsed = Number(answer);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > options.length) {
+      throw new Error("Invalid provider selection.");
+    }
+    return options[parsed - 1];
+  } finally {
+    rl.close();
+  }
+}
+
+async function resolveProfileId(profiles: ProfilesDocument, provider: string, profileFlag?: string): Promise<string> {
+  if (profileFlag) return validateProfileId(profileFlag);
+  const suggested = suggestProfileId(profiles, provider);
+  const rl = createInterface({ input, output });
+  try {
+    const answer = (await rl.question(`Profile id [${suggested}]: `)).trim();
+    return validateProfileId(answer || suggested);
+  } finally {
+    rl.close();
+  }
+}
+
+async function loginWithOAuth(runtime: ReturnType<typeof createAuthRuntime>, providerId: string, providerName: string): Promise<void> {
+  const rl = createInterface({ input, output });
+  try {
+    await runtime.authStorage.login(providerId as OAuthProviderId, {
+      onAuth: (info) => {
+        console.log(`Open this URL to authenticate ${providerName}:`);
+        console.log(info.url);
+        if (info.instructions) console.log(info.instructions);
+        openUrl(info.url);
+      },
+      onPrompt: async (prompt) => {
+        const hint = prompt.placeholder ? ` (${prompt.placeholder})` : "";
+        return rl.question(`${prompt.message}${hint}: `);
+      },
+      onProgress: (message) => {
+        console.log(message);
+      },
+      onManualCodeInput: async () => rl.question("Paste redirect URL or auth code: ")
+    });
+  } finally {
+    rl.close();
+  }
+}
+
+async function resolveApiKey(apiKeyEnv?: string): Promise<string> {
+  if (apiKeyEnv) {
+    const value = process.env[apiKeyEnv];
+    if (!value) throw new Error(`Environment variable '${apiKeyEnv}' is not set.`);
+    if (!value.trim()) throw new Error(`Environment variable '${apiKeyEnv}' is empty.`);
+    return value.trim();
+  }
+  const rl = createInterface({ input, output });
+  try {
+    const entered = (await rl.question("API key: ")).trim();
+    if (!entered) throw new Error("API key cannot be empty.");
+    return entered;
+  } finally {
+    rl.close();
+  }
+}
 
 async function applyAutostartChoice(configPath: string, config: LocalConfig, options: any): Promise<void> {
   let enable = options.autostart !== false;

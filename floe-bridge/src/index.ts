@@ -15,8 +15,8 @@ async function main(): Promise<void> {
     console.error(`Unknown floe-bridge command: ${command}`);
     process.exit(1);
   }
-  const { config } = ensureConfig(getArgValue("--config"));
-  const daemon = new BridgeDaemon(config);
+  const { configPath, config } = ensureConfig(getArgValue("--config"));
+  const daemon = new BridgeDaemon(configPath, config);
   await daemon.start();
   process.on("SIGINT", () => void daemon.stop().finally(() => process.exit(0)));
   process.on("SIGTERM", () => void daemon.stop().finally(() => process.exit(0)));

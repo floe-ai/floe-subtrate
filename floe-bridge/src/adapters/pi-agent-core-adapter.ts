@@ -1,22 +1,43 @@
 import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
-import { Type, getEnvApiKey, getModel } from "@mariozechner/pi-ai";
-import type { DeliveryBundle, EventEnvelope } from "../bus-client.js";
+import { Type } from "@mariozechner/pi-ai";
+import type { AgentRuntimeConfig, BridgeAuthRuntime, RuntimeAuthResolved } from "../auth.js";
+import { resolveRuntimeAuth } from "../auth.js";
+import type { DeliveryBundle } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 
 type SessionState = {
   agent: Agent;
   initialized: boolean;
+  provider: string;
+  modelId: string;
 };
 
 export class PiAgentCoreAdapter implements RuntimeAdapter {
   readonly name = "pi-agent-core";
   private sessions = new Map<string, SessionState>();
 
-  async handleBundle(context: RuntimeContext, bundle: DeliveryBundle): Promise<void> {
-    const session = this.getOrCreateSession(context, bundle);
+  constructor(private readonly authRuntime: BridgeAuthRuntime) {}
+
+  async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void> {
+    const resolved = await resolveRuntimeAuth(this.authRuntime, runtimeConfig);
+    const session = this.getOrCreateSession(context, bundle, resolved);
     if (!session.initialized) {
       this.subscribeAgentEvents(context, bundle, session.agent);
       session.initialized = true;
+    }
+
+    if (resolved.usedEnvFallback) {
+      await context.bus.appendRuntimeTelemetry({
+        workspace_id: bundle.workspace_id,
+        endpoint_id: bundle.endpoint_id,
+        delivery_id: bundle.delivery_id,
+        kind: "runtime_config",
+        payload: {
+          source: "env_fallback",
+          provider: resolved.provider,
+          model: resolved.modelId
+        }
+      });
     }
 
     const prompt = deliveryToPrompt(bundle);
@@ -27,22 +48,38 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     } as any);
   }
 
-  private getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle): SessionState {
+  private getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved): SessionState {
     const key = bundle.endpoint_id;
     const existing = this.sessions.get(key);
-    if (existing) return existing;
+    if (existing && existing.provider === resolved.provider && existing.modelId === resolved.model.id) return existing;
 
-    const provider = (process.env.FLOE_PI_PROVIDER ?? "openai") as any;
-    const modelId = (process.env.FLOE_PI_MODEL ?? "openai/gpt-5-mini") as any;
-    const model = getModel(provider, modelId);
-    if (!model) throw new Error(`Pi model not found for provider=${provider} id=${modelId}`);
+    const emitTool = this.createEmitTool(context, bundle);
+    const agent = new Agent({
+      initialState: {
+        model: resolved.model,
+        systemPrompt:
+          "You are a Floe runtime agent. Use tool emit to publish messages/progress/responses to Floe bus. End turns normally.",
+        tools: [emitTool]
+      },
+      getApiKey: async () => {
+        const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
+        if (!latest) throw new Error(`Provider '${resolved.provider}' is missing authentication. Run 'floe login'.`);
+        return latest;
+      }
+    });
 
-    const envApiKey = getEnvApiKey(provider);
-    if (!envApiKey) {
-      throw new Error(`No API key found for Pi provider '${provider}'. Set provider env key (e.g. OPENAI_API_KEY).`);
-    }
+    const state: SessionState = {
+      agent,
+      initialized: false,
+      provider: resolved.provider,
+      modelId: resolved.model.id
+    };
+    this.sessions.set(key, state);
+    return state;
+  }
 
-    const emitTool: AgentTool = {
+  private createEmitTool(context: RuntimeContext, bundle: DeliveryBundle): AgentTool {
+    return {
       name: "emit",
       label: "Emit Floe Event",
       description: "Emit a Floe event back to the bus.",
@@ -88,20 +125,6 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         };
       }
     };
-
-    const agent = new Agent({
-      initialState: {
-        model,
-        systemPrompt:
-          "You are a Floe runtime agent. Use tool emit to publish messages/progress/responses to Floe bus. End turns normally.",
-        tools: [emitTool]
-      },
-      getApiKey: () => envApiKey
-    });
-
-    const state: SessionState = { agent, initialized: false };
-    this.sessions.set(key, state);
-    return state;
   }
 
   private subscribeAgentEvents(context: RuntimeContext, bundle: DeliveryBundle, agent: Agent): void {

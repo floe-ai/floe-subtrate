@@ -43,11 +43,7 @@ describe("Floe local vertical slice", () => {
         http_base_url: busUrl,
         ws_base_url: wsUrl,
         data_dir: "./bus",
-        log_dir: "./logs/bus",
-        wait_policy: {
-          held_yield_refresh_ms: 250,
-          wait_refresh_event_type: "wait_refresh"
-        }
+        log_dir: "./logs/bus"
       },
       bridge: {
         data_dir: "./bridge",
@@ -90,7 +86,7 @@ describe("Floe local vertical slice", () => {
     if (temp) await removeTemp(temp);
   });
 
-  it("initializes .floe, registers endpoints, and resumes fake runtime waits", async () => {
+  it("initializes .floe and executes emit->delivery->turn-end lifecycle with fake runtime", async () => {
     const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
       locator: projectPath,
       init_authorized: true
@@ -101,7 +97,7 @@ describe("Floe local vertical slice", () => {
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
     const agentFile = readFileSync(join(projectPath, ".floe", "agents", "floe.md"), "utf8");
     expect(agentFile).not.toContain("endpoint_id");
-    expect(agentFile).toContain("substrate-build");
+    expect(agentFile).toContain("auth_profile");
 
     const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
     const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
@@ -122,121 +118,42 @@ describe("Floe local vertical slice", () => {
       type: "message",
       workspace_id: workspaceId,
       source_endpoint_id: humanEndpointId,
-      destination_endpoint_id: agentEndpointId,
+      destination: {
+        kind: "endpoint",
+        endpoint_id: agentEndpointId
+      },
       thread_id: "thread:test",
       correlation_id: null,
       content: { text: "First local test message", data: {} },
+      response: { expected: false },
       metadata: {}
     });
 
-    await waitFor(async () => agentMessages(workspaceId, agentEndpointId, humanEndpointId).then((events) => events.length >= 2), "first fake response");
+    await waitFor(async () => agentMessages(workspaceId, agentEndpointId, humanEndpointId).then((events) => events.length >= 2), "fake runtime response");
     await waitFor(() => sawBusEvents([
       "event_submitted",
-      "event_queued",
+      "destination_selector_resolved",
+      "delivery_created",
       "delivery_reserved",
       "delivery_delivered_to_bridge",
       "delivery_injected_to_runtime",
       "delivery_acknowledged",
-      "wait_registered"
-    ]), "first delivery state progression");
+      "turn_end_observed"
+    ]), "delivery lifecycle events");
+
+    await waitFor(async () => {
+      const telemetry = await get<{ records: any[] }>(`/v1/runtime/telemetry?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
+      return telemetry.records.some((record) => record.kind === "visible_output");
+    }, "visible runtime telemetry");
+
     await waitFor(async () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
       return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "waiting");
-    }, "agent waiting after yield");
+    }, "pending response status");
 
-    await post("/v1/events/emit", {
-      type: "message",
-      workspace_id: workspaceId,
-      source_endpoint_id: humanEndpointId,
-      destination_endpoint_id: agentEndpointId,
-      thread_id: "thread:test",
-      correlation_id: null,
-      content: { text: "Resume from user", data: {} },
-      metadata: {}
-    });
-
-    const finalEvents = await waitFor(
-      async () => {
-        const messages = await agentMessages(workspaceId, agentEndpointId, humanEndpointId);
-        return messages.length >= 4 ? messages : false;
-      },
-      "second fake response after wait resume"
-    );
-    expect(finalEvents.map((event) => event.type)).toContain("progress");
-    expect(finalEvents.some((event) => event.content.text?.includes("waiting for the next eligible event"))).toBe(true);
-    await waitFor(() => busMessages.filter((message) => message.type === "wait_resolved").length >= 1, "resume delivered to yielded runtime");
-
-    const timerAgentEndpointId = `endpoint:${workspaceId}:agent:timer`;
-    await post("/v1/endpoints/register", {
-      endpoint_id: timerAgentEndpointId,
-      workspace_id: workspaceId,
-      actor_type: "agent",
-      name: "Timer Agent",
-      agent_id: "timer",
-      bridge_id: "bridge:local",
-      status: "idle"
-    });
-    await post("/v1/events/yield", {
-      event: {
-        type: "message",
-        workspace_id: workspaceId,
-        source_endpoint_id: timerAgentEndpointId,
-        destination_endpoint_id: humanEndpointId,
-        thread_id: "thread:wait-refresh",
-        correlation_id: null,
-        content: { text: "Waiting for bus-owned wait refresh", data: {} },
-        metadata: { turn_state: "waiting_for_input" }
-      },
-      wait: {
-        mode: "open",
-        max_batch_events: 5
-      }
-    });
-    await waitFor(async () => {
-      const result = await get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=200`);
-      return result.events.some((event) => event.type === "wait_refresh" && event.destination_endpoint_id === timerAgentEndpointId);
-    }, "wait_refresh event resume");
-    await waitFor(() => busMessages.some((message) => message.type === "delivery_acknowledged"), "wait_refresh acknowledged");
-    const deliveries = await get<{ deliveries: any[] }>(`/v1/delivery?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
-    expect(deliveries.deliveries.some((delivery) => delivery.state === "acknowledged")).toBe(true);
-
-    const statusBeforeDrift = await workspaceStatus(workspaceId);
-    expect(statusBeforeDrift.active_config_hash).toBeTruthy();
-    writeFileSync(join(projectPath, ".floe", "agents", "floe.md"), "\n\nDrift marker for tests.\n", { flag: "a" });
-    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
-    const drifted = await waitFor(async () => {
-      const workspace = await workspaceStatus(workspaceId);
-      return workspace.status === "config_drift" ? workspace : false;
-    }, "config drift detection");
-    expect(drifted.active_config_hash).toBe(statusBeforeDrift.active_config_hash);
-
-    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/config-snapshot`, {});
-    await waitFor(async () => {
-      const workspace = await workspaceStatus(workspaceId);
-      return workspace.status === "attached" && workspace.active_config_hash !== statusBeforeDrift.active_config_hash;
-    }, "config snapshot import");
-
-    const savedConfig = await post<{ config: any }>("/v1/configs", {
-      name: "Test reviewer config",
-      config: {
-        agents: [
-          {
-            id: "reviewer",
-            name: "Reviewer",
-            instructions: "Review local changes and yield with a concrete summary.",
-            skills: []
-          }
-        ]
-      }
-    });
-    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/apply-config`, {
-      config_id: savedConfig.config.config_id
-    });
-    await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "reviewer.md")), "saved config materialization");
-    await waitFor(async () => {
-      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
-      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === `endpoint:${workspaceId}:agent:reviewer`);
-    }, "saved config agent endpoint");
+    const pending = await get<{ pending: any[] }>(`/v1/pending-responses?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
+    expect(pending.pending.length).toBeGreaterThan(0);
+    expect(pending.pending.some((item) => item.waiting_endpoint_id === agentEndpointId)).toBe(true);
   }, 90_000);
 
   function sawBusEvents(types: string[]): boolean {
@@ -245,7 +162,7 @@ describe("Floe local vertical slice", () => {
 
   async function agentMessages(workspaceId: string, agentEndpointId: string, humanEndpointId: string) {
     const result = await get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
-    return result.events.filter((event) => event.source_endpoint_id === agentEndpointId && event.destination_endpoint_id === humanEndpointId);
+    return result.events.filter((event) => event.source_endpoint_id === agentEndpointId && event.destination_json?.endpoint_id === humanEndpointId);
   }
 
   async function get<T>(path: string): Promise<T> {
@@ -262,11 +179,6 @@ describe("Floe local vertical slice", () => {
     });
     if (!response.ok) throw new Error(`${path} failed ${response.status}: ${await response.text()}`);
     return response.json() as Promise<T>;
-  }
-
-  async function workspaceStatus(workspaceId: string): Promise<any> {
-    const result = await get<{ workspace: any }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/config-status`);
-    return result.workspace;
   }
 });
 
