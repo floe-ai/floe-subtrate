@@ -43,35 +43,60 @@ export function ensureProjectTemplate(workspacePath: string, workspaceName: stri
   writeFileSync(join(floeDir, "floe.yaml"), YAML.stringify({
     schema: "floe.workspace.v1",
     version: 1,
-    name: workspaceName,
+    applied_config: {
+      config_id: "cfg_composition_floe_default",
+      version: 1,
+      source: "initial_template"
+    },
     agents: [
       {
         id: "floe",
-        file: "agents/floe.md"
+        path: "./agents/floe.md"
       }
-    ]
+    ],
+    pulse: {
+      default: "off",
+      after_idle: "30m",
+      min_interval: "30m"
+    },
+    state: {
+      path: "./state"
+    }
   }), "utf8");
 
   writeFileSync(join(floeDir, "agents", "floe.md"), `---
 schema: floe.agent.v1
 agent_id: floe
-name: Floe
+label: Floe
 runtime:
-  provider: copilot_cli_sdk
+  engine: pi
+  provider: configured_by_pi_ai
+  options: {}
+applied_from:
+  config_id: cfg_composition_floe_default
+  version: 1
+extensions: []
 skills:
-  - substrate-build
+  - ../skills/substrate-build
+mcp: []
+pulse:
+  inherit: true
+scope:
+  paths:
+    - ./
+  services: []
 ---
 # Floe
 
-You are Floe, the default runtime-backed agent for this project.
+You are Floe, the default agent for this project.
 
-Use the project-local substrate-build skill when it is available. Inspect and
-extend the Floe substrate through the runtime-native tools provided by the
-host runtime.
+Use emit to publish messages, progress, requests, and other events into Floe.
 
-Before calling yield, send a meaningful summary of work completed, findings,
-changes, and what you are waiting for. Do not yield with an empty or mechanical
-message.
+If you need a future response before more work can continue, emit an event with
+response.expected true and then end your turn normally.
+
+If your work is complete and you are not waiting for anything, send your final
+response and end the turn normally.
 `, "utf8");
 
   writeFileSync(join(floeDir, "extensions", "README.md"), "# Extensions\n\nProject-local Floe extensions can be placed here.\n", "utf8");
@@ -164,7 +189,9 @@ export function materializeSavedConfig(workspacePath: string, config: SavedProje
       agent_id: agentId,
       name,
       runtime: {
-        provider: "copilot_cli_sdk"
+        engine: "pi",
+        provider: "configured_by_pi_ai",
+        options: {}
       },
       skills
     };

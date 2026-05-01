@@ -5,43 +5,59 @@ import { DatabaseSync } from "node:sqlite";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 
+type Broadcast = (type: string, payload: Record<string, unknown>) => void;
+
+export type DestinationSelector =
+  | { kind: "endpoint"; endpoint_id: string }
+  | {
+      kind: "broadcast";
+      scope: "workspace";
+      target: "all" | "agents" | "humans" | "active_agents" | "active_humans";
+      exclude_source?: boolean;
+    };
+
+export type ResponseExpectation = {
+  expected: boolean;
+  mode?: "open" | "thread_affine" | "correlated";
+  correlation_id?: string | null;
+  timeout_at?: string | null;
+};
+
 export type EventCommand = {
   type: string;
   workspace_id: string;
   source_endpoint_id: string;
-  destination_endpoint_id: string;
+  destination: DestinationSelector;
   thread_id: string;
   correlation_id?: string | null;
   content: Record<string, unknown>;
+  response?: ResponseExpectation;
   metadata?: Record<string, unknown>;
   idempotency_key?: string | null;
 };
 
-export type EventEnvelope = Omit<EventCommand, "idempotency_key"> & {
+export type EventEnvelope = {
   event_id: string;
+  type: string;
+  workspace_id: string;
+  source_endpoint_id: string;
+  thread_id: string;
   correlation_id: string | null;
+  destination_json: DestinationSelector;
+  content: Record<string, unknown>;
+  response: ResponseExpectation;
   metadata: Record<string, unknown>;
   created_at: string;
 };
 
-export type WaitCommand = {
-  mode?: "open" | "thread_affine" | "correlated";
-  expected_correlation_id?: string | null;
-  max_batch_events?: number;
-};
-
 export type DeliveryBundle = {
   delivery_id: string;
-  wait_id: string | null;
   endpoint_id: string;
   workspace_id: string;
-  resume_reason: "event" | "wait_refresh" | "reminder" | "webhook_received" | "system";
   trigger_event_id: string;
   events: EventEnvelope[];
   delivered_at: string;
 };
-
-type Broadcast = (type: string, payload: Record<string, unknown>) => void;
 
 function now(): string {
   return new Date().toISOString();
@@ -116,10 +132,11 @@ export class BusStore {
         type TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
         source_endpoint_id TEXT NOT NULL,
-        destination_endpoint_id TEXT NOT NULL,
         thread_id TEXT NOT NULL,
         correlation_id TEXT,
+        destination_json TEXT NOT NULL,
         content_json TEXT NOT NULL,
+        response_json TEXT NOT NULL,
         metadata_json TEXT NOT NULL,
         idempotency_key TEXT,
         created_at TEXT NOT NULL
@@ -146,31 +163,10 @@ export class BusStore {
       CREATE INDEX IF NOT EXISTS idx_event_queue_destination
         ON event_queue(destination_endpoint_id, state, created_at);
 
-      CREATE TABLE IF NOT EXISTS waits (
-        wait_id TEXT PRIMARY KEY,
-        endpoint_id TEXT NOT NULL,
-        workspace_id TEXT NOT NULL,
-        mode TEXT NOT NULL,
-        thread_id TEXT,
-        expected_correlation_id TEXT,
-        wait_refresh_due_at TEXT,
-        max_batch_events INTEGER NOT NULL,
-        status TEXT NOT NULL,
-        outbound_event_id TEXT NOT NULL,
-        trigger_event_id TEXT,
-        created_at TEXT NOT NULL,
-        resolved_at TEXT
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_waits_endpoint
-        ON waits(endpoint_id, status, created_at);
-
       CREATE TABLE IF NOT EXISTS delivery_bundles (
         delivery_id TEXT PRIMARY KEY,
-        wait_id TEXT,
         endpoint_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
-        resume_reason TEXT NOT NULL,
         trigger_event_id TEXT NOT NULL,
         events_json TEXT NOT NULL,
         state TEXT NOT NULL,
@@ -184,6 +180,33 @@ export class BusStore {
       CREATE INDEX IF NOT EXISTS idx_delivery_bundles_endpoint
         ON delivery_bundles(endpoint_id, state, created_at);
 
+      CREATE TABLE IF NOT EXISTS pending_responses (
+        pending_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        waiting_endpoint_id TEXT NOT NULL,
+        source_event_id TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        thread_id TEXT,
+        correlation_id TEXT,
+        timeout_at TEXT,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pending_waiting_endpoint
+        ON pending_responses(waiting_endpoint_id, status, created_at);
+
+      CREATE TABLE IF NOT EXISTS runtime_telemetry (
+        telemetry_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        endpoint_id TEXT NOT NULL,
+        delivery_id TEXT,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS saved_configs (
         config_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -192,14 +215,14 @@ export class BusStore {
         updated_at TEXT NOT NULL
       );
     `);
-    this.addColumnIfMissing("waits", "wait_refresh_due_at", "TEXT");
-    this.addColumnIfMissing("event_queue", "delivery_id", "TEXT");
-    this.addColumnIfMissing("event_queue", "lease_expires_at", "TEXT");
-    this.addColumnIfMissing("event_queue", "attempt_count", "INTEGER NOT NULL DEFAULT 0");
-    this.addColumnIfMissing("event_queue", "last_error", "TEXT");
-    this.addColumnIfMissing("delivery_bundles", "lease_expires_at", "TEXT");
-    this.addColumnIfMissing("delivery_bundles", "attempt_count", "INTEGER NOT NULL DEFAULT 1");
-    this.addColumnIfMissing("delivery_bundles", "last_error", "TEXT");
+    this.addColumnIfMissing("events", "destination_endpoint_id", "TEXT NOT NULL DEFAULT ''");
+    this.addColumnIfMissing("events", "destination_json", "TEXT");
+    this.addColumnIfMissing("events", "response_json", "TEXT");
+    this.addColumnIfMissing("delivery_bundles", "wait_id", "TEXT");
+    this.addColumnIfMissing("delivery_bundles", "resume_reason", "TEXT NOT NULL DEFAULT 'event'");
+    this.addColumnIfMissing("runtime_telemetry", "delivery_id", "TEXT");
+    this.backfillEventDestinationJson();
+    this.backfillEventResponseJson();
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -207,6 +230,23 @@ export class BusStore {
     if (!columns.some((item) => item.name === column)) {
       this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
+  }
+
+  private backfillEventDestinationJson(): void {
+    this.db.exec(`
+      UPDATE events
+      SET destination_json = json_object('kind','endpoint','endpoint_id',destination_endpoint_id)
+      WHERE (destination_json IS NULL OR destination_json = '')
+        AND destination_endpoint_id IS NOT NULL
+    `);
+  }
+
+  private backfillEventResponseJson(): void {
+    this.db.exec(`
+      UPDATE events
+      SET response_json = '{"expected":false,"mode":"open","correlation_id":null,"timeout_at":null}'
+      WHERE response_json IS NULL OR response_json = ''
+    `);
   }
 
   listWorkspaces(): unknown[] {
@@ -261,9 +301,8 @@ export class BusStore {
     return bridge;
   }
 
-  reportBridgeLiveness(bridgeId: string, broadcast: Broadcast): void {
+  reportBridgeLiveness(bridgeId: string): void {
     this.db.prepare("UPDATE bridges SET status = 'online', last_seen_at = ? WHERE bridge_id = ?").run(now(), bridgeId);
-    broadcast("bridge_liveness_ping", { bridge_id: bridgeId });
   }
 
   registerEndpoint(input: {
@@ -311,9 +350,7 @@ export class BusStore {
   }
 
   listEndpoints(workspaceId?: string): unknown[] {
-    if (workspaceId) {
-      return this.db.prepare("SELECT * FROM endpoints WHERE workspace_id = ? ORDER BY actor_type, name").all(workspaceId);
-    }
+    if (workspaceId) return this.db.prepare("SELECT * FROM endpoints WHERE workspace_id = ? ORDER BY actor_type, name").all(workspaceId);
     return this.db.prepare("SELECT * FROM endpoints ORDER BY workspace_id, actor_type, name").all();
   }
 
@@ -325,9 +362,7 @@ export class BusStore {
     this.db.prepare("UPDATE endpoints SET status = ?, updated_at = ? WHERE endpoint_id = ?").run(status, now(), endpointId);
     const endpoint = this.getEndpoint(endpointId);
     broadcast("status_changed", { endpoint });
-    if (status === "idle" || status === "waiting") {
-      this.tryCreateDeliveryForEndpoint(endpointId, broadcast);
-    }
+    if (status === "idle" || status === "waiting") this.tryCreateDeliveryForEndpoint(endpointId, broadcast);
     return endpoint;
   }
 
@@ -357,129 +392,59 @@ export class BusStore {
       error_code: input.error_code ?? null,
       validation: input.validation ?? null
     });
-    if (input.status === "config_drift") {
-      broadcast("config_drift_detected", {
-        workspace,
-        bridge_id: input.bridge_id,
-        observed_config_hash: input.config_hash ?? null,
-        validation: input.validation ?? null
-      });
-    }
     return workspace;
   }
 
-  submitEvent(command: EventCommand, broadcast: Broadcast): EventEnvelope {
-    const envelope = this.transaction(() => {
+  submitEvent(command: EventCommand, broadcast: Broadcast): { event: EventEnvelope; deliveries_created: number } {
+    const response = this.normalizeResponse(command.response);
+    const event = this.transaction(() => {
       if (command.idempotency_key) {
         const existing = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?").get(command.idempotency_key) as any;
-        if (existing) {
-          return this.rowToEvent(existing);
-        }
+        if (existing) return this.rowToEvent(existing);
       }
-      const created = this.insertEvent(command);
-      this.queueEvent(created);
-      return created;
+      const inserted = this.insertEvent(command, response);
+      const destinationEndpointIds = this.resolveDestinations(inserted);
+      for (const destinationEndpointId of destinationEndpointIds) this.queueEvent(inserted.event_id, inserted.workspace_id, destinationEndpointId);
+      if (inserted.response.expected) this.createPendingResponse(inserted);
+      this.resolvePendingResponsesForIncoming(inserted);
+      return inserted;
     });
-    broadcast("event_submitted", { event: envelope });
-    broadcast("event_queued", { event_id: envelope.event_id, destination_endpoint_id: envelope.destination_endpoint_id });
-    this.tryCreateDeliveryForEndpoint(envelope.destination_endpoint_id, broadcast);
-    return envelope;
-  }
 
-  yieldEvent(input: { event: EventCommand; wait?: WaitCommand }, broadcast: Broadcast): { ok: true; event_id: string; wait_id: string; accepted_at: string } {
-    const waitMode = input.wait?.mode ?? "open";
-    const expectedCorrelation = input.wait?.expected_correlation_id ?? input.event.correlation_id ?? null;
-    if (waitMode === "correlated" && !expectedCorrelation) {
-      throw new Error("wait.mode correlated requires expected_correlation_id or event.correlation_id");
-    }
-    const waitId = `wait_${randomUUID()}`;
-    const acceptedAt = now();
-    const waitRefreshDueAt = this.nextWaitRefreshDueAt(acceptedAt);
-    const outbound = this.transaction(() => {
-      const created = this.insertEvent(input.event);
-      this.queueEvent(created);
-      this.db.prepare(`
-        INSERT INTO waits (
-          wait_id, endpoint_id, workspace_id, mode, thread_id, expected_correlation_id,
-          wait_refresh_due_at,
-          max_batch_events, status, outbound_event_id, created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?)
-      `).run(
-        waitId,
-        input.event.source_endpoint_id,
-        input.event.workspace_id,
-        waitMode,
-        input.event.thread_id,
-        expectedCorrelation,
-        waitRefreshDueAt,
-        input.wait?.max_batch_events ?? 25,
-        created.event_id,
-        acceptedAt
-      );
-      this.db.prepare("UPDATE endpoints SET status = 'waiting', updated_at = ? WHERE endpoint_id = ?")
-        .run(acceptedAt, input.event.source_endpoint_id);
-      return created;
+    const resolved = this.db.prepare(`
+      SELECT destination_endpoint_id
+      FROM event_queue
+      WHERE event_id = ?
+    `).all(event.event_id) as Array<{ destination_endpoint_id: string }>;
+    broadcast("event_submitted", { event });
+    broadcast("destination_selector_resolved", {
+      event_id: event.event_id,
+      destinations: resolved.map((row) => row.destination_endpoint_id)
     });
-    broadcast("event_submitted", { event: outbound });
-    broadcast("event_queued", { event_id: outbound.event_id, destination_endpoint_id: outbound.destination_endpoint_id });
-    broadcast("wait_registered", { wait_id: waitId, endpoint_id: input.event.source_endpoint_id });
-    this.tryCreateDeliveryForEndpoint(outbound.destination_endpoint_id, broadcast);
-    this.tryCreateDeliveryForEndpoint(input.event.source_endpoint_id, broadcast);
-    return { ok: true, event_id: outbound.event_id, wait_id: waitId, accepted_at: acceptedAt };
-  }
-
-  processDueTimers(broadcast: Broadcast): DeliveryBundle[] {
-    this.requeueExpiredDeliveryLeases(broadcast);
-    const timestamp = now();
-    const waits = this.db.prepare(`
-      SELECT *
-      FROM waits
-      WHERE status = 'waiting'
-        AND wait_refresh_due_at IS NOT NULL
-        AND wait_refresh_due_at <= ?
-      ORDER BY created_at ASC
-      LIMIT 50
-    `).all(timestamp) as any[];
-    const bundles: DeliveryBundle[] = [];
-    for (const wait of waits) {
-      const fresh = this.db.prepare("SELECT * FROM waits WHERE wait_id = ? AND status = 'waiting'").get(wait.wait_id) as any;
-      if (!fresh) continue;
-      const reason: DeliveryBundle["resume_reason"] = "wait_refresh";
-      const event = this.insertEvent({
-        type: reason,
-        workspace_id: fresh.workspace_id,
-        source_endpoint_id: `endpoint:${fresh.workspace_id}:system:${reason}`,
-        destination_endpoint_id: fresh.endpoint_id,
-        thread_id: fresh.thread_id ?? `${reason}:${fresh.wait_id}`,
-        correlation_id: null,
-        content: {
-          text: "wait_refresh",
-          data: {
-            wait_id: fresh.wait_id,
-            reason
-          }
-        },
-        metadata: {
-          generated_by: "floe-bus",
-          wait_id: fresh.wait_id
-        }
-      });
-      const bundle = this.createDirectDeliveryBundle(fresh.endpoint_id, fresh.workspace_id, fresh.wait_id, [event], reason);
-      this.db.prepare("UPDATE waits SET wait_refresh_due_at = ? WHERE wait_id = ? AND status = 'waiting'")
-        .run(this.nextWaitRefreshDueAt(bundle.delivered_at), fresh.wait_id);
-      this.db.prepare("UPDATE endpoints SET status = 'busy', updated_at = ? WHERE endpoint_id = ?")
-        .run(bundle.delivered_at, fresh.endpoint_id);
-      broadcast("event_submitted", { event });
-      broadcast("delivery_reserved", { delivery: bundle });
-      broadcast("wait_refreshed", { wait_id: fresh.wait_id, delivery_id: bundle.delivery_id, resume_reason: reason });
-      broadcast("delivery_bundle_available", { delivery: bundle });
-      bundles.push(bundle);
+    for (const row of resolved) {
+      broadcast("delivery_created", { event_id: event.event_id, destination_endpoint_id: row.destination_endpoint_id });
+      this.tryCreateDeliveryForEndpoint(row.destination_endpoint_id, broadcast);
     }
-    return bundles;
+    return { event, deliveries_created: resolved.length };
   }
 
-  claimDeliveries(bridgeId: string, limit = 10, broadcast: Broadcast): DeliveryBundle[] {
+  reportTurnEnd(endpointId: string, broadcast: Broadcast): unknown {
+    const openPending = this.db.prepare(`
+      SELECT count(*) AS c
+      FROM pending_responses
+      WHERE waiting_endpoint_id = ? AND status = 'pending'
+    `).get(endpointId) as { c: number };
+    const queued = this.db.prepare(`
+      SELECT count(*) AS c
+      FROM event_queue
+      WHERE destination_endpoint_id = ? AND state IN ('queued', 'reserved', 'delivered_to_bridge', 'injected_to_runtime')
+    `).get(endpointId) as { c: number };
+    const status = openPending.c > 0 ? "waiting" : queued.c > 0 ? "queued" : "idle";
+    const endpoint = this.updateEndpointStatus(endpointId, status, broadcast);
+    broadcast("turn_end_observed", { endpoint_id: endpointId, status });
+    return endpoint;
+  }
+
+  claimDeliveries(bridgeId: string, limit: number, broadcast: Broadcast): DeliveryBundle[] {
     this.requeueExpiredDeliveryLeases(broadcast);
     const rows = this.db.prepare(`
       SELECT db.*
@@ -495,12 +460,10 @@ export class BusStore {
         .run(claimedAt, row.delivery_id);
       this.db.prepare("UPDATE event_queue SET state = 'delivered_to_bridge' WHERE delivery_id = ? AND state = 'reserved'")
         .run(row.delivery_id);
+      broadcast("delivery_reserved", { delivery_id: row.delivery_id, endpoint_id: row.endpoint_id });
+      broadcast("delivery_delivered_to_bridge", { delivery_id: row.delivery_id, bridge_id: bridgeId });
     }
-    const bundles = rows.map((row) => this.rowToDelivery(row));
-    if (bundles.length > 0) {
-      broadcast("delivery_delivered_to_bridge", { bridge_id: bridgeId, delivery_ids: bundles.map((bundle) => bundle.delivery_id) });
-    }
-    return bundles;
+    return rows.map((row) => this.rowToDelivery(row));
   }
 
   reportDeliveryStatus(input: {
@@ -547,6 +510,50 @@ export class BusStore {
     return this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id);
   }
 
+  appendRuntimeTelemetry(input: {
+    workspace_id: string;
+    endpoint_id: string;
+    delivery_id?: string | null;
+    kind: string;
+    payload: Record<string, unknown>;
+  }, broadcast: Broadcast): unknown {
+    const telemetry = {
+      telemetry_id: `tel_${randomUUID()}`,
+      workspace_id: input.workspace_id,
+      endpoint_id: input.endpoint_id,
+      delivery_id: input.delivery_id ?? null,
+      kind: input.kind,
+      payload_json: json(input.payload),
+      created_at: now()
+    };
+    this.db.prepare(`
+      INSERT INTO runtime_telemetry (
+        telemetry_id, workspace_id, endpoint_id, delivery_id, kind, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      telemetry.telemetry_id,
+      telemetry.workspace_id,
+      telemetry.endpoint_id,
+      telemetry.delivery_id,
+      telemetry.kind,
+      telemetry.payload_json,
+      telemetry.created_at
+    );
+    broadcast("runtime_telemetry", { telemetry: { ...telemetry, payload: input.payload } });
+    return telemetry;
+  }
+
+  listRuntimeTelemetry(filters: { workspace_id?: string; limit?: number }): unknown[] {
+    const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
+    if (filters.workspace_id) {
+      return this.db.prepare(`
+        SELECT * FROM runtime_telemetry WHERE workspace_id = ?
+        ORDER BY created_at ASC LIMIT ?
+      `).all(filters.workspace_id, limit);
+    }
+    return this.db.prepare("SELECT * FROM runtime_telemetry ORDER BY created_at ASC LIMIT ?").all(limit);
+  }
+
   listEvents(filters: { workspace_id?: string; thread_id?: string; limit?: number }): EventEnvelope[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
     if (filters.workspace_id && filters.thread_id) {
@@ -574,6 +581,17 @@ export class BusStore {
       `).all(filters.workspace_id, limit);
     }
     return this.db.prepare("SELECT * FROM delivery_bundles ORDER BY created_at ASC LIMIT ?").all(limit);
+  }
+
+  listPendingResponses(filters: { workspace_id?: string; limit?: number }): unknown[] {
+    const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
+    if (filters.workspace_id) {
+      return this.db.prepare(`
+        SELECT * FROM pending_responses WHERE workspace_id = ?
+        ORDER BY created_at ASC LIMIT ?
+      `).all(filters.workspace_id, limit);
+    }
+    return this.db.prepare("SELECT * FROM pending_responses ORDER BY created_at ASC LIMIT ?").all(limit);
   }
 
   listConfigs(): unknown[] {
@@ -632,7 +650,7 @@ export class BusStore {
       type: "webhook_received",
       workspace_id: workspaceId,
       source_endpoint_id: human?.endpoint_id ?? `endpoint:${workspaceId}:webhook:${routeId}`,
-      destination_endpoint_id: destination.endpoint_id,
+      destination: { kind: "endpoint", endpoint_id: destination.endpoint_id },
       thread_id: `webhook:${routeId}:${randomUUID()}`,
       correlation_id: typeof body.correlation_id === "string" ? body.correlation_id : null,
       content: {
@@ -641,37 +659,53 @@ export class BusStore {
       },
       metadata: { route_id: routeId }
     };
-    return this.submitEvent(command, broadcast);
+    return this.submitEvent(command, broadcast).event;
   }
 
-  private insertEvent(command: EventCommand): EventEnvelope {
+  private normalizeResponse(response?: ResponseExpectation): ResponseExpectation {
+    return {
+      expected: !!response?.expected,
+      mode: response?.mode ?? "open",
+      correlation_id: response?.correlation_id ?? null,
+      timeout_at: response?.timeout_at ?? null
+    };
+  }
+
+  private insertEvent(command: EventCommand, response: ResponseExpectation): EventEnvelope {
+    const destinationEndpointId =
+      command.destination.kind === "endpoint"
+        ? command.destination.endpoint_id
+        : `broadcast:${command.destination.scope}:${command.destination.target}`;
     const envelope: EventEnvelope = {
       event_id: `evt_${randomUUID()}`,
       type: command.type,
       workspace_id: command.workspace_id,
       source_endpoint_id: command.source_endpoint_id,
-      destination_endpoint_id: command.destination_endpoint_id,
       thread_id: command.thread_id,
       correlation_id: command.correlation_id ?? null,
+      destination_json: command.destination,
       content: command.content,
+      response,
       metadata: command.metadata ?? {},
       created_at: now()
     };
     this.db.prepare(`
       INSERT INTO events (
-        event_id, type, workspace_id, source_endpoint_id, destination_endpoint_id,
-        thread_id, correlation_id, content_json, metadata_json, idempotency_key, created_at
+        event_id, type, workspace_id, source_endpoint_id, destination_endpoint_id, thread_id, correlation_id,
+        destination_json, content_json, response_json, metadata_json, idempotency_key, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       envelope.event_id,
       envelope.type,
       envelope.workspace_id,
       envelope.source_endpoint_id,
-      envelope.destination_endpoint_id,
+      destinationEndpointId,
       envelope.thread_id,
       envelope.correlation_id,
+      json(envelope.destination_json),
       json(envelope.content),
+      json(envelope.response),
       json(envelope.metadata),
       command.idempotency_key ?? null,
       envelope.created_at
@@ -679,92 +713,112 @@ export class BusStore {
     return envelope;
   }
 
-  private queueEvent(event: EventEnvelope): void {
+  private resolveDestinations(event: EventEnvelope): string[] {
+    const destination = event.destination_json;
+    if (destination.kind === "endpoint") return [destination.endpoint_id];
+    const target = destination.target;
+    const query = `
+      SELECT endpoint_id
+      FROM endpoints
+      WHERE workspace_id = ?
+        AND (
+          (? = 'all')
+          OR (? = 'agents' AND actor_type = 'agent')
+          OR (? = 'humans' AND actor_type = 'human')
+          OR (? = 'active_agents' AND actor_type = 'agent' AND status = 'active')
+          OR (? = 'active_humans' AND actor_type = 'human' AND status = 'active')
+        )
+    `;
+    const rows = this.db.prepare(query).all(
+      event.workspace_id,
+      target,
+      target,
+      target,
+      target,
+      target
+    ) as Array<{ endpoint_id: string }>;
+    return rows
+      .map((row) => row.endpoint_id)
+      .filter((endpointId) => !(destination.exclude_source && endpointId === event.source_endpoint_id));
+  }
+
+  private queueEvent(eventId: string, workspaceId: string, destinationEndpointId: string): void {
     this.db.prepare(`
       INSERT INTO event_queue (queue_id, event_id, workspace_id, destination_endpoint_id, state, created_at)
       VALUES (?, ?, ?, ?, 'queued', ?)
-    `).run(`q_${randomUUID()}`, event.event_id, event.workspace_id, event.destination_endpoint_id, now());
+    `).run(`q_${randomUUID()}`, eventId, workspaceId, destinationEndpointId, now());
+    this.db.prepare("UPDATE endpoints SET status = 'queued', updated_at = ? WHERE endpoint_id = ?")
+      .run(now(), destinationEndpointId);
+  }
+
+  private createPendingResponse(event: EventEnvelope): void {
+    const pending = {
+      pending_id: `pr_${randomUUID()}`,
+      workspace_id: event.workspace_id,
+      waiting_endpoint_id: event.source_endpoint_id,
+      source_event_id: event.event_id,
+      mode: event.response.mode ?? "open",
+      thread_id: event.thread_id,
+      correlation_id: event.response.correlation_id ?? event.correlation_id,
+      timeout_at: event.response.timeout_at ?? null,
+      status: "pending",
+      created_at: now(),
+      resolved_at: null as string | null
+    };
+    this.db.prepare(`
+      INSERT INTO pending_responses (
+        pending_id, workspace_id, waiting_endpoint_id, source_event_id, mode, thread_id,
+        correlation_id, timeout_at, status, created_at, resolved_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      pending.pending_id,
+      pending.workspace_id,
+      pending.waiting_endpoint_id,
+      pending.source_event_id,
+      pending.mode,
+      pending.thread_id,
+      pending.correlation_id,
+      pending.timeout_at,
+      pending.status,
+      pending.created_at,
+      pending.resolved_at
+    );
+  }
+
+  private resolvePendingResponsesForIncoming(incoming: EventEnvelope): void {
+    const rows = this.db.prepare(`
+      SELECT * FROM pending_responses
+      WHERE waiting_endpoint_id = ? AND status = 'pending'
+      ORDER BY created_at ASC
+    `).all(incoming.destination_json.kind === "endpoint" ? incoming.destination_json.endpoint_id : "") as any[];
+    for (const pending of rows) {
+      if (pending.mode === "thread_affine" && pending.thread_id !== incoming.thread_id) continue;
+      if (pending.mode === "correlated") {
+        const incomingCorrelation = incoming.correlation_id ?? null;
+        if (!pending.correlation_id || incomingCorrelation !== pending.correlation_id) continue;
+      }
+      this.db.prepare("UPDATE pending_responses SET status = 'resolved', resolved_at = ? WHERE pending_id = ?")
+        .run(now(), pending.pending_id);
+    }
   }
 
   private tryCreateDeliveryForEndpoint(endpointId: string, broadcast: Broadcast): DeliveryBundle | null {
     const endpoint = this.getEndpoint(endpointId);
     if (!endpoint || endpoint.actor_type !== "agent") return null;
-    const waiting = this.db.prepare(`
-      SELECT * FROM waits
-      WHERE endpoint_id = ? AND status = 'waiting'
-      ORDER BY created_at ASC LIMIT 1
-    `).get(endpointId) as any;
+    if (endpoint.status === "active" || endpoint.status === "error") return null;
 
-    if (waiting) {
-      const queuedRows = this.selectEligibleQueueRows(endpointId, waiting, waiting.max_batch_events);
-      if (queuedRows.length === 0) return null;
-      const bundle = this.createDeliveryBundle(endpointId, waiting.workspace_id, waiting.wait_id, queuedRows, "event");
-      this.db.prepare("UPDATE waits SET status = 'resolved', trigger_event_id = ?, resolved_at = ? WHERE wait_id = ?")
-        .run(bundle.trigger_event_id, bundle.delivered_at, waiting.wait_id);
-      this.db.prepare("UPDATE endpoints SET status = 'busy', updated_at = ? WHERE endpoint_id = ?")
-        .run(now(), endpointId);
-      broadcast("delivery_reserved", { delivery: bundle });
-      broadcast("wait_resolved", { wait_id: waiting.wait_id, delivery_id: bundle.delivery_id });
-      broadcast("delivery_bundle_available", { delivery: bundle });
-      return bundle;
-    }
-
-    if (endpoint.status === "busy" || endpoint.status === "error") return null;
-    const queuedRows = this.selectEligibleQueueRows(endpointId, null, 25);
-    if (queuedRows.length === 0) return null;
-    const bundle = this.createDeliveryBundle(endpointId, endpoint.workspace_id, null, queuedRows, "event");
-    this.db.prepare("UPDATE endpoints SET status = 'busy', updated_at = ? WHERE endpoint_id = ?")
-      .run(now(), endpointId);
-    broadcast("delivery_reserved", { delivery: bundle });
-    broadcast("delivery_bundle_available", { delivery: bundle });
-    return bundle;
-  }
-
-  private selectEligibleQueueRows(endpointId: string, wait: any | null, limit: number): any[] {
-    if (wait?.mode === "correlated") {
-      return this.db.prepare(`
-        SELECT q.*, e.*
-        FROM event_queue q
-        JOIN events e ON e.event_id = q.event_id
-        WHERE q.destination_endpoint_id = ?
-          AND q.state = 'queued'
-          AND e.correlation_id = ?
-        ORDER BY q.created_at ASC
-        LIMIT ?
-      `).all(endpointId, wait.expected_correlation_id, limit) as any[];
-    }
-    if (wait?.mode === "thread_affine") {
-      return this.db.prepare(`
-        SELECT q.*, e.*
-        FROM event_queue q
-        JOIN events e ON e.event_id = q.event_id
-        WHERE q.destination_endpoint_id = ?
-          AND q.state = 'queued'
-          AND e.thread_id = ?
-        ORDER BY q.created_at ASC
-        LIMIT ?
-      `).all(endpointId, wait.thread_id, limit) as any[];
-    }
-    return this.db.prepare(`
+    const queuedRows = this.db.prepare(`
       SELECT q.*, e.*
       FROM event_queue q
       JOIN events e ON e.event_id = q.event_id
       WHERE q.destination_endpoint_id = ?
         AND q.state = 'queued'
       ORDER BY q.created_at ASC
-      LIMIT ?
-    `).all(endpointId, limit) as any[];
-  }
+      LIMIT 25
+    `).all(endpointId) as any[];
+    if (queuedRows.length === 0) return null;
 
-  private createDeliveryBundle(
-    endpointId: string,
-    workspaceId: string,
-    waitId: string | null,
-    queuedRows: any[],
-    resumeReason: DeliveryBundle["resume_reason"]
-  ): DeliveryBundle {
     const deliveredAt = now();
-    const events = queuedRows.map((row) => this.rowToEvent(row));
     const deliveryId = `del_${randomUUID()}`;
     const leaseExpiresAt = this.deliveryLeaseExpiresAt();
     for (const row of queuedRows) {
@@ -778,91 +832,40 @@ export class BusStore {
         WHERE queue_id = ? AND state = 'queued'
       `).run(deliveryId, leaseExpiresAt, row.queue_id);
     }
+    const events = queuedRows.map((row) => this.rowToEvent(row));
     const bundle: DeliveryBundle = {
       delivery_id: deliveryId,
-      wait_id: waitId,
       endpoint_id: endpointId,
-      workspace_id: workspaceId,
-      resume_reason: resumeReason,
+      workspace_id: endpoint.workspace_id,
       trigger_event_id: events[0].event_id,
       events,
       delivered_at: deliveredAt
     };
     this.db.prepare(`
       INSERT INTO delivery_bundles (
-        delivery_id, wait_id, endpoint_id, workspace_id, resume_reason,
-        trigger_event_id, events_json, state, lease_expires_at, created_at
+        delivery_id, wait_id, endpoint_id, workspace_id, resume_reason, trigger_event_id,
+        events_json, state, lease_expires_at, created_at
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
     `).run(
       bundle.delivery_id,
-      bundle.wait_id,
+      null,
       bundle.endpoint_id,
       bundle.workspace_id,
-      bundle.resume_reason,
+      "event",
       bundle.trigger_event_id,
       json(bundle.events),
       leaseExpiresAt,
       bundle.delivered_at
     );
-    return bundle;
-  }
-
-  private createDirectDeliveryBundle(
-    endpointId: string,
-    workspaceId: string,
-    waitId: string | null,
-    events: EventEnvelope[],
-    resumeReason: DeliveryBundle["resume_reason"]
-  ): DeliveryBundle {
-    const deliveredAt = now();
-    const deliveryId = `del_${randomUUID()}`;
-    const leaseExpiresAt = this.deliveryLeaseExpiresAt();
-    const bundle: DeliveryBundle = {
-      delivery_id: deliveryId,
-      wait_id: waitId,
-      endpoint_id: endpointId,
-      workspace_id: workspaceId,
-      resume_reason: resumeReason,
-      trigger_event_id: events[0].event_id,
-      events,
-      delivered_at: deliveredAt
-    };
-    for (const event of events) {
-      this.db.prepare(`
-        INSERT INTO event_queue (
-          queue_id, event_id, workspace_id, destination_endpoint_id, state,
-          created_at, delivery_id, lease_expires_at, attempt_count
-        )
-        VALUES (?, ?, ?, ?, 'reserved', ?, ?, ?, 1)
-      `).run(`q_${randomUUID()}`, event.event_id, event.workspace_id, event.destination_endpoint_id, deliveredAt, deliveryId, leaseExpiresAt);
-    }
-    this.db.prepare(`
-      INSERT INTO delivery_bundles (
-        delivery_id, wait_id, endpoint_id, workspace_id, resume_reason,
-        trigger_event_id, events_json, state, lease_expires_at, created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
-    `).run(
-      bundle.delivery_id,
-      bundle.wait_id,
-      bundle.endpoint_id,
-      bundle.workspace_id,
-      bundle.resume_reason,
-      bundle.trigger_event_id,
-      json(bundle.events),
-      leaseExpiresAt,
-      bundle.delivered_at
-    );
+    this.db.prepare("UPDATE endpoints SET status = 'active', updated_at = ? WHERE endpoint_id = ?")
+      .run(now(), endpointId);
+    broadcast("delivery_bundle_available", { delivery: bundle });
     return bundle;
   }
 
   private deliveryLeaseExpiresAt(): string {
     return new Date(Date.now() + 30_000).toISOString();
-  }
-
-  private nextWaitRefreshDueAt(baseTime: string): string {
-    return new Date(Date.parse(baseTime) + this.config.bus.wait_policy.held_yield_refresh_ms).toISOString();
   }
 
   private requeueExpiredDeliveryLeases(broadcast: Broadcast): void {
@@ -890,9 +893,7 @@ export class BusStore {
         delivery_id: row.delivery_id,
         error: "delivery lease expired"
       });
-      if (queueState === "queued") {
-        this.tryCreateDeliveryForEndpoint(row.endpoint_id, broadcast);
-      }
+      if (queueState === "queued") this.tryCreateDeliveryForEndpoint(row.endpoint_id, broadcast);
     }
   }
 
@@ -902,10 +903,11 @@ export class BusStore {
       type: row.type,
       workspace_id: row.workspace_id,
       source_endpoint_id: row.source_endpoint_id,
-      destination_endpoint_id: row.destination_endpoint_id,
       thread_id: row.thread_id,
       correlation_id: row.correlation_id ?? null,
+      destination_json: parseJson<DestinationSelector>(row.destination_json),
       content: parseJson<Record<string, unknown>>(row.content_json),
+      response: parseJson<ResponseExpectation>(row.response_json),
       metadata: parseJson<Record<string, unknown>>(row.metadata_json),
       created_at: row.created_at
     };
@@ -914,10 +916,8 @@ export class BusStore {
   private rowToDelivery(row: any): DeliveryBundle {
     return {
       delivery_id: row.delivery_id,
-      wait_id: row.wait_id ?? null,
       endpoint_id: row.endpoint_id,
       workspace_id: row.workspace_id,
-      resume_reason: row.resume_reason,
       trigger_event_id: row.trigger_event_id,
       events: parseJson<EventEnvelope[]>(row.events_json),
       delivered_at: row.created_at

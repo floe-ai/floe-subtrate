@@ -38,7 +38,7 @@ type EventEnvelope = {
   type: string;
   workspace_id: string;
   source_endpoint_id: string;
-  destination_endpoint_id: string;
+  destination_json: { kind: "endpoint" | "broadcast"; endpoint_id?: string };
   thread_id: string;
   content: { text?: string; data?: unknown };
   created_at: string;
@@ -170,12 +170,18 @@ function App() {
         type: "message",
         workspace_id: selectedWorkspace.workspace_id,
         source_endpoint_id: humanEndpoint,
-        destination_endpoint_id: selectedAgent.endpoint_id,
+        destination: {
+          kind: "endpoint",
+          endpoint_id: selectedAgent.endpoint_id
+        },
         thread_id: threadId,
         correlation_id: null,
         content: {
           text: message.trim(),
           data: {}
+        },
+        response: {
+          expected: false
         },
         metadata: {
           submitted_by: "floe-web"

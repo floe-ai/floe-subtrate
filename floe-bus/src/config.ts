@@ -18,14 +18,7 @@ const LocalConfigSchema = z.object({
     http_base_url: z.string(),
     ws_base_url: z.string(),
     data_dir: z.string(),
-    log_dir: z.string(),
-    wait_policy: z.object({
-      held_yield_refresh_ms: z.number().int().positive(),
-      wait_refresh_event_type: z.literal("wait_refresh")
-    }).default({
-      held_yield_refresh_ms: 60000,
-      wait_refresh_event_type: "wait_refresh"
-    })
+    log_dir: z.string()
   }),
   bridge: z.object({
     data_dir: z.string(),
@@ -68,11 +61,7 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
       http_base_url: "http://127.0.0.1:5377",
       ws_base_url: "ws://127.0.0.1:5377",
       data_dir: "./bus",
-      log_dir: "./logs/bus",
-      wait_policy: {
-        held_yield_refresh_ms: 60000,
-        wait_refresh_event_type: "wait_refresh"
-      }
+      log_dir: "./logs/bus"
     },
     bridge: {
       data_dir: "./bridge",

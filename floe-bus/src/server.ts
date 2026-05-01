@@ -10,21 +10,29 @@ const EventCommandSchema = z.object({
   type: z.string().min(1),
   workspace_id: z.string().min(1),
   source_endpoint_id: z.string().min(1),
-  destination_endpoint_id: z.string().min(1),
+  destination: z.union([
+    z.object({
+      kind: z.literal("endpoint"),
+      endpoint_id: z.string().min(1)
+    }),
+    z.object({
+      kind: z.literal("broadcast"),
+      scope: z.literal("workspace"),
+      target: z.enum(["all", "agents", "humans", "active_agents", "active_humans"]),
+      exclude_source: z.boolean().optional()
+    })
+  ]),
   thread_id: z.string().min(1),
   correlation_id: z.string().nullable().optional(),
   content: z.record(z.unknown()),
+  response: z.object({
+    expected: z.boolean(),
+    mode: z.enum(["open", "thread_affine", "correlated"]).optional(),
+    correlation_id: z.string().nullable().optional(),
+    timeout_at: z.string().nullable().optional()
+  }).optional(),
   metadata: z.record(z.unknown()).optional(),
   idempotency_key: z.string().nullable().optional()
-});
-
-const YieldSchema = z.object({
-  event: EventCommandSchema,
-  wait: z.object({
-    mode: z.enum(["open", "thread_affine", "correlated"]).optional(),
-    expected_correlation_id: z.string().nullable().optional(),
-    max_batch_events: z.number().int().positive().max(100).optional()
-  }).optional()
 });
 
 type SocketLike = {
@@ -68,13 +76,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     store.close();
   });
 
-  const timer = setInterval(() => {
-    try {
-      store.processDueTimers(broadcast);
-    } catch (error) {
-      app.log.error({ err: error }, "failed to process due wait timers");
-    }
-  }, 500);
+  const timer = setInterval(() => undefined, 60_000);
 
   app.get("/health", async () => ({
     ok: true,
@@ -176,7 +178,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.post("/v1/bridges/:bridge_id/liveness", async (request) => {
     const params = z.object({ bridge_id: z.string() }).parse(request.params);
-    store.reportBridgeLiveness(params.bridge_id, broadcast);
+    store.reportBridgeLiveness(params.bridge_id);
     return { ok: true };
   });
 
@@ -229,18 +231,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.post("/v1/events/emit", async (request, reply) => {
     const command = EventCommandSchema.parse(request.body) as EventCommand;
-    const event = store.submitEvent(command, broadcast);
+    const result = store.submitEvent(command, broadcast);
     return reply.code(202).send({
       ok: true,
-      event_id: event.event_id,
-      accepted_at: event.created_at,
-      event
+      event_id: result.event.event_id,
+      accepted_at: result.event.created_at,
+      deliveries_created: result.deliveries_created,
+      event: result.event
     });
-  });
-
-  app.post("/v1/events/yield", async (request, reply) => {
-    const body = YieldSchema.parse(request.body);
-    return reply.code(202).send(store.yieldEvent(body, broadcast));
   });
 
   app.get("/v1/events", async (request) => {
@@ -266,6 +264,44 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       limit: z.coerce.number().int().positive().max(500).optional()
     }).parse(request.query);
     return { deliveries: store.listDeliveries(query) };
+  });
+  app.post("/v1/runtime/telemetry", async (request, reply) => {
+    const body = z.object({
+      workspace_id: z.string().min(1),
+      endpoint_id: z.string().min(1),
+      delivery_id: z.string().nullable().optional(),
+      kind: z.string().min(1),
+      payload: z.record(z.unknown())
+    }).parse(request.body);
+    const telemetry = store.appendRuntimeTelemetry({
+      workspace_id: body.workspace_id,
+      endpoint_id: body.endpoint_id,
+      delivery_id: body.delivery_id ?? null,
+      kind: body.kind,
+      payload: body.payload
+    }, broadcast);
+    return reply.code(202).send({ ok: true, telemetry });
+  });
+
+  app.get("/v1/runtime/telemetry", async (request) => {
+    const query = z.object({
+      workspace_id: z.string().optional(),
+      limit: z.coerce.number().int().positive().max(500).optional()
+    }).parse(request.query);
+    return { records: store.listRuntimeTelemetry(query) };
+  });
+
+  app.post("/v1/endpoints/:endpoint_id/turn-end", async (request) => {
+    const params = z.object({ endpoint_id: z.string().min(1) }).parse(request.params);
+    return { endpoint: store.reportTurnEnd(params.endpoint_id, broadcast) };
+  });
+
+  app.get("/v1/pending-responses", async (request) => {
+    const query = z.object({
+      workspace_id: z.string().optional(),
+      limit: z.coerce.number().int().positive().max(500).optional()
+    }).parse(request.query);
+    return { pending: store.listPendingResponses(query) };
   });
 
   app.get("/v1/configs", async () => ({ configs: store.listConfigs() }));

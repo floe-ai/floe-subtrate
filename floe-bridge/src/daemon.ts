@@ -6,7 +6,7 @@ import { BusClient, type DeliveryBundle } from "./bus-client.js";
 import { ensureProjectTemplate, loadProject, materializeSavedConfig } from "./project.js";
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
-import { CopilotSdkAdapter } from "./adapters/copilot-sdk-adapter.js";
+import { PiAgentCoreAdapter } from "./adapters/pi-agent-core-adapter.js";
 
 type Timer = ReturnType<typeof setInterval>;
 
@@ -301,6 +301,7 @@ export class BridgeDaemon {
         bus: this.bus
       }, delivery);
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
+      await this.bus.reportTurnEnd(delivery.endpoint_id);
     } catch (error) {
       console.error("[bridge] adapter failed", error);
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", (error as Error).message);
@@ -311,7 +312,7 @@ export class BridgeDaemon {
 
 function chooseAdapter(): RuntimeAdapter {
   const selected = process.env.FLOE_RUNTIME_ADAPTER ?? "fake";
-  if (selected === "copilot" || selected === "copilot-sdk") return new CopilotSdkAdapter();
+  if (selected === "pi" || selected === "pi-agent-core") return new PiAgentCoreAdapter();
   return new FakeRuntimeAdapter();
 }
 

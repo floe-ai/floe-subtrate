@@ -3,27 +3,39 @@ export type EventEnvelope = {
   type: string;
   workspace_id: string;
   source_endpoint_id: string;
-  destination_endpoint_id: string;
   thread_id: string;
   correlation_id: string | null;
+  destination_json: {
+    kind: "endpoint" | "broadcast";
+    endpoint_id?: string;
+    scope?: "workspace";
+    target?: "all" | "agents" | "humans" | "active_agents" | "active_humans";
+    exclude_source?: boolean;
+  };
   content: Record<string, unknown>;
+  response: {
+    expected: boolean;
+    mode?: "open" | "thread_affine" | "correlated";
+    correlation_id?: string | null;
+    timeout_at?: string | null;
+  };
   metadata: Record<string, unknown>;
   created_at: string;
 };
 
 export type DeliveryBundle = {
   delivery_id: string;
-  wait_id: string | null;
   endpoint_id: string;
   workspace_id: string;
-  resume_reason: string;
   trigger_event_id: string;
   events: EventEnvelope[];
   delivered_at: string;
 };
 
-export type EventCommand = Omit<EventEnvelope, "event_id" | "created_at" | "metadata" | "correlation_id"> & {
+export type EventCommand = Omit<EventEnvelope, "event_id" | "created_at" | "metadata" | "correlation_id" | "destination_json" | "response"> & {
+  destination: EventEnvelope["destination_json"];
   correlation_id?: string | null;
+  response?: EventEnvelope["response"];
   metadata?: Record<string, unknown>;
   idempotency_key?: string | null;
 };
@@ -96,8 +108,18 @@ export class BusClient {
     await this.post("/v1/events/emit", event);
   }
 
-  async yield(event: EventCommand, wait?: Record<string, unknown>): Promise<void> {
-    await this.post("/v1/events/yield", { event, wait });
+  async reportTurnEnd(endpointId: string): Promise<void> {
+    await this.post(`/v1/endpoints/${encodeURIComponent(endpointId)}/turn-end`, {});
+  }
+
+  async appendRuntimeTelemetry(input: {
+    workspace_id: string;
+    endpoint_id: string;
+    delivery_id?: string | null;
+    kind: string;
+    payload: Record<string, unknown>;
+  }): Promise<void> {
+    await this.post("/v1/runtime/telemetry", input);
   }
 
   private async get(path: string): Promise<unknown> {
