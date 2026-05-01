@@ -363,6 +363,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           }
         });
       } else {
+        const stopReason = assistantMessage?.stopReason ?? assistantMessage?.stop_reason ?? null;
+        const errorMessage = assistantMessage?.errorMessage ?? null;
         console.log("[bridge] pi runtime_no_visible_output", {
           runtime_turn_id: turn.runtime_turn_id,
           delivery_id: turn.delivery_id,
@@ -370,18 +372,44 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           assistant_content_types: assistantMessage && Array.isArray(assistantMessage.content)
             ? assistantMessage.content.map((c: any) => c?.type)
             : null,
-          stop_reason: assistantMessage?.stopReason ?? assistantMessage?.stop_reason ?? null
+          stop_reason: stopReason,
+          error_message: errorMessage
         });
-        await this.appendTelemetry(context, turn, "runtime_no_visible_output", {
-          note: "No assistant visible output was produced during this turn."
-        });
+        if (stopReason === "error") {
+          await this.appendTelemetry(context, turn, "runtime_error", {
+            note: "Pi runtime returned an error assistant message.",
+            stop_reason: stopReason,
+            error_message: errorMessage,
+            had_assistant_message: !!assistantMessage,
+            assistant_content_types: assistantMessage && Array.isArray(assistantMessage.content)
+              ? assistantMessage.content.map((c: any) => c?.type ?? typeof c)
+              : null,
+            assistant_content_items: assistantMessage && Array.isArray(assistantMessage.content)
+              ? assistantMessage.content.length
+              : null
+          });
+        } else {
+          await this.appendTelemetry(context, turn, "runtime_no_visible_output", {
+            note: "No assistant visible output was produced during this turn.",
+            had_assistant_message: !!assistantMessage,
+            assistant_content_types: assistantMessage && Array.isArray(assistantMessage.content)
+              ? assistantMessage.content.map((c: any) => c?.type ?? typeof c)
+              : null,
+            assistant_content_items: assistantMessage && Array.isArray(assistantMessage.content)
+              ? assistantMessage.content.length
+              : null,
+            stop_reason: stopReason
+          });
+        }
       }
 
       if (assistantMessage) {
         await this.appendTelemetry(context, turn, "usage", {
           usage: assistantMessage.usage ?? null,
           model: assistantMessage.model ?? null,
-          provider: assistantMessage.provider ?? null
+          provider: assistantMessage.provider ?? null,
+          stop_reason: assistantMessage.stopReason ?? assistantMessage.stop_reason ?? null,
+          error_message: assistantMessage.errorMessage ?? null
         });
       }
 

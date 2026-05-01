@@ -89,6 +89,7 @@ type TimelineEntry =
   | { kind: "telemetry"; data: TelemetryRecord };
 
 const TELEMETRY_ERROR_KINDS = new Set([
+  "runtime_error",
   "runtime_no_visible_output",
   "provider_auth_missing",
   "runtime_profile_provider_mismatch",
@@ -487,13 +488,15 @@ function App() {
                 let payload: Record<string, unknown> = {};
                 try { payload = JSON.parse(t.payload_json); } catch { /* ignore */ }
                 const isError = TELEMETRY_ERROR_KINDS.has(t.kind);
-                const summary = payload.text
-                  ? String(payload.text).slice(0, 120)
-                  : payload.message
-                    ? String(payload.message).slice(0, 120)
-                    : payload.note
-                      ? String(payload.note).slice(0, 120)
-                      : "";
+                const summary = payload.error_message
+                  ? String(payload.error_message).slice(0, 200)
+                  : payload.text
+                    ? String(payload.text).slice(0, 120)
+                    : payload.message
+                      ? String(payload.message).slice(0, 120)
+                      : payload.note
+                        ? String(payload.note).slice(0, 120)
+                        : "";
                 return (
                   <article key={t.telemetry_id} className={`event telemetry${isError ? " telemetry-error" : ""}`}>
                     <div className="event-meta">

@@ -25,6 +25,7 @@ class FakeAgent {
     await this.emit({
       type: "message_end",
       message: {
+        role: "assistant",
         content: [{ type: "text", text }]
       }
     });
@@ -148,6 +149,136 @@ describe("PiAgentCoreAdapter", () => {
     expect(runtimeOutputEvents[1].metadata.delivery_id).toBe("del-2");
     expect(runtimeOutputEvents[1].thread_id).toBe("thread-2");
     expect(runtimeOutputEvents[1].content.text).toContain("Second deterministic reply.");
+  });
+});
+
+describe("PiAgentCoreAdapter – output classification", () => {
+  function makeTestAdapter(fakeAgent: any) {
+    return new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      { agentFactory: () => fakeAgent, turnFinalizeTimeoutMs: 1_000 }
+    );
+  }
+
+  function makeContext() {
+    const telemetryCalls: any[] = [];
+    const emittedEvents: any[] = [];
+    return {
+      context: {
+        bridge_id: "bridge:test",
+        bus: {
+          async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
+          async emit(event: any) { emittedEvents.push(event); }
+        }
+      } as any,
+      telemetryCalls,
+      emittedEvents
+    };
+  }
+
+  it("does not persist user/input echo as runtime_turn_output — only assistant message is captured", async () => {
+    const deliveryBundleText = "Floe delivery bundle del_abc123\n- [message] from endpoint:workspace:test:user:operator thread=thread-1: hi, tell me about yourself\nRespond naturally to the user message.";
+    const assistantReply = "Hello! I am Floe, a durable multi-actor substrate agent.";
+
+    // Simulate Pi emitting both a user-role echo and an assistant reply
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        // Pi echoes the input as a user-role message_end
+        for (const l of this.listeners) await l({
+          type: "message_end",
+          message: { role: "user", content: [{ type: "text", text: deliveryBundleText }] }
+        });
+        // Then emits a message_update followed by message_end for the assistant reply
+        for (const l of this.listeners) await l({
+          type: "message_update",
+          message: { role: "assistant", content: [{ type: "text", text: assistantReply }] }
+        });
+        for (const l of this.listeners) await l({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: assistantReply }] }
+        });
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: { input: 10, output: 5, totalTokens: 15 }, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapter(fakeAgent);
+    const { context, emittedEvents, telemetryCalls } = makeContext();
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-echo", "thread-1", "hi, tell me about yourself"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    const runtimeOutput = emittedEvents.filter((e) => e.metadata?.origin === "runtime_turn_output");
+    expect(runtimeOutput).toHaveLength(1);
+    expect(runtimeOutput[0].content.text).toBe(assistantReply);
+    expect(runtimeOutput[0].content.text).not.toContain("Floe delivery bundle");
+    expect(runtimeOutput[0].content.text).not.toContain("del_abc123");
+
+    // No runtime_no_visible_output telemetry since assistant output was found
+    const noOutputTelemetry = telemetryCalls.filter((t) => t.kind === "runtime_no_visible_output");
+    expect(noOutputTelemetry).toHaveLength(0);
+  });
+
+  it("emits runtime_no_visible_output telemetry when Pi produces no assistant output", async () => {
+    // Simulate Pi that only echoes the user message, produces no assistant reply
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        for (const l of this.listeners) await l({
+          type: "message_end",
+          message: { role: "user", content: [{ type: "text", text: "some user echo" }] }
+        });
+        // turn_end with no content on the message
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapter(fakeAgent);
+    const { context, emittedEvents, telemetryCalls } = makeContext();
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-noout", "thread-1", "trigger"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    const runtimeOutput = emittedEvents.filter((e) => e.metadata?.origin === "runtime_turn_output");
+    expect(runtimeOutput).toHaveLength(0);
+
+    const noOutputTelemetry = telemetryCalls.filter((t) => t.kind === "runtime_no_visible_output");
+    expect(noOutputTelemetry).toHaveLength(1);
   });
 });
 

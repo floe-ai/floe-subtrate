@@ -86,6 +86,9 @@ export type AgentRuntimeConfig = {
   provider?: string;
   model?: string;
   auth_profile?: string;
+  /** Source of the auth_profile selection. "agent_binding" and "workspace_binding" indicate
+   *  a local override; project-declared provider/model do not take precedence in that case. */
+  auth_profile_source?: string;
 };
 
 export type RuntimeAuthErrorCode =
@@ -93,7 +96,8 @@ export type RuntimeAuthErrorCode =
   | "provider_auth_missing"
   | "runtime_provider_required"
   | "runtime_model_required"
-  | "runtime_model_unknown";
+  | "runtime_model_unknown"
+  | "runtime_profile_provider_mismatch";
 
 export type RuntimeAuthResolved = {
   provider: string;
@@ -260,12 +264,43 @@ export async function resolveRuntimeAuth(
     );
   }
 
-  let provider = cleanValue(runtimeConfig?.provider);
+  const projectProvider = cleanValue(runtimeConfig?.provider);
+  const profileProvider = cleanValue(profile.provider);
+  const isLocalBinding =
+    runtimeConfig?.auth_profile_source === "agent_binding" ||
+    runtimeConfig?.auth_profile_source === "workspace_binding";
+
+  let provider: string | undefined;
   let modelId = cleanValue(runtimeConfig?.model);
   let usedEnvFallback = false;
 
-  if (!provider && profile) provider = cleanValue(profile.provider);
-  if (!modelId && profile?.model) modelId = cleanValue(profile.model);
+  if (isLocalBinding) {
+    // A local (workspace/agent) binding was selected: the profile's provider takes precedence.
+    // If the project declared a conflicting provider, its model is likely incompatible too, so strip it.
+    if (projectProvider && projectProvider !== "configured_by_pi_ai" && projectProvider !== profileProvider) {
+      modelId = undefined;
+    }
+    provider = profileProvider;
+    if (!modelId && profile?.model) modelId = cleanValue(profile.model);
+  } else {
+    // No local binding. If project and profile declare different providers, that is a configuration
+    // conflict that cannot be resolved automatically.
+    if (
+      projectProvider &&
+      projectProvider !== "configured_by_pi_ai" &&
+      profileProvider &&
+      projectProvider !== profileProvider
+    ) {
+      throw new RuntimeAuthError(
+        "runtime_profile_provider_mismatch",
+        `Project runtime declares provider '${projectProvider}' but auth profile '${profileId}' is for provider '${profileProvider}'. ` +
+        `Update the project runtime block to match the selected profile, or select a compatible profile.`
+      );
+    }
+    provider = projectProvider !== "configured_by_pi_ai" ? projectProvider : undefined;
+    if (!provider && profileProvider) provider = profileProvider;
+    if (!modelId && profile?.model) modelId = cleanValue(profile.model);
+  }
 
   if (modelId && modelId.includes("/")) {
     const [qualifiedProvider, ...rest] = modelId.split("/");

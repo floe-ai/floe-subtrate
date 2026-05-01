@@ -70,8 +70,6 @@ agent_id: floe
 label: Floe
 runtime:
   engine: pi
-  provider: openai-codex
-  model: gpt-5.4-mini
 applied_from:
   config_id: cfg_composition_floe_default
   version: 1
@@ -189,9 +187,7 @@ export function materializeSavedConfig(workspacePath: string, config: SavedProje
       agent_id: agentId,
       name,
       runtime: {
-        engine: "pi",
-        provider: "openai-codex",
-        model: "gpt-5.4-mini"
+        engine: "pi"
       },
       skills
     };

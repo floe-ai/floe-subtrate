@@ -4,3 +4,5 @@ dist/
 coverage/
 *.log
 .floe-runtime/
+tmp-playwright-*/
+.playwright-mcp/
