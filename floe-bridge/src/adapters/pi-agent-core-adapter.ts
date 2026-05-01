@@ -110,7 +110,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     console.log("[bridge] pi prompt injected", {
       delivery_id: bundle.delivery_id,
       runtime_turn_id: turn.runtime_turn_id,
-      endpoint_id: bundle.endpoint_id
+      endpoint_id: bundle.endpoint_id,
+      prompt_length: prompt.length
     });
     try {
       await session.agent.prompt({
@@ -120,9 +121,30 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       } as any);
       await this.awaitTurnCompletion(context, session, turn);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("[bridge] pi runtime error", {
+        delivery_id: bundle.delivery_id,
+        runtime_turn_id: turn.runtime_turn_id,
+        endpoint_id: bundle.endpoint_id,
+        error: errorMessage
+      });
+      // Surface runtime error as telemetry
+      await this.appendTelemetry(context, turn, "runtime_error", {
+        error_message: errorMessage,
+        provider: resolved.provider,
+        model: resolved.model.id
+      });
       if (session.activeTurn === turn) session.activeTurn = undefined;
-      if (!turn.finalized) turn.completion.reject(error);
-      throw error;
+      if (!turn.finalized) {
+        turn.finalized = true;
+        turn.completion.resolve();
+      }
+      // Invalidate session on request body errors (likely state corruption)
+      if (errorMessage.includes("invalid_request_body") || errorMessage.includes("400")) {
+        console.log("[bridge] pi session invalidated due to error", { endpoint_id: bundle.endpoint_id });
+        this.sessions.delete(bundle.endpoint_id);
+      }
+      return; // Don't re-throw; error is surfaced via telemetry
     }
   }
 
@@ -491,7 +513,30 @@ function createDefaultAgent(input: AgentFactoryInput): AgentLike {
       systemPrompt: input.systemPrompt,
       tools: input.tools
     },
-    getApiKey: input.getApiKey
+    getApiKey: input.getApiKey,
+    onPayload: (payload: any, model: any) => {
+      // Log request structure (no content/tokens) for diagnostics
+      const inputItems = Array.isArray(payload?.input) ? payload.input : [];
+      const roles = inputItems.map((m: any) => m?.role ?? m?.type ?? "unknown");
+      console.log("[bridge] pi request payload", {
+        model_id: model?.id,
+        provider: model?.provider,
+        api: model?.api,
+        input_items: inputItems.length,
+        roles: roles.slice(0, 20),
+        has_thinking: !!payload?.thinking,
+        has_tools: Array.isArray(payload?.tools) && payload.tools.length > 0,
+        tool_count: Array.isArray(payload?.tools) ? payload.tools.length : 0
+      });
+      return payload;
+    },
+    onResponse: (response: any, model: any) => {
+      console.log("[bridge] pi response received", {
+        status: response?.status,
+        model_id: model?.id,
+        provider: model?.provider
+      });
+    }
   });
 }
 
@@ -506,16 +551,19 @@ function instructionHash(text: string): string {
 }
 
 function deliveryToPrompt(bundle: DeliveryBundle): string {
+  // Extract just the user-visible text from delivery events.
+  // Agent identity/instructions are handled via systemPrompt, not repeated here.
+  const texts = bundle.events
+    .filter((event) => event.type === "message")
+    .map((event) => (typeof event.content?.text === "string" ? event.content.text : ""))
+    .filter((t) => t.length > 0);
+  if (texts.length > 0) return texts.join("\n\n");
+  // Fallback for non-message event deliveries
   const lines = bundle.events.map((event) => {
     const text = typeof event.content?.text === "string" ? event.content.text : JSON.stringify(event.content ?? {});
-    return `- [${event.type}] from ${event.source_endpoint_id} thread=${event.thread_id}: ${text}`;
+    return `[${event.type}] ${text}`;
   });
-  return [
-    `Floe delivery bundle ${bundle.delivery_id}`,
-    lines.join("\n"),
-    "Respond naturally to the user message.",
-    "Use emit only for explicit substrate operations (routing/progress/structured events)."
-  ].join("\n");
+  return lines.join("\n");
 }
 
 function extractText(message: any): string {

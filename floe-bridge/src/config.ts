@@ -24,6 +24,7 @@ const LocalConfigSchema = z.object({
     data_dir: z.string(),
     log_dir: z.string(),
     bus_url: z.string(),
+    runtime_adapter: z.string().optional(),
     workspace_access: z.object({
       local_paths: z.boolean()
     })

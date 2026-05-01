@@ -442,7 +442,7 @@ export class BridgeDaemon {
 }
 
 function chooseAdapter(configPath: string, config: LocalConfig): RuntimeAdapter {
-  const selected = process.env.FLOE_RUNTIME_ADAPTER ?? "fake";
+  const selected = process.env.FLOE_RUNTIME_ADAPTER ?? config.bridge.runtime_adapter ?? "fake";
   if (selected === "pi" || selected === "pi-agent-core") return new PiAgentCoreAdapter(createBridgeAuthRuntime(configPath, config));
   return new FakeRuntimeAdapter();
 }
