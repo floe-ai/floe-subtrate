@@ -48,6 +48,16 @@ type RuntimeBinding = {
   workspace_id: string | null;
   endpoint_id: string | null;
   auth_profile: string;
+  model: string | null;
+};
+
+type ModelInfo = {
+  id: string;
+  name: string;
+  provider: string;
+  reasoning: boolean;
+  contextWindow?: number;
+  api?: string;
 };
 
 type EventEnvelope = {
@@ -111,7 +121,8 @@ function App() {
   const [events, setEvents] = useState<EventEnvelope[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryRecord[]>([]);
   const [authProfiles, setAuthProfiles] = useState<AuthProfile[]>([]);
-  const [runtimeBindings, setRuntimeBindings] = useState<RuntimeBinding[]>([]);
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [runtimeBindings, setRuntimeBindings] = useState<RuntimeBinding[]>([]); 
   const [configs, setConfigs] = useState<SavedConfig[]>([]);
   const [selectedConfigId, setSelectedConfigId] = useState("");
   const [configName, setConfigName] = useState("Local agent config");
@@ -141,6 +152,13 @@ function App() {
   const agentBinding = selectedAgent
     ? runtimeBindings.find((binding) => binding.scope === "agent" && binding.endpoint_id === selectedAgent.endpoint_id)
     : undefined;
+
+  // The effective profile is the agent binding's profile (if set), otherwise the workspace binding's
+  const effectiveProfileId = agentBinding?.auth_profile || workspaceBinding?.auth_profile || null;
+  const effectiveProfile = authProfiles.find((p) => p.id === effectiveProfileId) ?? null;
+  // Is the runtime ready to send? Both profile and model must be resolved.
+  const effectiveModel = agentBinding?.model ?? workspaceBinding?.model ?? null;
+  const runtimeReady = !!effectiveProfileId && !!effectiveModel;
 
   const refresh = useCallback(async (preferredWorkspaceId?: string) => {
     try {
@@ -189,6 +207,14 @@ function App() {
   useEffect(() => {
     selectedWorkspaceIdRef.current = selectedWorkspaceId;
   }, [selectedWorkspaceId]);
+
+  // Fetch available models whenever the effective provider changes
+  useEffect(() => {
+    if (!effectiveProfile?.provider) { setAvailableModels([]); return; }
+    void api<{ models: ModelInfo[] }>(busUrl, `/v1/auth/models?provider=${encodeURIComponent(effectiveProfile.provider)}`)
+      .then((result) => setAvailableModels(result.models))
+      .catch(() => setAvailableModels([]));
+  }, [busUrl, effectiveProfile?.provider]);
 
   useEffect(() => {
     localStorage.setItem("floe.busUrl", busUrl);
@@ -296,10 +322,25 @@ function App() {
         body: {
           scope: "workspace_default",
           workspace_id: selectedWorkspace.workspace_id,
-          auth_profile: profileId
+          auth_profile: profileId,
+          model: null  // clear model when profile changes — user must re-select
         }
       });
     }
+    await refresh(selectedWorkspace.workspace_id);
+  }
+
+  async function setWorkspaceModel(modelId: string) {
+    if (!selectedWorkspace || !workspaceBinding?.auth_profile) return;
+    await api(busUrl, "/v1/runtime/bindings", {
+      method: "POST",
+      body: {
+        scope: "workspace_default",
+        workspace_id: selectedWorkspace.workspace_id,
+        auth_profile: workspaceBinding.auth_profile,
+        model: modelId || null
+      }
+    });
     await refresh(selectedWorkspace.workspace_id);
   }
 
@@ -321,7 +362,40 @@ function App() {
           scope: "agent",
           workspace_id: selectedWorkspace.workspace_id,
           endpoint_id: selectedAgent.endpoint_id,
-          auth_profile: profileId
+          auth_profile: profileId,
+          model: null  // clear model when profile changes
+        }
+      });
+    }
+    await refresh(selectedWorkspace.workspace_id);
+  }
+
+  async function setAgentModel(modelId: string) {
+    if (!selectedWorkspace || !selectedAgent) return;
+    // Agent model override: use agent binding's profile if set, else workspace binding's profile
+    const profileId = agentBinding?.auth_profile || workspaceBinding?.auth_profile;
+    if (!profileId) return;
+    if (!agentBinding) {
+      // No agent binding yet — create one with the inherited profile + selected model
+      await api(busUrl, "/v1/runtime/bindings", {
+        method: "POST",
+        body: {
+          scope: "agent",
+          workspace_id: selectedWorkspace.workspace_id,
+          endpoint_id: selectedAgent.endpoint_id,
+          auth_profile: profileId,
+          model: modelId || null
+        }
+      });
+    } else {
+      await api(busUrl, "/v1/runtime/bindings", {
+        method: "POST",
+        body: {
+          scope: "agent",
+          workspace_id: selectedWorkspace.workspace_id,
+          endpoint_id: selectedAgent.endpoint_id,
+          auth_profile: agentBinding.auth_profile,
+          model: modelId || null
         }
       });
     }
@@ -544,10 +618,15 @@ function App() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void sendMessage();
               }}
-              placeholder={selectedAgent ? `Message ${selectedAgent.name}` : "Waiting for an agent endpoint"}
-              disabled={!selectedAgent}
+              placeholder={
+                !selectedAgent ? "Waiting for an agent endpoint"
+                : !effectiveProfileId ? "Select a runtime profile first"
+                : !effectiveModel ? "Select a model to enable messaging"
+                : `Message ${selectedAgent.name}`
+              }
+              disabled={!selectedAgent || !runtimeReady}
             />
-            <button onClick={() => void sendMessage()} disabled={!selectedAgent || !message.trim()} title="Send">
+            <button onClick={() => void sendMessage()} disabled={!selectedAgent || !runtimeReady || !message.trim()} title="Send">
               <Send size={18} />
             </button>
           </div>
@@ -596,6 +675,23 @@ function App() {
                   </option>
                 ))}
               </select>
+              <label htmlFor="workspace-model">
+                Workspace model
+                {availableModels.length > 0 && <span style={{ color: "var(--text-muted)", marginLeft: "4px" }}>({availableModels.length} available)</span>}
+              </label>
+              <select
+                id="workspace-model"
+                value={workspaceBinding?.model ?? ""}
+                onChange={(event) => void setWorkspaceModel(event.target.value)}
+                disabled={!workspaceBinding?.auth_profile || availableModels.length === 0}
+              >
+                <option value="">Select a model…</option>
+                {availableModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name}{model.reasoning ? " ✦" : ""}
+                  </option>
+                ))}
+              </select>
               <label htmlFor="agent-profile">Agent override ({selectedAgent?.name ?? "no agent"})</label>
               <select
                 id="agent-profile"
@@ -610,6 +706,29 @@ function App() {
                   </option>
                 ))}
               </select>
+              {agentBinding?.auth_profile && (
+                <>
+                  <label htmlFor="agent-model">Agent model override</label>
+                  <select
+                    id="agent-model"
+                    value={agentBinding?.model ?? ""}
+                    onChange={(event) => void setAgentModel(event.target.value)}
+                    disabled={availableModels.length === 0}
+                  >
+                    <option value="">Inherit workspace model</option>
+                    {availableModels.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.name}{model.reasoning ? " ✦" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
+              {!runtimeReady && effectiveProfileId && (
+                <div className="warning" style={{ marginTop: "6px" }}>
+                  Select a model to enable messaging.
+                </div>
+              )}
             </div>
           )}
 

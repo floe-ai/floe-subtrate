@@ -67,6 +67,7 @@ export type RuntimeBindingRecord = {
   workspace_id: string | null;
   endpoint_id: string | null;
   auth_profile: string;
+  model: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -246,6 +247,7 @@ export class BusStore {
     this.addColumnIfMissing("delivery_bundles", "wait_id", "TEXT");
     this.addColumnIfMissing("delivery_bundles", "resume_reason", "TEXT NOT NULL DEFAULT 'event'");
     this.addColumnIfMissing("runtime_telemetry", "delivery_id", "TEXT");
+    this.addColumnIfMissing("runtime_bindings", "model", "TEXT");
     this.backfillEventDestinationJson();
     this.backfillEventResponseJson();
   }
@@ -322,29 +324,35 @@ export class BusStore {
     endpoint_auth_profile: string | null;
     workspace_auth_profile: string | null;
     global_auth_profile: string | null;
+    endpoint_model: string | null;
+    workspace_model: string | null;
+    global_model: string | null;
   } {
     const endpoint = this.db.prepare(`
-      SELECT auth_profile
+      SELECT auth_profile, model
       FROM runtime_bindings
       WHERE scope = 'agent' AND workspace_id = ? AND endpoint_id = ?
       LIMIT 1
-    `).get(workspaceId, endpointId) as { auth_profile: string } | undefined;
+    `).get(workspaceId, endpointId) as { auth_profile: string; model: string | null } | undefined;
     const workspace = this.db.prepare(`
-      SELECT auth_profile
+      SELECT auth_profile, model
       FROM runtime_bindings
       WHERE scope = 'workspace_default' AND workspace_id = ?
       LIMIT 1
-    `).get(workspaceId) as { auth_profile: string } | undefined;
+    `).get(workspaceId) as { auth_profile: string; model: string | null } | undefined;
     const global = this.db.prepare(`
-      SELECT auth_profile
+      SELECT auth_profile, model
       FROM runtime_bindings
       WHERE scope = 'global_default'
       LIMIT 1
-    `).get() as { auth_profile: string } | undefined;
+    `).get() as { auth_profile: string; model: string | null } | undefined;
     return {
       endpoint_auth_profile: endpoint?.auth_profile ?? null,
       workspace_auth_profile: workspace?.auth_profile ?? null,
-      global_auth_profile: global?.auth_profile ?? null
+      global_auth_profile: global?.auth_profile ?? null,
+      endpoint_model: endpoint?.model ?? null,
+      workspace_model: workspace?.model ?? null,
+      global_model: global?.model ?? null
     };
   }
 
@@ -353,15 +361,17 @@ export class BusStore {
     workspace_id?: string | null;
     endpoint_id?: string | null;
     auth_profile: string;
+    model?: string | null;
   }, broadcast: Broadcast): RuntimeBindingRecord {
     const timestamp = now();
     const bindingKey = runtimeBindingKey(input.scope, input.workspace_id ?? null, input.endpoint_id ?? null);
     this.db.prepare(`
       INSERT INTO runtime_bindings (
-        binding_key, scope, workspace_id, endpoint_id, auth_profile, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        binding_key, scope, workspace_id, endpoint_id, auth_profile, model, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(binding_key) DO UPDATE SET
         auth_profile = excluded.auth_profile,
+        model = excluded.model,
         updated_at = excluded.updated_at
     `).run(
       bindingKey,
@@ -369,6 +379,7 @@ export class BusStore {
       input.workspace_id ?? null,
       input.endpoint_id ?? null,
       input.auth_profile,
+      input.model ?? null,
       timestamp,
       timestamp
     );
@@ -1102,6 +1113,7 @@ export class BusStore {
       workspace_id: row.workspace_id ?? null,
       endpoint_id: row.endpoint_id ?? null,
       auth_profile: String(row.auth_profile),
+      model: row.model ?? null,
       created_at: String(row.created_at),
       updated_at: String(row.updated_at)
     };

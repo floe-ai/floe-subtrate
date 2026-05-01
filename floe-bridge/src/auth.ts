@@ -89,6 +89,9 @@ export type AgentRuntimeConfig = {
   /** Source of the auth_profile selection. "agent_binding" and "workspace_binding" indicate
    *  a local override; project-declared provider/model do not take precedence in that case. */
   auth_profile_source?: string;
+  /** Source of the model selection. "agent_binding" and "workspace_binding" indicate the model
+   *  was explicitly chosen by the user and must not be stripped when providers differ. */
+  model_source?: string;
 };
 
 export type RuntimeAuthErrorCode =
@@ -276,8 +279,12 @@ export async function resolveRuntimeAuth(
 
   if (isLocalBinding) {
     // A local (workspace/agent) binding was selected: the profile's provider takes precedence.
-    // If the project declared a conflicting provider, its model is likely incompatible too, so strip it.
-    if (projectProvider && projectProvider !== "configured_by_pi_ai" && projectProvider !== profileProvider) {
+    // If the project declared a conflicting provider, its model is likely incompatible too, so strip it —
+    // but only if the model itself also came from the project, not from a user-selected binding.
+    const modelFromBinding =
+      runtimeConfig?.model_source === "agent_binding" ||
+      runtimeConfig?.model_source === "workspace_binding";
+    if (!modelFromBinding && projectProvider && projectProvider !== "configured_by_pi_ai" && projectProvider !== profileProvider) {
       modelId = undefined;
     }
     provider = profileProvider;

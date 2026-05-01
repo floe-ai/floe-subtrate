@@ -36,6 +36,9 @@ export type RuntimeBindingResolution = {
   endpoint_auth_profile: string | null;
   workspace_auth_profile: string | null;
   global_auth_profile: string | null;
+  endpoint_model: string | null;
+  workspace_model: string | null;
+  global_model: string | null;
 };
 
 export type EventCommand = Omit<EventEnvelope, "event_id" | "created_at" | "metadata" | "correlation_id" | "destination_json" | "response"> & {

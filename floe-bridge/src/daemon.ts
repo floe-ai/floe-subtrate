@@ -325,12 +325,16 @@ export class BridgeDaemon {
       const effectiveRuntime: AgentRuntimeConfig = {
         ...runtimeConfig,
         auth_profile: resolvedAuth.auth_profile ?? undefined,
-        auth_profile_source: resolvedAuth.source ?? undefined
+        auth_profile_source: resolvedAuth.source ?? undefined,
+        // Binding model takes priority over project-declared model
+        model: resolvedAuth.model ?? runtimeConfig?.model ?? undefined,
+        model_source: resolvedAuth.model_source ?? undefined
       };
       console.log("[bridge] effective runtime resolved", {
         delivery_id: delivery.delivery_id,
         provider: effectiveRuntime.provider ?? "(none)",
         model: effectiveRuntime.model ?? "(none)",
+        model_source: effectiveRuntime.model_source ?? "(none)",
         auth_profile: effectiveRuntime.auth_profile ?? "(none)",
         auth_profile_source: effectiveRuntime.auth_profile_source ?? "(none)"
       });
@@ -382,14 +386,49 @@ export class BridgeDaemon {
     workspaceId: string,
     endpointId: string,
     runtimeConfig: AgentRuntimeConfig | undefined
-  ): Promise<{ auth_profile: string | null; source: string | null }> {
+  ): Promise<{ auth_profile: string | null; model: string | null; source: string | null; model_source: string | null }> {
     const bindings = await this.bus.resolveRuntimeBinding(workspaceId, endpointId);
-    if (bindings.endpoint_auth_profile) return { auth_profile: bindings.endpoint_auth_profile, source: "agent_binding" };
-    if (bindings.workspace_auth_profile) return { auth_profile: bindings.workspace_auth_profile, source: "workspace_binding" };
-    if (runtimeConfig?.auth_profile?.trim()) return { auth_profile: runtimeConfig.auth_profile.trim(), source: "project_runtime" };
-    if (bindings.global_auth_profile) return { auth_profile: bindings.global_auth_profile, source: "runtime_binding_global" };
-    if (this.config.runtime?.default_auth_profile?.trim()) return { auth_profile: this.config.runtime.default_auth_profile.trim(), source: "config_global_default" };
-    return { auth_profile: null, source: null };
+    if (bindings.endpoint_auth_profile) {
+      return {
+        auth_profile: bindings.endpoint_auth_profile,
+        model: bindings.endpoint_model ?? bindings.workspace_model ?? bindings.global_model ?? null,
+        source: "agent_binding",
+        model_source: bindings.endpoint_model ? "agent_binding" : bindings.workspace_model ? "workspace_binding" : bindings.global_model ? "global_binding" : null
+      };
+    }
+    if (bindings.workspace_auth_profile) {
+      return {
+        auth_profile: bindings.workspace_auth_profile,
+        model: bindings.workspace_model ?? bindings.global_model ?? null,
+        source: "workspace_binding",
+        model_source: bindings.workspace_model ? "workspace_binding" : bindings.global_model ? "global_binding" : null
+      };
+    }
+    if (runtimeConfig?.auth_profile?.trim()) {
+      return {
+        auth_profile: runtimeConfig.auth_profile.trim(),
+        model: null,
+        source: "project_runtime",
+        model_source: null
+      };
+    }
+    if (bindings.global_auth_profile) {
+      return {
+        auth_profile: bindings.global_auth_profile,
+        model: bindings.global_model ?? null,
+        source: "runtime_binding_global",
+        model_source: bindings.global_model ? "global_binding" : null
+      };
+    }
+    if (this.config.runtime?.default_auth_profile?.trim()) {
+      return {
+        auth_profile: this.config.runtime.default_auth_profile.trim(),
+        model: null,
+        source: "config_global_default",
+        model_source: null
+      };
+    }
+    return { auth_profile: null, model: null, source: null, model_source: null };
   }
 }
 

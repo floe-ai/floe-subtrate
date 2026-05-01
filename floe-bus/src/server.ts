@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import YAML from "yaml";
+import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
 import { BusStore, type EventCommand } from "./store.js";
@@ -42,7 +43,8 @@ const RuntimeBindingUpsertSchema = z.object({
   scope: z.enum(["agent", "workspace_default", "global_default"]),
   workspace_id: z.string().nullable().optional(),
   endpoint_id: z.string().nullable().optional(),
-  auth_profile: z.string().min(1)
+  auth_profile: z.string().min(1),
+  model: z.string().nullable().optional()
 });
 
 const RuntimeBindingClearSchema = z.object({
@@ -203,19 +205,24 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       scope: body.scope,
       workspace_id: body.workspace_id ?? null,
       endpoint_id: body.endpoint_id ?? null,
-      auth_profile: body.auth_profile
+      auth_profile: body.auth_profile,
+      model: body.model ?? null
     }, broadcast);
-    if (body.scope === "agent" && body.endpoint_id) {
+    if (body.scope === "agent" && body.endpoint_id && body.workspace_id) {
       const endpoint = store.getEndpoint(body.endpoint_id) as any;
       if (endpoint && String(endpoint.status) === "runtime_unconfigured") {
-        store.updateEndpointStatus(body.endpoint_id, "idle", broadcast);
+        const resolution = store.getRuntimeBindingResolution(body.workspace_id, body.endpoint_id);
+        const hasModel = resolution.endpoint_model || resolution.workspace_model || resolution.global_model;
+        if (hasModel) store.updateEndpointStatus(body.endpoint_id, "idle", broadcast);
       }
     }
     if (body.scope === "workspace_default" && body.workspace_id) {
       const endpoints = store.listEndpoints(body.workspace_id) as any[];
       for (const endpoint of endpoints) {
         if (endpoint.actor_type === "agent" && String(endpoint.status) === "runtime_unconfigured") {
-          store.updateEndpointStatus(String(endpoint.endpoint_id), "idle", broadcast);
+          const resolution = store.getRuntimeBindingResolution(body.workspace_id, String(endpoint.endpoint_id));
+          const hasModel = resolution.endpoint_model || resolution.workspace_model || resolution.global_model;
+          if (hasModel) store.updateEndpointStatus(String(endpoint.endpoint_id), "idle", broadcast);
         }
       }
     }
@@ -259,6 +266,25 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
         ? config.runtime.default_auth_profile
         : null
     };
+  });
+
+  app.get("/v1/auth/models", async (request) => {
+    const query = z.object({ provider: z.string().optional() }).parse(request.query);
+    const providers = getProviders();
+    const allModels = query.provider
+      ? (providers.includes(query.provider as any) ? getModels(query.provider as any) : [])
+      : providers.flatMap((p) => getModels(p as any));
+    const models = allModels.map((m) => ({
+      id: m.id,
+      name: m.name,
+      provider: m.provider,
+      api: m.api,
+      reasoning: m.reasoning,
+      contextWindow: m.contextWindow,
+      maxTokens: m.maxTokens,
+      input: m.input
+    }));
+    return { models };
   });
 
   app.post("/v1/bridges/register", async (request, reply) => {

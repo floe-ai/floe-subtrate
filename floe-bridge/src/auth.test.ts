@@ -185,3 +185,102 @@ describe("resolveRuntimeAuth – provider/profile coherence (Issue 1)", () => {
     expect(result.provider).toBe("github-copilot");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Model selection tests
+// ---------------------------------------------------------------------------
+
+describe("resolveRuntimeAuth – model selection (model discovery)", () => {
+  const copilotWithoutDefaultModel = { id: "copilot-atvi", provider: "github-copilot" };
+  const claudeModel = makeModel("github-copilot", "claude-sonnet-4.6");
+  const haiku = makeModel("github-copilot", "claude-haiku-4.5");
+
+  const runtimeNoProfileModel = makeAuthRuntime(
+    [copilotWithoutDefaultModel],
+    { "github-copilot": "ghp_fake" },
+    { "github-copilot": { "claude-sonnet-4.6": claudeModel, "claude-haiku-4.5": haiku } }
+  );
+
+  it("throws runtime_model_required when auth profile has no model and binding provides no model", async () => {
+    await expect(
+      resolveRuntimeAuth(runtimeNoProfileModel, {
+        auth_profile: "copilot-atvi",
+        auth_profile_source: "workspace_binding"
+        // model: undefined — nothing selected
+      })
+    ).rejects.toSatisfy((e: unknown) => {
+      return e instanceof RuntimeAuthError && e.code === "runtime_model_required";
+    });
+  });
+
+  it("binding model resolves correctly when workspace binding specifies model", async () => {
+    const result = await resolveRuntimeAuth(runtimeNoProfileModel, {
+      auth_profile: "copilot-atvi",
+      auth_profile_source: "workspace_binding",
+      model: "claude-sonnet-4.6",
+      model_source: "workspace_binding"
+    });
+
+    expect(result.provider).toBe("github-copilot");
+    expect(result.modelId).toBe("claude-sonnet-4.6");
+    expect(result.model.id).toBe("claude-sonnet-4.6");
+    expect(result.apiKey).toBe("ghp_fake");
+  });
+
+  it("binding model resolves correctly when agent binding specifies model", async () => {
+    const result = await resolveRuntimeAuth(runtimeNoProfileModel, {
+      auth_profile: "copilot-atvi",
+      auth_profile_source: "agent_binding",
+      model: "claude-haiku-4.5",
+      model_source: "agent_binding"
+    });
+
+    expect(result.provider).toBe("github-copilot");
+    expect(result.modelId).toBe("claude-haiku-4.5");
+  });
+
+  it("binding model takes priority over profile model", async () => {
+    const runtimeWithProfileModel = makeAuthRuntime(
+      [{ id: "copilot-atvi", provider: "github-copilot", model: "claude-haiku-4.5" }],
+      { "github-copilot": "ghp_fake" },
+      { "github-copilot": { "claude-sonnet-4.6": claudeModel, "claude-haiku-4.5": haiku } }
+    );
+
+    const result = await resolveRuntimeAuth(runtimeWithProfileModel, {
+      auth_profile: "copilot-atvi",
+      auth_profile_source: "workspace_binding",
+      model: "claude-sonnet-4.6",  // binding explicitly selects sonnet
+      model_source: "workspace_binding"
+    });
+
+    expect(result.modelId).toBe("claude-sonnet-4.6");  // binding wins over profile's haiku
+  });
+
+  it("binding model is NOT stripped when project provider conflicts with profile provider", async () => {
+    // User selected copilot-atvi profile (github-copilot) AND explicitly chose a model via the binding.
+    // Even though the project file declared openai-codex, the binding model must be preserved.
+    const result = await resolveRuntimeAuth(runtimeNoProfileModel, {
+      provider: "openai-codex",  // project-declared provider (conflicts)
+      auth_profile: "copilot-atvi",
+      auth_profile_source: "workspace_binding",
+      model: "claude-sonnet-4.6",  // explicitly selected via UI
+      model_source: "workspace_binding"
+    });
+
+    expect(result.provider).toBe("github-copilot");
+    expect(result.modelId).toBe("claude-sonnet-4.6");  // NOT stripped
+  });
+
+  it("throws runtime_model_unknown for a model id not in the registry", async () => {
+    await expect(
+      resolveRuntimeAuth(runtimeNoProfileModel, {
+        auth_profile: "copilot-atvi",
+        auth_profile_source: "workspace_binding",
+        model: "nonexistent-model-xyz",
+        model_source: "workspace_binding"
+      })
+    ).rejects.toSatisfy((e: unknown) => {
+      return e instanceof RuntimeAuthError && e.code === "runtime_model_unknown";
+    });
+  });
+});

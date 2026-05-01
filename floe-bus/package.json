@@ -15,6 +15,7 @@
   "dependencies": {
     "@fastify/cors": "^10.0.0",
     "@fastify/websocket": "^11.0.0",
+    "@mariozechner/pi-ai": "*",
     "fastify": "^5.0.0",
     "yaml": "^2.6.0",
     "zod": "^3.24.0"
