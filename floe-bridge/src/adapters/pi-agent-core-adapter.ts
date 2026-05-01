@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
+import { getGitHubCopilotBaseUrl } from "@mariozechner/pi-ai/oauth";
 import type { AgentRuntimeConfig, BridgeAuthRuntime, RuntimeAuthResolved } from "../auth.js";
 import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle } from "../bus-client.js";
@@ -71,7 +72,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
   async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void> {
     const resolved = await resolveRuntimeAuth(this.authRuntime, runtimeConfig);
-    const session = this.getOrCreateSession(context, bundle, resolved);
+    const session = await this.getOrCreateSession(context, bundle, resolved);
     if (!session.initialized) {
       this.subscribeAgentEvents(session);
       session.initialized = true;
@@ -123,7 +124,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     }
   }
 
-  private getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved): SessionState {
+  private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved): Promise<SessionState> {
     const key = bundle.endpoint_id;
     const existing = this.sessions.get(key);
     if (existing && existing.provider === resolved.provider && existing.modelId === resolved.model.id) {
@@ -139,9 +140,28 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       context
     };
 
+    // Patch github-copilot model baseUrl using the live token's proxy-ep field.
+    // The static Pi registry hardcodes api.individual.githubcopilot.com, but enterprise
+    // accounts have a different endpoint embedded in the token via proxy-ep.
+    let model = resolved.model;
+    if (model.provider === "github-copilot") {
+      const apiKey = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
+      if (apiKey) {
+        const patchedBaseUrl = getGitHubCopilotBaseUrl(apiKey);
+        if (patchedBaseUrl !== model.baseUrl) {
+          console.log("[bridge] pi patched github-copilot baseUrl", {
+            from: model.baseUrl,
+            to: patchedBaseUrl,
+            endpoint_id: bundle.endpoint_id
+          });
+          model = { ...model, baseUrl: patchedBaseUrl };
+        }
+      }
+    }
+
     const emitTool = this.createEmitTool(state);
     state.agent = this.agentFactory({
-      model: resolved.model,
+      model,
       tools: [emitTool],
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);

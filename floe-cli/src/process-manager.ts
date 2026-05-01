@@ -97,7 +97,10 @@ export async function startService(configPath: string, config: LocalConfig, serv
       ...process.env,
       FLOE_CONFIG: configPath,
       FLOE_BUS_HTTP_URL: config.bus.http_base_url,
-      FLOE_BUS_WS_URL: config.bus.ws_base_url
+      FLOE_BUS_WS_URL: config.bus.ws_base_url,
+      ...(service === "bridge" && config.bridge.runtime_adapter
+        ? { FLOE_RUNTIME_ADAPTER: config.bridge.runtime_adapter }
+        : {})
     }
   });
   closeSync(logFd);
