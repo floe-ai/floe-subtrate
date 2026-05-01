@@ -13,11 +13,16 @@ import { PiAgentCoreAdapter } from "./adapters/pi-agent-core-adapter.js";
 
 type Timer = ReturnType<typeof setInterval>;
 
+type EndpointEntry = {
+  config: AgentRuntimeConfig;
+  instructions: string;
+};
+
 export class BridgeDaemon {
   readonly bridgeId: string;
   readonly bus: BusClient;
   readonly adapter: RuntimeAdapter;
-  private endpointRuntime = new Map<string, AgentRuntimeConfig>();
+  private endpointRuntime = new Map<string, EndpointEntry>();
   private timers: Timer[] = [];
   private attaching = false;
   private processing = false;
@@ -167,7 +172,7 @@ export class BridgeDaemon {
       for (const agent of project.agents) {
         const endpointId = agentEndpointId(workspace.workspace_id, agent.agent_id);
         const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
-        this.endpointRuntime.set(endpointId, runtimeConfig);
+        this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body });
         const resolvedAuth = await this.resolveAuthProfile(workspace.workspace_id, endpointId, runtimeConfig);
         await this.bus.registerEndpoint({
           endpoint_id: endpointId,
@@ -263,7 +268,7 @@ export class BridgeDaemon {
     for (const agent of project.agents) {
       const endpointId = agentEndpointId(workspaceId, agent.agent_id);
       const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
-      this.endpointRuntime.set(endpointId, runtimeConfig);
+      this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body });
       const resolvedAuth = await this.resolveAuthProfile(workspaceId, endpointId, runtimeConfig);
       await this.bus.registerEndpoint({
         endpoint_id: endpointId,
@@ -320,7 +325,9 @@ export class BridgeDaemon {
       event_count: delivery.events.length
     });
     try {
-      const runtimeConfig = this.endpointRuntime.get(delivery.endpoint_id);
+      const endpointEntry = this.endpointRuntime.get(delivery.endpoint_id);
+      const runtimeConfig = endpointEntry?.config;
+      const instructions = endpointEntry?.instructions;
       const resolvedAuth = await this.resolveAuthProfile(delivery.workspace_id, delivery.endpoint_id, runtimeConfig);
       const effectiveRuntime: AgentRuntimeConfig = {
         ...runtimeConfig,
@@ -328,7 +335,8 @@ export class BridgeDaemon {
         auth_profile_source: resolvedAuth.source ?? undefined,
         // Binding model takes priority over project-declared model
         model: resolvedAuth.model ?? runtimeConfig?.model ?? undefined,
-        model_source: resolvedAuth.model_source ?? undefined
+        model_source: resolvedAuth.model_source ?? undefined,
+        instructions: instructions ?? undefined
       };
       console.log("[bridge] effective runtime resolved", {
         delivery_id: delivery.delivery_id,
@@ -336,7 +344,8 @@ export class BridgeDaemon {
         model: effectiveRuntime.model ?? "(none)",
         model_source: effectiveRuntime.model_source ?? "(none)",
         auth_profile: effectiveRuntime.auth_profile ?? "(none)",
-        auth_profile_source: effectiveRuntime.auth_profile_source ?? "(none)"
+        auth_profile_source: effectiveRuntime.auth_profile_source ?? "(none)",
+        instructions_bytes: instructions?.length ?? 0
       });
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "injected_to_runtime");
       console.log("[bridge] delivery injected to runtime", { delivery_id: delivery.delivery_id, adapter: this.adapter.name });

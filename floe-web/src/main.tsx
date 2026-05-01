@@ -6,6 +6,7 @@ import {
   Check,
   FolderPlus,
   FileJson,
+  MessageCircle,
   PlugZap,
   RefreshCw,
   Save,
@@ -67,7 +68,8 @@ type EventEnvelope = {
   source_endpoint_id: string;
   destination_json: { kind: "endpoint" | "broadcast"; endpoint_id?: string };
   thread_id: string;
-  content: { text?: string; data?: unknown };
+  content: { text?: string; data?: Record<string, unknown> };
+  metadata?: Record<string, unknown>;
   created_at: string;
 };
 
@@ -474,6 +476,51 @@ function App() {
     return entries.sort((a, b) => a.data.created_at.localeCompare(b.data.created_at));
   }, [events, telemetry]);
 
+  // Chat pane: human messages sent + agent runtime_turn_output events only
+  const chatMessages = useMemo((): TimelineEntry[] => {
+    if (!selectedAgent || !threadId) return [];
+    const agentEndpointId = selectedAgent.endpoint_id;
+    const result: TimelineEntry[] = [];
+    for (const event of events) {
+      if (event.thread_id !== threadId) continue;
+      const isHumanMessage = event.source_endpoint_id === humanEndpoint && event.type === "message";
+      const isAgentOutput = event.metadata?.origin === "runtime_turn_output"
+        && event.source_endpoint_id === agentEndpointId;
+      if (isHumanMessage || isAgentOutput) {
+        result.push({ kind: "event", data: event });
+      }
+    }
+    return result.sort((a, b) => a.data.created_at.localeCompare(b.data.created_at));
+  }, [events, selectedAgent, threadId, humanEndpoint]);
+
+  // Streaming bubble: latest visible_output per turn that doesn't yet have a runtime_turn_output event
+  const streamingTurns = useMemo((): Record<string, { text: string; created_at: string }> => {
+    if (!selectedAgent || !threadId) return {};
+    const agentEndpointId = selectedAgent.endpoint_id;
+    // Collect runtime_turn_ids that already have a final output event
+    const finishedTurnIds = new Set<string>();
+    for (const event of events) {
+      if (event.metadata?.origin === "runtime_turn_output" && event.source_endpoint_id === agentEndpointId) {
+        const turnId = event.content?.data?.runtime_turn_id;
+        if (typeof turnId === "string") finishedTurnIds.add(turnId);
+      }
+    }
+    // Latest visible_output snapshot per turn (only for unfinished turns)
+    const latest: Record<string, { text: string; created_at: string }> = {};
+    for (const t of telemetry) {
+      if (t.endpoint_id !== agentEndpointId) continue;
+      if (t.kind !== "visible_output") continue;
+      let payload: Record<string, unknown> = {};
+      try { payload = JSON.parse(t.payload_json); } catch { continue; }
+      const turnId = payload.runtime_turn_id;
+      if (typeof turnId !== "string" || finishedTurnIds.has(turnId)) continue;
+      if (!latest[turnId] || t.created_at > latest[turnId].created_at) {
+        latest[turnId] = { text: String(payload.text ?? ""), created_at: t.created_at };
+      }
+    }
+    return latest;
+  }, [events, telemetry, selectedAgent, threadId]);
+
   const agentErrorTelemetry = useMemo(() => {
     if (!selectedAgent) return null;
     const agentTel = telemetry.filter((t) => t.endpoint_id === selectedAgent.endpoint_id);
@@ -550,6 +597,79 @@ function App() {
         <section className="thread-panel">
           <div className="panel-heading split">
             <div>
+              <MessageCircle size={17} />
+              <h2>Chat</h2>
+            </div>
+            <span>{selectedAgent?.name ?? "No agent selected"}</span>
+          </div>
+          <div className="event-list chat-list">
+            {chatMessages.map((entry) => {
+              const event = entry.data as EventEnvelope;
+              const isHuman = event.source_endpoint_id === humanEndpoint;
+              return (
+                <article key={event.event_id} className={isHuman ? "event human" : "event agent"}>
+                  <div className="event-meta">
+                    <span>{isHuman ? "You" : (selectedAgent?.name ?? "Agent")}</span>
+                    <time>{new Date(event.created_at).toLocaleTimeString()}</time>
+                  </div>
+                  <p>{event.content?.text ?? JSON.stringify(event.content)}</p>
+                </article>
+              );
+            })}
+            {Object.entries(streamingTurns).map(([turnId, { text, created_at }]) => (
+              <article key={turnId} className="event agent streaming">
+                <div className="event-meta">
+                  <span>{selectedAgent?.name ?? "Agent"} <em>(streaming…)</em></span>
+                  <time>{new Date(created_at).toLocaleTimeString()}</time>
+                </div>
+                <p>{text}</p>
+              </article>
+            ))}
+            {chatMessages.length === 0 && Object.keys(streamingTurns).length === 0 && (
+              <div className="empty">{selectedAgent ? "No messages yet. Say hello!" : "Select a workspace and agent."}</div>
+            )}
+          </div>
+          {agentErrorTelemetry && (
+            <div className="warning">
+              Runtime outcome: <strong>{agentErrorTelemetry.kind}</strong>
+              {(() => {
+                try {
+                  const p = JSON.parse(agentErrorTelemetry.payload_json) as Record<string, unknown>;
+                  return p.message ? <span>{String(p.message)}</span> : null;
+                } catch { return null; }
+              })()}
+            </div>
+          )}
+          {selectedAgent?.status === "runtime_unconfigured" && (
+            <div className="warning">
+              Agent runtime is unconfigured.
+              <span>Select a runtime auth profile in the Runtime Auth panel.</span>
+            </div>
+          )}
+          <div className="composer">
+            <input
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void sendMessage();
+              }}
+              placeholder={
+                !selectedAgent ? "Waiting for an agent endpoint"
+                : !effectiveProfileId ? "Select a runtime profile first"
+                : !effectiveModel ? "Select a model to enable messaging"
+                : `Message ${selectedAgent.name}`
+              }
+              disabled={!selectedAgent || !runtimeReady}
+            />
+            <button onClick={() => void sendMessage()} disabled={!selectedAgent || !runtimeReady || !message.trim()} title="Send">
+              <Send size={18} />
+            </button>
+          </div>
+        </section>
+
+        <section className="thread-panel debug-panel">
+          <div className="panel-heading split">
+            <div>
               <Activity size={17} />
               <h2>Event History</h2>
             </div>
@@ -593,42 +713,6 @@ function App() {
               );
             })}
             {sortedTimeline.length === 0 && <div className="empty">No events yet.</div>}
-          </div>
-          {agentErrorTelemetry && (
-            <div className="warning">
-              Runtime outcome: <strong>{agentErrorTelemetry.kind}</strong>
-              {(() => {
-                try {
-                  const p = JSON.parse(agentErrorTelemetry.payload_json) as Record<string, unknown>;
-                  return p.message ? <span>{String(p.message)}</span> : null;
-                } catch { return null; }
-              })()}
-            </div>
-          )}
-          {selectedAgent?.status === "runtime_unconfigured" && (
-            <div className="warning">
-              Agent runtime is unconfigured.
-              <span>Select a runtime auth profile in the Runtime Auth panel.</span>
-            </div>
-          )}
-          <div className="composer">
-            <input
-              value={message}
-              onChange={(event) => setMessage(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void sendMessage();
-              }}
-              placeholder={
-                !selectedAgent ? "Waiting for an agent endpoint"
-                : !effectiveProfileId ? "Select a runtime profile first"
-                : !effectiveModel ? "Select a model to enable messaging"
-                : `Message ${selectedAgent.name}`
-              }
-              disabled={!selectedAgent || !runtimeReady}
-            />
-            <button onClick={() => void sendMessage()} disabled={!selectedAgent || !runtimeReady || !message.trim()} title="Send">
-              <Send size={18} />
-            </button>
           </div>
         </section>
 

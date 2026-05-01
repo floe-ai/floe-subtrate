@@ -280,6 +280,95 @@ describe("PiAgentCoreAdapter – output classification", () => {
     const noOutputTelemetry = telemetryCalls.filter((t) => t.kind === "runtime_no_visible_output");
     expect(noOutputTelemetry).toHaveLength(1);
   });
+
+  it("uses agent instructions as system prompt and recreates session when instructions change", async () => {
+    const capturedSystemPrompts: string[] = [];
+
+    function makeCapturingFactory(): any {
+      return {
+        listeners: [] as Array<(event: any) => void | Promise<void>>,
+        subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+        async prompt() {
+          for (const l of this.listeners) await l({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "I am Floe." }] }
+          });
+          for (const l of this.listeners) await l({
+            type: "turn_end",
+            message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+          });
+        }
+      };
+    }
+
+    let sessionCount = 0;
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input) => {
+          sessionCount++;
+          capturedSystemPrompts.push(input.systemPrompt);
+          return makeCapturingFactory();
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const makeCtx = () => ({
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {}
+      }
+    } as any);
+
+    // First call with Floe instructions
+    await adapter.handleBundle(
+      makeCtx(),
+      makeDelivery("del-instr-1", "thread-1", "what is your name?"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", instructions: "# Floe\n\nYou are Floe, the default agent." }
+    );
+    expect(sessionCount).toBe(1);
+    expect(capturedSystemPrompts[0]).toContain("You are Floe");
+
+    // Second call with same instructions — session reused (no new session created)
+    await adapter.handleBundle(
+      makeCtx(),
+      makeDelivery("del-instr-2", "thread-2", "hi again"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", instructions: "# Floe\n\nYou are Floe, the default agent." }
+    );
+    expect(sessionCount).toBe(1); // session reused
+
+    // Third call with changed instructions — session must be recreated
+    await adapter.handleBundle(
+      makeCtx(),
+      makeDelivery("del-instr-3", "thread-3", "hi"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", instructions: "# Updated\n\nYou are a different agent." }
+    );
+    expect(sessionCount).toBe(2); // new session created
+    expect(capturedSystemPrompts[1]).toContain("You are a different agent");
+  });
 });
 
 function makeDelivery(deliveryId: string, threadId: string, text: string): DeliveryBundle {

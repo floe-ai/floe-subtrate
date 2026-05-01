@@ -163,7 +163,7 @@ h2 {
 .console-grid {
   flex: 1;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 260px;
+  grid-template-columns: 260px minmax(0, 1fr) minmax(0, 1fr) 260px;
   min-height: 0;
 }
 
@@ -292,6 +292,11 @@ h2 {
   padding: 14px;
 }
 
+.debug-panel {
+  border-left: 1px solid #d5dbd8;
+  background: #f9fbfa;
+}
+
 .event-list {
   min-height: 0;
   overflow: auto;
@@ -309,6 +314,18 @@ h2 {
 .event.agent {
   border-color: #b4ccc5;
   background: #f4fffa;
+}
+
+.event.agent.streaming {
+  border-color: #8cbfb5;
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+.event.agent.streaming em {
+  font-style: italic;
+  color: #6b9e94;
+  font-size: 0.85em;
 }
 
 .event.human {

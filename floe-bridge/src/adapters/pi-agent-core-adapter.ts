@@ -16,6 +16,7 @@ type AgentFactoryInput = {
   model: RuntimeAuthResolved["model"];
   tools: AgentTool[];
   getApiKey: () => Promise<string>;
+  systemPrompt: string;
 };
 
 type AgentFactory = (input: AgentFactoryInput) => AgentLike;
@@ -49,6 +50,7 @@ type SessionState = {
   initialized: boolean;
   provider: string;
   modelId: string;
+  instructionsHash: string;
   context?: RuntimeContext;
   activeTurn?: RuntimeTurnContext;
 };
@@ -72,7 +74,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
   async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void> {
     const resolved = await resolveRuntimeAuth(this.authRuntime, runtimeConfig);
-    const session = await this.getOrCreateSession(context, bundle, resolved);
+    const session = await this.getOrCreateSession(context, bundle, resolved, runtimeConfig);
     if (!session.initialized) {
       this.subscribeAgentEvents(session);
       session.initialized = true;
@@ -124,10 +126,18 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     }
   }
 
-  private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved): Promise<SessionState> {
+  private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved, runtimeConfig?: AgentRuntimeConfig): Promise<SessionState> {
     const key = bundle.endpoint_id;
+    const rawInstructions = runtimeConfig?.instructions?.trim() ?? "";
+    // Build the full system prompt: agent instructions + substrate guidance
+    const systemPrompt = rawInstructions
+      ? `${rawInstructions}\n\nUse emit only for explicit substrate operations (routing/progress/structured events). Normal replies are captured from your visible output.`
+      : "You are a Floe runtime agent. Respond naturally. Use emit only for explicit substrate operations (routing/progress/structured events).";
+
+    const instructionsHash = instructionHash(systemPrompt);
+
     const existing = this.sessions.get(key);
-    if (existing && existing.provider === resolved.provider && existing.modelId === resolved.model.id) {
+    if (existing && existing.provider === resolved.provider && existing.modelId === resolved.model.id && existing.instructionsHash === instructionsHash) {
       existing.context = context;
       return existing;
     }
@@ -137,6 +147,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       initialized: false,
       provider: resolved.provider,
       modelId: resolved.model.id,
+      instructionsHash,
       context
     };
 
@@ -159,10 +170,17 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       }
     }
 
+    console.log("[bridge] pi agent instructions loaded", {
+      endpoint_id: bundle.endpoint_id,
+      instructions_bytes: rawInstructions.length,
+      instructions_hash: instructionsHash
+    });
+
     const emitTool = this.createEmitTool(state);
     state.agent = this.agentFactory({
       model,
       tools: [emitTool],
+      systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
         if (!latest) throw new Error(`Provider '${resolved.provider}' is missing authentication. Run 'floe login'.`);
@@ -470,12 +488,21 @@ function createDefaultAgent(input: AgentFactoryInput): AgentLike {
   return new Agent({
     initialState: {
       model: input.model,
-      systemPrompt:
-        "You are a Floe runtime agent. Respond normally. Use tool emit only for explicit substrate operations.",
+      systemPrompt: input.systemPrompt,
       tools: input.tools
     },
     getApiKey: input.getApiKey
   });
+}
+
+function instructionHash(text: string): string {
+  // FNV-1a 32-bit — cheap, no crypto import needed, good enough for cache key
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
 }
 
 function deliveryToPrompt(bundle: DeliveryBundle): string {

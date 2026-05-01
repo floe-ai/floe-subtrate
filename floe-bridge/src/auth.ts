@@ -92,6 +92,8 @@ export type AgentRuntimeConfig = {
   /** Source of the model selection. "agent_binding" and "workspace_binding" indicate the model
    *  was explicitly chosen by the user and must not be stripped when providers differ. */
   model_source?: string;
+  /** Agent markdown body to use as the system prompt for this agent's runtime sessions. */
+  instructions?: string;
 };
 
 export type RuntimeAuthErrorCode =
