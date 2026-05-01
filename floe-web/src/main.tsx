@@ -74,6 +74,30 @@ type WorkspaceDeleteResult = {
   locator_deleted: boolean;
 };
 
+type TelemetryRecord = {
+  telemetry_id: string;
+  workspace_id: string;
+  endpoint_id: string;
+  delivery_id: string | null;
+  kind: string;
+  payload_json: string;
+  created_at: string;
+};
+
+type TimelineEntry =
+  | { kind: "event"; data: EventEnvelope }
+  | { kind: "telemetry"; data: TelemetryRecord };
+
+const TELEMETRY_ERROR_KINDS = new Set([
+  "runtime_no_visible_output",
+  "provider_auth_missing",
+  "runtime_profile_provider_mismatch",
+  "runtime_model_required",
+  "runtime_model_unknown",
+  "runtime_provider_required",
+  "runtime_profile_required"
+]);
+
 const defaultBusUrl = localStorage.getItem("floe.busUrl") ?? "http://127.0.0.1:5377";
 
 function App() {
@@ -84,6 +108,7 @@ function App() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("");
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [events, setEvents] = useState<EventEnvelope[]>([]);
+  const [telemetry, setTelemetry] = useState<TelemetryRecord[]>([]);
   const [authProfiles, setAuthProfiles] = useState<AuthProfile[]>([]);
   const [runtimeBindings, setRuntimeBindings] = useState<RuntimeBinding[]>([]);
   const [configs, setConfigs] = useState<SavedConfig[]>([]);
@@ -145,10 +170,13 @@ function App() {
         setRuntimeBindings(bindingResult.bindings);
         const eventResult = await api<{ events: EventEnvelope[] }>(busUrl, `/v1/events?workspace_id=${encodeURIComponent(nextWorkspaceId)}&limit=200`);
         setEvents(eventResult.events);
+        const telemetryResult = await api<{ records: TelemetryRecord[] }>(busUrl, `/v1/runtime/telemetry?workspace_id=${encodeURIComponent(nextWorkspaceId)}&limit=200`);
+        setTelemetry(telemetryResult.records);
       } else {
         setEndpoints([]);
         setRuntimeBindings([]);
         setEvents([]);
+        setTelemetry([]);
       }
       setStatus("Connected");
     } catch (err) {
@@ -166,12 +194,20 @@ function App() {
     void refresh();
     const socketUrl = busUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:").replace(/\/$/, "") + "/v1/events/stream";
     const socket = new WebSocket(socketUrl);
-    let refreshQueued = false;
+    let refreshRunning = false;
+    let refreshPending = false;
     const queueRefresh = () => {
-      if (refreshQueued) return;
-      refreshQueued = true;
+      if (refreshRunning) {
+        refreshPending = true;
+        return;
+      }
+      refreshRunning = true;
+      refreshPending = false;
       void refresh().finally(() => {
-        refreshQueued = false;
+        refreshRunning = false;
+        if (refreshPending) {
+          queueRefresh();
+        }
       });
     };
     socket.onopen = () => setStatus("Connected");
@@ -355,7 +391,20 @@ function App() {
     await refresh();
   }
 
-  const sortedEvents = useMemo(() => [...events].sort((a, b) => a.created_at.localeCompare(b.created_at)), [events]);
+  const sortedTimeline = useMemo((): TimelineEntry[] => {
+    const entries: TimelineEntry[] = [
+      ...events.map((e): TimelineEntry => ({ kind: "event", data: e })),
+      ...telemetry.map((t): TimelineEntry => ({ kind: "telemetry", data: t }))
+    ];
+    return entries.sort((a, b) => a.data.created_at.localeCompare(b.data.created_at));
+  }, [events, telemetry]);
+
+  const agentErrorTelemetry = useMemo(() => {
+    if (!selectedAgent) return null;
+    const agentTel = telemetry.filter((t) => t.endpoint_id === selectedAgent.endpoint_id);
+    const latest = agentTel[agentTel.length - 1];
+    return latest && TELEMETRY_ERROR_KINDS.has(latest.kind) ? latest : null;
+  }, [telemetry, selectedAgent]);
 
   return (
     <main className="app-shell">
@@ -432,17 +481,53 @@ function App() {
             <span>{selectedWorkspace?.active_config_hash ?? "No config hash"}</span>
           </div>
           <div className="event-list">
-            {sortedEvents.map((event) => (
-              <article key={event.event_id} className={event.source_endpoint_id === humanEndpoint ? "event human" : "event agent"}>
-                <div className="event-meta">
-                  <span>{event.type}</span>
-                  <time>{new Date(event.created_at).toLocaleTimeString()}</time>
-                </div>
-                <p>{event.content?.text ?? JSON.stringify(event.content)}</p>
-              </article>
-            ))}
-            {sortedEvents.length === 0 && <div className="empty">No events yet.</div>}
+            {sortedTimeline.map((entry) => {
+              if (entry.kind === "telemetry") {
+                const t = entry.data;
+                let payload: Record<string, unknown> = {};
+                try { payload = JSON.parse(t.payload_json); } catch { /* ignore */ }
+                const isError = TELEMETRY_ERROR_KINDS.has(t.kind);
+                const summary = payload.text
+                  ? String(payload.text).slice(0, 120)
+                  : payload.message
+                    ? String(payload.message).slice(0, 120)
+                    : payload.note
+                      ? String(payload.note).slice(0, 120)
+                      : "";
+                return (
+                  <article key={t.telemetry_id} className={`event telemetry${isError ? " telemetry-error" : ""}`}>
+                    <div className="event-meta">
+                      <span>⚙ {t.kind}</span>
+                      <time>{new Date(t.created_at).toLocaleTimeString()}</time>
+                    </div>
+                    {summary && <p>{summary}</p>}
+                  </article>
+                );
+              }
+              const event = entry.data;
+              return (
+                <article key={event.event_id} className={event.source_endpoint_id === humanEndpoint ? "event human" : "event agent"}>
+                  <div className="event-meta">
+                    <span>{event.type}</span>
+                    <time>{new Date(event.created_at).toLocaleTimeString()}</time>
+                  </div>
+                  <p>{event.content?.text ?? JSON.stringify(event.content)}</p>
+                </article>
+              );
+            })}
+            {sortedTimeline.length === 0 && <div className="empty">No events yet.</div>}
           </div>
+          {agentErrorTelemetry && (
+            <div className="warning">
+              Runtime outcome: <strong>{agentErrorTelemetry.kind}</strong>
+              {(() => {
+                try {
+                  const p = JSON.parse(agentErrorTelemetry.payload_json) as Record<string, unknown>;
+                  return p.message ? <span>{String(p.message)}</span> : null;
+                } catch { return null; }
+              })()}
+            </div>
+          )}
           {selectedAgent?.status === "runtime_unconfigured" && (
             <div className="warning">
               Agent runtime is unconfigured.

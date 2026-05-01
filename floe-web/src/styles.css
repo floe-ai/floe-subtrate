@@ -317,6 +317,20 @@ h2 {
   background: #f5f9ff;
 }
 
+.event.telemetry {
+  align-self: center;
+  border-color: #d0d7e0;
+  background: #f8f9fb;
+  opacity: 0.85;
+  font-size: 0.82em;
+}
+
+.event.telemetry-error {
+  border-color: #e8b4b4;
+  background: #fff5f5;
+  opacity: 1;
+}
+
 .event p {
   margin: 5px 0 0;
   line-height: 1.45;

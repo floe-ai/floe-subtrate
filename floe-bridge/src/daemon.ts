@@ -313,23 +313,49 @@ export class BridgeDaemon {
   }
 
   private async handleDelivery(delivery: DeliveryBundle): Promise<void> {
+    console.log("[bridge] delivery claimed", {
+      delivery_id: delivery.delivery_id,
+      endpoint_id: delivery.endpoint_id,
+      workspace_id: delivery.workspace_id,
+      event_count: delivery.events.length
+    });
     try {
       const runtimeConfig = this.endpointRuntime.get(delivery.endpoint_id);
       const resolvedAuth = await this.resolveAuthProfile(delivery.workspace_id, delivery.endpoint_id, runtimeConfig);
       const effectiveRuntime: AgentRuntimeConfig = {
         ...runtimeConfig,
-        auth_profile: resolvedAuth.auth_profile ?? undefined
+        auth_profile: resolvedAuth.auth_profile ?? undefined,
+        auth_profile_source: resolvedAuth.source ?? undefined
       };
+      console.log("[bridge] effective runtime resolved", {
+        delivery_id: delivery.delivery_id,
+        provider: effectiveRuntime.provider ?? "(none)",
+        model: effectiveRuntime.model ?? "(none)",
+        auth_profile: effectiveRuntime.auth_profile ?? "(none)",
+        auth_profile_source: effectiveRuntime.auth_profile_source ?? "(none)"
+      });
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "injected_to_runtime");
+      console.log("[bridge] delivery injected to runtime", { delivery_id: delivery.delivery_id, adapter: this.adapter.name });
       await this.adapter.handleBundle({
         bridge_id: this.bridgeId,
         bus: this.bus
       }, delivery, effectiveRuntime);
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
+      console.log("[bridge] delivery acknowledged", { delivery_id: delivery.delivery_id });
       await this.bus.reportTurnEnd(delivery.endpoint_id);
+      console.log("[bridge] turn end reported", { endpoint_id: delivery.endpoint_id });
     } catch (error) {
       console.error("[bridge] adapter failed", error);
-      if (error instanceof RuntimeAuthError && (error.code === "runtime_profile_required" || error.code === "provider_auth_missing")) {
+      const deferCodes = [
+        "runtime_profile_required",
+        "provider_auth_missing",
+        "runtime_profile_provider_mismatch",
+        "runtime_provider_required",
+        "runtime_model_required",
+        "runtime_model_unknown"
+      ] as const;
+      if (error instanceof RuntimeAuthError && (deferCodes as readonly string[]).includes(error.code)) {
+        console.log("[bridge] delivery deferred", { delivery_id: delivery.delivery_id, code: error.code });
         await this.bus.appendRuntimeTelemetry({
           workspace_id: delivery.workspace_id,
           endpoint_id: delivery.endpoint_id,
@@ -343,6 +369,10 @@ export class BridgeDaemon {
         await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "deferred", `${error.code}: ${error.message}`);
         return;
       }
+      console.log("[bridge] delivery failed", {
+        delivery_id: delivery.delivery_id,
+        error: (error as Error).message
+      });
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", (error as Error).message);
       await this.bus.updateEndpointStatus(delivery.endpoint_id, "error");
     }

@@ -75,6 +75,17 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     if (!session.initialized) {
       this.subscribeAgentEvents(session);
       session.initialized = true;
+      console.log("[bridge] pi session created", {
+        endpoint_id: bundle.endpoint_id,
+        provider: resolved.provider,
+        model: resolved.model.id
+      });
+    } else {
+      console.log("[bridge] pi session reused", {
+        endpoint_id: bundle.endpoint_id,
+        provider: resolved.provider,
+        model: resolved.model.id
+      });
     }
 
     if (session.activeTurn && !session.activeTurn.finalized) {
@@ -93,6 +104,11 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     }
 
     const prompt = deliveryToPrompt(bundle);
+    console.log("[bridge] pi prompt injected", {
+      delivery_id: bundle.delivery_id,
+      runtime_turn_id: turn.runtime_turn_id,
+      endpoint_id: bundle.endpoint_id
+    });
     try {
       await session.agent.prompt({
         role: "user",
@@ -204,14 +220,28 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       if (!turn || !context) return;
 
       try {
-        if (event.type === "message_update" || event.type === "message_end") {
+        if ((event.type === "message_update" || event.type === "message_end") && event.message?.role === "assistant") {
           const text = extractText((event as any).message);
           if (text) {
             turn.visible_output = text;
             if (text !== turn.last_visible_telemetry_text) {
               turn.last_visible_telemetry_text = text;
+              console.log("[bridge] pi visible_output observed", {
+                runtime_turn_id: turn.runtime_turn_id,
+                delivery_id: turn.delivery_id,
+                text_length: text.length,
+                event_type: event.type
+              });
               await this.appendTelemetry(context, turn, "visible_output", { text });
             }
+          } else if (event.type === "message_end") {
+            const msg = (event as any).message;
+            console.log("[bridge] pi message_end no text extracted", {
+              runtime_turn_id: turn.runtime_turn_id,
+              role: msg?.role,
+              content_types: Array.isArray(msg?.content) ? msg.content.map((c: any) => c?.type) : "(no content array)",
+              stop_reason: msg?.stopReason ?? msg?.stop_reason
+            });
           }
         }
 
@@ -271,6 +301,11 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       sleep(this.turnFinalizeTimeoutMs).then(() => false)
     ]);
     if (completed) return;
+    console.log("[bridge] pi turn timeout, finalizing", {
+      runtime_turn_id: turn.runtime_turn_id,
+      delivery_id: turn.delivery_id,
+      visible_output_length: turn.visible_output.length
+    });
     if (session.activeTurn === turn && !turn.finalized) {
       await this.finalizeTurn(context, session, turn, null);
     }
@@ -287,8 +322,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     turn.finalized = true;
 
     try {
-      const output = turn.visible_output.trim();
+      const output = turn.visible_output.trim() || extractText(assistantMessage)?.trim() || "";
       if (output.length > 0) {
+        console.log("[bridge] pi runtime_turn_output emitting", {
+          runtime_turn_id: turn.runtime_turn_id,
+          delivery_id: turn.delivery_id,
+          output_length: output.length
+        });
         await context.bus.emit({
           type: "message",
           workspace_id: turn.workspace_id,
@@ -321,6 +361,19 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             thread_id: turn.thread_id,
             started_at: turn.started_at
           }
+        });
+      } else {
+        console.log("[bridge] pi runtime_no_visible_output", {
+          runtime_turn_id: turn.runtime_turn_id,
+          delivery_id: turn.delivery_id,
+          had_assistant_message: !!assistantMessage,
+          assistant_content_types: assistantMessage && Array.isArray(assistantMessage.content)
+            ? assistantMessage.content.map((c: any) => c?.type)
+            : null,
+          stop_reason: assistantMessage?.stopReason ?? assistantMessage?.stop_reason ?? null
+        });
+        await this.appendTelemetry(context, turn, "runtime_no_visible_output", {
+          note: "No assistant visible output was produced during this turn."
         });
       }
 
