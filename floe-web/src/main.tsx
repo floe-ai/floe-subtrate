@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -11,6 +11,7 @@ import {
   Save,
   Send,
   Terminal,
+  Trash2,
   UserRound
 } from "lucide-react";
 import "./styles.css";
@@ -50,6 +51,13 @@ type SavedConfig = {
   config_json: string;
 };
 
+type WorkspaceDeleteResult = {
+  ok: boolean;
+  workspace_id: string;
+  locator: string;
+  locator_deleted: boolean;
+};
+
 const defaultBusUrl = localStorage.getItem("floe.busUrl") ?? "http://127.0.0.1:5377";
 
 function App() {
@@ -76,27 +84,35 @@ function App() {
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("Connecting");
   const [error, setError] = useState<string | null>(null);
+  const selectedWorkspaceIdRef = useRef<string>("");
 
-  const selectedWorkspace = workspaces.find((workspace) => workspace.workspace_id === selectedWorkspaceId) ?? workspaces[0];
+  const selectedWorkspace = workspaces.find((workspace) => workspace.workspace_id === selectedWorkspaceId) ?? null;
   const agents = endpoints.filter((endpoint) => endpoint.actor_type === "agent");
   const humanEndpoint = selectedWorkspace ? humanEndpointId(selectedWorkspace.workspace_id) : "";
   const selectedAgent = agents[0];
   const threadId = selectedWorkspace ? `thread:${selectedWorkspace.workspace_id}:operator` : "";
 
-  async function refresh() {
+  const refresh = useCallback(async (preferredWorkspaceId?: string) => {
     try {
       setError(null);
       const workspaceResult = await api<{ workspaces: Workspace[] }>(busUrl, "/v1/workspaces");
       setWorkspaces(workspaceResult.workspaces);
       const configResult = await api<{ configs: SavedConfig[] }>(busUrl, "/v1/configs");
       setConfigs(configResult.configs);
-      if (!selectedConfigId && configResult.configs[0]) setSelectedConfigId(configResult.configs[0].config_id);
-      const preferred = selectedWorkspaceId || workspaceResult.workspaces[0]?.workspace_id || "";
-      setSelectedWorkspaceId(preferred);
-      if (preferred) {
-        const endpointResult = await api<{ endpoints: Endpoint[] }>(busUrl, `/v1/workspaces/${encodeURIComponent(preferred)}/endpoints`);
+      setSelectedConfigId((current) => current || configResult.configs[0]?.config_id || "");
+      const ids = new Set(workspaceResult.workspaces.map((workspace) => workspace.workspace_id));
+      let nextWorkspaceId = preferredWorkspaceId ?? selectedWorkspaceIdRef.current;
+      if (!nextWorkspaceId || !ids.has(nextWorkspaceId)) {
+        nextWorkspaceId = workspaceResult.workspaces[0]?.workspace_id || "";
+      }
+      if (nextWorkspaceId !== selectedWorkspaceIdRef.current) {
+        selectedWorkspaceIdRef.current = nextWorkspaceId;
+        setSelectedWorkspaceId(nextWorkspaceId);
+      }
+      if (nextWorkspaceId) {
+        const endpointResult = await api<{ endpoints: Endpoint[] }>(busUrl, `/v1/workspaces/${encodeURIComponent(nextWorkspaceId)}/endpoints`);
         setEndpoints(endpointResult.endpoints);
-        const eventResult = await api<{ events: EventEnvelope[] }>(busUrl, `/v1/events?workspace_id=${encodeURIComponent(preferred)}&limit=200`);
+        const eventResult = await api<{ events: EventEnvelope[] }>(busUrl, `/v1/events?workspace_id=${encodeURIComponent(nextWorkspaceId)}&limit=200`);
         setEvents(eventResult.events);
       } else {
         setEndpoints([]);
@@ -107,21 +123,35 @@ function App() {
       setStatus("Offline");
       setError((err as Error).message);
     }
-  }
+  }, [busUrl]);
+
+  useEffect(() => {
+    selectedWorkspaceIdRef.current = selectedWorkspaceId;
+  }, [selectedWorkspaceId]);
 
   useEffect(() => {
     localStorage.setItem("floe.busUrl", busUrl);
     void refresh();
     const socketUrl = busUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:").replace(/\/$/, "") + "/v1/events/stream";
     const socket = new WebSocket(socketUrl);
-    socket.onmessage = () => void refresh();
-    socket.onerror = () => setStatus("Socket retrying");
+    let refreshQueued = false;
+    const queueRefresh = () => {
+      if (refreshQueued) return;
+      refreshQueued = true;
+      void refresh().finally(() => {
+        refreshQueued = false;
+      });
+    };
+    socket.onopen = () => setStatus("Connected");
+    socket.onmessage = () => queueRefresh();
+    socket.onerror = () => setStatus((current) => (current === "Offline" ? current : "Socket reconnecting"));
+    socket.onclose = () => setStatus((current) => (current === "Offline" ? current : "Socket disconnected"));
     const recoveryInterval = setInterval(() => void refresh(), 30_000);
     return () => {
       socket.close();
       clearInterval(recoveryInterval);
     };
-  }, [busUrl, selectedWorkspaceId]);
+  }, [busUrl, refresh]);
 
   async function registerWorkspace() {
     if (!candidate.trim()) return;
@@ -133,15 +163,35 @@ function App() {
       }
     });
     await api(busUrl, `/v1/workspaces/${encodeURIComponent(result.workspace.workspace_id)}/select`, { method: "POST" });
+    selectedWorkspaceIdRef.current = result.workspace.workspace_id;
     setSelectedWorkspaceId(result.workspace.workspace_id);
     await ensureHuman(result.workspace.workspace_id);
-    await refresh();
+    await refresh(result.workspace.workspace_id);
   }
 
   async function selectWorkspace(workspaceId: string) {
+    selectedWorkspaceIdRef.current = workspaceId;
     setSelectedWorkspaceId(workspaceId);
     await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, { method: "POST" });
     await ensureHuman(workspaceId);
+    await refresh(workspaceId);
+  }
+
+  async function deleteWorkspace(workspace: Workspace) {
+    if (!window.confirm(`Remove workspace '${workspace.name}' from Floe?`)) return;
+    const deleteLocator = window.confirm(
+      `Also delete the workspace folder and files on disk?\n\n${workspace.locator}\n\nPress OK to delete files, Cancel to keep files.`
+    );
+    await api<WorkspaceDeleteResult>(busUrl, `/v1/workspaces/${encodeURIComponent(workspace.workspace_id)}/delete`, {
+      method: "POST",
+      body: {
+        delete_locator: deleteLocator
+      }
+    });
+    if (selectedWorkspaceIdRef.current === workspace.workspace_id) {
+      selectedWorkspaceIdRef.current = "";
+      setSelectedWorkspaceId("");
+    }
     await refresh();
   }
 
@@ -269,14 +319,26 @@ function App() {
           </div>
           <div className="workspace-list">
             {workspaces.map((workspace) => (
-              <button
+              <div
                 key={workspace.workspace_id}
-                className={workspace.workspace_id === selectedWorkspace?.workspace_id ? "workspace-item active" : "workspace-item"}
-                onClick={() => void selectWorkspace(workspace.workspace_id)}
+                className={workspace.workspace_id === selectedWorkspaceId ? "workspace-row active" : "workspace-row"}
               >
-                <strong>{workspace.name}</strong>
-                <span>{workspace.status}</span>
-              </button>
+                <button
+                  className={workspace.workspace_id === selectedWorkspaceId ? "workspace-item active" : "workspace-item"}
+                  onClick={() => void selectWorkspace(workspace.workspace_id)}
+                >
+                  <strong>{workspace.name}</strong>
+                  <span>{workspace.status}</span>
+                </button>
+                <button
+                  className="workspace-delete"
+                  onClick={() => void deleteWorkspace(workspace)}
+                  title={`Remove workspace ${workspace.name}`}
+                  aria-label={`Remove workspace ${workspace.name}`}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             ))}
           </div>
         </aside>

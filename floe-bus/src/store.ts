@@ -1,5 +1,5 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join, parse, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { LocalConfig } from "./config.js";
@@ -284,6 +284,37 @@ export class BusStore {
 
   getWorkspace(workspaceId: string): unknown {
     return this.db.prepare("SELECT * FROM workspaces WHERE workspace_id = ?").get(workspaceId);
+  }
+
+  deleteWorkspace(workspaceId: string, options: { delete_locator?: boolean }, broadcast: Broadcast): {
+    ok: true;
+    workspace_id: string;
+    locator: string;
+    locator_deleted: boolean;
+  } {
+    const workspace = this.getWorkspace(workspaceId) as any;
+    if (!workspace) throw new Error(`Unknown workspace_id: ${workspaceId}`);
+    const locator = String(workspace.locator ?? "");
+    const deleteLocator = !!options.delete_locator;
+    let locatorDeleted = false;
+    if (deleteLocator) locatorDeleted = deleteWorkspaceLocator(locator);
+    this.transaction(() => {
+      this.db.prepare("DELETE FROM event_queue WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM delivery_bundles WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM pending_responses WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM runtime_telemetry WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM events WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM endpoints WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM workspaces WHERE workspace_id = ?").run(workspaceId);
+    });
+    const payload = {
+      workspace_id: workspaceId,
+      locator,
+      delete_locator: deleteLocator,
+      locator_deleted: locatorDeleted
+    };
+    broadcast("workspace_deleted", payload);
+    return { ok: true, workspace_id: workspaceId, locator, locator_deleted: locatorDeleted };
   }
 
   registerBridge(input: { bridge_id: string; capabilities?: Record<string, unknown> }, broadcast: Broadcast): unknown {
@@ -935,4 +966,15 @@ export class BusStore {
       throw error;
     }
   }
+}
+
+function deleteWorkspaceLocator(locator: string): boolean {
+  const resolved = resolve(locator);
+  if (!existsSync(resolved)) return false;
+  const root = parse(resolved).root;
+  if (resolved === root) {
+    throw new Error(`Refusing to delete root path '${resolved}'.`);
+  }
+  rmSync(resolved, { recursive: true, force: true });
+  return true;
 }

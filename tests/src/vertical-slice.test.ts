@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { dirname } from "node:path";
@@ -154,6 +154,21 @@ describe("Floe local vertical slice", () => {
     const pending = await get<{ pending: any[] }>(`/v1/pending-responses?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
     expect(pending.pending.length).toBeGreaterThan(0);
     expect(pending.pending.some((item) => item.waiting_endpoint_id === agentEndpointId)).toBe(true);
+
+    const marker = join(projectPath, "delete-marker.txt");
+    writeFileSync(marker, "cleanup proof", "utf8");
+    const deleted = await post<{ ok: boolean; workspace_id: string; locator_deleted: boolean }>(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`,
+      { delete_locator: true }
+    );
+    expect(deleted.ok).toBe(true);
+    expect(deleted.workspace_id).toBe(workspaceId);
+    expect(deleted.locator_deleted).toBe(true);
+    await waitFor(async () => {
+      const result = await get<{ workspaces: any[] }>("/v1/workspaces");
+      return !result.workspaces.some((workspace) => workspace.workspace_id === workspaceId);
+    }, "workspace deletion propagation");
+    expect(existsSync(projectPath)).toBe(false);
   }, 90_000);
 
   function sawBusEvents(types: string[]): boolean {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentRuntimeConfig, BridgeAuthRuntime, RuntimeAuthResolved } from "../auth.js";
@@ -5,62 +6,127 @@ import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 
+type AgentLike = {
+  prompt(input: unknown): Promise<void>;
+  subscribe(listener: (event: any) => void | Promise<void>): void;
+};
+
+type AgentFactoryInput = {
+  model: RuntimeAuthResolved["model"];
+  tools: AgentTool[];
+  getApiKey: () => Promise<string>;
+};
+
+type AgentFactory = (input: AgentFactoryInput) => AgentLike;
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
+type RuntimeTurnContext = {
+  runtime_turn_id: string;
+  delivery_id: string;
+  delivery_attempt_id: string;
+  endpoint_id: string;
+  workspace_id: string;
+  thread_id: string;
+  source_endpoint_id: string;
+  correlation_id: string | null;
+  started_at: string;
+  trigger_event_id: string;
+  reply_destination_endpoint_id: string;
+  visible_output: string;
+  last_visible_telemetry_text: string;
+  finalized: boolean;
+  completion: Deferred<void>;
+};
+
 type SessionState = {
-  agent: Agent;
+  agent: AgentLike;
   initialized: boolean;
   provider: string;
   modelId: string;
+  context?: RuntimeContext;
+  activeTurn?: RuntimeTurnContext;
 };
 
 export class PiAgentCoreAdapter implements RuntimeAdapter {
   readonly name = "pi-agent-core";
   private sessions = new Map<string, SessionState>();
+  private readonly agentFactory: AgentFactory;
+  private readonly turnFinalizeTimeoutMs: number;
 
-  constructor(private readonly authRuntime: BridgeAuthRuntime) {}
+  constructor(
+    private readonly authRuntime: BridgeAuthRuntime,
+    options?: {
+      agentFactory?: AgentFactory;
+      turnFinalizeTimeoutMs?: number;
+    }
+  ) {
+    this.agentFactory = options?.agentFactory ?? createDefaultAgent;
+    this.turnFinalizeTimeoutMs = options?.turnFinalizeTimeoutMs ?? 5_000;
+  }
 
   async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void> {
     const resolved = await resolveRuntimeAuth(this.authRuntime, runtimeConfig);
     const session = this.getOrCreateSession(context, bundle, resolved);
     if (!session.initialized) {
-      this.subscribeAgentEvents(context, bundle, session.agent);
+      this.subscribeAgentEvents(session);
       session.initialized = true;
     }
 
+    if (session.activeTurn && !session.activeTurn.finalized) {
+      throw new Error(`Runtime turn already active for endpoint '${bundle.endpoint_id}'.`);
+    }
+
+    const turn = this.startTurn(bundle);
+    session.activeTurn = turn;
+
     if (resolved.usedEnvFallback) {
-      await context.bus.appendRuntimeTelemetry({
-        workspace_id: bundle.workspace_id,
-        endpoint_id: bundle.endpoint_id,
-        delivery_id: bundle.delivery_id,
-        kind: "runtime_config",
-        payload: {
-          source: "env_fallback",
-          provider: resolved.provider,
-          model: resolved.modelId
-        }
+      await this.appendTelemetry(context, turn, "runtime_config", {
+        source: "env_fallback",
+        provider: resolved.provider,
+        model: resolved.modelId
       });
     }
 
     const prompt = deliveryToPrompt(bundle);
-    await session.agent.prompt({
-      role: "user",
-      timestamp: Date.now(),
-      content: [{ type: "text", text: prompt }]
-    } as any);
+    try {
+      await session.agent.prompt({
+        role: "user",
+        timestamp: Date.now(),
+        content: [{ type: "text", text: prompt }]
+      } as any);
+      await this.awaitTurnCompletion(context, session, turn);
+    } catch (error) {
+      if (session.activeTurn === turn) session.activeTurn = undefined;
+      if (!turn.finalized) turn.completion.reject(error);
+      throw error;
+    }
   }
 
   private getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved): SessionState {
     const key = bundle.endpoint_id;
     const existing = this.sessions.get(key);
-    if (existing && existing.provider === resolved.provider && existing.modelId === resolved.model.id) return existing;
+    if (existing && existing.provider === resolved.provider && existing.modelId === resolved.model.id) {
+      existing.context = context;
+      return existing;
+    }
 
-    const emitTool = this.createEmitTool(context, bundle);
-    const agent = new Agent({
-      initialState: {
-        model: resolved.model,
-        systemPrompt:
-          "You are a Floe runtime agent. Use tool emit to publish messages/progress/responses to Floe bus. End turns normally.",
-        tools: [emitTool]
-      },
+    const state: SessionState = {
+      agent: null as unknown as AgentLike,
+      initialized: false,
+      provider: resolved.provider,
+      modelId: resolved.model.id,
+      context
+    };
+
+    const emitTool = this.createEmitTool(state);
+    state.agent = this.agentFactory({
+      model: resolved.model,
+      tools: [emitTool],
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
         if (!latest) throw new Error(`Provider '${resolved.provider}' is missing authentication. Run 'floe login'.`);
@@ -68,21 +134,15 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       }
     });
 
-    const state: SessionState = {
-      agent,
-      initialized: false,
-      provider: resolved.provider,
-      modelId: resolved.model.id
-    };
     this.sessions.set(key, state);
     return state;
   }
 
-  private createEmitTool(context: RuntimeContext, bundle: DeliveryBundle): AgentTool {
+  private createEmitTool(session: SessionState): AgentTool {
     return {
       name: "emit",
       label: "Emit Floe Event",
-      description: "Emit a Floe event back to the bus.",
+      description: "Emit a Floe substrate event for routing/progress/structured operations.",
       parameters: Type.Object({
         type: Type.String(),
         destination: Type.Object({
@@ -93,30 +153,40 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         response_expected: Type.Optional(Type.Boolean()),
         correlation_id: Type.Optional(Type.String())
       }),
-      async execute(_toolCallId, params: any) {
-        const targetEndpoint = params?.destination?.endpoint_id ?? bundle.events[0]?.source_endpoint_id;
+      execute: async (_toolCallId, params: any) => {
+        const turn = session.activeTurn;
+        const context = session.context;
+        if (!turn || !context) throw new Error("No active runtime turn context is available for emit.");
+
+        const targetEndpoint = params?.destination?.endpoint_id ?? turn.reply_destination_endpoint_id;
         await context.bus.emit({
           type: String(params?.type ?? "message"),
-          workspace_id: bundle.workspace_id,
-          source_endpoint_id: bundle.endpoint_id,
+          workspace_id: turn.workspace_id,
+          source_endpoint_id: turn.endpoint_id,
           destination: {
             kind: "endpoint",
             endpoint_id: String(targetEndpoint)
           },
-          thread_id: bundle.events[0]?.thread_id ?? `thread:${bundle.workspace_id}:pi`,
-          correlation_id: params?.correlation_id ?? bundle.events[0]?.correlation_id ?? null,
+          thread_id: turn.thread_id,
+          correlation_id: params?.correlation_id ?? turn.correlation_id,
           content: {
             text: String(params?.text ?? ""),
             data: {
-              via: "pi-emit-tool",
-              delivery_id: bundle.delivery_id
+              origin: "pi_emit_tool",
+              runtime_turn_id: turn.runtime_turn_id,
+              delivery_id: turn.delivery_id,
+              delivery_attempt_id: turn.delivery_attempt_id
             }
           },
           response: {
             expected: !!params?.response_expected
           },
           metadata: {
-            runtime: "pi-agent-core"
+            runtime: "pi-agent-core",
+            origin: "pi_emit_tool",
+            runtime_turn_id: turn.runtime_turn_id,
+            delivery_id: turn.delivery_id,
+            delivery_attempt_id: turn.delivery_attempt_id
           }
         });
         return {
@@ -127,61 +197,184 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     };
   }
 
-  private subscribeAgentEvents(context: RuntimeContext, bundle: DeliveryBundle, agent: Agent): void {
-    agent.subscribe(async (event) => {
-      if (event.type === "message_update" || event.type === "message_end") {
-        const text = extractText((event as any).message);
-        if (text) {
-          await context.bus.appendRuntimeTelemetry({
-            workspace_id: bundle.workspace_id,
-            endpoint_id: bundle.endpoint_id,
-            delivery_id: bundle.delivery_id,
-            kind: "visible_output",
-            payload: { text }
-          });
+  private subscribeAgentEvents(session: SessionState): void {
+    session.agent.subscribe(async (event) => {
+      const turn = session.activeTurn;
+      const context = session.context;
+      if (!turn || !context) return;
+
+      try {
+        if (event.type === "message_update" || event.type === "message_end") {
+          const text = extractText((event as any).message);
+          if (text) {
+            turn.visible_output = text;
+            if (text !== turn.last_visible_telemetry_text) {
+              turn.last_visible_telemetry_text = text;
+              await this.appendTelemetry(context, turn, "visible_output", { text });
+            }
+          }
         }
-      }
-      if (event.type === "tool_execution_start") {
-        await context.bus.appendRuntimeTelemetry({
-          workspace_id: bundle.workspace_id,
-          endpoint_id: bundle.endpoint_id,
-          delivery_id: bundle.delivery_id,
-          kind: "BeforeToolUse",
-          payload: {
+
+        if (event.type === "tool_execution_start") {
+          await this.appendTelemetry(context, turn, "BeforeToolUse", {
             toolCallId: event.toolCallId,
             toolName: event.toolName,
             args: event.args
-          }
-        });
-      }
-      if (event.type === "tool_execution_end") {
-        await context.bus.appendRuntimeTelemetry({
-          workspace_id: bundle.workspace_id,
-          endpoint_id: bundle.endpoint_id,
-          delivery_id: bundle.delivery_id,
-          kind: event.isError ? "ToolUseFailed" : "AfterToolUse",
-          payload: {
+          });
+        }
+
+        if (event.type === "tool_execution_end") {
+          await this.appendTelemetry(context, turn, event.isError ? "ToolUseFailed" : "AfterToolUse", {
             toolCallId: event.toolCallId,
             toolName: event.toolName,
             isError: event.isError
-          }
-        });
-      }
-      if (event.type === "turn_end" && event.message.role === "assistant") {
-        await context.bus.appendRuntimeTelemetry({
-          workspace_id: bundle.workspace_id,
-          endpoint_id: bundle.endpoint_id,
-          delivery_id: bundle.delivery_id,
-          kind: "usage",
-          payload: {
-            usage: event.message.usage ?? null,
-            model: event.message.model ?? null,
-            provider: event.message.provider ?? null
-          }
-        });
+          });
+        }
+
+        if (event.type === "turn_end" && event.message?.role === "assistant") {
+          await this.finalizeTurn(context, session, turn, event.message);
+        }
+      } catch (error) {
+        if (session.activeTurn === turn) session.activeTurn = undefined;
+        if (!turn.finalized) turn.completion.reject(error);
+        console.error("[bridge] pi adapter event handling failed", error);
       }
     });
   }
+
+  private startTurn(bundle: DeliveryBundle): RuntimeTurnContext {
+    const trigger = bundle.events[0];
+    const sourceEndpoint = trigger?.source_endpoint_id || `endpoint:${bundle.workspace_id}:user:operator`;
+    const threadId = trigger?.thread_id || `thread:${bundle.workspace_id}:pi`;
+    return {
+      runtime_turn_id: `rt_${randomUUID()}`,
+      delivery_id: bundle.delivery_id,
+      delivery_attempt_id: `da_${randomUUID()}`,
+      endpoint_id: bundle.endpoint_id,
+      workspace_id: bundle.workspace_id,
+      thread_id: threadId,
+      source_endpoint_id: sourceEndpoint,
+      correlation_id: trigger?.correlation_id ?? null,
+      started_at: new Date().toISOString(),
+      trigger_event_id: trigger?.event_id ?? `evt:${bundle.delivery_id}`,
+      reply_destination_endpoint_id: sourceEndpoint,
+      visible_output: "",
+      last_visible_telemetry_text: "",
+      finalized: false,
+      completion: createDeferred<void>()
+    };
+  }
+
+  private async awaitTurnCompletion(context: RuntimeContext, session: SessionState, turn: RuntimeTurnContext): Promise<void> {
+    const completed = await Promise.race([
+      turn.completion.promise.then(() => true),
+      sleep(this.turnFinalizeTimeoutMs).then(() => false)
+    ]);
+    if (completed) return;
+    if (session.activeTurn === turn && !turn.finalized) {
+      await this.finalizeTurn(context, session, turn, null);
+    }
+    await turn.completion.promise;
+  }
+
+  private async finalizeTurn(
+    context: RuntimeContext,
+    session: SessionState,
+    turn: RuntimeTurnContext,
+    assistantMessage: any | null
+  ): Promise<void> {
+    if (turn.finalized) return;
+    turn.finalized = true;
+
+    try {
+      const output = turn.visible_output.trim();
+      if (output.length > 0) {
+        await context.bus.emit({
+          type: "message",
+          workspace_id: turn.workspace_id,
+          source_endpoint_id: turn.endpoint_id,
+          destination: {
+            kind: "endpoint",
+            endpoint_id: turn.reply_destination_endpoint_id
+          },
+          thread_id: turn.thread_id,
+          correlation_id: turn.correlation_id,
+          content: {
+            text: output,
+            data: {
+              origin: "runtime_turn_output",
+              runtime_turn_id: turn.runtime_turn_id,
+              delivery_id: turn.delivery_id,
+              delivery_attempt_id: turn.delivery_attempt_id,
+              trigger_event_id: turn.trigger_event_id
+            }
+          },
+          response: {
+            expected: false
+          },
+          metadata: {
+            runtime: "pi-agent-core",
+            origin: "runtime_turn_output",
+            runtime_turn_id: turn.runtime_turn_id,
+            delivery_id: turn.delivery_id,
+            delivery_attempt_id: turn.delivery_attempt_id,
+            thread_id: turn.thread_id,
+            started_at: turn.started_at
+          }
+        });
+      }
+
+      if (assistantMessage) {
+        await this.appendTelemetry(context, turn, "usage", {
+          usage: assistantMessage.usage ?? null,
+          model: assistantMessage.model ?? null,
+          provider: assistantMessage.provider ?? null
+        });
+      }
+
+      turn.completion.resolve();
+    } catch (error) {
+      turn.completion.reject(error);
+      throw error;
+    } finally {
+      if (session.activeTurn === turn) session.activeTurn = undefined;
+    }
+  }
+
+  private async appendTelemetry(
+    context: RuntimeContext,
+    turn: RuntimeTurnContext,
+    kind: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    await context.bus.appendRuntimeTelemetry({
+      workspace_id: turn.workspace_id,
+      endpoint_id: turn.endpoint_id,
+      delivery_id: turn.delivery_id,
+      kind,
+      payload: {
+        runtime_turn_id: turn.runtime_turn_id,
+        delivery_id: turn.delivery_id,
+        delivery_attempt_id: turn.delivery_attempt_id,
+        endpoint_id: turn.endpoint_id,
+        thread_id: turn.thread_id,
+        started_at: turn.started_at,
+        ...payload
+      }
+    });
+  }
+}
+
+function createDefaultAgent(input: AgentFactoryInput): AgentLike {
+  return new Agent({
+    initialState: {
+      model: input.model,
+      systemPrompt:
+        "You are a Floe runtime agent. Respond normally. Use tool emit only for explicit substrate operations.",
+      tools: input.tools
+    },
+    getApiKey: input.getApiKey
+  });
 }
 
 function deliveryToPrompt(bundle: DeliveryBundle): string {
@@ -189,7 +382,12 @@ function deliveryToPrompt(bundle: DeliveryBundle): string {
     const text = typeof event.content?.text === "string" ? event.content.text : JSON.stringify(event.content ?? {});
     return `- [${event.type}] from ${event.source_endpoint_id} thread=${event.thread_id}: ${text}`;
   });
-  return `Floe delivery bundle ${bundle.delivery_id}\n${lines.join("\n")}\nRespond via emit tool.`;
+  return [
+    `Floe delivery bundle ${bundle.delivery_id}`,
+    lines.join("\n"),
+    "Respond naturally to the user message.",
+    "Use emit only for explicit substrate operations (routing/progress/structured events)."
+  ].join("\n");
 }
 
 function extractText(message: any): string {
@@ -198,4 +396,18 @@ function extractText(message: any): string {
     .filter((item: any) => item?.type === "text" && typeof item.text === "string")
     .map((item: any) => item.text)
     .join("");
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolveFn, rejectFn) => {
+    resolve = resolveFn;
+    reject = rejectFn;
+  });
+  return { promise, resolve, reject };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

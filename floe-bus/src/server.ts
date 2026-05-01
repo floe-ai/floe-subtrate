@@ -124,6 +124,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { workspace: store.selectWorkspace(params.workspace_id, broadcast) };
   });
 
+  app.post("/v1/workspaces/:workspace_id/delete", async (request) => {
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const body = z.object({
+      delete_locator: z.boolean().optional()
+    }).parse(request.body ?? {});
+    return store.deleteWorkspace(params.workspace_id, { delete_locator: body.delete_locator ?? false }, broadcast);
+  });
+
   app.post("/v1/workspaces/:workspace_id/attachment-result", async (request) => {
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const body = z.object({
