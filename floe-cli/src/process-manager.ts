@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
@@ -84,10 +84,9 @@ export async function startService(configPath: string, config: LocalConfig, serv
     ? ["run", "dev", "--workspace", workspace, "--", "--host", webListen.host, "--port", String(webListen.port)]
     : ["run", "dev", "--workspace", workspace, "--", "--config", configPath];
   const commandLine = commandForNpm(args);
-  const logFile = serviceLogPath(configPath, config, service);
-  mkdirSync(dirname(logFile), { recursive: true });
-  writeFileSync(logFile, `\n[${new Date().toISOString()}] starting ${service}\n`, { flag: "a" });
-  const logFd = openSync(logFile, "a");
+  const defaultLogFile = serviceLogPath(configPath, config, service);
+  mkdirSync(dirname(defaultLogFile), { recursive: true });
+  const { logFile, logFd } = openServiceLog(defaultLogFile, service);
   const child = spawn(commandLine.command, commandLine.args, {
     cwd: root,
     detached: true,
@@ -116,6 +115,21 @@ export async function startService(configPath: string, config: LocalConfig, serv
   records[service] = record;
   writeRecords(configPath, config, records);
   return record;
+}
+
+function openServiceLog(defaultLogFile: string, service: ServiceName): { logFile: string; logFd: number } {
+  const marker = `\n[${new Date().toISOString()}] starting ${service}\n`;
+  try {
+    const fd = openSync(defaultLogFile, "a");
+    writeSync(fd, marker);
+    return { logFile: defaultLogFile, logFd: fd };
+  } catch (error: any) {
+    if (error?.code !== "EBUSY" && error?.code !== "EPERM") throw error;
+    const fallback = join(dirname(defaultLogFile), `${service}-${Date.now()}.log`);
+    const fd = openSync(fallback, "a");
+    writeSync(fd, marker);
+    return { logFile: fallback, logFd: fd };
+  }
 }
 
 function parseListen(value: string): { host: string; port: number } {

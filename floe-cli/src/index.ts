@@ -301,7 +301,7 @@ program.action(async () => {
   }
 });
 
-await program.parseAsync(process.argv);
+await program.parseAsync(normalizeLegacyCommandArgs(process.argv));
 
 async function resolveProviderOption(
   options: Array<{ id: string; name: string; auth_type: "oauth" | "api_key" }>,
@@ -504,4 +504,29 @@ function tail(text: string, lines: number): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeLegacyCommandArgs(argv: string[]): string[] {
+  const map: Record<string, string> = {
+    "--start": "start",
+    "--stop": "stop",
+    "--status": "status",
+    "--doctor": "doctor",
+    "--restart": "restart",
+    "--open": "open",
+    "--setup": "setup",
+    "--logs": "logs",
+    "--uninstall": "uninstall"
+  };
+  let commandInjected = false;
+  const normalized = [...argv.slice(0, 2)];
+  for (const token of argv.slice(2)) {
+    if (!commandInjected && map[token]) {
+      normalized.push(map[token]);
+      commandInjected = true;
+      continue;
+    }
+    normalized.push(token);
+  }
+  return normalized;
 }
