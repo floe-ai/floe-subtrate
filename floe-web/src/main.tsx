@@ -5,6 +5,7 @@ import {
   Bot,
   ChevronDown,
   ChevronRight,
+  Folder,
   FolderPlus,
   MessageCircle,
   PanelRightClose,
@@ -173,6 +174,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [showRightSidebar, setShowRightSidebar] = useState(true);
+  const [expandedVoTurns, setExpandedVoTurns] = useState<Set<string>>(new Set());
   const selectedWorkspaceIdRef = useRef<string>("");
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -315,25 +317,30 @@ function App() {
   }, [telemetry, selectedAgent]);
 
   /* ── Debug entries grouped by turn ── */
-  const debugEntries = useMemo(() => {
-    if (!selectedAgent) return [];
-    type DebugEntry = { id: string; kind: string; summary: string; time: string; isError: boolean; turnId: string | null };
-    const entries: DebugEntry[] = [];
+  type DebugEntry = { id: string; kind: string; summary: string; time: string; isError: boolean };
+  type DebugTurnGroup = { turnId: string; entries: DebugEntry[]; voEntries: DebugEntry[]; firstTime: string };
+  const debugGroups = useMemo((): { turns: DebugTurnGroup[]; ungrouped: DebugEntry[] } => {
+    if (!selectedAgent) return { turns: [], ungrouped: [] };
+    const turnMap = new Map<string, DebugTurnGroup>();
+    const ungrouped: DebugEntry[] = [];
     for (const t of telemetry) {
       if (t.endpoint_id !== selectedAgent.endpoint_id) continue;
       let p: Record<string, unknown> = {};
       try { p = JSON.parse(t.payload_json); } catch { /* */ }
       const summary = (p.error_message ?? p.text ?? p.message ?? p.note ?? "") as string;
-      entries.push({
-        id: t.telemetry_id,
-        kind: t.kind,
+      const entry: DebugEntry = {
+        id: t.telemetry_id, kind: t.kind,
         summary: String(summary).slice(0, 120),
         time: new Date(t.created_at).toLocaleTimeString(),
         isError: TELEMETRY_ERROR_KINDS.has(t.kind),
-        turnId: typeof p.runtime_turn_id === "string" ? p.runtime_turn_id : null,
-      });
+      };
+      const turnId = typeof p.runtime_turn_id === "string" ? p.runtime_turn_id : null;
+      if (!turnId) { ungrouped.push(entry); continue; }
+      let group = turnMap.get(turnId);
+      if (!group) { group = { turnId, entries: [], voEntries: [], firstTime: entry.time }; turnMap.set(turnId, group); }
+      if (t.kind === "visible_output") { group.voEntries.push(entry); } else { group.entries.push(entry); }
     }
-    return entries;
+    return { turns: Array.from(turnMap.values()), ungrouped };
   }, [telemetry, selectedAgent]);
 
   /* ── Actions ── */
@@ -490,30 +497,39 @@ function App() {
         </div>
 
         <div className="sidebar-section">
+          <h3>Workspace</h3>
+          <div className="workspace-label">
+            <span className={`dot ${connDot}`} />
+            Local Environment
+          </div>
+        </div>
+
+        <div className="sidebar-section">
           <h3>Projects</h3>
         </div>
 
         <div className="workspace-list">
           {workspaces.map((ws) => (
-            <div key={ws.workspace_id} style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+            <div key={ws.workspace_id} className="project-row">
               <button
                 className={`ws-item${ws.workspace_id === selectedWorkspaceId ? " active" : ""}`}
                 onClick={() => void selectWorkspace(ws.workspace_id)}
               >
+                <Folder size={14} className="ws-icon" />
                 <span className="ws-name">{ws.name}</span>
                 <span className={`dot ${ws.status === "attached" ? "dot-green" : "dot-gray"}`} />
               </button>
               <button
+                className="ws-delete"
                 onClick={() => void deleteWorkspace(ws)}
                 title={`Remove ${ws.name}`}
-                style={{ border: "none", background: "transparent", padding: "4px", minHeight: "auto", color: "var(--text-muted)", cursor: "pointer" }}
               >
                 <Trash2 size={12} />
               </button>
             </div>
           ))}
           {workspaces.length === 0 && (
-            <div style={{ color: "var(--text-muted)", fontSize: "12px", padding: "8px" }}>No projects yet</div>
+            <div className="empty-projects">No projects yet</div>
           )}
         </div>
 
@@ -550,11 +566,12 @@ function App() {
         <div className="chat-header">
           <div className="agent-avatar"><Bot size={18} /></div>
           <div className="agent-header-info">
+            {selectedWorkspace && <div className="project-context"><Folder size={11} /> {selectedWorkspace.name}</div>}
             <h2>{selectedAgent?.name ?? "Floe"}</h2>
             <div className="agent-subtitle">
               {pill && <span className={`status-pill ${pill.cls}`}><span className={`dot dot-${pill.cls === "idle" ? "green" : pill.cls === "active" ? "amber" : pill.cls === "error" ? "red" : "gray"}`} />{pill.label}</span>}
-              {effectiveModel && <span>· {effectiveModel}</span>}
-              {effectiveProfile && <span>· {effectiveProfile.provider}</span>}
+              {effectiveModel && <span className="subtitle-detail">{effectiveModel}</span>}
+              {effectiveProfile && <span className="subtitle-detail">{effectiveProfile.provider}</span>}
             </div>
           </div>
           <div className="chat-header-actions">
@@ -744,23 +761,77 @@ function App() {
             </div>
           )}
 
-          {/* Debug trace */}
+          {/* Debug trace — grouped by turn */}
           <button className="debug-toggle" onClick={() => setShowDebug(!showDebug)}>
             {showDebug ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            Debug Trace ({debugEntries.length})
+            Debug Trace ({debugGroups.turns.length} turn{debugGroups.turns.length !== 1 ? "s" : ""}{debugGroups.ungrouped.length > 0 ? ` + ${debugGroups.ungrouped.length}` : ""})
           </button>
           {showDebug && (
             <div className="debug-content">
-              {debugEntries.length === 0 && <div style={{ color: "var(--text-muted)", padding: "8px" }}>No telemetry</div>}
-              {debugEntries.map((entry) => (
-                <div key={entry.id} className={`debug-event${entry.isError ? " error" : ""}`}>
-                  <div className="de-header">
-                    <span className="de-kind">{entry.kind}</span>
-                    <time>{entry.time}</time>
+              {debugGroups.turns.length === 0 && debugGroups.ungrouped.length === 0 && (
+                <div className="debug-empty">No telemetry</div>
+              )}
+              {debugGroups.turns.map((group) => (
+                <div key={group.turnId} className="debug-turn-group">
+                  <div className="debug-turn-header">
+                    <span className="turn-label">Turn {group.turnId.slice(0, 8)}…</span>
+                    <time>{group.firstTime}</time>
                   </div>
-                  {entry.summary && <div className="de-body">{entry.summary}</div>}
+                  {group.voEntries.length > 0 && (
+                    <div
+                      className="debug-event vo-group"
+                      onClick={() => setExpandedVoTurns((prev) => {
+                        const next = new Set(prev);
+                        next.has(group.turnId) ? next.delete(group.turnId) : next.add(group.turnId);
+                        return next;
+                      })}
+                    >
+                      <div className="de-header">
+                        <span className="de-kind">
+                          {expandedVoTurns.has(group.turnId) ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                          {" "}Visible output stream
+                        </span>
+                        <span>{group.voEntries.length} updates</span>
+                      </div>
+                      {expandedVoTurns.has(group.turnId) && (
+                        <div className="vo-expanded">
+                          {group.voEntries.map((ve) => (
+                            <div key={ve.id} className="vo-entry">
+                              <time>{ve.time}</time>
+                              <span>{ve.summary}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {group.entries.map((entry) => (
+                    <div key={entry.id} className={`debug-event${entry.isError ? " error" : ""}`}>
+                      <div className="de-header">
+                        <span className="de-kind">{entry.kind}</span>
+                        <time>{entry.time}</time>
+                      </div>
+                      {entry.summary && <div className="de-body">{entry.summary}</div>}
+                    </div>
+                  ))}
                 </div>
               ))}
+              {debugGroups.ungrouped.length > 0 && (
+                <>
+                  <div className="debug-turn-header" style={{ marginTop: "4px" }}>
+                    <span className="turn-label">Other</span>
+                  </div>
+                  {debugGroups.ungrouped.map((entry) => (
+                    <div key={entry.id} className={`debug-event${entry.isError ? " error" : ""}`}>
+                      <div className="de-header">
+                        <span className="de-kind">{entry.kind}</span>
+                        <time>{entry.time}</time>
+                      </div>
+                      {entry.summary && <div className="de-body">{entry.summary}</div>}
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           )}
         </aside>
