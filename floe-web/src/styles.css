@@ -870,9 +870,9 @@ code {
 .activity-group {
   position: relative;
   z-index: 1;
+  flex-shrink: 0;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  overflow: hidden;
 }
 
 .activity-group.working {
