@@ -724,12 +724,15 @@ export class BusStore {
   listRuntimeTelemetry(filters: { workspace_id?: string; limit?: number }): unknown[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
     if (filters.workspace_id) {
-      return this.db.prepare(`
+      // Return newest records first (DESC) then reverse so caller gets chronological order
+      const rows = this.db.prepare(`
         SELECT * FROM runtime_telemetry WHERE workspace_id = ?
-        ORDER BY created_at ASC LIMIT ?
+        ORDER BY created_at DESC LIMIT ?
       `).all(filters.workspace_id, limit);
+      return rows.reverse();
     }
-    return this.db.prepare("SELECT * FROM runtime_telemetry ORDER BY created_at ASC LIMIT ?").all(limit);
+    const rows = this.db.prepare("SELECT * FROM runtime_telemetry ORDER BY created_at DESC LIMIT ?").all(limit);
+    return rows.reverse();
   }
 
   listEvents(filters: { workspace_id?: string; thread_id?: string; limit?: number }): EventEnvelope[] {
