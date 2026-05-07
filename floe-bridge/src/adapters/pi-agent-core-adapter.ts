@@ -110,7 +110,16 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       });
     }
 
-    const prompt = deliveryToPrompt(bundle);
+    // Fetch visible endpoints for inclusion in prompt context
+    let visibleEndpoints: Array<{ endpoint_id: string; name: string; actor_type: string; status: string }> = [];
+    try {
+      const eps = await context.bus.listEndpoints(bundle.workspace_id);
+      visibleEndpoints = eps
+        .filter((ep: any) => ep.endpoint_id !== bundle.endpoint_id)
+        .map((ep: any) => ({ endpoint_id: ep.endpoint_id, name: ep.name, actor_type: ep.actor_type, status: ep.status }));
+    } catch { /* endpoint discovery is optional */ }
+
+    const prompt = deliveryToPrompt(bundle, visibleEndpoints);
     console.log("[bridge] pi prompt injected", {
       delivery_id: bundle.delivery_id,
       runtime_turn_id: turn.runtime_turn_id,
@@ -225,7 +234,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "emit",
       label: "Emit Floe Event",
-      description: "Publish a canonical event to the Floe event bus. Use for explicit communication, progress updates, structured routing, review requests, or response expectations. Your reply destination is available in the delivery context.",
+      description: "Publish a canonical event to the Floe event bus. This is the ONLY way to communicate with other endpoints. Nothing you produce (text, tool results, reasoning) is visible to anyone unless you use this tool. Always call emit with type 'message' to reply to a delivered message. Your reply destination is available in the delivery context.",
       parameters: Type.Object({
         type: Type.String(),
         destination: Type.Optional(Type.String({ description: "Target endpoint_id. Omit to use reply_destination from delivery context." })),
@@ -290,7 +299,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "list_endpoints",
       label: "List Visible Endpoints",
-      description: "List endpoints visible/addressable by this endpoint in the current workspace. Returns endpoint_id, name, actor_type, and status. Use to discover valid emit destinations.",
+      description: "List endpoints visible/addressable by this endpoint in the current workspace. Returns endpoint_id, name, actor_type, and status. Results are only visible to you — you MUST use emit to share this information with other endpoints.",
       parameters: Type.Object({}),
       execute: async () => {
         const turn = session.activeTurn;
@@ -309,7 +318,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           }));
 
         return {
-          content: [{ type: "text", text: JSON.stringify(visible, null, 2) }],
+          content: [
+            { type: "text", text: JSON.stringify(visible, null, 2) },
+            { type: "text", text: "Remember: call emit with type 'message' to send this information to the requesting endpoint." }
+          ],
           details: { ok: true, count: visible.length }
         };
       }
@@ -528,7 +540,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         event_id: e.event_id ?? "unknown",
         type: e.type ?? "unknown",
         source_endpoint_id: e.source_endpoint_id ?? "unknown",
-        text: typeof e.content === "string" ? e.content.slice(0, 200) : JSON.stringify(e.content ?? "").slice(0, 200)
+        text: ((e.content as Record<string, unknown>)?.text as string ?? JSON.stringify(e.content ?? "")).slice(0, 200)
       })),
       visible_output: turn.visible_output || null,
       tool_activity: turn.tool_activity ?? [],
@@ -587,7 +599,7 @@ function instructionHash(text: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
-function deliveryToPrompt(bundle: DeliveryBundle): string {
+function deliveryToPrompt(bundle: DeliveryBundle, visibleEndpoints: Array<{ endpoint_id: string; name: string; actor_type: string; status: string }> = []): string {
   // Render destination context so the agent knows source/reply/thread without hard-coded IDs
   const trigger = bundle.events[0];
   const sourceEndpoint = trigger?.source_endpoint_id || `endpoint:${bundle.workspace_id}:user:operator`;
@@ -601,6 +613,13 @@ function deliveryToPrompt(bundle: DeliveryBundle): string {
     correlation_id: correlationId
   });
 
+  // Include visible endpoints in delivery context
+  let endpointsBlock = "";
+  if (visibleEndpoints.length > 0) {
+    const epLines = visibleEndpoints.map(ep => `  - ${ep.endpoint_id} (${ep.name}, ${ep.actor_type}, ${ep.status})`);
+    endpointsBlock = `\n[Visible Endpoints]\n${epLines.join("\n")}`;
+  }
+
   // Render delivered events
   const eventLines = bundle.events.map((event) => {
     const text = typeof event.content?.text === "string" ? event.content.text : JSON.stringify(event.content ?? {});
@@ -609,7 +628,7 @@ function deliveryToPrompt(bundle: DeliveryBundle): string {
   }).filter((t) => t.length > 0);
 
   const eventsBlock = eventLines.join("\n\n");
-  return `${contextBlock}\n\n${eventsBlock}`;
+  return `${contextBlock}${endpointsBlock}\n\n${eventsBlock}`;
 }
 
 function extractText(message: any): string {

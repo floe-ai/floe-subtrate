@@ -517,7 +517,7 @@ describe("Substrate model — explicit emit only", () => {
         });
         // Simulate the agent calling emit (via tool result)
         if (emitToolHandler) {
-          await emitToolHandler({
+          await (emitToolHandler as (args: any) => Promise<any>)({
             type: "message",
             destination: "endpoint:workspace:test:user:operator",
             thread_id: "thread-1",

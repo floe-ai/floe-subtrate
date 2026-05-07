@@ -28,6 +28,8 @@ Communication in Floe happens **only** by emitting events. Use the \`emit\` tool
 
 **Normal visible output is NOT automatically a message.** It is recorded as work log / runtime trace only. If you want another endpoint to see your response, you MUST use \`emit\`.
 
+**IMPORTANT: You MUST emit at least one message event before ending any turn where you received a message. Using other tools (list_endpoints, etc.) is NOT communication — only emit delivers your response to the source.**
+
 ### Response expectations
 When you emit, choose the appropriate response behaviour:
 - Emitting a reply and expecting further interaction → \`response_expected: true\` (creates a pending response expectation in the bus)
