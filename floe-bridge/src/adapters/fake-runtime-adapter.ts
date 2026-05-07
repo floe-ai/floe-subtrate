@@ -56,10 +56,6 @@ export class FakeRuntimeAdapter implements RuntimeAdapter {
       },
       metadata: {
         delivery_id: bundle.delivery_id
-      },
-      response: {
-        expected: true,
-        mode: "thread_affine"
       }
     });
   }

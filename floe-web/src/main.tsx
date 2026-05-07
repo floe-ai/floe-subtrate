@@ -171,6 +171,7 @@ function App() {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [channelOpen, setChannelOpen] = useState(false);
   const [channelMessage, setChannelMessage] = useState("");
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [expandedActivities, setExpandedActivities] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState("Connecting");
   const [error, setError] = useState<string | null>(null);
@@ -180,10 +181,13 @@ function App() {
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
   const agents = endpoints.filter((endpoint) => endpoint.actor_type === "agent");
-  const floeAgent = agents.find((endpoint) => endpoint.agent_id === "floe") ?? agents[0] ?? null;
+  const selectedAgent = agents.find((endpoint) => endpoint.agent_id === (selectedAgentId ?? "floe")) ?? agents[0] ?? null;
+  const floeAgent = selectedAgent; // alias for backward compat in existing rendering code
   const humans = endpoints.filter((endpoint) => endpoint.actor_type === "human");
   const humanEndpoint = selectedWorkspace ? humanEndpointId(selectedWorkspace.workspace_id) : "";
-  const threadId = selectedWorkspace ? `thread:${selectedWorkspace.workspace_id}:floe` : "";
+  const threadId = selectedWorkspace && selectedAgent
+    ? `thread:${selectedWorkspace.workspace_id}:${selectedAgent.agent_id ?? "floe"}`
+    : "";
   const selectedField = view.kind === "field" ? fields.find((field) => field.id === view.fieldId) ?? null : null;
   const selectedCanvasFieldId = selectedField?.nodes.find((node) => node.selected) ? fieldIdFromNode(selectedField.nodes.find((node) => node.selected)!) : null;
   const effectiveSelectedBlockId = selectedCanvasFieldId ?? selectedBlockId;
@@ -209,18 +213,22 @@ function App() {
     return events
       .filter((event) => {
         if (event.thread_id !== threadId) return false;
-        if (event.source_endpoint_id === humanEndpoint && event.type === "message") return true;
-        return event.metadata?.origin === "runtime_turn_output" && event.source_endpoint_id === floeAgent.endpoint_id;
+        if (event.type !== "message") return false;
+        // Show human→agent and agent→human messages in this thread
+        if (event.source_endpoint_id === humanEndpoint) return true;
+        if (event.source_endpoint_id === floeAgent.endpoint_id) return true;
+        return false;
       })
       .sort((left, right) => left.created_at.localeCompare(right.created_at));
   }, [events, floeAgent, humanEndpoint, threadId]);
 
   const streamingTurns = useMemo(() => {
     if (!floeAgent || !threadId) return {};
+    // A turn is finished when its emit produced a message event in the thread
     const finished = new Set<string>();
     for (const event of events) {
-      if (event.metadata?.origin === "runtime_turn_output" && event.source_endpoint_id === floeAgent.endpoint_id) {
-        const turnId = event.content?.data?.runtime_turn_id;
+      if (event.type === "message" && event.source_endpoint_id === floeAgent.endpoint_id && event.thread_id === threadId) {
+        const turnId = event.content?.data?.runtime_turn_id ?? event.metadata?.runtime_turn_id;
         if (typeof turnId === "string") finished.add(turnId);
       }
     }
@@ -1158,38 +1166,56 @@ function App() {
 
   function renderChannel() {
     if (!channelOpen) return null;
+    const agentName = selectedAgent?.name ?? selectedAgent?.agent_id ?? "Agent";
     return (
       <aside className="channel">
         <div className="channel-header">
-          <div className="channel-title">
-            <div className="channel-avatar"><Sparkles size={16} /></div>
-            <div>
-              <strong>Floe</strong>
-              <span>System</span>
+          {agents.length > 1 ? (
+            <div className="channel-title">
+              <div className="channel-avatar"><Bot size={16} /></div>
+              <select
+                className="agent-select"
+                value={selectedAgent?.agent_id ?? ""}
+                onChange={(event) => setSelectedAgentId(event.target.value)}
+              >
+                {agents.map((agent) => (
+                  <option key={agent.endpoint_id} value={agent.agent_id ?? ""}>
+                    {agent.name ?? agent.agent_id} {agent.status === "active" ? "●" : ""}
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
+          ) : (
+            <div className="channel-title">
+              <div className="channel-avatar"><Sparkles size={16} /></div>
+              <div>
+                <strong>{agentName}</strong>
+                <span>{selectedAgent?.status ?? "offline"}</span>
+              </div>
+            </div>
+          )}
           <button className="icon-button" onClick={() => setChannelOpen(false)} title="Close Channel">
             <X size={16} />
           </button>
         </div>
         <div className="channel-body">
-          {!floeAgent && (
+          {!selectedAgent && (
             <div className="callout warning">
               <AlertTriangle size={15} />
-              <span>The default Floe endpoint has not registered yet.</span>
+              <span>No agent endpoint has registered yet.</span>
             </div>
           )}
-          {!runtimeReady && floeAgent && (
+          {!runtimeReady && selectedAgent && (
             <div className="callout warning">
               <AlertTriangle size={15} />
-              <span>Select a runtime profile and model before messaging Floe.</span>
+              <span>Select a runtime profile and model before messaging {agentName}.</span>
             </div>
           )}
           {chatSegments.length === 0 ? (
             <div className="channel-empty">
               <MessageSquare size={22} />
-              <strong>Floe is available from this screen.</strong>
-              <span>Messages use the existing event substrate and the default Floe endpoint.</span>
+              <strong>{agentName} is available from this screen.</strong>
+              <span>Messages use the event substrate. Only explicit emitted events appear here.</span>
             </div>
           ) : (
             <>
@@ -1200,7 +1226,7 @@ function App() {
                 if (segment.kind === "streaming") {
                   return (
                     <div key={segment.turnId} className="channel-message floe streaming">
-                      <div className="message-meta">Floe</div>
+                      <div className="message-meta">{agentName}</div>
                       <div className="message-text">{renderMarkdown(segment.text)}</div>
                     </div>
                   );
@@ -1208,7 +1234,7 @@ function App() {
                 const isHuman = segment.message.source_endpoint_id === humanEndpoint;
                 return (
                   <div key={segment.message.event_id} className={`channel-message ${isHuman ? "human" : "floe"}`}>
-                    <div className="message-meta">{isHuman ? "You" : "Floe"} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
+                    <div className="message-meta">{isHuman ? "You" : agentName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
                     <div className="message-text">{isHuman ? segment.message.content.text : renderMarkdown(segment.message.content.text ?? "")}</div>
                   </div>
                 );
@@ -1218,7 +1244,7 @@ function App() {
           {floeIsActive && !chatSegments.some((s) => s.kind === "activity" && s.group.status === "working") && (
             <div className="thinking-strip">
               <Loader size={13} className="spin" />
-              <span>Floe is working…</span>
+              <span>{agentName} is working…</span>
             </div>
           )}
           <div ref={chatEndRef} />
@@ -1233,13 +1259,13 @@ function App() {
                 void sendFloeMessage();
               }
             }}
-            disabled={!floeAgent || !runtimeReady}
-            placeholder={!floeAgent ? "Waiting for Floe endpoint" : !runtimeReady ? "Configure runtime first" : "Message Floe"}
+            disabled={!selectedAgent || !runtimeReady}
+            placeholder={!selectedAgent ? "Waiting for agent endpoint" : !runtimeReady ? "Configure runtime first" : `Message ${agentName}`}
           />
           <button
             className="icon-button primary-icon"
             onClick={() => void sendFloeMessage()}
-            disabled={!floeAgent || !runtimeReady || !channelMessage.trim()}
+            disabled={!selectedAgent || !runtimeReady || !channelMessage.trim()}
             title="Send"
           >
             <Send size={15} />

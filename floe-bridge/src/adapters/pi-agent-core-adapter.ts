@@ -6,6 +6,8 @@ import type { AgentRuntimeConfig, BridgeAuthRuntime, RuntimeAuthResolved } from 
 import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
+import { buildSystemPrompt, renderDestinationContext, appendWorkLog } from "../runtime-core/index.js";
+import type { WorkLogEntry } from "../runtime-core/index.js";
 
 type AgentLike = {
   prompt(input: unknown): Promise<void>;
@@ -43,6 +45,8 @@ type RuntimeTurnContext = {
   last_visible_telemetry_text: string;
   finalized: boolean;
   completion: Deferred<void>;
+  tool_activity: Array<{ name: string; call_id?: string; summary?: string; is_error?: boolean }>;
+  emitted_events: Array<{ type: string; destination: string; text_preview: string; response_expected: boolean }>;
 };
 
 type SessionState = {
@@ -120,6 +124,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         content: [{ type: "text", text: prompt }]
       } as any);
       await this.awaitTurnCompletion(context, session, turn);
+      // Write work log after successful turn completion
+      this.writeWorkLog(context, bundle, turn, "completed");
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error("[bridge] pi runtime error", {
@@ -139,6 +145,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         turn.finalized = true;
         turn.completion.resolve();
       }
+      // Write work log for failed turn
+      this.writeWorkLog(context, bundle, turn, "error");
       // Invalidate session on request body errors (likely state corruption)
       if (errorMessage.includes("invalid_request_body") || errorMessage.includes("400")) {
         console.log("[bridge] pi session invalidated due to error", { endpoint_id: bundle.endpoint_id });
@@ -151,10 +159,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
   private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved, runtimeConfig?: AgentRuntimeConfig): Promise<SessionState> {
     const key = bundle.endpoint_id;
     const rawInstructions = runtimeConfig?.instructions?.trim() ?? "";
-    // Build the full system prompt: agent instructions + substrate guidance
-    const systemPrompt = rawInstructions
-      ? `${rawInstructions}\n\nUse emit only for explicit substrate operations (routing/progress/structured events). Normal replies are captured from your visible output.`
-      : "You are a Floe runtime agent. Respond naturally. Use emit only for explicit substrate operations (routing/progress/structured events).";
+    // Build the full system prompt: agent instructions + Floe substrate guidance
+    const systemPrompt = buildSystemPrompt(rawInstructions);
 
     const instructionsHash = instructionHash(systemPrompt);
 
@@ -199,9 +205,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     });
 
     const emitTool = this.createEmitTool(state);
+    const listEndpointsTool = this.createListEndpointsTool(state);
     state.agent = this.agentFactory({
       model,
-      tools: [emitTool],
+      tools: [emitTool, listEndpointsTool],
       systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
@@ -218,13 +225,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "emit",
       label: "Emit Floe Event",
-      description: "Emit a Floe substrate event for routing/progress/structured operations.",
+      description: "Publish a canonical event to the Floe event bus. Use for explicit communication, progress updates, structured routing, review requests, or response expectations. Your reply destination is available in the delivery context.",
       parameters: Type.Object({
         type: Type.String(),
-        destination: Type.Object({
-          kind: Type.String({ default: "endpoint" }),
-          endpoint_id: Type.Optional(Type.String())
-        }),
+        destination: Type.Optional(Type.String({ description: "Target endpoint_id. Omit to use reply_destination from delivery context." })),
         text: Type.String(),
         response_expected: Type.Optional(Type.Boolean()),
         correlation_id: Type.Optional(Type.String())
@@ -234,7 +238,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         const context = session.context;
         if (!turn || !context) throw new Error("No active runtime turn context is available for emit.");
 
-        const targetEndpoint = params?.destination?.endpoint_id ?? turn.reply_destination_endpoint_id;
+        const targetEndpoint = params?.destination ?? turn.reply_destination_endpoint_id;
         await context.bus.emit({
           type: String(params?.type ?? "message"),
           workspace_id: turn.workspace_id,
@@ -265,9 +269,48 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             delivery_attempt_id: turn.delivery_attempt_id
           }
         });
+        // Track emitted event for work log
+        turn.emitted_events.push({
+          type: String(params?.type ?? "message"),
+          destination: String(targetEndpoint),
+          text_preview: String(params?.text ?? "").slice(0, 120),
+          response_expected: !!params?.response_expected
+        });
         return {
           content: [{ type: "text", text: "emit accepted" }],
           details: { ok: true }
+        };
+      }
+    };
+  }
+
+  private createListEndpointsTool(session: SessionState): AgentTool {
+    // TODO: Future visibility should be: workspace scope + subscriptions + permissions
+    // For V0, workspace-scoped visibility is sufficient (no cross-workspace exposure).
+    return {
+      name: "list_endpoints",
+      label: "List Visible Endpoints",
+      description: "List endpoints visible/addressable by this endpoint in the current workspace. Returns endpoint_id, name, actor_type, and status. Use to discover valid emit destinations.",
+      parameters: Type.Object({}),
+      execute: async () => {
+        const turn = session.activeTurn;
+        const context = session.context;
+        if (!turn || !context) throw new Error("No active runtime turn context for list_endpoints.");
+
+        // Scoped to current workspace only — no cross-workspace endpoints exposed
+        const endpoints = await context.bus.listEndpoints(turn.workspace_id);
+        const visible = endpoints
+          .filter((ep: any) => ep.endpoint_id !== turn.endpoint_id)
+          .map((ep: any) => ({
+            endpoint_id: ep.endpoint_id,
+            name: ep.name,
+            actor_type: ep.actor_type,
+            status: ep.status
+          }));
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(visible, null, 2) }],
+          details: { ok: true, count: visible.length }
         };
       }
     };
@@ -311,6 +354,11 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             toolName: event.toolName,
             args: event.args
           });
+          // Track tool activity for work log
+          turn.tool_activity.push({
+            name: event.toolName,
+            call_id: event.toolCallId
+          });
         }
 
         if (event.type === "tool_execution_end") {
@@ -319,6 +367,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             toolName: event.toolName,
             isError: event.isError
           });
+          // Update tool activity with error status
+          const toolEntry = turn.tool_activity.find((t) => t.call_id === event.toolCallId);
+          if (toolEntry) toolEntry.is_error = event.isError;
         }
 
         if (event.type === "turn_end" && event.message?.role === "assistant") {
@@ -351,7 +402,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       visible_output: "",
       last_visible_telemetry_text: "",
       finalized: false,
-      completion: createDeferred<void>()
+      completion: createDeferred<void>(),
+      tool_activity: [],
+      emitted_events: []
     };
   }
 
@@ -384,81 +437,32 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     try {
       const output = turn.visible_output.trim() || extractText(assistantMessage)?.trim() || "";
       if (output.length > 0) {
-        console.log("[bridge] pi runtime_turn_output emitting", {
+        // Visible output is work-log/trace only — NOT auto-emitted as a message.
+        // Communication happens only through explicit emit calls by the agent.
+        // See docs/substrate-semantics.md §6.
+        console.log("[bridge] visible_output recorded as work log (not emitted)", {
           runtime_turn_id: turn.runtime_turn_id,
           delivery_id: turn.delivery_id,
           output_length: output.length
         });
-        await context.bus.emit({
-          type: "message",
-          workspace_id: turn.workspace_id,
-          source_endpoint_id: turn.endpoint_id,
-          destination: {
-            kind: "endpoint",
-            endpoint_id: turn.reply_destination_endpoint_id
-          },
-          thread_id: turn.thread_id,
-          correlation_id: turn.correlation_id,
-          content: {
-            text: output,
-            data: {
-              origin: "runtime_turn_output",
-              runtime_turn_id: turn.runtime_turn_id,
-              delivery_id: turn.delivery_id,
-              delivery_attempt_id: turn.delivery_attempt_id,
-              trigger_event_id: turn.trigger_event_id
-            }
-          },
-          response: {
-            expected: false
-          },
-          metadata: {
-            runtime: "pi-agent-core",
-            origin: "runtime_turn_output",
-            runtime_turn_id: turn.runtime_turn_id,
-            delivery_id: turn.delivery_id,
-            delivery_attempt_id: turn.delivery_attempt_id,
-            thread_id: turn.thread_id,
-            started_at: turn.started_at
-          }
+        await this.appendTelemetry(context, turn, "visible_output_worklog", {
+          text: output,
+          note: "Runtime visible output recorded as work log. Not emitted as message."
         });
       } else {
         const stopReason = assistantMessage?.stopReason ?? assistantMessage?.stop_reason ?? null;
         const errorMessage = assistantMessage?.errorMessage ?? null;
-        console.log("[bridge] pi runtime_no_visible_output", {
+        console.log("[bridge] no visible output", {
           runtime_turn_id: turn.runtime_turn_id,
           delivery_id: turn.delivery_id,
           had_assistant_message: !!assistantMessage,
-          assistant_content_types: assistantMessage && Array.isArray(assistantMessage.content)
-            ? assistantMessage.content.map((c: any) => c?.type)
-            : null,
-          stop_reason: stopReason,
-          error_message: errorMessage
+          stop_reason: stopReason
         });
         if (stopReason === "error") {
           await this.appendTelemetry(context, turn, "runtime_error", {
-            note: "Pi runtime returned an error assistant message.",
+            note: "Pi runtime returned an error.",
             stop_reason: stopReason,
-            error_message: errorMessage,
-            had_assistant_message: !!assistantMessage,
-            assistant_content_types: assistantMessage && Array.isArray(assistantMessage.content)
-              ? assistantMessage.content.map((c: any) => c?.type ?? typeof c)
-              : null,
-            assistant_content_items: assistantMessage && Array.isArray(assistantMessage.content)
-              ? assistantMessage.content.length
-              : null
-          });
-        } else {
-          await this.appendTelemetry(context, turn, "runtime_no_visible_output", {
-            note: "No assistant visible output was produced during this turn.",
-            had_assistant_message: !!assistantMessage,
-            assistant_content_types: assistantMessage && Array.isArray(assistantMessage.content)
-              ? assistantMessage.content.map((c: any) => c?.type ?? typeof c)
-              : null,
-            assistant_content_items: assistantMessage && Array.isArray(assistantMessage.content)
-              ? assistantMessage.content.length
-              : null,
-            stop_reason: stopReason
+            error_message: errorMessage
           });
         }
       }
@@ -503,6 +507,39 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         ...payload
       }
     });
+  }
+
+  private writeWorkLog(
+    context: RuntimeContext,
+    bundle: DeliveryBundle,
+    turn: RuntimeTurnContext,
+    outcome: string
+  ): void {
+    if (!context.workspace_locator || !context.agent_id) return;
+    const entry: WorkLogEntry = {
+      runtime_turn_id: turn.runtime_turn_id,
+      agent_id: context.agent_id,
+      started_at: turn.started_at,
+      ended_at: new Date().toISOString(),
+      trigger_type: bundle.events?.[0]?.type ?? "unknown",
+      thread_id: turn.thread_id,
+      delivery_id: turn.delivery_id,
+      delivered_events: (bundle.events ?? []).map(e => ({
+        event_id: e.event_id ?? "unknown",
+        type: e.type ?? "unknown",
+        source_endpoint_id: e.source_endpoint_id ?? "unknown",
+        text: typeof e.content === "string" ? e.content.slice(0, 200) : JSON.stringify(e.content ?? "").slice(0, 200)
+      })),
+      visible_output: turn.visible_output || null,
+      tool_activity: turn.tool_activity ?? [],
+      emitted_events: turn.emitted_events ?? [],
+      lifecycle_outcome: outcome
+    };
+    try {
+      appendWorkLog(context.workspace_locator, entry);
+    } catch (err) {
+      console.error("[bridge] work-log write failed", { agent_id: context.agent_id, error: String(err) });
+    }
   }
 }
 
@@ -551,19 +588,28 @@ function instructionHash(text: string): string {
 }
 
 function deliveryToPrompt(bundle: DeliveryBundle): string {
-  // Extract just the user-visible text from delivery events.
-  // Agent identity/instructions are handled via systemPrompt, not repeated here.
-  const texts = bundle.events
-    .filter((event) => event.type === "message")
-    .map((event) => (typeof event.content?.text === "string" ? event.content.text : ""))
-    .filter((t) => t.length > 0);
-  if (texts.length > 0) return texts.join("\n\n");
-  // Fallback for non-message event deliveries
-  const lines = bundle.events.map((event) => {
-    const text = typeof event.content?.text === "string" ? event.content.text : JSON.stringify(event.content ?? {});
-    return `[${event.type}] ${text}`;
+  // Render destination context so the agent knows source/reply/thread without hard-coded IDs
+  const trigger = bundle.events[0];
+  const sourceEndpoint = trigger?.source_endpoint_id || `endpoint:${bundle.workspace_id}:user:operator`;
+  const threadId = trigger?.thread_id || `thread:${bundle.workspace_id}:default`;
+  const correlationId = trigger?.correlation_id ?? null;
+
+  const contextBlock = renderDestinationContext({
+    source_endpoint_id: sourceEndpoint,
+    reply_destination_endpoint_id: sourceEndpoint,
+    thread_id: threadId,
+    correlation_id: correlationId
   });
-  return lines.join("\n");
+
+  // Render delivered events
+  const eventLines = bundle.events.map((event) => {
+    const text = typeof event.content?.text === "string" ? event.content.text : JSON.stringify(event.content ?? {});
+    if (event.type === "message") return text;
+    return `[${event.type}] ${text}`;
+  }).filter((t) => t.length > 0);
+
+  const eventsBlock = eventLines.join("\n\n");
+  return `${contextBlock}\n\n${eventsBlock}`;
 }
 
 function extractText(message: any): string {

@@ -88,12 +88,20 @@ scope:
 
 You are Floe, the default agent for this project.
 
-Use emit to publish messages, progress, requests, and other events into Floe.
+You are a runtime-backed endpoint. Your visible output is work log only — it is
+not automatically delivered to anyone.
+
+Always communicate by emitting events. When you receive a message and want to
+reply, use the emit tool with type "message" addressed to the reply destination
+from your delivery context.
+
+Use emit to publish messages, progress, review requests, status updates, and
+other events into Floe.
 
 If you need a future response before more work can continue, emit an event with
 response.expected true and then end your turn normally.
 
-If your work is complete and you are not waiting for anything, send your final
+If your work is complete and you are not waiting for anything, emit your final
 response and end the turn normally.
 `, "utf8");
 
@@ -136,14 +144,29 @@ export function loadProject(workspacePath: string): ProjectLoadResult {
   const agentEntries = Array.isArray(projectConfig.agents) ? projectConfig.agents : [{ id: "floe", file: "agents/floe.md" }];
   const agents: AgentConfig[] = [];
   for (const entry of agentEntries) {
-    const file = typeof entry.file === "string" ? entry.file : `agents/${entry.id ?? "floe"}.md`;
-    const path = join(floeDir, file);
-    if (!existsSync(path)) {
-      errors.push(`Agent file is missing: ${file}`);
-      continue;
+    const file = typeof entry.file === "string"
+      ? entry.file
+      : typeof entry.path === "string"
+        ? entry.path
+        : `agents/${entry.id ?? "floe"}.md`;
+    let resolvedPath = join(floeDir, file);
+    // Support directory-based agents: agents/<name>/agent.md
+    if (!existsSync(resolvedPath) && !file.endsWith(".md")) {
+      const dirAgent = join(floeDir, file, "agent.md");
+      if (existsSync(dirAgent)) resolvedPath = dirAgent;
     }
-    const parsed = parseAgentFile(readFileSync(path, "utf8"));
-    const agentId = String(parsed.frontmatter.agent_id ?? entry.id ?? basename(file, ".md"));
+    if (!existsSync(resolvedPath)) {
+      // Try directory fallback: agents/<id>/agent.md
+      const dirFallback = join(floeDir, "agents", entry.id ?? "floe", "agent.md");
+      if (existsSync(dirFallback)) {
+        resolvedPath = dirFallback;
+      } else {
+        errors.push(`Agent file is missing: ${file}`);
+        continue;
+      }
+    }
+    const parsed = parseAgentFile(readFileSync(resolvedPath, "utf8"));
+    const agentId = String(parsed.frontmatter.agent_id ?? entry.id ?? basename(resolvedPath, ".md"));
     if ("endpoint_id" in parsed.frontmatter) {
       warnings.push(`${file} contains endpoint_id; canonical project files should omit workspace-specific endpoint ids`);
     }

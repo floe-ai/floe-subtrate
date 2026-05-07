@@ -16,6 +16,8 @@ type Timer = ReturnType<typeof setInterval>;
 type EndpointEntry = {
   config: AgentRuntimeConfig;
   instructions: string;
+  workspace_locator?: string;
+  agent_id?: string;
 };
 
 export class BridgeDaemon {
@@ -172,7 +174,7 @@ export class BridgeDaemon {
       for (const agent of project.agents) {
         const endpointId = agentEndpointId(workspace.workspace_id, agent.agent_id);
         const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
-        this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body });
+        this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body, workspace_locator: locator, agent_id: agent.agent_id });
         const resolvedAuth = await this.resolveAuthProfile(workspace.workspace_id, endpointId, runtimeConfig);
         await this.bus.registerEndpoint({
           endpoint_id: endpointId,
@@ -268,7 +270,7 @@ export class BridgeDaemon {
     for (const agent of project.agents) {
       const endpointId = agentEndpointId(workspaceId, agent.agent_id);
       const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
-      this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body });
+      this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body, workspace_locator: locator, agent_id: agent.agent_id });
       const resolvedAuth = await this.resolveAuthProfile(workspaceId, endpointId, runtimeConfig);
       await this.bus.registerEndpoint({
         endpoint_id: endpointId,
@@ -351,7 +353,9 @@ export class BridgeDaemon {
       console.log("[bridge] delivery injected to runtime", { delivery_id: delivery.delivery_id, adapter: this.adapter.name });
       await this.adapter.handleBundle({
         bridge_id: this.bridgeId,
-        bus: this.bus
+        bus: this.bus,
+        workspace_locator: endpointEntry?.workspace_locator,
+        agent_id: endpointEntry?.agent_id
       }, delivery, effectiveRuntime);
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
       console.log("[bridge] delivery acknowledged", { delivery_id: delivery.delivery_id });

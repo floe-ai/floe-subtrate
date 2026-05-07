@@ -7,7 +7,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "vitest": "^2.1.0"
+    "vite": "8.0.10",
+    "vitest": "^4.1.5"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

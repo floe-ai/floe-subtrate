@@ -6,3 +6,7 @@ coverage/
 .floe-runtime/
 tmp-playwright-*/
 .playwright-mcp/
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json

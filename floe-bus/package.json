@@ -17,11 +17,12 @@
     "@fastify/websocket": "^11.0.0",
     "@mariozechner/pi-ai": "*",
     "fastify": "^5.0.0",
+    "vite": "8.0.10",
     "yaml": "^2.6.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.5"
   }
 }

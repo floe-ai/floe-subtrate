@@ -163,12 +163,12 @@ describe("Floe local vertical slice", () => {
 
     await waitFor(async () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
-      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "waiting");
-    }, "pending response status");
+      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "idle");
+    }, "endpoint returns to idle after normal reply");
 
+    // Normal replies do not create pending responses
     const pending = await get<{ pending: any[] }>(`/v1/pending-responses?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
-    expect(pending.pending.length).toBeGreaterThan(0);
-    expect(pending.pending.some((item) => item.waiting_endpoint_id === agentEndpointId)).toBe(true);
+    expect(pending.pending.filter((item) => item.waiting_endpoint_id === agentEndpointId)).toHaveLength(0);
 
     const marker = join(projectPath, "delete-marker.txt");
     writeFileSync(marker, "cleanup proof", "utf8");

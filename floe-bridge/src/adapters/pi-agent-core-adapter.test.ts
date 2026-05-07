@@ -48,7 +48,7 @@ class FakeAgent {
 }
 
 describe("PiAgentCoreAdapter", () => {
-  it("attributes telemetry and runtime_turn_output messages to the correct delivery context", async () => {
+  it("records visible output as work-log telemetry without auto-emitting messages", async () => {
     const fakeAgent = new FakeAgent();
     const telemetryCalls: any[] = [];
     const emittedEvents: any[] = [];
@@ -123,32 +123,25 @@ describe("PiAgentCoreAdapter", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
-    const telemetryDel1 = telemetryCalls.filter((item) => item.delivery_id === "del-1");
-    const telemetryDel2 = telemetryCalls.filter((item) => item.delivery_id === "del-2");
-    const visibleDel1 = telemetryDel1.find((item) => item.kind === "visible_output");
-    const visibleDel2 = telemetryDel2.find((item) => item.kind === "visible_output");
-    const usageDel1 = telemetryDel1.find((item) => item.kind === "usage");
-    const usageDel2 = telemetryDel2.find((item) => item.kind === "usage");
+    // Visible output goes to telemetry as work-log, NOT emitted as messages
+    const worklogDel1 = telemetryCalls.filter((item) => item.delivery_id === "del-1" && item.kind === "visible_output_worklog");
+    const worklogDel2 = telemetryCalls.filter((item) => item.delivery_id === "del-2" && item.kind === "visible_output_worklog");
+    expect(worklogDel1).toHaveLength(1);
+    expect(worklogDel1[0].payload?.text).toContain("First deterministic reply.");
+    expect(worklogDel2).toHaveLength(1);
+    expect(worklogDel2[0].payload?.text).toContain("Second deterministic reply.");
 
-    expect(visibleDel1?.payload?.text).toContain("First deterministic reply.");
-    expect(visibleDel2?.payload?.text).toContain("Second deterministic reply.");
-    expect(visibleDel1?.payload?.text).not.toContain("Second deterministic reply.");
-    expect(visibleDel2?.payload?.text).not.toContain("First deterministic reply.");
+    // No auto-emitted runtime_turn_output messages
+    const runtimeOutputEvents = emittedEvents.filter((event) => event.metadata?.origin === "runtime_turn_output");
+    expect(runtimeOutputEvents).toHaveLength(0);
+
+    // Usage telemetry still recorded
+    const usageDel1 = telemetryCalls.find((item) => item.delivery_id === "del-1" && item.kind === "usage");
+    const usageDel2 = telemetryCalls.find((item) => item.delivery_id === "del-2" && item.kind === "usage");
     expect(usageDel1?.payload?.model).toBe("mock-model");
     expect(usageDel2?.payload?.provider).toBe("mock-provider");
-    expect(usageDel1?.payload?.runtime_turn_id).toBeTypeOf("string");
-    expect(usageDel2?.payload?.delivery_attempt_id).toBeTypeOf("string");
     expect(usageDel1?.payload?.thread_id).toBe("thread-1");
     expect(usageDel2?.payload?.thread_id).toBe("thread-2");
-
-    const runtimeOutputEvents = emittedEvents.filter((event) => event.metadata?.origin === "runtime_turn_output");
-    expect(runtimeOutputEvents).toHaveLength(2);
-    expect(runtimeOutputEvents[0].metadata.delivery_id).toBe("del-1");
-    expect(runtimeOutputEvents[0].thread_id).toBe("thread-1");
-    expect(runtimeOutputEvents[0].content.text).toContain("First deterministic reply.");
-    expect(runtimeOutputEvents[1].metadata.delivery_id).toBe("del-2");
-    expect(runtimeOutputEvents[1].thread_id).toBe("thread-2");
-    expect(runtimeOutputEvents[1].content.text).toContain("Second deterministic reply.");
   });
 });
 
@@ -197,8 +190,8 @@ describe("PiAgentCoreAdapter – output classification", () => {
     };
   }
 
-  it("does not persist user/input echo as runtime_turn_output — only assistant message is captured", async () => {
-    const deliveryBundleText = "Floe delivery bundle del_abc123\n- [message] from endpoint:workspace:test:user:operator thread=thread-1: hi, tell me about yourself\nRespond naturally to the user message.";
+  it("does not persist input echo as runtime_turn_output — only endpoint visible output is captured", async () => {
+    const deliveryBundleText = "Floe delivery bundle del_abc123\n- [message] from endpoint:workspace:test:user:operator thread=thread-1: hi, tell me about yourself\nRespond naturally to the delivered events.";
     const assistantReply = "Hello! I am Floe, a durable multi-actor substrate agent.";
 
     // Simulate Pi emitting both a user-role echo and an assistant reply
@@ -236,19 +229,19 @@ describe("PiAgentCoreAdapter – output classification", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
+    // No auto-emitted messages (visible output is work-log only)
     const runtimeOutput = emittedEvents.filter((e) => e.metadata?.origin === "runtime_turn_output");
-    expect(runtimeOutput).toHaveLength(1);
-    expect(runtimeOutput[0].content.text).toBe(assistantReply);
-    expect(runtimeOutput[0].content.text).not.toContain("Floe delivery bundle");
-    expect(runtimeOutput[0].content.text).not.toContain("del_abc123");
+    expect(runtimeOutput).toHaveLength(0);
 
-    // No runtime_no_visible_output telemetry since assistant output was found
-    const noOutputTelemetry = telemetryCalls.filter((t) => t.kind === "runtime_no_visible_output");
-    expect(noOutputTelemetry).toHaveLength(0);
+    // Visible output captured in telemetry as work log
+    const worklog = telemetryCalls.filter((t) => t.kind === "visible_output_worklog");
+    expect(worklog).toHaveLength(1);
+    expect(worklog[0].payload.text).toBe(assistantReply);
+    expect(worklog[0].payload.text).not.toContain("Floe delivery bundle");
   });
 
-  it("emits runtime_no_visible_output telemetry when Pi produces no assistant output", async () => {
-    // Simulate Pi that only echoes the user message, produces no assistant reply
+  it("records no work-log when Pi produces no visible output", async () => {
+    // Simulate Pi that only echoes the input events, produces no visible endpoint output
     const fakeAgent = {
       listeners: [] as Array<(event: any) => void | Promise<void>>,
       subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
@@ -274,11 +267,12 @@ describe("PiAgentCoreAdapter – output classification", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
+    // No emitted messages and no work-log (no visible output produced)
     const runtimeOutput = emittedEvents.filter((e) => e.metadata?.origin === "runtime_turn_output");
     expect(runtimeOutput).toHaveLength(0);
 
-    const noOutputTelemetry = telemetryCalls.filter((t) => t.kind === "runtime_no_visible_output");
-    expect(noOutputTelemetry).toHaveLength(1);
+    const worklog = telemetryCalls.filter((t) => t.kind === "visible_output_worklog");
+    expect(worklog).toHaveLength(0);
   });
 
   it("uses agent instructions as system prompt and recreates session when instructions change", async () => {
@@ -371,6 +365,81 @@ describe("PiAgentCoreAdapter – output classification", () => {
   });
 });
 
+describe("Substrate guidance", () => {
+  it("shared guidance is identity-neutral and does not hard-code 'You are Floe'", async () => {
+    const capturedSystemPrompts: string[] = [];
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input) => {
+          capturedSystemPrompts.push(input.systemPrompt);
+          return fakeAgent;
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {}
+      }
+    } as any;
+
+    // Call with no agent instructions — shared guidance only
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-guidance", "thread-1", "hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(capturedSystemPrompts).toHaveLength(1);
+    const guidance = capturedSystemPrompts[0];
+    // Shared guidance must NOT contain "You are Floe"
+    expect(guidance).not.toContain("You are Floe");
+    // But must contain identity-neutral endpoint framing
+    expect(guidance).toContain("runtime-backed endpoint in Floe");
+    // Must teach explicit emit as the only communication path
+    expect(guidance).toContain("only");
+    expect(guidance).toContain("emit");
+    expect(guidance).toContain("NOT automatically a message");
+  });
+});
+
 function makeDelivery(deliveryId: string, threadId: string, text: string): DeliveryBundle {
   return {
     delivery_id: deliveryId,
@@ -403,3 +472,353 @@ function makeDelivery(deliveryId: string, threadId: string, text: string): Deliv
     ]
   };
 }
+
+describe("Substrate model — explicit emit only", () => {
+  function makeTestAdapterWithEmit(fakeAgent: any) {
+    return new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      { agentFactory: () => fakeAgent, turnFinalizeTimeoutMs: 1_000 }
+    );
+  }
+
+  it("agent using emit tool produces a canonical message event on the bus", async () => {
+    let emitToolHandler: ((args: any) => Promise<any>) | null = null;
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        // Simulate tool registration — capture emit handler
+        for (const l of this.listeners) await l({
+          type: "tool_call_start",
+          toolCallId: "tc_1",
+          toolName: "emit"
+        });
+        // Simulate the agent calling emit (via tool result)
+        if (emitToolHandler) {
+          await emitToolHandler({
+            type: "message",
+            destination: "endpoint:workspace:test:user:operator",
+            thread_id: "thread-1",
+            content: { text: "Hello from Floe!" },
+            response_expected: false
+          });
+        }
+        for (const l of this.listeners) await l({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "I emitted my response." }] }
+        });
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: { input: 5, output: 3, totalTokens: 8 }, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const telemetryCalls: any[] = [];
+    const emittedEvents: any[] = [];
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
+        async emit(event: any) {
+          emittedEvents.push(event);
+          // Capture the emit tool handler when the adapter registers it
+        }
+      }
+    } as any;
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-emit-1", "thread-1", "say hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    // Visible output ("I emitted my response.") should be in work-log telemetry only
+    const worklog = telemetryCalls.filter((t) => t.kind === "visible_output_worklog");
+    expect(worklog).toHaveLength(1);
+    expect(worklog[0].payload.text).toContain("I emitted my response.");
+
+    // No auto-emitted runtime_turn_output
+    const autoEmits = emittedEvents.filter((e) => e.metadata?.origin === "runtime_turn_output");
+    expect(autoEmits).toHaveLength(0);
+  });
+
+  it("delivery context includes source, destination, thread, and reply info", async () => {
+    let capturedPrompt = "";
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt(message: any) {
+        capturedPrompt = message?.content?.[0]?.text ?? "";
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {}
+      }
+    } as any;
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-ctx-1", "thread-ctx-1", "hello context test"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    // Delivery context should be rendered in the prompt
+    expect(capturedPrompt).toContain("[Delivery Context]");
+    expect(capturedPrompt).toContain("endpoint:workspace:test:user:operator"); // source + reply
+    expect(capturedPrompt).toContain("thread-ctx-1"); // thread
+    expect(capturedPrompt).toContain("reply_destination");
+  });
+
+  it("turn end does not produce any message event", async () => {
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        // Only turn_end, no visible output, no emit
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const emittedEvents: any[] = [];
+    const telemetryCalls: any[] = [];
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
+        async emit(event: any) { emittedEvents.push(event); }
+      }
+    } as any;
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-turnend", "thread-turnend", "trigger"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    // Turn end is lifecycle only — no messages emitted
+    expect(emittedEvents).toHaveLength(0);
+    // No work-log visible output either (nothing was said)
+    const worklog = telemetryCalls.filter((t) => t.kind === "visible_output_worklog");
+    expect(worklog).toHaveLength(0);
+  });
+
+  it("no global endpoint directory is exposed — list_endpoints requires bus context", async () => {
+    let registeredTools: string[] = [];
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input) => {
+          registeredTools = input.tools?.map((t: any) => t.name ?? t.tool?.name) ?? [];
+          return fakeAgent;
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        // list_endpoints returns workspace-scoped results only
+        async listEndpoints(workspaceId: string) {
+          return [
+            { endpoint_id: "endpoint:workspace:test:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: "endpoint:workspace:test:user:operator", name: "Operator", actor_type: "human", status: "active" }
+          ];
+        }
+      }
+    } as any;
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-tools", "thread-tools", "list my tools"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    // list_endpoints tool should be registered
+    expect(registeredTools).toContain("list_endpoints");
+    // emit tool should be registered
+    expect(registeredTools).toContain("emit");
+  });
+
+  it("list_endpoints is workspace-scoped and excludes cross-workspace endpoints", async () => {
+    let listEndpointsResult: any = null;
+
+    // Fake agent that calls list_endpoints tool
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      registeredTools: [] as any[],
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        // Call list_endpoints tool
+        const tool = this.registeredTools.find((t: any) => t.name === "list_endpoints");
+        if (tool) {
+          listEndpointsResult = await tool.execute("tc_list", {});
+        }
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input) => {
+          fakeAgent.registeredTools = input.tools ?? [];
+          return fakeAgent;
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const workspaceAEndpoints = [
+      { endpoint_id: "endpoint:ws-a:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
+      { endpoint_id: "endpoint:ws-a:user:operator", name: "Operator", actor_type: "human", status: "active" }
+    ];
+    const workspaceBEndpoints = [
+      { endpoint_id: "endpoint:ws-b:agent:reviewer", name: "Reviewer", actor_type: "agent", status: "idle" }
+    ];
+
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async listEndpoints(workspaceId: string) {
+          if (workspaceId === "workspace:a") return workspaceAEndpoints;
+          if (workspaceId === "workspace:b") return workspaceBEndpoints;
+          return [];
+        }
+      }
+    } as any;
+
+    // Agent in workspace A calls list_endpoints
+    const deliveryInA: DeliveryBundle = {
+      delivery_id: "del-scope-a",
+      endpoint_id: "endpoint:ws-a:agent:floe",
+      workspace_id: "workspace:a",
+      trigger_event_id: "evt:scope-a",
+      delivered_at: new Date().toISOString(),
+      events: [{
+        event_id: "evt:scope-a",
+        type: "message",
+        workspace_id: "workspace:a",
+        source_endpoint_id: "endpoint:ws-a:user:operator",
+        thread_id: "thread-scope",
+        correlation_id: null,
+        destination_json: { kind: "endpoint", endpoint_id: "endpoint:ws-a:agent:floe" },
+        content: { text: "list endpoints", data: {} },
+        response: { expected: false },
+        metadata: {},
+        created_at: new Date().toISOString()
+      }]
+    };
+
+    await adapter.handleBundle(context, deliveryInA, { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" });
+
+    expect(listEndpointsResult).not.toBeNull();
+    const parsed = JSON.parse(listEndpointsResult.content[0].text);
+
+    // Should only see workspace A endpoints (excluding self)
+    expect(parsed).toHaveLength(1); // only operator (self excluded)
+    expect(parsed[0].endpoint_id).toBe("endpoint:ws-a:user:operator");
+
+    // Should NOT see workspace B endpoints
+    const wsB = parsed.filter((ep: any) => ep.endpoint_id.includes("ws-b"));
+    expect(wsB).toHaveLength(0);
+  });
+});
