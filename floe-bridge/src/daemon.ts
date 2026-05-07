@@ -163,12 +163,31 @@ export class BridgeDaemon {
         workspace.active_config_hash.length > 0 &&
         workspace.active_config_hash !== project.config_hash
       ) {
-        await this.reportOnce(workspace.workspace_id, "config_drift", null, project.config_hash, {
-          ...project.validation,
+        // Auto-reimport config when drift is detected — the disk state is authoritative
+        console.log("[bridge] config drift detected, auto-reimporting", {
+          workspace_id: workspace.workspace_id,
           observed_config_hash: project.config_hash,
           active_config_hash: workspace.active_config_hash
         });
-        return;
+        try {
+          await this.bus.importConfigSnapshot(workspace.workspace_id, {
+            config_hash: project.config_hash,
+            agents: project.agents.map(a => ({
+              agent_id: a.agent_id,
+              label: a.name,
+              body: a.body,
+              runtime: a.frontmatter?.runtime ?? { engine: "pi" }
+            }))
+          });
+        } catch (importErr) {
+          console.error("[bridge] auto-reimport failed", importErr);
+          await this.reportOnce(workspace.workspace_id, "config_drift", null, project.config_hash, {
+            ...project.validation,
+            observed_config_hash: project.config_hash,
+            active_config_hash: workspace.active_config_hash
+          });
+          return;
+        }
       }
 
       for (const agent of project.agents) {

@@ -114,10 +114,14 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     let visibleEndpoints: Array<{ endpoint_id: string; name: string; actor_type: string; status: string }> = [];
     try {
       const eps = await context.bus.listEndpoints(bundle.workspace_id);
+      console.log("[bridge] visible endpoints fetched", { count: eps.length, workspace_id: bundle.workspace_id, self: bundle.endpoint_id });
       visibleEndpoints = eps
         .filter((ep: any) => ep.endpoint_id !== bundle.endpoint_id)
         .map((ep: any) => ({ endpoint_id: ep.endpoint_id, name: ep.name, actor_type: ep.actor_type, status: ep.status }));
-    } catch { /* endpoint discovery is optional */ }
+      console.log("[bridge] visible endpoints after filter", { count: visibleEndpoints.length });
+    } catch (epErr) {
+      console.error("[bridge] failed to fetch visible endpoints", epErr);
+    }
 
     const prompt = deliveryToPrompt(bundle, visibleEndpoints);
     console.log("[bridge] pi prompt injected", {

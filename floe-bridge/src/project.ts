@@ -251,6 +251,8 @@ function hashFloeDir(floeDir: string): string {
   const files = listFiles(floeDir).filter((file) => {
     const rel = relative(floeDir, file).replace(/\\/g, "/");
     if (rel.startsWith("state/") && rel !== "state/README.md" && rel !== "state/.gitignore") return false;
+    // Exclude worklogs from config hash — they are runtime artefacts, not config
+    if (rel.includes("/worklogs/")) return false;
     return true;
   });
   for (const file of files) {
