@@ -120,6 +120,7 @@ type RuntimeActivity = {
   time: string;
   files_touched?: string[];
   duration_ms?: number;
+  toolCallId?: string;
 };
 
 type ActivityGroup = {
@@ -281,10 +282,12 @@ function App() {
     function telemetryToActivity(record: TelemetryRecord): RuntimeActivity {
       let filesTouched: string[] | undefined;
       let durationMs: number | undefined;
+      let toolCallId: string | undefined;
       try {
         const payload = JSON.parse(record.payload_json) as Record<string, unknown>;
         if (Array.isArray(payload.files_touched)) filesTouched = payload.files_touched as string[];
         if (typeof payload.duration_ms === "number") durationMs = payload.duration_ms;
+        if (typeof payload.toolCallId === "string") toolCallId = payload.toolCallId;
       } catch {}
       return {
         id: record.telemetry_id,
@@ -293,7 +296,25 @@ function App() {
         time: new Date(record.created_at).toLocaleTimeString(),
         files_touched: filesTouched,
         duration_ms: durationMs,
+        toolCallId,
       };
+    }
+
+    // Merge tool activity by toolCallId: when AfterToolUse arrives for an existing
+    // BeforeToolUse, replace the "Running" row with the resolved row (Completed/Failed).
+    // This ensures completed tool calls show as a single final-state row.
+    function mergeActivity(list: RuntimeActivity[], item: RuntimeActivity): void {
+      if (item.toolCallId && (item.kind === "Completed" || item.kind === "Failed")) {
+        const startIdx = list.findIndex(
+          (existing) => existing.toolCallId === item.toolCallId && existing.kind === "Running"
+        );
+        if (startIdx !== -1) {
+          // Replace the Running row with the resolved one, preserving position
+          list[startIdx] = item;
+          return;
+        }
+      }
+      list.push(item);
     }
 
     // Semantic grouping: attach tool/runtime activity TO the agent message it precedes.
@@ -310,7 +331,7 @@ function App() {
       while (telemetryIndex < agentTelemetry.length && agentTelemetry[telemetryIndex].created_at <= message.created_at) {
         const record = agentTelemetry[telemetryIndex];
         if (!excludedKinds.has(record.kind)) {
-          pendingActivity.push(telemetryToActivity(record));
+          mergeActivity(pendingActivity, telemetryToActivity(record));
         }
         telemetryIndex++;
       }
@@ -342,15 +363,15 @@ function App() {
     while (telemetryIndex < agentTelemetry.length) {
       const record = agentTelemetry[telemetryIndex];
       if (!excludedKinds.has(record.kind)) {
-        pendingActivity.push(telemetryToActivity(record));
+        mergeActivity(pendingActivity, telemetryToActivity(record));
       }
       telemetryIndex++;
     }
     // Only show trailing activity if the agent is actively working OR if there
-    // are actual tool starts (BeforeToolUse). Trailing AfterToolUse-only items
-    // are just completion echoes of the tool call that produced the last message.
-    const hasToolStarts = pendingActivity.some((item) => item.kind === "Running");
-    if (pendingActivity.length > 0 && (floeIsActive || hasToolStarts)) {
+    // are genuinely unresolved items. After merging, "Running" items only exist
+    // for tool calls that haven't completed yet.
+    const hasUnresolved = pendingActivity.some((item) => item.kind === "Running");
+    if (pendingActivity.length > 0 && (floeIsActive || hasUnresolved)) {
       segments.push({
         kind: "activity",
         group: {
@@ -1206,8 +1227,10 @@ function App() {
         {isExpanded && (
           <div className="activity-group-details">
             {group.items.map((item) => (
-              <div key={item.id} className="activity-detail-item">
-                <span className="activity-detail-kind">{item.kind}</span>
+              <div key={item.id} className={`activity-detail-item ${item.kind === "Failed" ? "failed" : ""}`}>
+                <span className="activity-detail-icon">
+                  {item.kind === "Completed" ? "✓" : item.kind === "Failed" ? "✗" : item.kind === "Running" ? "⋯" : "·"}
+                </span>
                 <span className="activity-detail-summary">{item.summary}</span>
                 {item.duration_ms != null && (
                   <span className="activity-detail-duration">{item.duration_ms}ms</span>
@@ -1554,19 +1577,21 @@ function runtimeActivityLabel(kind: string): string {
 
 /** Human-friendly label for a completed activity group */
 function activityGroupLabel(items: RuntimeActivity[]): string {
-  const toolStarts = items.filter((item) => item.kind === "Running");
-  if (toolStarts.length === 0) return `Activity · ${items.length} step${items.length === 1 ? "" : "s"}`;
-  // Build concise summary of what happened in this processing cycle
-  const toolNames = toolStarts.map((item) => {
+  // After merging, items are resolved (Completed/Failed). Extract tool names from all items.
+  const toolItems = items.filter((item) => item.kind === "Completed" || item.kind === "Running" || item.kind === "Failed");
+  if (toolItems.length === 0) return `Activity · ${items.length} step${items.length === 1 ? "" : "s"}`;
+  const toolNames = toolItems.map((item) => {
     const name = item.summary || "tool";
-    // Rename "emit" to a human-friendly label
-    if (name === "emit" || name.startsWith("emit ")) return "sent message";
+    if (name === "emit" || name.startsWith("emit ") || name === "sent message" || name.startsWith("sent message")) return "sent message";
     return name;
   });
   const uniqueTools = [...new Set(toolNames)];
-  if (uniqueTools.length === 1) return `Activity · ${uniqueTools[0]}`;
-  if (uniqueTools.length <= 3) return `Activity · ${uniqueTools.join(" · ")}`;
-  return `Activity · ${uniqueTools.length} tools`;
+  // Append "completed" when all items are resolved (no Running)
+  const allResolved = items.every((item) => item.kind !== "Running");
+  const suffix = allResolved ? " · completed" : "";
+  if (uniqueTools.length === 1) return `Activity · ${uniqueTools[0]}${suffix}`;
+  if (uniqueTools.length <= 3) return `Activity · ${uniqueTools.join(" · ")}${suffix}`;
+  return `Activity · ${uniqueTools.length} tools${suffix}`;
 }
 
 /** Live working label showing the latest action */

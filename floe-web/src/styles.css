@@ -1000,18 +1000,26 @@ code {
 
 .activity-detail-item {
   display: grid;
-  grid-template-columns: 90px minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
   padding: 4px 0;
   font-size: 11px;
 }
 
-.activity-detail-kind {
+.activity-detail-item.failed {
+  color: var(--system-warning);
+}
+
+.activity-detail-icon {
   color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 12px;
+  text-align: center;
+  line-height: 1;
+}
+
+.activity-detail-item.failed .activity-detail-icon {
+  color: var(--system-warning);
 }
 
 .activity-detail-summary {
