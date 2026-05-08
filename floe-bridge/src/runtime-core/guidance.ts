@@ -49,6 +49,15 @@ Use provided destination context. Do not invent endpoint IDs. If you need to add
 
 ### Work log
 Everything you produce during a processing cycle (visible output, tool calls, file reads, code edits, reasoning) is recorded in your work log. Only explicitly emitted events are communication.
+
+### Workspace tools
+You have access to workspace tools for inspecting and understanding the project:
+- \`read\` — read file contents (with optional line range)
+- \`ls\` — list directory contents
+- \`grep\` — search file contents by pattern
+- \`find\` — find files by name/glob pattern
+
+All workspace tool paths are relative to the workspace root. Tool output is work log material — use \`emit\` to communicate results to other endpoints.
 `.trim();
 
 /**

@@ -118,6 +118,8 @@ type RuntimeActivity = {
   kind: string;
   summary: string;
   time: string;
+  files_touched?: string[];
+  duration_ms?: number;
 };
 
 type ActivityGroup = {
@@ -282,17 +284,30 @@ function App() {
     let telemetryIndex = 0;
     let pendingActivity: RuntimeActivity[] = [];
 
+    function telemetryToActivity(record: TelemetryRecord): RuntimeActivity {
+      let filesTouched: string[] | undefined;
+      let durationMs: number | undefined;
+      try {
+        const payload = JSON.parse(record.payload_json) as Record<string, unknown>;
+        if (Array.isArray(payload.files_touched)) filesTouched = payload.files_touched as string[];
+        if (typeof payload.duration_ms === "number") durationMs = payload.duration_ms;
+      } catch {}
+      return {
+        id: record.telemetry_id,
+        kind: runtimeActivityLabel(record.kind),
+        summary: summarizeTelemetry(record),
+        time: new Date(record.created_at).toLocaleTimeString(),
+        files_touched: filesTouched,
+        duration_ms: durationMs,
+      };
+    }
+
     for (const message of messages) {
       // Collect telemetry before this message
       while (telemetryIndex < agentTelemetry.length && agentTelemetry[telemetryIndex].created_at < message.created_at) {
         const record = agentTelemetry[telemetryIndex];
         if (!excludedKinds.has(record.kind)) {
-          pendingActivity.push({
-            id: record.telemetry_id,
-            kind: runtimeActivityLabel(record.kind),
-            summary: summarizeTelemetry(record),
-            time: new Date(record.created_at).toLocaleTimeString()
-          });
+          pendingActivity.push(telemetryToActivity(record));
         }
         telemetryIndex++;
       }
@@ -317,12 +332,7 @@ function App() {
     while (telemetryIndex < agentTelemetry.length) {
       const record = agentTelemetry[telemetryIndex];
       if (!excludedKinds.has(record.kind)) {
-        pendingActivity.push({
-          id: record.telemetry_id,
-          kind: runtimeActivityLabel(record.kind),
-          summary: summarizeTelemetry(record),
-          time: new Date(record.created_at).toLocaleTimeString()
-        });
+        pendingActivity.push(telemetryToActivity(record));
       }
       telemetryIndex++;
     }
@@ -1155,7 +1165,17 @@ function App() {
               <div key={item.id} className="activity-detail-item">
                 <span className="activity-detail-kind">{item.kind}</span>
                 <span className="activity-detail-summary">{item.summary}</span>
+                {item.duration_ms != null && (
+                  <span className="activity-detail-duration">{item.duration_ms}ms</span>
+                )}
                 <time className="activity-detail-time">{item.time}</time>
+                {item.files_touched && item.files_touched.length > 0 && (
+                  <div className="activity-detail-files">
+                    {item.files_touched.map((file, idx) => (
+                      <span key={idx} className="activity-detail-file">📄 {file}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1496,7 +1516,8 @@ function activityWorkingLabel(items: RuntimeActivity[]): string {
 function summarizeTelemetry(record: TelemetryRecord): string {
   try {
     const payload = JSON.parse(record.payload_json) as Record<string, unknown>;
-    // For tool calls, show the tool name
+    // For tool calls, show summary if available, then fall back to tool name
+    if (typeof payload.summary === "string" && payload.summary.trim()) return payload.summary.trim().slice(0, 140);
     if (typeof payload.toolName === "string") return payload.toolName;
     const candidate = payload.error_message ?? payload.message ?? payload.note ?? payload.text ?? payload.code;
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim().slice(0, 140);

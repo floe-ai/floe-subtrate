@@ -8,6 +8,8 @@ import type { DeliveryBundle } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 import { buildSystemPrompt, renderDestinationContext, appendWorkLog } from "../runtime-core/index.js";
 import type { WorkLogEntry } from "../runtime-core/index.js";
+import { createWorkspaceTools } from "../tools/index.js";
+import type { ToolContext } from "../tools/index.js";
 
 type AgentLike = {
   prompt(input: unknown): Promise<void>;
@@ -45,7 +47,7 @@ type RuntimeTurnContext = {
   last_visible_telemetry_text: string;
   finalized: boolean;
   completion: Deferred<void>;
-  tool_activity: Array<{ name: string; call_id?: string; summary?: string; is_error?: boolean }>;
+  tool_activity: Array<{ name: string; call_id?: string; summary?: string; is_error?: boolean; files_touched?: string[]; duration_ms?: number }>;
   emitted_events: Array<{ type: string; destination: string; text_preview: string; response_expected: boolean }>;
 };
 
@@ -219,9 +221,18 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
     const emitTool = this.createEmitTool(state);
     const listEndpointsTool = this.createListEndpointsTool(state);
+
+    // Create workspace tools when workspace locator is available
+    const workspaceTools = context.workspace_locator
+      ? createWorkspaceTools({
+          workspaceRoot: context.workspace_locator,
+          getActiveTurn: () => state.activeTurn,
+        } satisfies ToolContext)
+      : [];
+
     state.agent = this.agentFactory({
       model,
-      tools: [emitTool, listEndpointsTool],
+      tools: [emitTool, listEndpointsTool, ...workspaceTools],
       systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
@@ -378,13 +389,17 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         }
 
         if (event.type === "tool_execution_end") {
+          // Collect enriched data from tool activity (set by workspace tools during execute)
+          const toolEntry = turn.tool_activity.find((t) => t.call_id === event.toolCallId);
           await this.appendTelemetry(context, turn, event.isError ? "ToolUseFailed" : "AfterToolUse", {
             toolCallId: event.toolCallId,
             toolName: event.toolName,
-            isError: event.isError
+            isError: event.isError,
+            summary: toolEntry?.summary,
+            files_touched: toolEntry?.files_touched,
+            duration_ms: toolEntry?.duration_ms,
           });
           // Update tool activity with error status
-          const toolEntry = turn.tool_activity.find((t) => t.call_id === event.toolCallId);
           if (toolEntry) toolEntry.is_error = event.isError;
         }
 
