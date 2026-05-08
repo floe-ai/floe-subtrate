@@ -5,6 +5,7 @@ import type { DeliveryBundle } from "../bus-client.js";
 type FakeEvent = {
   type: string;
   message?: any;
+  messages?: any[];
   toolCallId?: string;
   toolName?: string;
   args?: any;
@@ -22,21 +23,24 @@ class FakeAgent {
   async prompt(): Promise<void> {
     this.turn += 1;
     const text = this.turn === 1 ? "First deterministic reply." : "Second deterministic reply.";
+    const assistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      usage: { input: 1, output: 1, totalTokens: 2 },
+      model: "mock-model",
+      provider: "mock-provider"
+    };
     await this.emit({
       type: "message_end",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text }]
-      }
+      message: assistantMessage
     });
     await this.emit({
       type: "turn_end",
-      message: {
-        role: "assistant",
-        usage: { input: 1, output: 1, totalTokens: 2 },
-        model: "mock-model",
-        provider: "mock-provider"
-      }
+      message: assistantMessage
+    });
+    await this.emit({
+      type: "agent_end",
+      messages: [assistantMessage]
     });
   }
 

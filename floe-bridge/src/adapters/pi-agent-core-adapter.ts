@@ -403,8 +403,21 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           if (toolEntry) toolEntry.is_error = event.isError;
         }
 
-        if (event.type === "turn_end" && event.message?.role === "assistant") {
-          await this.finalizeTurn(context, session, turn, event.message);
+        // agent_end is the correct finalization signal — it fires ONCE after all
+        // tool-call loops complete. turn_end fires after each inner iteration, so
+        // finalizing on turn_end would cut the agent short when it uses multiple tools.
+        if (event.type === "agent_end") {
+          const messages = (event as any).messages as any[] | undefined;
+          const lastAssistant = messages
+            ?.filter((m: any) => m.role === "assistant")
+            .pop() ?? null;
+          console.log("[bridge] pi agent_end finalizing", {
+            runtime_turn_id: turn.runtime_turn_id,
+            last_assistant_stop_reason: lastAssistant?.stopReason,
+            last_assistant_has_text: !!extractText(lastAssistant),
+            visible_output_len: turn.visible_output.length
+          });
+          await this.finalizeTurn(context, session, turn, lastAssistant);
         }
       } catch (error) {
         if (session.activeTurn === turn) session.activeTurn = undefined;
