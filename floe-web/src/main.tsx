@@ -130,7 +130,7 @@ type ActivityGroup = {
 };
 
 type ChatSegment =
-  | { kind: "message"; message: EventEnvelope }
+  | { kind: "message"; message: EventEnvelope; activity?: ActivityGroup }
   | { kind: "activity"; group: ActivityGroup }
   | { kind: "streaming"; turnId: string; text: string };
 
@@ -276,13 +276,7 @@ function App() {
       .filter((record) => record.endpoint_id === floeAgent.endpoint_id)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
 
-    // Build sorted list of messages
     const messages = [...floeMessages].sort((a, b) => a.created_at.localeCompare(b.created_at));
-
-    // Build timeline: interleave messages with activity groups
-    const segments: ChatSegment[] = [];
-    let telemetryIndex = 0;
-    let pendingActivity: RuntimeActivity[] = [];
 
     function telemetryToActivity(record: TelemetryRecord): RuntimeActivity {
       let filesTouched: string[] | undefined;
@@ -302,8 +296,15 @@ function App() {
       };
     }
 
+    // Semantic grouping: attach tool/runtime activity TO the agent message it precedes.
+    // Only emitted messages appear as primary chat items.
+    // Activity groups are either attached to an agent message or shown standalone if orphaned.
+    const segments: ChatSegment[] = [];
+    let telemetryIndex = 0;
+    let pendingActivity: RuntimeActivity[] = [];
+
     for (const message of messages) {
-      // Collect telemetry before this message
+      // Collect telemetry that occurred before this message
       while (telemetryIndex < agentTelemetry.length && agentTelemetry[telemetryIndex].created_at < message.created_at) {
         const record = agentTelemetry[telemetryIndex];
         if (!excludedKinds.has(record.kind)) {
@@ -311,12 +312,13 @@ function App() {
         }
         telemetryIndex++;
       }
-      // Emit accumulated activity before agent messages
       const isHuman = message.source_endpoint_id === humanEndpoint;
       if (!isHuman && pendingActivity.length > 0) {
+        // Attach accumulated activity to this agent message
         segments.push({
-          kind: "activity",
-          group: {
+          kind: "message",
+          message,
+          activity: {
             id: `activity_${pendingActivity[0].id}`,
             items: pendingActivity,
             status: "done",
@@ -324,11 +326,12 @@ function App() {
           }
         });
         pendingActivity = [];
+      } else {
+        segments.push({ kind: "message", message });
       }
-      segments.push({ kind: "message", message });
     }
 
-    // Trailing telemetry (agent is still working) — include any carried-forward pending activity
+    // Trailing telemetry (agent is still working or finished without emitting)
     while (telemetryIndex < agentTelemetry.length) {
       const record = agentTelemetry[telemetryIndex];
       if (!excludedKinds.has(record.kind)) {
@@ -1286,6 +1289,7 @@ function App() {
                   <div key={segment.message.event_id} className={`channel-message ${isHuman ? "human" : "floe"}`}>
                     <div className="message-meta">{isHuman ? "You" : agentName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
                     <div className="message-text">{isHuman ? segment.message.content.text : renderMarkdown(segment.message.content.text ?? "")}</div>
+                    {segment.activity && renderActivityGroup(segment.activity)}
                   </div>
                 );
               })}
@@ -1527,7 +1531,8 @@ function runtimeActivityLabel(kind: string): string {
     "AfterToolUse": "Completed",
     "ToolUseFailed": "Failed",
     "runtime_error": "Error",
-    "runtime_no_visible_output": "No output"
+    "runtime_no_visible_output": "No output",
+    "visible_output_worklog": "Runtime notes"
   };
   if (labels[kind]) return labels[kind];
   return kind
@@ -1540,11 +1545,17 @@ function runtimeActivityLabel(kind: string): string {
 function activityGroupLabel(items: RuntimeActivity[]): string {
   const toolStarts = items.filter((item) => item.kind === "Running");
   if (toolStarts.length === 0) return `Activity · ${items.length} step${items.length === 1 ? "" : "s"}`;
-  if (toolStarts.length === 1) return `Used ${toolStarts[0].summary || "a tool"}`;
-  // Deduplicate tool names for a concise label
-  const uniqueTools = [...new Set(toolStarts.map((item) => item.summary || "tool"))];
-  if (uniqueTools.length <= 2) return `Used ${uniqueTools.join(" and ")}`;
-  return `Used ${uniqueTools.length} tools`;
+  // Build concise summary of what happened in this processing cycle
+  const toolNames = toolStarts.map((item) => {
+    const name = item.summary || "tool";
+    // Rename "emit" to a human-friendly label
+    if (name === "emit" || name.startsWith("emit ")) return "sent message";
+    return name;
+  });
+  const uniqueTools = [...new Set(toolNames)];
+  if (uniqueTools.length === 1) return `Activity · ${uniqueTools[0]}`;
+  if (uniqueTools.length <= 3) return `Activity · ${uniqueTools.join(" · ")}`;
+  return `Activity · ${uniqueTools.length} tools`;
 }
 
 /** Live working label showing the latest action */
@@ -1570,8 +1581,16 @@ function summarizeTelemetry(record: TelemetryRecord): string {
   try {
     const payload = JSON.parse(record.payload_json) as Record<string, unknown>;
     // For tool calls, show summary if available, then fall back to tool name
-    if (typeof payload.summary === "string" && payload.summary.trim()) return payload.summary.trim().slice(0, 140);
-    if (typeof payload.toolName === "string") return payload.toolName;
+    if (typeof payload.summary === "string" && payload.summary.trim()) {
+      const summary = payload.summary.trim().slice(0, 140);
+      // Rename "emit" references for user-facing display
+      return summary.replace(/^emit\b/i, "sent message");
+    }
+    if (typeof payload.toolName === "string") {
+      const name = payload.toolName;
+      if (name === "emit") return "sent message";
+      return name;
+    }
     const candidate = payload.error_message ?? payload.message ?? payload.note ?? payload.text ?? payload.code;
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim().slice(0, 140);
   } catch {

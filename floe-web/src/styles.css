@@ -1145,6 +1145,38 @@ code {
   border-style: dashed;
 }
 
+/* Activity group nested inside a message — compact, attached style */
+.channel-message .activity-group {
+  margin-top: 4px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.channel-message .activity-group-toggle {
+  background: transparent;
+  padding: 4px 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  gap: 5px;
+}
+
+.channel-message .activity-group-toggle:hover {
+  background: var(--surface-inset);
+  border-radius: var(--radius-sm);
+}
+
+.channel-message .activity-group-label {
+  font-weight: 500;
+}
+
+.channel-message .activity-group-details {
+  border-top: 1px solid var(--border);
+  background: var(--surface-inset);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin-top: 2px;
+}
+
 .message-text p + p {
   margin-top: 7px;
 }
