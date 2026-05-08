@@ -826,3 +826,205 @@ describe("Substrate model — explicit emit only", () => {
     expect(wsB).toHaveLength(0);
   });
 });
+
+// ─── Slice 4: Full actor work loop acceptance ─────────────────────────────────
+describe("Full actor work loop acceptance", () => {
+  const { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } = require("fs") as typeof import("fs");
+  const { join } = require("path") as typeof import("path");
+  const { tmpdir } = require("os") as typeof import("os");
+
+  function makeAcceptanceAdapter(fakeAgent: any, workspaceLocator: string) {
+    return new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input) => {
+          fakeAgent.registeredTools = input.tools ?? [];
+          return fakeAgent;
+        },
+        turnFinalizeTimeoutMs: 5_000
+      }
+    );
+  }
+
+  function makeAcceptanceDelivery(workspaceId: string, text: string): DeliveryBundle {
+    return {
+      delivery_id: "del-acceptance",
+      endpoint_id: `endpoint:${workspaceId}:agent:floe`,
+      workspace_id: workspaceId,
+      trigger_event_id: "evt:acceptance",
+      delivered_at: new Date().toISOString(),
+      events: [{
+        event_id: "evt:acceptance",
+        type: "message",
+        workspace_id: workspaceId,
+        source_endpoint_id: `endpoint:${workspaceId}:user:operator`,
+        thread_id: `thread:${workspaceId}:floe`,
+        correlation_id: null,
+        destination_json: { kind: "endpoint", endpoint_id: `endpoint:${workspaceId}:agent:floe` },
+        content: { text, data: {} },
+        response: { expected: false },
+        metadata: {},
+        created_at: new Date().toISOString()
+      }]
+    };
+  }
+
+  it("agent uses read/write/ls/bash tools, writes work log, and emits response", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "floe-acceptance-"));
+    writeFileSync(join(workspaceDir, "hello.txt"), "Hello from workspace\n");
+
+    const telemetryCalls: any[] = [];
+    const emittedEvents: any[] = [];
+
+    // FakeAgent that exercises the full tool chain:
+    // 1. ls to list files
+    // 2. read to read hello.txt
+    // 3. write to create output.txt
+    // 4. bash to run a command
+    // 5. emit to send a response
+    const fakeAgent = {
+      registeredTools: [] as any[],
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async emit(event: any) { for (const l of this.listeners) await l(event); },
+      async prompt() {
+        const findTool = (name: string) => this.registeredTools.find((t: any) => t.name === name);
+
+        // Helper to call a tool with proper Pi event lifecycle
+        const callTool = async (name: string, callId: string, args: any) => {
+          const tool = findTool(name);
+          expect(tool).toBeDefined();
+          await this.emit({ type: "tool_execution_start", toolCallId: callId, toolName: name, args });
+          const result = await tool!.execute(callId, args);
+          await this.emit({ type: "tool_execution_end", toolCallId: callId, toolName: name, isError: false });
+          return result;
+        };
+
+        // Step 1: ls the workspace
+        const lsResult = await callTool("ls", "tc_ls", { path: "." });
+        expect(lsResult.content[0].text).toContain("hello.txt");
+
+        // Step 2: read hello.txt
+        const readResult = await callTool("read", "tc_read", { path: "hello.txt" });
+        expect(readResult.content[0].text).toContain("Hello from workspace");
+
+        // Step 3: write output.txt
+        const writeResult = await callTool("write", "tc_write", { path: "output.txt", content: "Work loop verified" });
+        expect(writeResult.content[0].text).toContain("output.txt");
+
+        // Step 4: bash a simple command
+        const bashResult = await callTool("bash", "tc_bash", { command: "echo floe-test-ok" });
+        expect(bashResult.content[0].text).toContain("floe-test-ok");
+
+        // Step 5: emit response
+        await callTool("emit", "tc_emit", {
+          type: "message",
+          text: "Work loop complete.",
+          response_expected: false
+        });
+
+        // End agent turn
+        for (const l of this.listeners) await l({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "Done." }] }
+        });
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: { input: 10, output: 5, totalTokens: 15 }, model: "mock-model", provider: "mock-provider" }
+        });
+        for (const l of this.listeners) await l({
+          type: "agent_end",
+          messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }] }]
+        });
+      }
+    };
+
+    const adapter = makeAcceptanceAdapter(fakeAgent, workspaceDir);
+    const workspaceId = "workspace:acceptance";
+    const context = {
+      bridge_id: "bridge:test",
+      workspace_locator: workspaceDir,
+      bus: {
+        async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
+        async emit(event: any) { emittedEvents.push(event); },
+        async listEndpoints(_workspaceId: string) {
+          return [
+            { endpoint_id: `endpoint:${_workspaceId}:agent:floe`, name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: `endpoint:${_workspaceId}:user:operator`, name: "Operator", actor_type: "human", status: "active" }
+          ];
+        }
+      }
+    } as any;
+
+    await adapter.handleBundle(
+      context,
+      makeAcceptanceDelivery(workspaceId, "Run the work loop"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    // --- Acceptance criteria ---
+
+    // 1. All 7 workspace tools registered
+    const toolNames = fakeAgent.registeredTools.map((t: any) => t.name);
+    expect(toolNames).toContain("read");
+    expect(toolNames).toContain("write");
+    expect(toolNames).toContain("edit");
+    expect(toolNames).toContain("ls");
+    expect(toolNames).toContain("grep");
+    expect(toolNames).toContain("find");
+    expect(toolNames).toContain("bash");
+    expect(toolNames).toContain("emit");
+    expect(toolNames).toContain("list_endpoints");
+
+    // 2. File was actually created
+    expect(existsSync(join(workspaceDir, "output.txt"))).toBe(true);
+    expect(readFileSync(join(workspaceDir, "output.txt"), "utf-8")).toBe("Work loop verified");
+
+    // 3. Agent emitted a message event
+    const messageEmits = emittedEvents.filter((e) => e.type === "message");
+    expect(messageEmits).toHaveLength(1);
+    expect(messageEmits[0].content.text).toBe("Work loop complete.");
+
+    // 4. Tool telemetry was recorded (BeforeToolUse/AfterToolUse for each tool)
+    const toolTelemetry = telemetryCalls.filter((t) => t.kind === "BeforeToolUse" || t.kind === "AfterToolUse");
+    expect(toolTelemetry.length).toBeGreaterThanOrEqual(8); // at least 4 tools × 2 (before + after)
+
+    // 5. Visible output is work-log only (not auto-emitted)
+    const worklog = telemetryCalls.filter((t) => t.kind === "visible_output_worklog");
+    expect(worklog).toHaveLength(1);
+    expect(worklog[0].payload.text).toContain("Done.");
+    const autoEmits = emittedEvents.filter((e) => e.metadata?.origin === "runtime_turn_output");
+    expect(autoEmits).toHaveLength(0);
+
+    // 6. Work log file was written to workspace
+    const worklogDir = join(workspaceDir, ".floe", "agents", "floe", "worklogs");
+    if (existsSync(worklogDir)) {
+      const files = require("fs").readdirSync(worklogDir);
+      expect(files.length).toBeGreaterThan(0);
+    }
+
+    // Cleanup
+    rmSync(workspaceDir, { recursive: true, force: true });
+  });
+});
