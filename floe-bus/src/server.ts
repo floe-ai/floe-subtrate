@@ -1,8 +1,8 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import YAML from "yaml";
 import { getModels, getProviders } from "@mariozechner/pi-ai";
@@ -131,8 +131,20 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const input = z.object({
       locator: z.string().min(1),
       name: z.string().optional(),
-      init_authorized: z.boolean().optional()
+      init_authorized: z.boolean().optional(),
+      create_directory: z.boolean().optional()
     }).parse(request.body);
+    const resolved = resolve(input.locator);
+    if (!existsSync(resolved)) {
+      if (!input.create_directory) {
+        return reply.code(400).send({
+          error: "directory_not_found",
+          message: `Directory does not exist: ${resolved}`,
+          locator: resolved
+        });
+      }
+      mkdirSync(resolved, { recursive: true });
+    }
     const workspace = store.registerWorkspace(input, broadcast);
     return reply.code(201).send({ workspace });
   });

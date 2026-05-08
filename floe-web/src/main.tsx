@@ -267,7 +267,7 @@ function App() {
       }));
   }, [floeAgent, telemetry]);
 
-  const floeIsActive = floeAgent?.status === "active" || Object.keys(streamingTurns).length > 0;
+  const floeIsActive = floeAgent?.status === "active";
 
   const chatSegments = useMemo<ChatSegment[]>(() => {
     if (!floeAgent || !threadId) return [];
@@ -537,24 +537,36 @@ function App() {
     return () => window.removeEventListener("dblclick", handleDoubleClick);
   }, [selectedField]);
 
-  async function registerWorkspace() {
+  async function registerWorkspace(createDirectory = false) {
     if (!workspacePath.trim()) return;
-    const result = await api<{ workspace: Workspace }>(busUrl, "/v1/workspaces/register", {
-      method: "POST",
-      body: {
-        locator: workspacePath.trim(),
-        name: workspaceName.trim() || undefined,
-        init_authorized: authorizeInit
+    try {
+      const result = await api<{ workspace: Workspace }>(busUrl, "/v1/workspaces/register", {
+        method: "POST",
+        body: {
+          locator: workspacePath.trim(),
+          name: workspaceName.trim() || undefined,
+          init_authorized: authorizeInit,
+          create_directory: createDirectory || undefined
+        }
+      });
+      await api(busUrl, `/v1/workspaces/${encodeURIComponent(result.workspace.workspace_id)}/select`, { method: "POST" });
+      selectedWorkspaceIdRef.current = result.workspace.workspace_id;
+      setSelectedWorkspaceId(result.workspace.workspace_id);
+      await ensureHuman(result.workspace.workspace_id);
+      await refresh(result.workspace.workspace_id);
+      setWorkspacePath("");
+      setWorkspaceName("");
+      setView({ kind: "home" });
+    } catch (err) {
+      if (err instanceof ApiError && (err.body as any)?.error === "directory_not_found") {
+        const locator = (err.body as any)?.locator ?? workspacePath.trim();
+        if (window.confirm(`Directory does not exist:\n${locator}\n\nCreate it?`)) {
+          return registerWorkspace(true);
+        }
+        return;
       }
-    });
-    await api(busUrl, `/v1/workspaces/${encodeURIComponent(result.workspace.workspace_id)}/select`, { method: "POST" });
-    selectedWorkspaceIdRef.current = result.workspace.workspace_id;
-    setSelectedWorkspaceId(result.workspace.workspace_id);
-    await ensureHuman(result.workspace.workspace_id);
-    await refresh(result.workspace.workspace_id);
-    setWorkspacePath("");
-    setWorkspaceName("");
-    setView({ kind: "home" });
+      throw err;
+    }
   }
 
   async function selectWorkspace(workspaceId: string) {
@@ -565,6 +577,24 @@ function App() {
     await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, { method: "POST" });
     await ensureHuman(workspaceId);
     await refresh(workspaceId);
+  }
+
+  async function deleteWorkspace(workspaceId: string) {
+    const workspace = workspaces.find((w) => w.workspace_id === workspaceId);
+    const label = workspace?.name ?? workspaceId;
+    if (!window.confirm(`Delete workspace "${label}"?\n\nThis removes the workspace from Floe. The folder on disk is not deleted.`)) return;
+    await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, {
+      method: "POST",
+      body: { delete_locator: false }
+    });
+    if (selectedWorkspaceId === workspaceId) {
+      setSelectedWorkspaceId("");
+      selectedWorkspaceIdRef.current = "";
+      setEndpoints([]);
+      setEvents([]);
+      setTelemetry([]);
+    }
+    await refresh();
   }
 
   async function ensureHuman(workspaceId: string) {
@@ -1308,14 +1338,22 @@ function App() {
         <div className="rail-section">
           <span className="rail-label">Workspaces</span>
           {workspaces.map((workspace) => (
-            <button
-              key={workspace.workspace_id}
-              className={`workspace-button${workspace.workspace_id === selectedWorkspaceId ? " active" : ""}`}
-              onClick={() => void selectWorkspace(workspace.workspace_id)}
-            >
-              <FolderOpen size={15} />
-              <span>{workspace.name}</span>
-            </button>
+            <div key={workspace.workspace_id} className="workspace-row">
+              <button
+                className={`workspace-button${workspace.workspace_id === selectedWorkspaceId ? " active" : ""}`}
+                onClick={() => void selectWorkspace(workspace.workspace_id)}
+              >
+                <FolderOpen size={15} />
+                <span>{workspace.name}</span>
+              </button>
+              <button
+                className="workspace-delete-button"
+                onClick={(e) => { e.stopPropagation(); void deleteWorkspace(workspace.workspace_id); }}
+                title="Remove workspace"
+              >
+                <X size={12} />
+              </button>
+            </div>
           ))}
         </div>
         <div className="rail-new">
@@ -1400,13 +1438,28 @@ function Detail(props: { label: string; value: React.ReactNode }) {
   );
 }
 
+class ApiError extends Error {
+  status: number;
+  body: unknown;
+  constructor(status: number, body: unknown, text: string) {
+    super(text);
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function api<T>(baseUrl: string, path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
     method: options.method ?? "GET",
     headers: options.body ? { "content-type": "application/json" } : undefined,
     body: options.body ? JSON.stringify(options.body) : undefined
   });
-  if (!response.ok) throw new Error(`${options.method ?? "GET"} ${path}: ${response.status} ${await response.text()}`);
+  if (!response.ok) {
+    const text = await response.text();
+    let body: unknown;
+    try { body = JSON.parse(text); } catch { body = text; }
+    throw new ApiError(response.status, body, `${options.method ?? "GET"} ${path}: ${response.status} ${text}`);
+  }
   return response.json() as Promise<T>;
 }
 

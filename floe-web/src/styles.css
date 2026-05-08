@@ -188,6 +188,44 @@ code {
   letter-spacing: 0;
 }
 
+.workspace-row {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.workspace-row .workspace-button {
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace-delete-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.workspace-row:hover .workspace-delete-button {
+  opacity: 1;
+}
+
+.workspace-delete-button:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .workspace-button {
   display: grid;
   width: 100%;
