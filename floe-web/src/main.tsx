@@ -271,7 +271,7 @@ function App() {
 
   const chatSegments = useMemo<ChatSegment[]>(() => {
     if (!floeAgent || !threadId) return [];
-    const excludedKinds = new Set(["usage", "runtime_config", "visible_output", "runtime_no_visible_output"]);
+    const excludedKinds = new Set(["usage", "runtime_config", "visible_output", "runtime_no_visible_output", "visible_output_worklog"]);
     const agentTelemetry = telemetry
       .filter((record) => record.endpoint_id === floeAgent.endpoint_id)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
@@ -298,7 +298,7 @@ function App() {
 
     // Semantic grouping: attach tool/runtime activity TO the agent message it precedes.
     // Only emitted messages appear as primary chat items.
-    // Activity groups are either attached to an agent message or shown standalone if orphaned.
+    // Orphaned old telemetry before a human message is discarded (previous cycle).
     const segments: ChatSegment[] = [];
     let telemetryIndex = 0;
     let pendingActivity: RuntimeActivity[] = [];
@@ -313,7 +313,12 @@ function App() {
         telemetryIndex++;
       }
       const isHuman = message.source_endpoint_id === humanEndpoint;
-      if (!isHuman && pendingActivity.length > 0) {
+      if (isHuman) {
+        // Human message starts a new processing cycle.
+        // Any pending activity is orphaned from a prior cycle — discard it.
+        pendingActivity = [];
+        segments.push({ kind: "message", message });
+      } else if (pendingActivity.length > 0) {
         // Attach accumulated activity to this agent message
         segments.push({
           kind: "message",
