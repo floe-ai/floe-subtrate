@@ -304,8 +304,10 @@ function App() {
     let pendingActivity: RuntimeActivity[] = [];
 
     for (const message of messages) {
-      // Collect telemetry that occurred before this message
-      while (telemetryIndex < agentTelemetry.length && agentTelemetry[telemetryIndex].created_at < message.created_at) {
+      // Collect telemetry that occurred at or before this message timestamp.
+      // Use <= because tool calls (e.g. emit) often share the same second as
+      // the message event they produce.
+      while (telemetryIndex < agentTelemetry.length && agentTelemetry[telemetryIndex].created_at <= message.created_at) {
         const record = agentTelemetry[telemetryIndex];
         if (!excludedKinds.has(record.kind)) {
           pendingActivity.push(telemetryToActivity(record));
@@ -344,7 +346,11 @@ function App() {
       }
       telemetryIndex++;
     }
-    if (pendingActivity.length > 0) {
+    // Only show trailing activity if the agent is actively working OR if there
+    // are actual tool starts (BeforeToolUse). Trailing AfterToolUse-only items
+    // are just completion echoes of the tool call that produced the last message.
+    const hasToolStarts = pendingActivity.some((item) => item.kind === "Running");
+    if (pendingActivity.length > 0 && (floeIsActive || hasToolStarts)) {
       segments.push({
         kind: "activity",
         group: {

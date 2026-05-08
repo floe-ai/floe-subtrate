@@ -492,4 +492,42 @@ test.describe("Channel activity groups", () => {
     expect(summaries.some(s => s.includes("sent message"))).toBeTruthy();
     expect(summaries.some(s => s === "emit")).toBeFalsy();
   });
+
+  test("same-timestamp emit telemetry does not create standalone trailing group", async ({ page }) => {
+    // Reproduces real-world scenario: emit BeforeToolUse/AfterToolUse share the
+    // same second as the resulting message event. Should attach to message, not trail.
+    const t0 = "2024-06-01T10:00:00.000Z";
+    const t1 = "2024-06-01T10:00:01.000Z";
+    const t2 = "2024-06-01T10:00:02.000Z";
+    const t3 = "2024-06-01T10:00:03.000Z"; // same as message
+
+    const events = [
+      makeHumanMessage("Do something", t0),
+      makeFloeMessage("Done.", t3),
+    ];
+    const telemetry = [
+      makeTelemetry("BeforeToolUse", "read", t1),
+      makeTelemetry("AfterToolUse", "read", t2),
+      makeTelemetry("BeforeToolUse", "emit", t3), // same timestamp as message
+      makeTelemetry("AfterToolUse", "emit", t3),  // same timestamp as message
+    ];
+
+    await seedAndOpenChannel(page, { events, telemetry });
+
+    // Should be exactly ONE activity group (nested in the Floe message)
+    const allActivityGroups = page.locator(".activity-group");
+    await expect(allActivityGroups).toHaveCount(1);
+
+    // It should be inside the Floe message, not standalone
+    const floeMessage = page.locator(".channel-message.floe:not(.streaming)");
+    await expect(floeMessage).toBeVisible();
+    const nestedActivity = floeMessage.locator(".activity-group");
+    await expect(nestedActivity).toBeVisible();
+
+    // Should include both read and emit (as "sent message")
+    const label = nestedActivity.locator(".activity-group-label");
+    const labelText = await label.textContent();
+    expect(labelText).toContain("read");
+    expect(labelText).toContain("sent message");
+  });
 });
