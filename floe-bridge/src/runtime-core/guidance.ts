@@ -58,8 +58,9 @@ You have access to workspace tools for inspecting, understanding, and modifying 
 - \`find\` — find files by name/glob pattern
 - \`write\` — create or overwrite a file (auto-creates parent directories)
 - \`edit\` — precise search-and-replace edits with fuzzy matching
+- \`bash\` — execute shell commands in the workspace directory (env sanitised, output bounded)
 
-All workspace tool paths are relative to the workspace root. Tool output is work log material — use \`emit\` to communicate results to other endpoints.
+All file tool paths are relative to the workspace root and workspace-contained. \`bash\` runs in the workspace root as working directory but is not strictly path-contained. Tool output is work log material — use \`emit\` to communicate results to other endpoints.
 `.trim();
 
 /**

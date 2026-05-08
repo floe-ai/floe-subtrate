@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { platform } from "node:os";
 import { resolveWorkspacePath, validateWorkspaceContainment, safeWorkspacePath } from "./path-scoping.js";
 import { truncateOutput } from "./truncation.js";
 import { sanitiseEnvironment, listStrippedVarNames } from "./env-sanitise.js";
@@ -11,6 +12,7 @@ import { createGrepTool } from "./grep.js";
 import { createFindTool } from "./find.js";
 import { createWriteTool } from "./write.js";
 import { createEditTool } from "./edit.js";
+import { createBashTool } from "./bash.js";
 import { normalizeForFuzzyMatch, fuzzyFindText, applyEditsToNormalizedContent, generateDiffString, stripBom, detectLineEnding } from "./edit-diff.js";
 import type { ToolContext, ToolActivityEntry } from "./types.js";
 
@@ -687,6 +689,124 @@ describe("edit tool", () => {
     const content = readFileSync(join(workspace, "bom.txt"), "utf-8");
     expect(content.startsWith("\uFEFF")).toBe(true);
     expect(content).toContain("goodbye world");
+  });
+});
+
+// --- Bash tool tests ---
+
+describe("bash tool", () => {
+  const isWindows = platform() === "win32";
+  let workspace: string;
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "floe-test-bash-"));
+    writeFileSync(join(workspace, "test.txt"), "hello from workspace");
+  });
+
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("executes a simple command and captures output", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b1" });
+    const cmd = isWindows ? "echo hello" : "echo hello";
+    const result = await tool.execute("b1", { command: cmd });
+    expect(result.details?.ok).toBe(true);
+    expect((result.details as any).exit_code).toBe(0);
+    expect(result.content[0].text).toContain("hello");
+  });
+
+  it("runs in workspace root directory", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b2" });
+    const cmd = isWindows ? "type test.txt" : "cat test.txt";
+    const result = await tool.execute("b2", { command: cmd });
+    expect(result.details?.ok).toBe(true);
+    expect(result.content[0].text).toContain("hello from workspace");
+  });
+
+  it("returns exit code for failing command", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b3" });
+    const cmd = isWindows ? "exit /b 42" : "exit 42";
+    const result = await tool.execute("b3", { command: cmd });
+    expect(result.details?.ok).toBe(false);
+    expect((result.details as any).exit_code).toBe(42);
+  });
+
+  it("captures stderr output", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b4" });
+    const cmd = isWindows ? "echo error message 1>&2" : "echo error message >&2";
+    const result = await tool.execute("b4", { command: cmd });
+    expect(result.content[0].text).toContain("error message");
+  });
+
+  it("returns error when command is empty", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b5" });
+    const result = await tool.execute("b5", { command: "" });
+    expect(result.details?.ok).toBe(false);
+    expect(result.content[0].text).toContain("command is required");
+  });
+
+  it("enriches tool activity with command summary and duration", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b6" });
+    await tool.execute("b6", { command: "echo test" });
+    const entry = ctx.toolActivity.find((t) => t.call_id === "b6");
+    expect(entry?.summary).toContain("bash");
+    expect(entry?.summary).toContain("echo test");
+    expect(entry?.is_error).toBe(false);
+    expect(entry?.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("sanitises environment — Floe secrets are not available", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b7" });
+    // Set a FLOE_ var in current env temporarily
+    const oldVal = process.env.FLOE_TEST_SECRET;
+    process.env.FLOE_TEST_SECRET = "super_secret";
+    try {
+      const cmd = isWindows ? "echo %FLOE_TEST_SECRET%" : "echo $FLOE_TEST_SECRET";
+      const result = await tool.execute("b7", { command: cmd });
+      // The secret should not appear in the output
+      expect(result.content[0].text).not.toContain("super_secret");
+    } finally {
+      if (oldVal === undefined) delete process.env.FLOE_TEST_SECRET;
+      else process.env.FLOE_TEST_SECRET = oldVal;
+    }
+  });
+
+  it("truncates large output", async () => {
+    // Write a large file to the workspace and cat/type it
+    const lines = Array.from({ length: 3000 }, (_, i) => `line ${i}`);
+    writeFileSync(join(workspace, "big.txt"), lines.join("\n"));
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b8" });
+    const cmd = isWindows ? "type big.txt" : "cat big.txt";
+    const result = await tool.execute("b8", { command: cmd });
+    expect(result.details?.ok).toBe(true);
+    expect((result.details as any).truncated).toBe(true);
+    expect(result.content[0].text).toContain("[output truncated");
+  });
+
+  it("reports duration in details", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b9" });
+    const result = await tool.execute("b9", { command: "echo fast" });
+    expect(typeof (result.details as any).duration_ms).toBe("number");
+    expect((result.details as any).duration_ms).toBeGreaterThanOrEqual(0);
   });
 });
 

@@ -13,6 +13,7 @@ import { createGrepTool } from "./grep.js";
 import { createFindTool } from "./find.js";
 import { createWriteTool } from "./write.js";
 import { createEditTool } from "./edit.js";
+import { createBashTool } from "./bash.js";
 import type { ToolContext } from "./types.js";
 
 export type { ToolContext, ToolActivityEntry } from "./types.js";
@@ -34,5 +35,6 @@ export function createWorkspaceTools(ctx: ToolContext): AgentTool[] {
     createFindTool(ctx),
     createWriteTool(ctx),
     createEditTool(ctx),
+    createBashTool(ctx),
   ];
 }
