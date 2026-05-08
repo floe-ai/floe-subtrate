@@ -421,4 +421,75 @@ test.describe("Channel activity groups", () => {
     expect(labelText).toContain("runDeploy");
     expect(labelText).not.toContain("visible_output");
   });
+
+  test("activity is nested inside agent message, not standalone", async ({ page }) => {
+    const t0 = "2024-06-01T10:00:00.000Z";
+    const t1 = "2024-06-01T10:00:01.000Z";
+    const t2 = "2024-06-01T10:00:02.000Z";
+    const t3 = "2024-06-01T10:00:03.000Z";
+
+    const events = [
+      makeHumanMessage("Read the config", t0),
+      makeFloeMessage("Config loaded.", t3),
+    ];
+    const telemetry = [
+      makeTelemetry("BeforeToolUse", "read", t1),
+      makeTelemetry("AfterToolUse", "read", t2),
+    ];
+
+    await seedAndOpenChannel(page, { events, telemetry });
+
+    // Activity group should be INSIDE the Floe message, not standalone
+    const floeMessage = page.locator(".channel-message.floe:not(.streaming)");
+    await expect(floeMessage).toBeVisible();
+    const nestedActivity = floeMessage.locator(".activity-group");
+    await expect(nestedActivity).toBeVisible();
+
+    // Label uses "Activity · " format, not "Used ..."
+    const label = nestedActivity.locator(".activity-group-label");
+    const labelText = await label.textContent();
+    expect(labelText).toMatch(/Activity/);
+    expect(labelText).not.toMatch(/^Used /);
+  });
+
+  test("emit tool shows as 'sent message' not 'Used emit'", async ({ page }) => {
+    const t0 = "2024-06-01T10:00:00.000Z";
+    const t1 = "2024-06-01T10:00:01.000Z";
+    const t2 = "2024-06-01T10:00:02.000Z";
+    const t3 = "2024-06-01T10:00:03.000Z";
+    const t4 = "2024-06-01T10:00:04.000Z";
+    const t5 = "2024-06-01T10:00:05.000Z";
+
+    const events = [
+      makeHumanMessage("Do something", t0),
+      makeFloeMessage("Done.", t5),
+    ];
+    const telemetry = [
+      makeTelemetry("BeforeToolUse", "read", t1),
+      makeTelemetry("AfterToolUse", "read", t2),
+      makeTelemetry("BeforeToolUse", "emit", t3),
+      makeTelemetry("AfterToolUse", "emit", t4),
+    ];
+
+    await seedAndOpenChannel(page, { events, telemetry });
+
+    // Activity group label should say "sent message" not "emit"
+    const activityGroup = page.locator(".activity-group");
+    await expect(activityGroup).toBeVisible();
+    const label = activityGroup.locator(".activity-group-label");
+    const labelText = await label.textContent();
+    expect(labelText).toContain("sent message");
+    expect(labelText).not.toMatch(/\bemit\b/);
+
+    // Expand to check detail items
+    await page.click(".activity-group-toggle");
+    await page.waitForTimeout(300);
+    const details = page.locator(".activity-group-details");
+    await expect(details).toBeVisible();
+
+    // One of the detail items should show "sent message"
+    const summaries = await details.locator(".activity-detail-summary").allTextContents();
+    expect(summaries.some(s => s.includes("sent message"))).toBeTruthy();
+    expect(summaries.some(s => s === "emit")).toBeFalsy();
+  });
 });
