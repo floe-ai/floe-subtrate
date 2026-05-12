@@ -349,6 +349,58 @@ describe("Floe local vertical slice", () => {
     await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
   }, 90_000);
 
+  it("resolves short endpoint references via resolve-endpoint API", async () => {
+    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
+      locator: projectPath,
+      init_authorized: true
+    });
+    const workspaceId = registered.workspace.workspace_id;
+    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+
+    // Wait for bridge to set up the workspace (agents + endpoints)
+    await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
+    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
+    const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
+
+    await waitFor(async () => {
+      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId);
+    }, "agent endpoint registration");
+
+    // Register human endpoint
+    await post("/v1/endpoints/register", {
+      endpoint_id: humanEndpointId,
+      workspace_id: workspaceId,
+      actor_type: "human",
+      name: "Operator",
+      status: "online"
+    });
+
+    // Resolve agent short ref
+    const agentResolved = await get<{ endpoint_id: string; found: boolean }>(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("agent:floe")}`
+    );
+    expect(agentResolved.endpoint_id).toBe(agentEndpointId);
+    expect(agentResolved.found).toBe(true);
+
+    // Resolve user short ref
+    const userResolved = await get<{ endpoint_id: string; found: boolean }>(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("user:operator")}`
+    );
+    expect(userResolved.endpoint_id).toBe(humanEndpointId);
+    expect(userResolved.found).toBe(true);
+
+    // Resolve non-existent ref — should return constructed ID with found=false
+    const unknownResolved = await get<{ endpoint_id: string; found: boolean }>(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("agent:nonexistent")}`
+    );
+    expect(unknownResolved.endpoint_id).toBe(`endpoint:${workspaceId}:agent:nonexistent`);
+    expect(unknownResolved.found).toBe(false);
+
+    // Clean up
+    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
+  }, 60_000);
+
   function sawBusEvents(types: string[]): boolean {
     return types.every((type) => busMessages.some((message) => message.type === type));
   }

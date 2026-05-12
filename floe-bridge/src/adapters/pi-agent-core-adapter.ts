@@ -222,6 +222,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
     const emitTool = this.createEmitTool(state);
     const listEndpointsTool = this.createListEndpointsTool(state);
+    const resolveDestinationTool = this.createResolveDestinationTool(state);
 
     // Create workspace tools when workspace locator is available
     const workspaceTools = context.workspace_locator
@@ -235,7 +236,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
     state.agent = this.agentFactory({
       model,
-      tools: [emitTool, listEndpointsTool, ...pulseTools, ...workspaceTools],
+      tools: [emitTool, listEndpointsTool, resolveDestinationTool, ...pulseTools, ...workspaceTools],
       systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
@@ -252,10 +253,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "emit",
       label: "Emit Floe Event",
-      description: "Publish a canonical event to the Floe event bus. This is the ONLY way to communicate with other endpoints. Nothing you produce (text, tool results, reasoning) is visible to anyone unless you use this tool. Always call emit with type 'message' to reply to a delivered message. Your reply destination is available in the delivery context.",
+      description: "Publish a canonical event to the Floe event bus. This is the ONLY way to communicate with other endpoints. Nothing you produce (text, tool results, reasoning) is visible to anyone unless you use this tool. Always call emit with type 'message' to reply to a delivered message. You can use short refs like 'agent:floe' or 'user:operator' as destination, or omit destination to reply to the source.",
       parameters: Type.Object({
         type: Type.String(),
-        destination: Type.Optional(Type.String({ description: "Target endpoint_id. Omit to use reply_destination from delivery context." })),
+        destination: Type.Optional(Type.String({ description: "Target endpoint. Can be a short ref like 'agent:floe' or 'user:operator', or a full endpoint_id. Omit to reply to the delivery source." })),
         text: Type.String(),
         response_expected: Type.Optional(Type.Boolean()),
         correlation_id: Type.Optional(Type.String())
@@ -265,7 +266,12 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         const context = session.context;
         if (!turn || !context) throw new Error("No active runtime turn context is available for emit.");
 
-        const targetEndpoint = params?.destination ?? turn.reply_destination_endpoint_id;
+        let targetEndpoint = params?.destination ?? turn.reply_destination_endpoint_id;
+        // Resolve short refs like "agent:floe" or "user:operator" to full endpoint IDs
+        if (targetEndpoint && !targetEndpoint.startsWith("endpoint:")) {
+          const resolved = await context.bus.resolveEndpoint(turn.workspace_id, targetEndpoint);
+          targetEndpoint = resolved.endpoint_id;
+        }
         await context.bus.emit({
           type: String(params?.type ?? "message"),
           workspace_id: turn.workspace_id,
@@ -317,7 +323,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "list_endpoints",
       label: "List Visible Endpoints",
-      description: "List endpoints visible/addressable by this endpoint in the current workspace. Returns endpoint_id, name, actor_type, and status. Results are only visible to you — you MUST use emit to share this information with other endpoints.",
+      description: "List endpoints visible/addressable by this endpoint in the current workspace. Returns endpoint_id, ref (short name usable in emit destination), name, actor_type, and status. Results are only visible to you — you MUST use emit to share this information with other endpoints.",
       parameters: Type.Object({}),
       execute: async () => {
         const turn = session.activeTurn;
@@ -330,6 +336,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           .filter((ep: any) => ep.endpoint_id !== turn.endpoint_id)
           .map((ep: any) => ({
             endpoint_id: ep.endpoint_id,
+            ref: extractShortRef(ep.endpoint_id),
             name: ep.name,
             actor_type: ep.actor_type,
             status: ep.status
@@ -341,6 +348,27 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             { type: "text", text: "Remember: call emit with type 'message' to send this information to the requesting endpoint." }
           ],
           details: { ok: true, count: visible.length }
+        };
+      }
+    };
+  }
+
+  private createResolveDestinationTool(session: SessionState): AgentTool {
+    return {
+      name: "resolve_destination",
+      label: "Resolve Destination",
+      description: "Resolve a short endpoint reference (like 'agent:floe' or 'user:operator') to a full endpoint ID. Use list_endpoints to see available destinations first.",
+      parameters: Type.Object({
+        ref: Type.String({ description: "Short endpoint reference (e.g., 'agent:review', 'user:operator')" })
+      }),
+      execute: async (_toolCallId, params: any) => {
+        const turn = session.activeTurn;
+        const context = session.context;
+        if (!turn || !context) throw new Error("No active runtime turn context.");
+        const resolved = await context.bus.resolveEndpoint(turn.workspace_id, String(params.ref));
+        return {
+          content: [{ type: "text", text: JSON.stringify(resolved, null, 2) }],
+          details: { ok: true, ...resolved }
         };
       }
     };
@@ -632,6 +660,16 @@ function instructionHash(text: string): string {
     h = (h * 0x01000193) >>> 0;
   }
   return h.toString(16).padStart(8, "0");
+}
+
+export function extractShortRef(endpointId: string): string {
+  // "endpoint:workspace:abc:agent:floe" → "agent:floe"
+  // "endpoint:workspace:abc:user:operator" → "user:operator"
+  const parts = endpointId.split(":");
+  if (parts.length >= 5) {
+    return `${parts[3]}:${parts.slice(4).join(":")}`;
+  }
+  return endpointId;
 }
 
 function deliveryToPrompt(bundle: DeliveryBundle, visibleEndpoints: Array<{ endpoint_id: string; name: string; actor_type: string; status: string }> = []): string {

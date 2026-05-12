@@ -341,6 +341,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { endpoints: store.listEndpoints(params.workspace_id) };
   });
 
+  app.get("/v1/workspaces/:workspace_id/resolve-endpoint", async (request) => {
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const query = z.object({ ref: z.string().min(1) }).parse(request.query);
+    const endpointId = store.resolveSubscriberEndpointId(params.workspace_id, query.ref);
+    const endpoint = store.getEndpoint(endpointId);
+    return { endpoint_id: endpointId, found: !!endpoint };
+  });
+
   app.post("/v1/endpoints/register", async (request, reply) => {
     const body = z.object({
       endpoint_id: z.string().min(1),

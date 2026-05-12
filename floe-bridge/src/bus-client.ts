@@ -79,6 +79,10 @@ export class BusClient {
     return result.endpoints;
   }
 
+  async resolveEndpoint(workspaceId: string, ref: string): Promise<{ endpoint_id: string; found: boolean }> {
+    return this.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent(ref)}`) as Promise<{ endpoint_id: string; found: boolean }>;
+  }
+
   async registerEndpoint(input: Record<string, unknown>): Promise<void> {
     await this.post("/v1/endpoints/register", input);
   }

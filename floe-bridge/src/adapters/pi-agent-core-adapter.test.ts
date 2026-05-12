@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PiAgentCoreAdapter } from "./pi-agent-core-adapter.js";
+import { PiAgentCoreAdapter, extractShortRef } from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle } from "../bus-client.js";
 
 type FakeEvent = {
@@ -1026,5 +1026,27 @@ describe("Full actor work loop acceptance", () => {
 
     // Cleanup
     rmSync(workspaceDir, { recursive: true, force: true });
+  });
+});
+
+describe("extractShortRef", () => {
+  it("extracts agent ref from full endpoint ID", () => {
+    expect(extractShortRef("endpoint:workspace:abc:agent:floe")).toBe("agent:floe");
+  });
+
+  it("extracts user ref from full endpoint ID", () => {
+    expect(extractShortRef("endpoint:workspace:abc:user:operator")).toBe("user:operator");
+  });
+
+  it("handles agent names with colons", () => {
+    expect(extractShortRef("endpoint:workspace:abc:agent:my:special:agent")).toBe("agent:my:special:agent");
+  });
+
+  it("returns input unchanged when not enough parts", () => {
+    expect(extractShortRef("short:ref")).toBe("short:ref");
+  });
+
+  it("returns input unchanged for non-endpoint strings", () => {
+    expect(extractShortRef("agent:floe")).toBe("agent:floe");
   });
 });
