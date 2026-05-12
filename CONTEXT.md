@@ -40,6 +40,27 @@ A committed Markdown activity record for human audit. Located at `.floe/agents/<
 ### Turn
 An endpoint's processing cycle for delivered events. Turn end means "this endpoint has finished processing." It is NOT a message.
 
+### Extension
+A substrate addition that provides tools and/or pulse declarations to agents. Lives in `.floe/extensions/NAME/` with an `extension.json` manifest and a TypeScript entry point. Discovered and loaded by the bridge at workspace attach time.
+_Avoid_: Plugin, module, add-on
+
+### Extension Manifest
+A JSON file (`extension.json`) declaring extension metadata, capabilities, and optional pulse schedules. Schema-versioned (`floe.extension.v1`).
+
+### Extension Entry Point
+A TypeScript file that exports a factory function receiving `ExtensionContext` and returning an array of `AgentTool` objects. Loaded via dynamic `import()` under tsx.
+_Avoid_: Pi extension factory (different lifecycle scope)
+
+### Extension Tool Prefix
+Extension tool names are auto-prefixed with the extension name to prevent collisions. Extension declares `name: "add"`, agent sees `todo_add`.
+
+## Relationships
+
+- An **Extension** provides **Tools** and optional **Pulse** declarations
+- An **Endpoint** (agent) declares which **Extensions** it uses via frontmatter `extensions: []`
+- The bridge loads **Extensions** at workspace attach alongside **Endpoints** and **Pulses**
+- Extension-declared **Pulses** are registered as normal **Pulses** — the bus is unaware of extensions
+
 ## Deferred Concepts
 
 ### Idle Pulse

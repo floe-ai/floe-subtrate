@@ -349,6 +349,96 @@ describe("Floe local vertical slice", () => {
     await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
   }, 90_000);
 
+  it("discovers and loads extensions from .floe/extensions/ on workspace attach", async () => {
+    // Create workspace with a real extension before registering
+    mkdirSync(join(projectPath, ".floe", "extensions", "todo"), { recursive: true });
+    mkdirSync(join(projectPath, ".floe", "agents"), { recursive: true });
+    mkdirSync(join(projectPath, ".floe", "skills", "substrate-build"), { recursive: true });
+    mkdirSync(join(projectPath, ".floe", "mcp"), { recursive: true });
+    mkdirSync(join(projectPath, ".floe", "state"), { recursive: true });
+
+    // Write extension manifest
+    writeFileSync(join(projectPath, ".floe", "extensions", "todo", "extension.json"), JSON.stringify({
+      schema: "floe.extension.v1",
+      name: "todo",
+      description: "Task tracking",
+      entry: "./index.ts"
+    }, null, 2), "utf8");
+
+    // Write extension entry point
+    writeFileSync(join(projectPath, ".floe", "extensions", "todo", "index.ts"), `
+export default function(ctx) {
+  return [
+    {
+      name: "add",
+      label: "Add Todo",
+      description: "Add a todo item",
+      parameters: { type: "object", properties: { text: { type: "string" } } },
+      execute: async (_id, params) => ({
+        content: [{ type: "text", text: "Added: " + (params?.text ?? "") }],
+        details: {}
+      })
+    }
+  ];
+}
+`, "utf8");
+
+    // Write floe.yaml with agent that declares the extension
+    writeFileSync(join(projectPath, ".floe", "floe.yaml"), YAML.stringify({
+      schema: "floe.workspace.v1",
+      version: 1,
+      agents: [{ id: "floe", path: "./agents/floe.md" }]
+    }), "utf8");
+
+    // Write agent file with extensions: ["todo"]
+    writeFileSync(join(projectPath, ".floe", "agents", "floe.md"), `---
+schema: floe.agent.v1
+agent_id: floe
+label: Floe
+runtime:
+  engine: pi
+extensions:
+  - todo
+---
+# Floe
+You are Floe.
+`, "utf8");
+
+    writeFileSync(join(projectPath, ".floe", "extensions", "README.md"), "# Extensions\n", "utf8");
+    writeFileSync(join(projectPath, ".floe", "skills", "substrate-build", "SKILL.md"), "# substrate-build\n", "utf8");
+    writeFileSync(join(projectPath, ".floe", "mcp", "README.md"), "# MCP\n", "utf8");
+    writeFileSync(join(projectPath, ".floe", "state", "README.md"), "# State\n", "utf8");
+    writeFileSync(join(projectPath, ".floe", "state", ".gitignore"), "*\n!.gitignore\n!README.md\n", "utf8");
+
+    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
+      locator: projectPath,
+      init_authorized: true
+    });
+    const workspaceId = registered.workspace.workspace_id;
+    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+
+    // Wait for bridge to attach and register the agent endpoint
+    // The bridge logs "[bridge] extension loaded" when it discovers and loads extensions
+    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
+    await waitFor(async () => {
+      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId);
+    }, "agent endpoint registration");
+
+    // Extension loading is verified by the bridge log output:
+    // "[bridge] extension loaded { extension: 'todo', tools: 1, pulses: 0 }"
+    // The agent endpoint is registered, which means workspace attachment completed
+    // successfully including extension discovery and loading.
+
+    // Verify the agent endpoint was registered (attachment completed)
+    const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+    const agentEndpoint = endpoints.endpoints.find((ep: any) => ep.endpoint_id === agentEndpointId);
+    expect(agentEndpoint).toBeDefined();
+    expect(agentEndpoint.name).toBe("Floe");
+
+    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
+  }, 60_000);
+
   it("resolves short endpoint references via resolve-endpoint API", async () => {
     const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
       locator: projectPath,

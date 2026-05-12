@@ -236,9 +236,12 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     const pulseTools = createPulseTools(context.bus, bundle.workspace_id, context.workspace_locator);
     const actorTools = createActorTools(context.bus, bundle.workspace_id, context.workspace_locator);
 
+    // Collect extension tools
+    const extensionTools = (context.extensions ?? []).flatMap(ext => ext.tools);
+
     state.agent = this.agentFactory({
       model,
-      tools: [emitTool, listEndpointsTool, resolveDestinationTool, ...pulseTools, ...actorTools, ...workspaceTools],
+      tools: [emitTool, listEndpointsTool, resolveDestinationTool, ...pulseTools, ...actorTools, ...extensionTools, ...workspaceTools],
       systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);

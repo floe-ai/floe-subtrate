@@ -9,6 +9,7 @@ export type AgentConfig = {
   file: string;
   frontmatter: Record<string, unknown>;
   body: string;
+  extensions: string[];
 };
 
 export type PulseConfig = {
@@ -192,7 +193,10 @@ export function loadProject(workspacePath: string): ProjectLoadResult {
       name: String(parsed.frontmatter.name ?? titleCase(agentId)),
       file,
       frontmatter: parsed.frontmatter,
-      body: parsed.body
+      body: parsed.body,
+      extensions: Array.isArray(parsed.frontmatter.extensions)
+        ? parsed.frontmatter.extensions.map(String)
+        : []
     });
   }
 
