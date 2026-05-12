@@ -170,6 +170,10 @@ export class BusClient {
     return this.post(`/v1/pulses/${encodeURIComponent(pulseId)}/cancel`, {});
   }
 
+  async requestConfigSnapshot(workspaceId: string): Promise<unknown> {
+    return this.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/config-snapshot`, {});
+  }
+
   private async get(path: string): Promise<unknown> {
     const response = await fetch(`${this.baseUrl}${path}`);
     if (!response.ok) throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
