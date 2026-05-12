@@ -9,6 +9,7 @@ import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
 import { BusStore, type EventCommand } from "./store.js";
+import { PulseScheduler } from "./pulse-scheduler.js";
 
 const EventCommandSchema = z.object({
   type: z.string().min(1),
@@ -451,6 +452,110 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return reply.code(202).send({ ok: true, event });
   });
 
+  // ---------------------------------------------------------------------------
+  // Pulse API
+  // ---------------------------------------------------------------------------
+
+  const pulseScheduler = new PulseScheduler((pulseId) => {
+    firePulse(pulseId, store, broadcast, pulseScheduler);
+  });
+
+  app.post("/v1/pulses", async (request, reply) => {
+    const body = z.object({
+      pulse_id: z.string().min(1),
+      workspace_id: z.string().min(1),
+      scope: z.enum(["workspace", "local"]).optional(),
+      trigger: z.object({
+        type: z.enum(["once", "cron"]),
+        at: z.string().optional(),
+        schedule: z.string().optional(),
+        timezone: z.string().optional()
+      }),
+      content: z.record(z.unknown()),
+      subscribers: z.array(z.object({
+        endpoint_ref: z.string().min(1)
+      })),
+      created_by: z.string().optional()
+    }).parse(request.body);
+    const pulse = store.createPulse(body, broadcast);
+    // Schedule in the priority queue
+    const record = pulse as any;
+    if (record.status === "active" && record.next_fire_at) {
+      pulseScheduler.addPulse(record.pulse_id, new Date(record.next_fire_at));
+    }
+    return reply.code(201).send({ pulse });
+  });
+
+  app.get("/v1/pulses", async (request) => {
+    const query = z.object({
+      workspace_id: z.string().optional(),
+      status: z.string().optional()
+    }).parse(request.query);
+    return { pulses: store.listPulses(query) };
+  });
+
+  app.post("/v1/pulses/:pulse_id/pause", async (request) => {
+    const params = z.object({ pulse_id: z.string() }).parse(request.params);
+    pulseScheduler.removePulse(params.pulse_id);
+    return { pulse: store.updatePulseStatus(params.pulse_id, "paused", broadcast) };
+  });
+
+  app.post("/v1/pulses/:pulse_id/resume", async (request) => {
+    const params = z.object({ pulse_id: z.string() }).parse(request.params);
+    const pulse = store.updatePulseStatus(params.pulse_id, "active", broadcast) as any;
+    if (pulse) {
+      const trigger = pulse.trigger as { type: string; schedule?: string; timezone?: string; at?: string };
+      if (trigger.type === "cron") {
+        // Recalculate next fire from now on resume
+        const nextFireAt = store.calculateNextFireAt(trigger);
+        if (nextFireAt) {
+          store.db.prepare("UPDATE pulses SET next_fire_at = ? WHERE pulse_id = ?").run(nextFireAt, params.pulse_id);
+          pulseScheduler.addPulse(params.pulse_id, new Date(nextFireAt));
+        }
+      } else if (pulse.next_fire_at) {
+        pulseScheduler.addPulse(params.pulse_id, new Date(pulse.next_fire_at));
+      }
+    }
+    return { pulse: store.getPulse(params.pulse_id) };
+  });
+
+  app.post("/v1/pulses/:pulse_id/cancel", async (request) => {
+    const params = z.object({ pulse_id: z.string() }).parse(request.params);
+    pulseScheduler.removePulse(params.pulse_id);
+    return { pulse: store.updatePulseStatus(params.pulse_id, "cancelled", broadcast) };
+  });
+
+  app.post("/v1/pulses/:pulse_id/subscribe", async (request) => {
+    const params = z.object({ pulse_id: z.string() }).parse(request.params);
+    const body = z.object({
+      endpoint_ref: z.string().min(1)
+    }).parse(request.body);
+    store.addPulseSubscriber(params.pulse_id, body);
+    return { ok: true };
+  });
+
+  app.post("/v1/pulses/:pulse_id/unsubscribe", async (request) => {
+    const params = z.object({ pulse_id: z.string() }).parse(request.params);
+    const body = z.object({
+      endpoint_ref: z.string().min(1)
+    }).parse(request.body);
+    store.removePulseSubscriber(params.pulse_id, body);
+    return { ok: true };
+  });
+
+  // Hydrate scheduler from persisted pulse state on startup
+  const activePulses = store.getActivePulsesForScheduler();
+  for (const pulse of activePulses) {
+    if (pulse.next_fire_at) {
+      pulseScheduler.addPulse(pulse.pulse_id, new Date(pulse.next_fire_at));
+    }
+  }
+  pulseScheduler.start();
+
+  app.addHook("onClose", async () => {
+    pulseScheduler.stop();
+  });
+
   return {
     app,
     store,
@@ -460,6 +565,59 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       await app.listen({ host, port });
     }
   };
+}
+
+function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, payload: Record<string, unknown>) => void, pulseScheduler: PulseScheduler): void {
+  const pulse = store.getPulse(pulseId) as any;
+  if (!pulse || pulse.status !== "active") return;
+
+  const subscribers = store.getPulseSubscribers(pulseId);
+  if (subscribers.length === 0) return;
+
+  const fireTimestamp = new Date().toISOString();
+  const threadId = `pulse:${pulseId}:${fireTimestamp}`;
+  const trigger = pulse.trigger as { type: string; schedule?: string; timezone?: string; at?: string };
+
+  for (const subscriber of subscribers) {
+    const endpointId = store.resolveSubscriberEndpointId(pulse.workspace_id, subscriber.endpoint_ref);
+    const command = {
+      type: "pulse.fired",
+      workspace_id: pulse.workspace_id,
+      source_endpoint_id: "system:pulse",
+      destination: { kind: "endpoint" as const, endpoint_id: endpointId },
+      thread_id: threadId,
+      correlation_id: null,
+      content: {
+        ...pulse.content,
+        pulse_id: pulseId
+      },
+      response: { expected: false },
+      metadata: {
+        pulse_id: pulseId,
+        trigger_type: trigger.type,
+        schedule: trigger.schedule ?? trigger.at ?? null,
+        fire_number: (pulse.fire_count ?? 0) + 1
+      }
+    };
+    try {
+      store.submitEvent(command, broadcast);
+    } catch (error) {
+      console.error("[bus] pulse event emission failed", { pulse_id: pulseId, subscriber, error });
+    }
+  }
+
+  // For one-off pulses, mark as completed. For cron, calculate next fire time and re-schedule.
+  let nextFireAt: string | null = null;
+  if (trigger.type === "cron") {
+    nextFireAt = store.calculateNextFireAt(trigger);
+  }
+  store.recordPulseFired(pulseId, nextFireAt);
+
+  if (nextFireAt) {
+    pulseScheduler.addPulse(pulseId, new Date(nextFireAt));
+  }
+
+  broadcast("pulse_fired", { pulse_id: pulseId, thread_id: threadId, subscriber_count: subscribers.length });
 }
 
 function loadAuthProfiles(configPath: string, config: LocalConfig): Array<{

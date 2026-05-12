@@ -186,6 +186,169 @@ describe("Floe local vertical slice", () => {
     expect(existsSync(projectPath)).toBe(false);
   }, 90_000);
 
+  it("fires a one-off pulse and delivers pulse.fired event to subscriber", async () => {
+    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
+      locator: projectPath,
+      init_authorized: true
+    });
+    const workspaceId = registered.workspace.workspace_id;
+    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+
+    // Wait for bridge to set up the workspace (agents + endpoints)
+    await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
+    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
+    const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
+
+    await waitFor(async () => {
+      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId);
+    }, "agent endpoint registration");
+
+    await post("/v1/endpoints/register", {
+      endpoint_id: humanEndpointId,
+      workspace_id: workspaceId,
+      actor_type: "human",
+      name: "Operator",
+      status: "online"
+    });
+    await post("/v1/runtime/bindings", {
+      scope: "workspace_default",
+      workspace_id: workspaceId,
+      auth_profile: "copilot-atvi"
+    });
+
+    // Wait for agent endpoint to become idle (runtime configured)
+    await waitFor(async () => {
+      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "idle");
+    }, "agent runtime configured");
+
+    // Create a one-off pulse that fires 2 seconds from now
+    const fireAt = new Date(Date.now() + 2_000).toISOString();
+    const pulseId = "test-pulse-once";
+    const created = await post<{ pulse: any }>("/v1/pulses", {
+      pulse_id: pulseId,
+      workspace_id: workspaceId,
+      scope: "local",
+      trigger: { type: "once", at: fireAt },
+      content: { text: "Pulse test message" },
+      subscribers: [{ endpoint_ref: `agent:floe` }],
+      created_by: humanEndpointId
+    });
+    expect(created.pulse.pulse_id).toBe(pulseId);
+    expect(created.pulse.status).toBe("active");
+
+    // Verify the pulse appears in the list
+    const listed = await get<{ pulses: any[] }>(`/v1/pulses?workspace_id=${encodeURIComponent(workspaceId)}`);
+    expect(listed.pulses.some((p) => p.pulse_id === pulseId)).toBe(true);
+
+    // Wait for the pulse to fire — we should see pulse_fired on the WebSocket
+    await waitFor(() => sawBusEvents(["pulse_created", "pulse_fired"]), "pulse fired broadcast", 15_000);
+
+    // Verify a pulse.fired event was submitted
+    await waitFor(async () => {
+      const events = await get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
+      return events.events.some((event) => event.type === "pulse.fired" && event.source_endpoint_id === "system:pulse");
+    }, "pulse.fired event in store");
+
+    // Verify the pulse status is now completed
+    const pulseAfter = await get<{ pulses: any[] }>(`/v1/pulses?workspace_id=${encodeURIComponent(workspaceId)}&status=completed`);
+    expect(pulseAfter.pulses.some((p) => p.pulse_id === pulseId && p.status === "completed")).toBe(true);
+
+    // Clean up
+    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
+  }, 60_000);
+
+  it("fires a cron pulse multiple times, pauses, and cancels", async () => {
+    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
+      locator: projectPath,
+      init_authorized: true
+    });
+    const workspaceId = registered.workspace.workspace_id;
+    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+
+    // Wait for bridge to set up the workspace
+    await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
+    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
+    const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
+
+    await waitFor(async () => {
+      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId);
+    }, "agent endpoint registration");
+
+    await post("/v1/endpoints/register", {
+      endpoint_id: humanEndpointId,
+      workspace_id: workspaceId,
+      actor_type: "human",
+      name: "Operator",
+      status: "online"
+    });
+    await post("/v1/runtime/bindings", {
+      scope: "workspace_default",
+      workspace_id: workspaceId,
+      auth_profile: "copilot-atvi"
+    });
+
+    await waitFor(async () => {
+      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "idle");
+    }, "agent runtime configured");
+
+    // Create a cron pulse that fires every 2 seconds
+    const pulseId = "test-pulse-cron";
+    const created = await post<{ pulse: any }>("/v1/pulses", {
+      pulse_id: pulseId,
+      workspace_id: workspaceId,
+      scope: "local",
+      trigger: { type: "cron", schedule: "*/2 * * * * *", timezone: "UTC" },
+      content: { text: "Cron pulse test" },
+      subscribers: [{ endpoint_ref: "agent:floe" }],
+      created_by: humanEndpointId
+    });
+    expect(created.pulse.pulse_id).toBe(pulseId);
+    expect(created.pulse.status).toBe("active");
+
+    // Wait for at least 2 fires
+    await waitFor(async () => {
+      const events = await get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
+      const pulseFires = events.events.filter(
+        (event) => event.type === "pulse.fired" && event.content?.pulse_id === pulseId
+      );
+      return pulseFires.length >= 2;
+    }, "cron pulse fires at least twice", 30_000);
+
+    // Verify fire_count incremented
+    const pulseAfterFires = await get<{ pulses: any[] }>(`/v1/pulses?workspace_id=${encodeURIComponent(workspaceId)}`);
+    const activePulse = pulseAfterFires.pulses.find((p) => p.pulse_id === pulseId);
+    expect(activePulse).toBeDefined();
+    expect(activePulse!.fire_count).toBeGreaterThanOrEqual(2);
+    expect(activePulse!.status).toBe("active");
+
+    // Pause the pulse
+    await post(`/v1/pulses/${pulseId}/pause`, {});
+    const pausedList = await get<{ pulses: any[] }>(`/v1/pulses?workspace_id=${encodeURIComponent(workspaceId)}&status=paused`);
+    expect(pausedList.pulses.some((p) => p.pulse_id === pulseId)).toBe(true);
+
+    // Record fire count at pause time
+    const fireCountAtPause = (await get<{ pulses: any[] }>(`/v1/pulses?workspace_id=${encodeURIComponent(workspaceId)}`))
+      .pulses.find((p) => p.pulse_id === pulseId)!.fire_count;
+
+    // Wait 4 seconds — no more fires should happen
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    const afterPauseWait = await get<{ pulses: any[] }>(`/v1/pulses?workspace_id=${encodeURIComponent(workspaceId)}`);
+    const pausedPulse = afterPauseWait.pulses.find((p) => p.pulse_id === pulseId);
+    expect(pausedPulse!.fire_count).toBe(fireCountAtPause);
+
+    // Cancel the pulse
+    await post(`/v1/pulses/${pulseId}/cancel`, {});
+    const cancelledList = await get<{ pulses: any[] }>(`/v1/pulses?workspace_id=${encodeURIComponent(workspaceId)}&status=cancelled`);
+    expect(cancelledList.pulses.some((p) => p.pulse_id === pulseId && p.status === "cancelled")).toBe(true);
+
+    // Clean up
+    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
+  }, 90_000);
+
   function sawBusEvents(types: string[]): boolean {
     return types.every((type) => busMessages.some((message) => message.type === type));
   }

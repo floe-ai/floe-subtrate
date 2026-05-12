@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, parse, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { CronExpressionParser } from "cron-parser";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 
@@ -240,6 +241,34 @@ export class BusStore {
 
       CREATE INDEX IF NOT EXISTS idx_runtime_bindings_workspace
         ON runtime_bindings(workspace_id, scope, endpoint_id);
+
+      CREATE TABLE IF NOT EXISTS pulses (
+        pulse_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'local',
+        trigger_json TEXT NOT NULL,
+        content_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        next_fire_at TEXT,
+        last_fired_at TEXT,
+        fire_count INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pulses_workspace
+        ON pulses(workspace_id, status);
+
+      CREATE INDEX IF NOT EXISTS idx_pulses_next_fire
+        ON pulses(status, next_fire_at);
+
+      CREATE TABLE IF NOT EXISTS pulse_subscribers (
+        pulse_id TEXT NOT NULL,
+        subscriber_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (pulse_id, subscriber_json)
+      );
     `);
     this.addColumnIfMissing("events", "destination_endpoint_id", "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing("events", "destination_json", "TEXT");
@@ -841,6 +870,182 @@ export class BusStore {
       metadata: { route_id: routeId }
     };
     return this.submitEvent(command, broadcast).event;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pulse CRUD
+  // ---------------------------------------------------------------------------
+
+  createPulse(input: {
+    pulse_id: string;
+    workspace_id: string;
+    scope?: string;
+    trigger: { type: string; at?: string; schedule?: string; timezone?: string };
+    content: Record<string, unknown>;
+    subscribers: Array<{ endpoint_ref: string }>;
+    created_by?: string;
+  }, broadcast: Broadcast): unknown {
+    const timestamp = now();
+    const nextFireAt = this.calculateNextFireAt(input.trigger);
+    this.db.prepare(`
+      INSERT INTO pulses (pulse_id, workspace_id, scope, trigger_json, content_json, status, created_by, created_at, updated_at, next_fire_at)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+      ON CONFLICT(pulse_id) DO UPDATE SET
+        trigger_json = excluded.trigger_json,
+        content_json = excluded.content_json,
+        scope = excluded.scope,
+        updated_at = excluded.updated_at,
+        next_fire_at = excluded.next_fire_at,
+        status = CASE WHEN pulses.status = 'cancelled' THEN pulses.status ELSE excluded.status END
+    `).run(
+      input.pulse_id,
+      input.workspace_id,
+      input.scope ?? "local",
+      json(input.trigger),
+      json(input.content),
+      input.created_by ?? null,
+      timestamp,
+      timestamp,
+      nextFireAt
+    );
+    // Upsert subscribers
+    for (const subscriber of input.subscribers) {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO pulse_subscribers (pulse_id, subscriber_json, created_at)
+        VALUES (?, ?, ?)
+      `).run(input.pulse_id, json(subscriber), timestamp);
+    }
+    const pulse = this.getPulse(input.pulse_id);
+    broadcast("pulse_created", { pulse });
+    return pulse;
+  }
+
+  getPulse(pulseId: string): unknown {
+    const row = this.db.prepare("SELECT * FROM pulses WHERE pulse_id = ?").get(pulseId) as any;
+    if (!row) return null;
+    return this.rowToPulse(row);
+  }
+
+  listPulses(filters: { workspace_id?: string; status?: string }): unknown[] {
+    let query = "SELECT * FROM pulses WHERE 1=1";
+    const params: string[] = [];
+    if (filters.workspace_id) {
+      query += " AND workspace_id = ?";
+      params.push(filters.workspace_id);
+    }
+    if (filters.status) {
+      query += " AND status = ?";
+      params.push(filters.status);
+    }
+    query += " ORDER BY created_at DESC";
+    const rows = this.db.prepare(query).all(...params) as any[];
+    return rows.map((row) => this.rowToPulse(row));
+  }
+
+  getPulseSubscribers(pulseId: string): Array<{ endpoint_ref: string }> {
+    const rows = this.db.prepare("SELECT subscriber_json FROM pulse_subscribers WHERE pulse_id = ?")
+      .all(pulseId) as Array<{ subscriber_json: string }>;
+    return rows.map((row) => parseJson<{ endpoint_ref: string }>(row.subscriber_json));
+  }
+
+  updatePulseStatus(pulseId: string, status: string, broadcast: Broadcast): unknown {
+    const timestamp = now();
+    this.db.prepare("UPDATE pulses SET status = ?, updated_at = ? WHERE pulse_id = ?")
+      .run(status, timestamp, pulseId);
+    const pulse = this.getPulse(pulseId);
+    broadcast(`pulse_${status}`, { pulse });
+    return pulse;
+  }
+
+  addPulseSubscriber(pulseId: string, subscriber: { endpoint_ref: string }): void {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO pulse_subscribers (pulse_id, subscriber_json, created_at)
+      VALUES (?, ?, ?)
+    `).run(pulseId, json(subscriber), now());
+  }
+
+  removePulseSubscriber(pulseId: string, subscriber: { endpoint_ref: string }): void {
+    this.db.prepare("DELETE FROM pulse_subscribers WHERE pulse_id = ? AND subscriber_json = ?")
+      .run(pulseId, json(subscriber));
+  }
+
+  recordPulseFired(pulseId: string, nextFireAt: string | null): void {
+    const timestamp = now();
+    const status = nextFireAt ? "active" : "completed";
+    this.db.prepare(`
+      UPDATE pulses
+      SET last_fired_at = ?, fire_count = fire_count + 1, next_fire_at = ?, status = ?, updated_at = ?
+      WHERE pulse_id = ?
+    `).run(timestamp, nextFireAt, status, timestamp, pulseId);
+  }
+
+  getActivePulsesForScheduler(): Array<{
+    pulse_id: string;
+    workspace_id: string;
+    trigger: { type: string; at?: string; schedule?: string; timezone?: string };
+    content: Record<string, unknown>;
+    next_fire_at: string | null;
+  }> {
+    const rows = this.db.prepare(`
+      SELECT pulse_id, workspace_id, trigger_json, content_json, next_fire_at
+      FROM pulses
+      WHERE status = 'active' AND next_fire_at IS NOT NULL
+      ORDER BY next_fire_at ASC
+    `).all() as any[];
+    return rows.map((row) => ({
+      pulse_id: row.pulse_id,
+      workspace_id: row.workspace_id,
+      trigger: parseJson<{ type: string; at?: string; schedule?: string; timezone?: string }>(row.trigger_json),
+      content: parseJson<Record<string, unknown>>(row.content_json),
+      next_fire_at: row.next_fire_at
+    }));
+  }
+
+  resolveSubscriberEndpointId(workspaceId: string, endpointRef: string): string {
+    // Try to find an endpoint matching the ref pattern
+    const fullId = `endpoint:${workspaceId}:${endpointRef}`;
+    const endpoint = this.db.prepare("SELECT endpoint_id FROM endpoints WHERE endpoint_id = ?").get(fullId) as any;
+    if (endpoint) return endpoint.endpoint_id;
+    // Try direct match
+    const direct = this.db.prepare("SELECT endpoint_id FROM endpoints WHERE endpoint_id = ?").get(endpointRef) as any;
+    if (direct) return direct.endpoint_id;
+    return fullId;
+  }
+
+  calculateNextFireAt(trigger: { type: string; at?: string; schedule?: string; timezone?: string }, fromDate?: Date): string | null {
+    if (trigger.type === "once" && trigger.at) {
+      return new Date(trigger.at).toISOString();
+    }
+    if (trigger.type === "cron" && trigger.schedule) {
+      try {
+        const options: { currentDate?: Date; tz?: string } = {};
+        if (fromDate) options.currentDate = fromDate;
+        if (trigger.timezone) options.tz = trigger.timezone;
+        const expr = CronExpressionParser.parse(trigger.schedule, options);
+        const next = expr.next();
+        return next.toDate().toISOString();
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private rowToPulse(row: any): Record<string, unknown> {
+    return {
+      pulse_id: row.pulse_id,
+      workspace_id: row.workspace_id,
+      scope: row.scope,
+      trigger: parseJson<unknown>(row.trigger_json),
+      content: parseJson<unknown>(row.content_json),
+      status: row.status,
+      created_by: row.created_by,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      next_fire_at: row.next_fire_at,
+      last_fired_at: row.last_fired_at,
+      fire_count: row.fire_count
+    };
   }
 
   private normalizeResponse(response?: ResponseExpectation): ResponseExpectation {
