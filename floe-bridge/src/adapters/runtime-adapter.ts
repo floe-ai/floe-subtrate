@@ -1,6 +1,7 @@
 import type { BusClient, DeliveryBundle } from "../bus-client.js";
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { LoadedExtension } from "../extension-loader.js";
+import type { HookRegistry } from "../hooks.js";
 
 export type RuntimeContext = {
   bridge_id: string;
@@ -11,6 +12,8 @@ export type RuntimeContext = {
   agent_id?: string;
   /** Loaded extensions filtered for this agent */
   extensions?: LoadedExtension[];
+  /** Hook registry for firing lifecycle hooks */
+  hooks?: HookRegistry;
 };
 
 export interface RuntimeAdapter {

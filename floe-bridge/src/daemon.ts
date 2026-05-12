@@ -11,6 +11,7 @@ import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
 import { PiAgentCoreAdapter } from "./adapters/pi-agent-core-adapter.js";
 import { loadExtensions, type LoadedExtension } from "./extension-loader.js";
+import { HookRegistry } from "./hooks.js";
 
 type Timer = ReturnType<typeof setInterval>;
 
@@ -28,6 +29,7 @@ export class BridgeDaemon {
   readonly adapter: RuntimeAdapter;
   private endpointRuntime = new Map<string, EndpointEntry>();
   private workspaceExtensions = new Map<string, LoadedExtension[]>();
+  private workspaceHooks = new Map<string, HookRegistry>();
   private timers: Timer[] = [];
   private attaching = false;
   private processing = false;
@@ -235,12 +237,14 @@ export class BridgeDaemon {
       // Load extensions
       const extensionsDir = join(locator, ".floe", "extensions");
       try {
+        const hookRegistry = new HookRegistry();
         const loaded = await loadExtensions(extensionsDir, {
           workspacePath: locator,
           busClient: this.bus,
           workspaceId: workspace.workspace_id
-        });
+        }, hookRegistry);
         this.workspaceExtensions.set(workspace.workspace_id, loaded);
+        this.workspaceHooks.set(workspace.workspace_id, hookRegistry);
 
         for (const ext of loaded) {
           if (ext.errors.length > 0) {
@@ -434,12 +438,15 @@ export class BridgeDaemon {
       const workspaceExts = this.workspaceExtensions.get(delivery.workspace_id) ?? [];
       const agentExtensions = workspaceExts.filter(ext => agentExtensionNames.includes(ext.name) && ext.errors.length === 0);
 
+      const hookRegistry = this.workspaceHooks.get(delivery.workspace_id);
+
       await this.adapter.handleBundle({
         bridge_id: this.bridgeId,
         bus: this.bus,
         workspace_locator: endpointEntry?.workspace_locator,
         agent_id: endpointEntry?.agent_id,
-        extensions: agentExtensions
+        extensions: agentExtensions,
+        hooks: hookRegistry
       }, delivery, effectiveRuntime);
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
       console.log("[bridge] delivery acknowledged", { delivery_id: delivery.delivery_id });

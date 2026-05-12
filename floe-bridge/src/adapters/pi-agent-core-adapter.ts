@@ -91,12 +91,26 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         provider: resolved.provider,
         model: resolved.model.id
       });
+      // Fire SessionStart hook
+      if (context.hooks?.hasHandlers("SessionStart")) {
+        await context.hooks.fire("SessionStart", {
+          endpoint_id: bundle.endpoint_id,
+          workspace_id: bundle.workspace_id
+        });
+      }
     } else {
       console.log("[bridge] pi session reused", {
         endpoint_id: bundle.endpoint_id,
         provider: resolved.provider,
         model: resolved.model.id
       });
+      // Fire SessionResume hook
+      if (context.hooks?.hasHandlers("SessionResume")) {
+        await context.hooks.fire("SessionResume", {
+          endpoint_id: bundle.endpoint_id,
+          workspace_id: bundle.workspace_id
+        });
+      }
     }
 
     if (session.activeTurn && !session.activeTurn.finalized) {
@@ -135,12 +149,35 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       prompt_length: prompt.length
     });
     try {
+      // Fire BeforeTurn hook
+      if (context.hooks?.hasHandlers("BeforeTurn")) {
+        await context.hooks.fire("BeforeTurn", {
+          endpoint_id: bundle.endpoint_id,
+          workspace_id: bundle.workspace_id,
+          delivery_id: bundle.delivery_id,
+          thread_id: bundle.events[0]?.thread_id
+        });
+      }
+
       await session.agent.prompt({
         role: "user",
         timestamp: Date.now(),
         content: [{ type: "text", text: prompt }]
       } as any);
       await this.awaitTurnCompletion(context, session, turn);
+
+      // Fire TurnEnd hook
+      if (context.hooks?.hasHandlers("TurnEnd")) {
+        await context.hooks.fire("TurnEnd", {
+          endpoint_id: bundle.endpoint_id,
+          workspace_id: bundle.workspace_id,
+          delivery_id: bundle.delivery_id,
+          visible_output: turn.visible_output,
+          tool_activity: turn.tool_activity,
+          emitted_events: turn.emitted_events
+        });
+      }
+
       // Write work log after successful turn completion
       this.writeWorkLog(context, bundle, turn, "completed");
     } catch (error) {
@@ -157,6 +194,17 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         provider: resolved.provider,
         model: resolved.model.id
       });
+
+      // Fire Error hook
+      if (context.hooks?.hasHandlers("Error")) {
+        await context.hooks.fire("Error", {
+          endpoint_id: bundle.endpoint_id,
+          workspace_id: bundle.workspace_id,
+          delivery_id: bundle.delivery_id,
+          error: errorMessage
+        });
+      }
+
       if (session.activeTurn === turn) session.activeTurn = undefined;
       if (!turn.finalized) {
         turn.finalized = true;
@@ -417,6 +465,15 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             toolName: event.toolName,
             args: event.args
           });
+          // Fire BeforeToolUse hook
+          if (context.hooks?.hasHandlers("BeforeToolUse")) {
+            await context.hooks.fire("BeforeToolUse", {
+              endpoint_id: turn.endpoint_id,
+              workspace_id: turn.workspace_id,
+              toolCallId: event.toolCallId,
+              toolName: event.toolName
+            });
+          }
           // Track tool activity for work log
           turn.tool_activity.push({
             name: event.toolName,
@@ -437,6 +494,17 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           });
           // Update tool activity with error status
           if (toolEntry) toolEntry.is_error = event.isError;
+          // Fire AfterToolUse or ToolUseFailed hook
+          const hookName = event.isError ? "ToolUseFailed" as const : "AfterToolUse" as const;
+          if (context.hooks?.hasHandlers(hookName)) {
+            await context.hooks.fire(hookName, {
+              endpoint_id: turn.endpoint_id,
+              workspace_id: turn.workspace_id,
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              isError: event.isError
+            });
+          }
         }
 
         // agent_end is the correct finalization signal — it fires ONCE after all

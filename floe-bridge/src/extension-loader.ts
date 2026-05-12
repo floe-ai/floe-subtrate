@@ -12,6 +12,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { HookRegistry, HookName, HookHandler } from "./hooks.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -37,6 +38,9 @@ export interface ExtensionContext {
   busClient: any;
   workspaceId: string;
   extensionName: string;
+  hooks: {
+    on(hook: HookName, handler: HookHandler): void;
+  };
 }
 
 export interface LoadedExtension {
@@ -88,7 +92,8 @@ function validateManifest(raw: unknown): { ok: true; manifest: ExtensionManifest
 async function loadSingleExtension(
   dirName: string,
   extDir: string,
-  context: Omit<ExtensionContext, "extensionName">
+  context: Omit<ExtensionContext, "extensionName" | "hooks">,
+  hookRegistry?: HookRegistry
 ): Promise<LoadedExtension> {
   const errors: string[] = [];
   const result: LoadedExtension = { name: dirName, tools: [], pulses: [], errors };
@@ -137,6 +142,11 @@ async function loadSingleExtension(
   const extContext: ExtensionContext = {
     ...context,
     extensionName: manifest.name,
+    hooks: {
+      on(hook: HookName, handler: HookHandler) {
+        hookRegistry?.on(hook, manifest.name, handler);
+      }
+    }
   };
 
   let rawTools: any[];
@@ -169,7 +179,8 @@ async function loadSingleExtension(
  */
 export async function loadExtensions(
   extensionsDir: string,
-  context: Omit<ExtensionContext, "extensionName">
+  context: Omit<ExtensionContext, "extensionName" | "hooks">,
+  hookRegistry?: HookRegistry
 ): Promise<LoadedExtension[]> {
   // Handle missing or empty directory
   let entries: string[];
@@ -193,7 +204,7 @@ export async function loadExtensions(
   const results: LoadedExtension[] = [];
   for (const dirName of subdirs) {
     const extDir = join(extensionsDir, dirName);
-    const loaded = await loadSingleExtension(dirName, extDir, context);
+    const loaded = await loadSingleExtension(dirName, extDir, context, hookRegistry);
     results.push(loaded);
   }
 
