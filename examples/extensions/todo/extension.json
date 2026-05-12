@@ -1,0 +1,6 @@
+{
+  "schema": "floe.extension.v1",
+  "name": "todo",
+  "description": "Task tracking extension — manages a workspace-local todo list",
+  "entry": "./index.ts"
+}
