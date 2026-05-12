@@ -10,6 +10,7 @@ import { buildSystemPrompt, renderDestinationContext, appendWorkLog } from "../r
 import type { WorkLogEntry } from "../runtime-core/index.js";
 import { createWorkspaceTools } from "../tools/index.js";
 import type { ToolContext } from "../tools/index.js";
+import { createPulseTools } from "../tools/pulse-tools.js";
 
 type AgentLike = {
   prompt(input: unknown): Promise<void>;
@@ -230,9 +231,11 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         } satisfies ToolContext)
       : [];
 
+    const pulseTools = createPulseTools(context.bus, bundle.workspace_id, context.workspace_locator);
+
     state.agent = this.agentFactory({
       model,
-      tools: [emitTool, listEndpointsTool, ...workspaceTools],
+      tools: [emitTool, listEndpointsTool, ...pulseTools, ...workspaceTools],
       systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);

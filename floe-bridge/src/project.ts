@@ -11,9 +11,17 @@ export type AgentConfig = {
   body: string;
 };
 
+export type PulseConfig = {
+  id: string;
+  trigger: { type: string; at?: string; schedule?: string; timezone?: string };
+  content: Record<string, unknown>;
+  subscribers?: Array<{ endpoint_ref: string }>;
+};
+
 export type ProjectLoadResult = {
   config_hash: string;
   agents: AgentConfig[];
+  pulses: PulseConfig[];
   validation: {
     ok: boolean;
     warnings: string[];
@@ -133,6 +141,7 @@ export function loadProject(workspacePath: string): ProjectLoadResult {
     return {
       config_hash: "",
       agents: [],
+      pulses: [],
       validation: { ok: false, warnings, errors: [".floe folder is missing"] }
     };
   }
@@ -187,9 +196,19 @@ export function loadProject(workspacePath: string): ProjectLoadResult {
     });
   }
 
+  const pulses: PulseConfig[] = Array.isArray(projectConfig.pulses)
+    ? projectConfig.pulses.map((p: any) => ({
+        id: String(p.id ?? ""),
+        trigger: p.trigger ?? { type: "once" },
+        content: p.content ?? {},
+        subscribers: Array.isArray(p.subscribers) ? p.subscribers : [],
+      }))
+    : [];
+
   return {
     config_hash: hashFloeDir(floeDir),
     agents,
+    pulses,
     validation: {
       ok: errors.length === 0,
       warnings,

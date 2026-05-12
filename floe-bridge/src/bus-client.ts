@@ -135,6 +135,37 @@ export class BusClient {
     return this.get(`/v1/runtime/bindings/resolve?workspace_id=${encodeURIComponent(workspaceId)}&endpoint_id=${encodeURIComponent(endpointId)}`) as Promise<RuntimeBindingResolution>;
   }
 
+  async createPulse(input: {
+    pulse_id: string;
+    workspace_id: string;
+    scope?: string;
+    trigger: { type: string; at?: string; schedule?: string; timezone?: string };
+    content: Record<string, unknown>;
+    subscribers: Array<{ endpoint_ref: string }>;
+    created_by?: string;
+  }): Promise<unknown> {
+    return this.post("/v1/pulses", input);
+  }
+
+  async listPulses(filters: { workspace_id?: string; status?: string }): Promise<{ pulses: unknown[] }> {
+    const params = new URLSearchParams();
+    if (filters.workspace_id) params.set("workspace_id", filters.workspace_id);
+    if (filters.status) params.set("status", filters.status);
+    return this.get(`/v1/pulses?${params}`) as Promise<{ pulses: unknown[] }>;
+  }
+
+  async pausePulse(pulseId: string): Promise<unknown> {
+    return this.post(`/v1/pulses/${encodeURIComponent(pulseId)}/pause`, {});
+  }
+
+  async resumePulse(pulseId: string): Promise<unknown> {
+    return this.post(`/v1/pulses/${encodeURIComponent(pulseId)}/resume`, {});
+  }
+
+  async cancelPulse(pulseId: string): Promise<unknown> {
+    return this.post(`/v1/pulses/${encodeURIComponent(pulseId)}/cancel`, {});
+  }
+
   private async get(path: string): Promise<unknown> {
     const response = await fetch(`${this.baseUrl}${path}`);
     if (!response.ok) throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);

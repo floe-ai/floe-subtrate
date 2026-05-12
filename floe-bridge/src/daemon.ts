@@ -213,6 +213,22 @@ export class BridgeDaemon {
         });
       }
 
+      // Register pulses defined in floe.yaml
+      for (const pulseDef of project.pulses) {
+        try {
+          await this.bus.createPulse({
+            pulse_id: pulseDef.id,
+            workspace_id: workspace.workspace_id,
+            scope: "workspace",
+            trigger: pulseDef.trigger,
+            content: pulseDef.content,
+            subscribers: pulseDef.subscribers ?? [],
+          });
+        } catch (error) {
+          console.error("[bridge] pulse registration failed", { pulse_id: pulseDef.id, error });
+        }
+      }
+
       await this.reportOnce(workspace.workspace_id, "attached", null, project.config_hash, project.validation);
     } catch (error) {
       await this.reportOnce(workspace.workspace_id, "attach_failed", "bridge_attach_failed", null, {
