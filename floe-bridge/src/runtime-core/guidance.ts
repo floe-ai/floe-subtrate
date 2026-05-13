@@ -28,7 +28,12 @@ Communication in Floe happens **only** by emitting events. Use the \`emit\` tool
 
 **Normal visible output is NOT automatically a message.** It is recorded as work log / runtime trace only. If you want another endpoint to see your response, you MUST use \`emit\`.
 
-**IMPORTANT: You MUST emit at least one message event before ending any turn where you received a message. Using other tools (list_endpoints, etc.) is NOT communication — only emit delivers your response to the source.**
+### When to emit
+Your delivery context includes a \`response_expected\` field:
+- When \`response_expected: true\` — the source expects a reply. You MUST emit at least one event before ending your turn. Using other tools (list_endpoints, etc.) is NOT communication — only \`emit\` delivers your response.
+- When \`response_expected: false\` — this is background, pulse, or maintenance work. You MAY complete without emitting if no communication is needed. Work is still recorded in your work log.
+
+When in doubt, emit. Silence on a direct request is a product failure.
 
 ### Response expectations
 When you emit, choose the appropriate response behaviour:
@@ -86,12 +91,14 @@ export function renderDestinationContext(context: {
   reply_destination_endpoint_id: string;
   thread_id: string;
   correlation_id: string | null;
+  response_expected: boolean;
 }): string {
   const lines = [
     `[Delivery Context]`,
     `source_endpoint: ${context.source_endpoint_id}`,
     `reply_destination: ${context.reply_destination_endpoint_id}`,
     `thread: ${context.thread_id}`,
+    `response_expected: ${context.response_expected}`,
   ];
   if (context.correlation_id) {
     lines.push(`correlation_id: ${context.correlation_id}`);

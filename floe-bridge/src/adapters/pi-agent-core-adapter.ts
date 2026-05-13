@@ -825,11 +825,17 @@ function deliveryToPrompt(bundle: DeliveryBundle, visibleEndpoints: Array<{ endp
   const threadId = trigger?.thread_id || `thread:${bundle.workspace_id}:default`;
   const correlationId = trigger?.correlation_id ?? null;
 
+  // Determine response_expected: true if any event is a direct message
+  const responseExpected = bundle.events.some(
+    (e) => e.type === "message"
+  );
+
   const contextBlock = renderDestinationContext({
     source_endpoint_id: sourceEndpoint,
     reply_destination_endpoint_id: sourceEndpoint,
     thread_id: threadId,
-    correlation_id: correlationId
+    correlation_id: correlationId,
+    response_expected: responseExpected,
   });
 
   // Include visible endpoints in delivery context
