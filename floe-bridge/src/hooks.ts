@@ -23,6 +23,13 @@ export type HookName =
 
 export type HookPayload = Record<string, unknown>;
 
+/**
+ * Hook result with optional context injection.
+ *
+ * inject.source — identifies the extension providing the injection (e.g., "memory", "todo")
+ * inject.content — string content to inject into the agent's context
+ * inject.<other> — additional structured data (rendered as JSON if no content string)
+ */
 export type HookResult = {
   inject?: Record<string, unknown>;
 };

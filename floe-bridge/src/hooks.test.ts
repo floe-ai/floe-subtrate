@@ -95,4 +95,19 @@ describe("HookRegistry", () => {
     expect(listing).toContainEqual({ hook: "SessionStart", count: 1 });
     expect(listing).toHaveLength(2);
   });
+
+  it("BeforeTurn hook inject result can be rendered into prompt context", async () => {
+    registry.on("BeforeTurn", "memory-ext", async () => ({
+      inject: { source: "memory", content: "User last discussed: project deadlines" }
+    }));
+    registry.on("BeforeTurn", "todo-ext", async () => ({
+      inject: { source: "todo", content: "Open tasks: fix bug #42, write docs" }
+    }));
+
+    const results = await registry.fire("BeforeTurn", { delivery_id: "d:1" });
+
+    expect(results).toHaveLength(2);
+    expect(results[0].inject).toEqual({ source: "memory", content: "User last discussed: project deadlines" });
+    expect(results[1].inject).toEqual({ source: "todo", content: "Open tasks: fix bug #42, write docs" });
+  });
 });
