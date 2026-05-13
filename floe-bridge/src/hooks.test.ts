@@ -96,6 +96,36 @@ describe("HookRegistry", () => {
     expect(listing).toHaveLength(2);
   });
 
+  it("Pulse hook fires when pulse.fired event is processed", async () => {
+    const received: HookPayload[] = [];
+    registry.on("Pulse", "pulse-tracker", (payload) => {
+      received.push(payload);
+    });
+
+    await registry.fire("Pulse", {
+      endpoint_id: "ep:1",
+      workspace_id: "ws:1",
+      pulse_id: "reminder-daily",
+      content: { text: "Daily standup reminder" }
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      pulse_id: "reminder-daily",
+      content: { text: "Daily standup reminder" }
+    });
+  });
+
+  it("Pulse hook handler failure does not block delivery processing", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    registry.on("Pulse", "bad-ext", () => { throw new Error("pulse hook crash"); });
+
+    // Should not throw
+    const results = await registry.fire("Pulse", { pulse_id: "test" });
+    expect(results).toEqual([]);
+    consoleSpy.mockRestore();
+  });
+
   it("BeforeTurn hook inject result can be rendered into prompt context", async () => {
     registry.on("BeforeTurn", "memory-ext", async () => ({
       inject: { source: "memory", content: "User last discussed: project deadlines" }

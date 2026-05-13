@@ -168,6 +168,22 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         }
       }
 
+      // Fire Pulse hook when delivery contains pulse.fired events
+      const pulseEvents = bundle.events.filter(e => e.type === "pulse.fired");
+      if (pulseEvents.length > 0 && context.hooks?.hasHandlers("Pulse")) {
+        for (const pulseEvent of pulseEvents) {
+          await context.hooks.fire("Pulse", {
+            endpoint_id: bundle.endpoint_id,
+            workspace_id: bundle.workspace_id,
+            delivery_id: bundle.delivery_id,
+            pulse_id: (pulseEvent.content as any)?.pulse_id ?? (pulseEvent.metadata as any)?.pulse_id,
+            event_id: pulseEvent.event_id,
+            thread_id: pulseEvent.thread_id,
+            content: pulseEvent.content
+          });
+        }
+      }
+
       const finalPrompt = injectedContext ? `${injectedContext}\n\n${prompt}` : prompt;
 
       await session.agent.prompt({
