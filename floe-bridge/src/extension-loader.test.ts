@@ -161,7 +161,7 @@ describe("loadExtensions", () => {
             expression: "0 9 * * *",
             timezone: "America/New_York",
           },
-          subscribers: ["agent:floe"],
+          subscribers: ["floe"],
         },
       ],
     };
@@ -171,7 +171,7 @@ describe("loadExtensions", () => {
     expect(result[0].pulses).toHaveLength(1);
     expect(result[0].pulses[0].id).toBe("daily-review");
     expect(result[0].pulses[0].trigger.type).toBe("cron");
-    expect(result[0].pulses[0].subscribers).toEqual(["agent:floe"]);
+    expect(result[0].pulses[0].subscribers).toEqual(["floe"]);
   });
 
   it("returns error when extension.json is missing", async () => {
