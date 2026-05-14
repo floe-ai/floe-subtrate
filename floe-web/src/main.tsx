@@ -715,7 +715,7 @@ function App() {
       await api(busUrl, `/v1/workspaces/${encodeURIComponent(result.workspace.workspace_id)}/select`, { method: "POST" });
       selectedWorkspaceIdRef.current = result.workspace.workspace_id;
       setSelectedWorkspaceId(result.workspace.workspace_id);
-      await ensureHuman(result.workspace.workspace_id);
+      await ensureOperator(result.workspace.workspace_id);
       await refresh(result.workspace.workspace_id);
       setWorkspacePath("");
       setWorkspaceName("");
@@ -738,7 +738,7 @@ function App() {
     setSelectedBlockId(null);
     setView({ kind: "home" });
     await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, { method: "POST" });
-    await ensureHuman(workspaceId);
+    await ensureOperator(workspaceId);
     await refresh(workspaceId);
   }
 
@@ -760,7 +760,7 @@ function App() {
     await refresh();
   }
 
-  async function ensureHuman(workspaceId: string) {
+  async function ensureOperator(workspaceId: string) {
     await api(busUrl, "/v1/endpoints/register", {
       method: "POST",
       body: {
@@ -811,7 +811,7 @@ function App() {
 
   async function sendFloeMessage() {
     if (!selectedWorkspace || !floeAgent || !channelMessage.trim()) return;
-    await ensureHuman(selectedWorkspace.workspace_id);
+    await ensureOperator(selectedWorkspace.workspace_id);
     const text = channelMessage.trim();
     const body = buildEmitBody({
       workspaceId: selectedWorkspace.workspace_id,
