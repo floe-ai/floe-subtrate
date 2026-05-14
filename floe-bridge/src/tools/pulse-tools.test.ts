@@ -79,7 +79,7 @@ describe("pulse-tools", () => {
         pulse_id: "daily-standup",
         trigger: { type: "cron", schedule: "0 9 * * 1-5", timezone: "Australia/Sydney" },
         content: { text: "Time for standup" },
-        subscribers: [{ endpoint_ref: "agent:floe" }],
+        subscribers: [{ endpoint_ref: "floe" }],
       });
 
       expect(bus.calls).toHaveLength(1);
@@ -89,7 +89,7 @@ describe("pulse-tools", () => {
       expect(input.workspace_id).toBe("ws_test");
       expect(input.scope).toBe("local");
       expect(input.trigger.schedule).toBe("0 9 * * 1-5");
-      expect(input.subscribers).toEqual([{ endpoint_ref: "agent:floe" }]);
+      expect(input.subscribers).toEqual([{ endpoint_ref: "floe" }]);
     });
 
     it("writes to floe.yaml when scope is workspace", async () => {
@@ -99,7 +99,7 @@ describe("pulse-tools", () => {
         pulse_id: "nightly-review",
         trigger: { type: "cron", schedule: "0 22 * * *" },
         content: { text: "Time for nightly review" },
-        subscribers: [{ endpoint_ref: "agent:floe" }],
+        subscribers: [{ endpoint_ref: "floe" }],
         scope: "workspace",
       });
 

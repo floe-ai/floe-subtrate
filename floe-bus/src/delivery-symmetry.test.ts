@@ -9,8 +9,8 @@ import { defaultConfig } from "./config.js";
 const noop = () => {};
 
 const WS = "workspace:delivery-sym";
-const AGENT_EP = "endpoint:sym:agent:a1";
-const HUMAN_EP = "endpoint:sym:human:h1";
+const AGENT_EP = "actor:sym:a1";
+const HUMAN_EP = "actor:sym:h1";
 const BRIDGE = "bridge:sym:b1";
 
 function makeStore(): { store: BusStore; cleanup: () => void } {

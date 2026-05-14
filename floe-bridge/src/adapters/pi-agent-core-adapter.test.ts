@@ -1438,7 +1438,7 @@ describe("Full actor work loop acceptance", () => {
 
 describe("extractShortRef (removed — superseded by toNeutralRef)", () => {
   it("is no longer exported; see runtime-core/neutral-ref.ts for replacement", () => {
-    // extractShortRef returned category-prefixed refs ("agent:floe", "user:operator")
+    // extractShortRef (deleted) returned category-prefixed refs
     // which leaked substrate-category metadata to agents. It has been deleted.
     // toNeutralRef from runtime-core/neutral-ref returns neutral refs ("floe", "operator")
     // and is exhaustively unit-tested in runtime-core/neutral-ref.test.ts.

@@ -30,7 +30,7 @@ describe("Work Logs", () => {
         {
           event_id: "evt-001",
           type: "message",
-          source_endpoint_id: "endpoint:ws1:user:operator",
+          source_endpoint_id: "actor:ws1:operator",
           text: "Hello agent",
         },
       ],
@@ -47,7 +47,7 @@ describe("Work Logs", () => {
       emitted_events: [
         {
           type: "message",
-          destination: "endpoint:ws1:user:operator",
+          destination: "actor:ws1:operator",
           text_preview: "Done processing your request",
           response_expected: false,
         },
@@ -106,7 +106,7 @@ describe("Work Logs", () => {
     appendWorkLog(tempDir, makeEntry());
     const content = readLog();
     expect(content).toContain("[message]");
-    expect(content).toContain("endpoint:ws1:user:operator");
+    expect(content).toContain("actor:ws1:operator");
     expect(content).toContain("Hello agent");
   });
 
@@ -161,7 +161,7 @@ describe("Work Logs", () => {
     appendWorkLog(tempDir, makeEntry());
     const content = readLog();
     expect(content).toContain("[message]");
-    expect(content).toContain("endpoint:ws1:user:operator");
+    expect(content).toContain("actor:ws1:operator");
     expect(content).toContain("Done processing your request");
   });
 

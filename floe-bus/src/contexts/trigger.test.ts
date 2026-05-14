@@ -9,8 +9,8 @@ import { defaultConfig } from "../config.js";
 const noop = () => {};
 
 const WS = "workspace:test-trig";
-const TARGET = "endpoint:test:agent:floe";
-const OTHER = "endpoint:test:agent:other";
+const TARGET = "actor:test:floe";
+const OTHER = "actor:test:other";
 const BRIDGE = "bridge:test:b1";
 
 function makeStore(): { store: BusStore; cleanup: () => void } {

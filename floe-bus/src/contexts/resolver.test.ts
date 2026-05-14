@@ -4,9 +4,9 @@ import type { ContextStoreReader } from "./store.js";
 import type { DestinationSelector } from "../store.js";
 
 const WS = "workspace:test";
-const E1 = "endpoint:test:agent:e1";
-const E2 = "endpoint:test:agent:e2";
-const E3 = "endpoint:test:agent:e3";
+const E1 = "actor:test:e1";
+const E2 = "actor:test:e2";
+const E3 = "actor:test:e3";
 
 function endpointDest(id: string): DestinationSelector {
   return { kind: "endpoint", endpoint_id: id };

@@ -9,9 +9,9 @@ import { defaultConfig } from "../config.js";
 const noop = () => {};
 
 const WS = "workspace:test-int";
-const E1 = "endpoint:test:agent:e1";
-const E2 = "endpoint:test:agent:e2";
-const E3 = "endpoint:test:agent:e3";
+const E1 = "actor:test:e1";
+const E2 = "actor:test:e2";
+const E3 = "actor:test:e3";
 
 function makeStore(): { store: BusStore; cleanup: () => void } {
   const tmp = mkdtempSync(join(tmpdir(), "floe-bus-ctx-"));
