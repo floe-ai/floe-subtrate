@@ -65,14 +65,18 @@ export function findDefaultContextId(
 export function sortContextsForAgent(
   contexts: ContextSummary[],
   operatorEndpointId: string,
-  agentEndpointId: string
+  selectedActorEndpointId: string
 ): { sorted: ContextSummary[]; defaultContextId: string | null } {
-  const defaultContextId = findDefaultContextId(
-    contexts,
-    operatorEndpointId,
-    agentEndpointId
+  // Only show contexts where both self AND selected actor participate
+  const relevant = contexts.filter(c =>
+    c.participants.includes(operatorEndpointId) && c.participants.includes(selectedActorEndpointId)
   );
-  const byActivity = [...contexts].sort((a, b) => {
+  const defaultContextId = findDefaultContextId(
+    relevant,
+    operatorEndpointId,
+    selectedActorEndpointId
+  );
+  const byActivity = [...relevant].sort((a, b) => {
     const at = a.last_event_at ?? a.created_at;
     const bt = b.last_event_at ?? b.created_at;
     return bt.localeCompare(at);

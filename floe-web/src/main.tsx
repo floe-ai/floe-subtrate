@@ -4,7 +4,6 @@ import {
   Activity,
   AlertTriangle,
   ArrowLeft,
-  Bot,
   ChevronDown,
   ChevronRight,
   CircleDot,
@@ -452,11 +451,12 @@ function App() {
     }
   }), []);
 
-  const refreshContexts = useCallback(async (workspaceId: string, agentEndpointId: string) => {
+  const refreshContexts = useCallback(async (workspaceId: string) => {
     try {
+      const selfId = operatorActorId(workspaceId);
       const result = await api<{ contexts: ContextSummary[] }>(
         busUrl,
-        `/v1/contexts?participant=${encodeURIComponent(agentEndpointId)}&workspace_id=${encodeURIComponent(workspaceId)}`
+        `/v1/contexts?participant=${encodeURIComponent(selfId)}&workspace_id=${encodeURIComponent(workspaceId)}`
       );
       setContexts(result.contexts);
     } catch {
@@ -595,7 +595,7 @@ function App() {
       setDraftMode(false);
       return;
     }
-    void refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
+    void refreshContexts(selectedWorkspace.workspace_id);
   }, [selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, refreshContexts]);
 
   // Auto-select default-or-most-recent context once contexts load (unless drafting).
@@ -627,7 +627,7 @@ function App() {
   // and the selected context's events so live updates flow through. Cheap.
   useEffect(() => {
     if (!selectedWorkspace || !floeAgent) return;
-    void refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
+    void refreshContexts(selectedWorkspace.workspace_id);
     if (selectedContextId) void refreshContextEvents(selectedContextId);
   }, [events.length, selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, selectedContextId, refreshContexts, refreshContextEvents]);
 
@@ -761,12 +761,13 @@ function App() {
   }
 
   async function ensureOperator(workspaceId: string) {
+    const name = localStorage.getItem("floe-operator-name") || "You";
     await api(busUrl, "/v1/endpoints/register", {
       method: "POST",
       body: {
         endpoint_id: operatorActorId(workspaceId),
         workspace_id: workspaceId,
-        name: "Operator",
+        name,
         status: "online",
         metadata: { registered_by: "floe-web" }
       }
@@ -831,7 +832,7 @@ function App() {
       setSelectedContextId(newCtxId);
       setDraftMode(false);
     }
-    await refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
+    await refreshContexts(selectedWorkspace.workspace_id);
     if (newCtxId) {
       await refreshContextEvents(newCtxId);
     } else if (selectedContextId) {
@@ -1328,7 +1329,7 @@ function App() {
     return (
       <InspectorSection title="Actor Access">
         <Detail label="Actors" value={String(endpoints.length)} />
-        <Detail label="Default channel" value={floeAgent ? "Floe" : "Unavailable"} />
+        <Detail label="Actors" value={String(agents.length)} />
       </InspectorSection>
     );
   }
@@ -1396,7 +1397,7 @@ function App() {
         <div className="channel-header">
           {agents.length > 1 ? (
             <div className="channel-title">
-              <div className="channel-avatar"><Bot size={16} /></div>
+              <div className="channel-avatar"><CircleDot size={16} /></div>
               <select
                 className="agent-select"
                 value={selectedAgent?.agent_id ?? ""}
@@ -1474,7 +1475,7 @@ function App() {
           {!selectedAgent && (
             <div className="callout warning">
               <AlertTriangle size={15} />
-              <span>No agent endpoint has registered yet.</span>
+              <span>No actors available yet.</span>
             </div>
           )}
           {!runtimeReady && selectedAgent && (
@@ -1524,9 +1525,10 @@ function App() {
                   );
                 }
                 const isSelf = segment.message.source_endpoint_id === humanEndpoint;
+                const selfName = localStorage.getItem("floe-operator-name") || "You";
                 return (
                   <div key={segment.message.event_id} className={`channel-message ${isSelf ? "self" : "other"}`}>
-                    <div className="message-meta">{isSelf ? "You" : agentName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
+                    <div className="message-meta">{isSelf ? selfName : agentName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
                     <div className="message-text">{isSelf ? segment.message.content.text : renderMarkdown(segment.message.content.text ?? "")}</div>
                     {segment.activity && renderActivityGroup(segment.activity)}
                   </div>
@@ -1553,7 +1555,7 @@ function App() {
               }
             }}
             disabled={!selectedAgent || !runtimeReady}
-            placeholder={!selectedAgent ? "Waiting for agent endpoint" : !runtimeReady ? "Configure runtime first" : `Message ${agentName}`}
+            placeholder={!selectedAgent ? "No actors available" : !runtimeReady ? "Configure runtime first" : `Message ${agentName}`}
           />
           <button
             className="icon-button primary-icon"
