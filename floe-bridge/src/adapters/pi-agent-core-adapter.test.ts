@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PiAgentCoreAdapter, extractShortRef } from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle } from "../bus-client.js";
 
@@ -607,7 +607,111 @@ describe("Substrate model — explicit emit only", () => {
     expect(capturedPrompt).toContain("reply_destination");
   });
 
-  it("delivery prompt includes current_context_id and current_context_participants when trigger has context_id", async () => {
+  it("delivery prompt includes current_context_id and fetched current_context_participants when trigger has context_id", async () => {
+    let capturedPrompt = "";
+    const getContextCalls: string[] = [];
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt(message: any) {
+        capturedPrompt = message?.content?.[0]?.text ?? "";
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async getContext(contextId: string) {
+          getContextCalls.push(contextId);
+          return {
+            context_id: contextId,
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: "endpoint:workspace:test:user:operator",
+            created_at: new Date().toISOString(),
+            participants: [
+              "endpoint:ws:agent:floe",
+              "endpoint:ws:human:operator"
+            ]
+          };
+        }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-ctx-2", "thread-ctx-2", "hello with context");
+    (delivery.events[0] as any).context_id = "ctx_test_abc";
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(getContextCalls).toContain("ctx_test_abc");
+    expect(capturedPrompt).toContain("current_context");
+    expect(capturedPrompt).toContain("ctx_test_abc");
+    // Strict: actual participants rendered under participants:
+    expect(capturedPrompt).toContain("endpoint:ws:agent:floe");
+    expect(capturedPrompt).toContain("endpoint:ws:human:operator");
+    expect(capturedPrompt).toMatch(/participants:\s*\n\s*-\s+endpoint:ws:agent:floe/);
+    // Not rendered as empty placeholder
+    expect(capturedPrompt).not.toMatch(/participants:\s*\[\]/);
+    // No global contexts list
+    expect(capturedPrompt).not.toContain("available_contexts");
+    expect(capturedPrompt).not.toContain("all_contexts");
+    expect(capturedPrompt).not.toContain("source_contexts");
+  });
+
+  it("delivery prompt omits current_context block when trigger has no context_id", async () => {
+    let capturedPrompt = "";
+    let getContextCalled = false;
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt(message: any) {
+        capturedPrompt = message?.content?.[0]?.text ?? "";
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async getContext(_id: string) {
+          getContextCalled = true;
+          return null;
+        }
+      }
+    } as any;
+
+    // Default delivery has no context_id on the trigger event
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-no-ctx", "thread-no-ctx", "hello no context"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    // Bridge must NOT call getContext when there is no current context
+    expect(getContextCalled).toBe(false);
+    // current_context block omitted entirely
+    expect(capturedPrompt).not.toContain("current_context");
+    expect(capturedPrompt).not.toContain("participants:");
+  });
+
+  it("delivery prompt does not crash when bus.getContext throws — participants empty, warning logged", async () => {
     let capturedPrompt = "";
     const fakeAgent = {
       listeners: [] as Array<(event: any) => void | Promise<void>>,
@@ -626,12 +730,68 @@ describe("Substrate model — explicit emit only", () => {
       bridge_id: "bridge:test",
       bus: {
         async appendRuntimeTelemetry(_input: any) {},
-        async emit(_event: any) {}
+        async emit(_event: any) {},
+        async getContext(_id: string) {
+          throw new Error("simulated bus failure");
+        }
       }
     } as any;
 
-    const delivery = makeDelivery("del-ctx-2", "thread-ctx-2", "hello with context");
-    (delivery.events[0] as any).context_id = "ctx_test_abc";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const delivery = makeDelivery("del-ctx-fail", "thread-ctx-fail", "hello");
+      (delivery.events[0] as any).context_id = "ctx_unreachable";
+
+      await expect(
+        adapter.handleBundle(
+          context,
+          delivery,
+          { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+        )
+      ).resolves.toBeUndefined();
+
+      // Block still rendered with id, but participants empty
+      expect(capturedPrompt).toContain("ctx_unreachable");
+      expect(capturedPrompt).toMatch(/participants:\s*\[\]/);
+
+      // Warning logged
+      const warned = warnSpy.mock.calls.flat().some((arg: any) =>
+        typeof arg === "string" && arg.includes("getContext")
+      );
+      expect(warned).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("delivery prompt does not crash when bus.getContext returns null — participants empty", async () => {
+    let capturedPrompt = "";
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt(message: any) {
+        capturedPrompt = message?.content?.[0]?.text ?? "";
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async getContext(_id: string) {
+          return null;
+        }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-ctx-null", "thread-ctx-null", "hello");
+    (delivery.events[0] as any).context_id = "ctx_missing";
 
     await adapter.handleBundle(
       context,
@@ -639,12 +799,50 @@ describe("Substrate model — explicit emit only", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
-    expect(capturedPrompt).toContain("current_context");
-    expect(capturedPrompt).toContain("ctx_test_abc");
-    // No global contexts list
-    expect(capturedPrompt).not.toContain("available_contexts");
-    expect(capturedPrompt).not.toContain("all_contexts");
-    expect(capturedPrompt).not.toContain("source_contexts");
+    expect(capturedPrompt).toContain("ctx_missing");
+    expect(capturedPrompt).toMatch(/participants:\s*\[\]/);
+  });
+
+  it("trigger event with source_endpoint_id: null does not crash the turn", async () => {
+    let capturedPrompt = "";
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt(message: any) {
+        capturedPrompt = message?.content?.[0]?.text ?? "";
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-null-src", "thread-null-src", "trigger from system");
+    // Simulate pulse/webhook trigger — no source endpoint
+    (delivery.events[0] as any).source_endpoint_id = null;
+    (delivery.events[0] as any).type = "pulse.fired";
+
+    await expect(
+      adapter.handleBundle(
+        context,
+        delivery,
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      )
+    ).resolves.toBeUndefined();
+
+    // Prompt rendered with a sane fallback for source/reply
+    expect(capturedPrompt).toContain("[Delivery Context]");
+    // No literal "null" rendered as source_endpoint
+    expect(capturedPrompt).not.toMatch(/source_endpoint:\s*null/);
   });
 
   it("emit tool accepts optional context_id and forwards it to the bus, plus current_delivery_context_id", async () => {
