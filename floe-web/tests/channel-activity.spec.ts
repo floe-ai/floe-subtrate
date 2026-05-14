@@ -156,11 +156,66 @@ async function setupRoutes(
     })
   );
 
-  await page.route("**/v1/events**", (route) =>
+  // Slice 5: chat reads context-scoped events. Wrap the seeded events in a
+  // single test context so the rendering pipeline still sees them.
+  const TEST_CONTEXT_ID = "ctx_test_activity";
+  const eventsWithCtx = (events as Array<Record<string, unknown>>).map((e) => ({
+    ...e,
+    context_id: TEST_CONTEXT_ID,
+  }));
+  const sortedTimes = eventsWithCtx
+    .map((e) => String((e as Record<string, unknown>).created_at ?? ""))
+    .filter((t) => t.length > 0)
+    .sort();
+  const lastEventAt = sortedTimes[sortedTimes.length - 1] ?? new Date().toISOString();
+  const previewSource = eventsWithCtx.find(
+    (e) => (e as { source_endpoint_id?: string }).source_endpoint_id === HUMAN_ENDPOINT_ID
+  ) ?? eventsWithCtx[0];
+  const firstPreview =
+    (previewSource as { content?: { text?: string } } | undefined)?.content?.text?.slice(0, 80) ?? null;
+
+  await page.route(/\/v1\/contexts\?[^/]*$/, (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ events }),
+      body: JSON.stringify({
+        contexts: eventsWithCtx.length === 0
+          ? []
+          : [{
+              context_id: TEST_CONTEXT_ID,
+              workspace_id: WORKSPACE_ID,
+              parent_context_id: null,
+              created_by_endpoint_id: HUMAN_ENDPOINT_ID,
+              created_at: sortedTimes[0] ?? lastEventAt,
+              last_event_at: lastEventAt,
+              participants: [HUMAN_ENDPOINT_ID, FLOE_ENDPOINT_ID],
+              first_message_preview: firstPreview,
+            }],
+      }),
+    })
+  );
+
+  await page.route(/\/v1\/contexts\/[^/]+\/events(?:\?.*)?$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ events: eventsWithCtx }),
+    })
+  );
+
+  await page.route(/\/v1\/events(?:\?[^/]*)?$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ events: eventsWithCtx }),
+    })
+  );
+
+  await page.route("**/v1/events/emit", (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, event_id: "evt_x", accepted_at: new Date().toISOString(), deliveries_created: 0, event: {} }),
     })
   );
 

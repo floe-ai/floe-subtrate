@@ -41,6 +41,13 @@ import {
   type Node
 } from "@xyflow/react";
 import "./styles.css";
+import {
+  buildEmitBody,
+  contextLabel,
+  sortContextsForAgent,
+  type ContextEvent,
+  type ContextSummary
+} from "./contexts";
 
 type Workspace = {
   workspace_id: string;
@@ -85,9 +92,10 @@ type EventEnvelope = {
   event_id: string;
   type: string;
   workspace_id: string;
-  source_endpoint_id: string;
+  source_endpoint_id: string | null;
   destination_json: { kind: "endpoint" | "broadcast"; endpoint_id?: string };
-  thread_id: string;
+  thread_id?: string | null;
+  context_id?: string | null;
   content: { text?: string; data?: Record<string, unknown> };
   metadata?: Record<string, unknown>;
   created_at: string;
@@ -175,6 +183,11 @@ function App() {
   const [channelOpen, setChannelOpen] = useState(false);
   const [channelMessage, setChannelMessage] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [contexts, setContexts] = useState<ContextSummary[]>([]);
+  const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
+  const [contextEvents, setContextEvents] = useState<ContextEvent[]>([]);
+  const [draftMode, setDraftMode] = useState(false);
+  const [pulseLabels, setPulseLabels] = useState<Record<string, string>>({});
   const [expandedActivities, setExpandedActivities] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState("Connecting");
   const [error, setError] = useState<string | null>(null);
@@ -188,9 +201,17 @@ function App() {
   const floeAgent = selectedAgent; // alias for backward compat in existing rendering code
   const humans = endpoints.filter((endpoint) => endpoint.actor_type === "human");
   const humanEndpoint = selectedWorkspace ? humanEndpointId(selectedWorkspace.workspace_id) : "";
-  const threadId = selectedWorkspace && selectedAgent
-    ? `thread:${selectedWorkspace.workspace_id}:${selectedAgent.agent_id ?? "floe"}`
-    : "";
+
+  const sortedContexts = useMemo(() => {
+    if (!selectedAgent || !humanEndpoint) {
+      return { sorted: [] as ContextSummary[], defaultContextId: null as string | null };
+    }
+    return sortContextsForAgent(contexts, humanEndpoint, selectedAgent.endpoint_id);
+  }, [contexts, selectedAgent, humanEndpoint]);
+
+  const selectedContext = selectedContextId
+    ? contexts.find((c) => c.context_id === selectedContextId) ?? null
+    : null;
   const selectedField = view.kind === "field" ? fields.find((field) => field.id === view.fieldId) ?? null : null;
   const selectedCanvasFieldId = selectedField?.nodes.find((node) => node.selected) ? fieldIdFromNode(selectedField.nodes.find((node) => node.selected)!) : null;
   const effectiveSelectedBlockId = selectedCanvasFieldId ?? selectedBlockId;
@@ -211,26 +232,30 @@ function App() {
   const effectiveModel = agentBinding?.model ?? workspaceBinding?.model ?? null;
   const runtimeReady = !!effectiveProfileId && !!effectiveModel;
 
-  const floeMessages = useMemo(() => {
-    if (!floeAgent || !threadId) return [];
-    return events
-      .filter((event) => {
-        if (event.thread_id !== threadId) return false;
-        if (event.type !== "message") return false;
-        // Show human→agent and agent→human messages in this thread
-        if (event.source_endpoint_id === humanEndpoint) return true;
-        if (event.source_endpoint_id === floeAgent.endpoint_id) return true;
-        return false;
-      })
+  const floeMessages = useMemo<EventEnvelope[]>(() => {
+    if (!floeAgent || !selectedContextId) return [];
+    return contextEvents
+      .filter((event) => event.type === "message")
+      .map((event) => ({
+        event_id: event.event_id,
+        type: event.type,
+        workspace_id: selectedWorkspace?.workspace_id ?? "",
+        source_endpoint_id: event.source_endpoint_id,
+        destination_json: event.destination_json,
+        context_id: event.context_id,
+        content: event.content,
+        metadata: event.metadata,
+        created_at: event.created_at
+      }))
       .sort((left, right) => left.created_at.localeCompare(right.created_at));
-  }, [events, floeAgent, humanEndpoint, threadId]);
+  }, [contextEvents, floeAgent, selectedContextId, selectedWorkspace?.workspace_id]);
 
   const streamingTurns = useMemo(() => {
-    if (!floeAgent || !threadId) return {};
-    // A turn is finished when its emit produced a message event in the thread
+    if (!floeAgent || !selectedContextId) return {};
+    // A turn is finished when its emit produced a message event in the context
     const finished = new Set<string>();
-    for (const event of events) {
-      if (event.type === "message" && event.source_endpoint_id === floeAgent.endpoint_id && event.thread_id === threadId) {
+    for (const event of contextEvents) {
+      if (event.type === "message" && event.source_endpoint_id === floeAgent.endpoint_id) {
         const turnId = event.content?.data?.runtime_turn_id ?? event.metadata?.runtime_turn_id;
         if (typeof turnId === "string") finished.add(turnId);
       }
@@ -246,13 +271,14 @@ function App() {
       }
       const turnId = payload.runtime_turn_id;
       if (typeof turnId !== "string" || finished.has(turnId)) continue;
-      if (typeof payload.thread_id === "string" && payload.thread_id !== threadId) continue;
+      // Restrict streaming preview to the selected context if telemetry carries one.
+      if (typeof payload.context_id === "string" && payload.context_id !== selectedContextId) continue;
       if (!latest[turnId] || record.created_at > latest[turnId].created_at) {
         latest[turnId] = { text: String(payload.text ?? ""), created_at: record.created_at };
       }
     }
     return latest;
-  }, [events, floeAgent, telemetry, threadId]);
+  }, [contextEvents, floeAgent, telemetry, selectedContextId]);
 
   const runtimeActivity = useMemo<RuntimeActivity[]>(() => {
     if (!floeAgent) return [];
@@ -271,7 +297,7 @@ function App() {
   const floeIsActive = floeAgent?.status === "active";
 
   const chatSegments = useMemo<ChatSegment[]>(() => {
-    if (!floeAgent || !threadId) return [];
+    if (!floeAgent || !selectedContextId) return [];
     const excludedKinds = new Set(["usage", "runtime_config", "visible_output", "runtime_no_visible_output", "visible_output_worklog"]);
     const agentTelemetry = telemetry
       .filter((record) => record.endpoint_id === floeAgent.endpoint_id)
@@ -389,7 +415,7 @@ function App() {
     }
 
     return segments;
-  }, [floeAgent, floeMessages, floeIsActive, humanEndpoint, streamingTurns, telemetry, threadId]);
+  }, [floeAgent, floeMessages, floeIsActive, humanEndpoint, streamingTurns, telemetry, selectedContextId]);
 
   const latestRuntimeError = useMemo(() => {
     if (!floeAgent) return null;
@@ -426,6 +452,30 @@ function App() {
       );
     }
   }), []);
+
+  const refreshContexts = useCallback(async (workspaceId: string, agentEndpointId: string) => {
+    try {
+      const result = await api<{ contexts: ContextSummary[] }>(
+        busUrl,
+        `/v1/contexts?participant=${encodeURIComponent(agentEndpointId)}&workspace_id=${encodeURIComponent(workspaceId)}`
+      );
+      setContexts(result.contexts);
+    } catch {
+      // Non-fatal — keep showing whatever we already have.
+    }
+  }, [busUrl]);
+
+  const refreshContextEvents = useCallback(async (contextId: string) => {
+    try {
+      const result = await api<{ events: ContextEvent[] }>(
+        busUrl,
+        `/v1/contexts/${encodeURIComponent(contextId)}/events`
+      );
+      setContextEvents(result.events);
+    } catch {
+      setContextEvents([]);
+    }
+  }, [busUrl]);
 
   const refresh = useCallback(async (preferredWorkspaceId?: string) => {
     try {
@@ -536,6 +586,85 @@ function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [floeMessages, streamingTurns]);
+
+  // ── Slice 5: per-agent context list + context-scoped events ──────────────
+  useEffect(() => {
+    if (!selectedWorkspace || !floeAgent) {
+      setContexts([]);
+      setSelectedContextId(null);
+      setContextEvents([]);
+      setDraftMode(false);
+      return;
+    }
+    void refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
+  }, [selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, refreshContexts]);
+
+  // Auto-select default-or-most-recent context once contexts load (unless drafting).
+  useEffect(() => {
+    if (draftMode) return;
+    if (selectedContextId) return;
+    if (sortedContexts.sorted.length === 0) return;
+    setSelectedContextId(sortedContexts.sorted[0].context_id);
+  }, [sortedContexts, selectedContextId, draftMode]);
+
+  // Drop selection if it disappears (workspace switch, etc.)
+  useEffect(() => {
+    if (!selectedContextId) return;
+    if (!contexts.some((c) => c.context_id === selectedContextId)) {
+      setSelectedContextId(null);
+      setContextEvents([]);
+    }
+  }, [contexts, selectedContextId]);
+
+  useEffect(() => {
+    if (!selectedContextId) {
+      setContextEvents([]);
+      return;
+    }
+    void refreshContextEvents(selectedContextId);
+  }, [selectedContextId, refreshContextEvents]);
+
+  // When workspace-level events change (via WS refresh), re-pull context list
+  // and the selected context's events so live updates flow through. Cheap.
+  useEffect(() => {
+    if (!selectedWorkspace || !floeAgent) return;
+    void refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
+    if (selectedContextId) void refreshContextEvents(selectedContextId);
+  }, [events.length, selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, selectedContextId, refreshContexts, refreshContextEvents]);
+
+  // Pulse-only label fallback: peek the first event of contexts that have no
+  // first_message_preview so we can render "Pulse: <name>" labels.
+  useEffect(() => {
+    const needsPeek = contexts.filter(
+      (c) => !c.first_message_preview && pulseLabels[c.context_id] === undefined
+    );
+    if (needsPeek.length === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      needsPeek.map(async (c) => {
+        try {
+          const result = await api<{ events: ContextEvent[] }>(
+            busUrl,
+            `/v1/contexts/${encodeURIComponent(c.context_id)}/events?limit=1`
+          );
+          const first = result.events[0] ?? null;
+          return { id: c.context_id, label: contextLabel(c, first) };
+        } catch {
+          return { id: c.context_id, label: contextLabel(c, null) };
+        }
+      })
+    ).then((labels) => {
+      if (cancelled) return;
+      setPulseLabels((prev) => {
+        const next = { ...prev };
+        for (const { id, label } of labels) next[id] = label;
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [contexts, busUrl, pulseLabels]);
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -684,27 +813,38 @@ function App() {
   async function sendFloeMessage() {
     if (!selectedWorkspace || !floeAgent || !channelMessage.trim()) return;
     await ensureHuman(selectedWorkspace.workspace_id);
-    await api(busUrl, "/v1/events/emit", {
-      method: "POST",
-      body: {
-        type: "message",
-        workspace_id: selectedWorkspace.workspace_id,
-        source_endpoint_id: humanEndpoint,
-        destination: { kind: "endpoint", endpoint_id: floeAgent.endpoint_id },
-        thread_id: threadId,
-        correlation_id: null,
-        content: {
-          text: channelMessage.trim(),
-          data: {
-            context: currentContextLabel(view, selectedWorkspace, selectedField)
-          }
-        },
-        response: { expected: false },
-        metadata: { submitted_by: "floe-web", channel: "floe" }
-      }
+    const text = channelMessage.trim();
+    const body = buildEmitBody({
+      workspaceId: selectedWorkspace.workspace_id,
+      source: humanEndpoint,
+      agentEndpointId: floeAgent.endpoint_id,
+      selectedContextId: selectedContextId,
+      text,
+      contextLabelText: currentContextLabel(view, selectedWorkspace, selectedField)
     });
     setChannelMessage("");
-    await refresh(selectedWorkspace.workspace_id);
+    const result = await api<{ event?: { context_id?: string | null }; ok?: boolean }>(
+      busUrl,
+      "/v1/events/emit",
+      { method: "POST", body }
+    );
+    const newCtxId = result?.event?.context_id ?? null;
+    if (newCtxId) {
+      setSelectedContextId(newCtxId);
+      setDraftMode(false);
+    }
+    await refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
+    if (newCtxId) {
+      await refreshContextEvents(newCtxId);
+    } else if (selectedContextId) {
+      await refreshContextEvents(selectedContextId);
+    }
+  }
+
+  function startNewConversation() {
+    setSelectedContextId(null);
+    setDraftMode(true);
+    setContextEvents([]);
   }
 
   function createField(name?: string) {
@@ -1285,6 +1425,54 @@ function App() {
             <X size={16} />
           </button>
         </div>
+        {selectedAgent && (
+          <div className="channel-context-list" data-testid="context-list">
+            <div className="channel-context-list-header">
+              <span>Conversations</span>
+              <button
+                className="ghost-action small"
+                data-testid="new-conversation-button"
+                onClick={startNewConversation}
+                title={`New conversation with ${agentName}`}
+              >
+                + New conversation
+              </button>
+            </div>
+            {sortedContexts.sorted.length === 0 ? (
+              <div className="channel-context-empty" data-testid="context-list-empty">
+                No conversations with {agentName} yet. Send a message to start one.
+              </div>
+            ) : (
+              <ul className="channel-context-items">
+                {sortedContexts.sorted.map((ctx) => {
+                  const label =
+                    ctx.first_message_preview?.trim()
+                      ? ctx.first_message_preview
+                      : pulseLabels[ctx.context_id] ?? "Conversation";
+                  const isDefault = ctx.context_id === sortedContexts.defaultContextId;
+                  const isActive = ctx.context_id === selectedContextId;
+                  return (
+                    <li key={ctx.context_id}>
+                      <button
+                        type="button"
+                        data-testid="context-list-item"
+                        data-context-id={ctx.context_id}
+                        className={`channel-context-item${isActive ? " active" : ""}${isDefault ? " default" : ""}`}
+                        onClick={() => {
+                          setSelectedContextId(ctx.context_id);
+                          setDraftMode(false);
+                        }}
+                      >
+                        {isDefault && <span className="default-pin" title="Default conversation">★</span>}
+                        <span className="channel-context-label">{label}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
         <div className="channel-body">
           {!selectedAgent && (
             <div className="callout warning">
@@ -1299,11 +1487,31 @@ function App() {
             </div>
           )}
           {chatSegments.length === 0 ? (
-            <div className="channel-empty">
-              <MessageSquare size={22} />
-              <strong>{agentName} is available from this screen.</strong>
-              <span>Messages use the event substrate. Only explicit emitted events appear here.</span>
-            </div>
+            sortedContexts.sorted.length === 0 ? (
+              <div className="channel-empty" data-testid="channel-empty-no-contexts">
+                <MessageSquare size={22} />
+                <strong>No conversations with {agentName} yet.</strong>
+                <span>Send a message to start one.</span>
+              </div>
+            ) : draftMode ? (
+              <div className="channel-empty" data-testid="channel-empty-draft">
+                <MessageSquare size={22} />
+                <strong>New conversation with {agentName}</strong>
+                <span>Type a message below to start. The conversation appears in the list once you send.</span>
+              </div>
+            ) : !selectedContextId ? (
+              <div className="channel-empty">
+                <MessageSquare size={22} />
+                <strong>Select a conversation</strong>
+                <span>Pick a conversation from the list above, or start a new one.</span>
+              </div>
+            ) : (
+              <div className="channel-empty">
+                <MessageSquare size={22} />
+                <strong>No messages yet in this conversation.</strong>
+                <span>Send a message to {agentName} below.</span>
+              </div>
+            )
           ) : (
             <>
               {chatSegments.map((segment) => {
