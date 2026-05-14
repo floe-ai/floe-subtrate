@@ -449,7 +449,7 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     world.contexts.push(makeContext({
       context_id: ctxId,
       first_message_preview: null,
-      participants: [FLOE],
+      participants: [OPERATOR, FLOE],
       created_at: "2024-06-01T10:00:00.000Z",
       last_event_at: "2024-06-01T10:00:00.000Z"
     }));
