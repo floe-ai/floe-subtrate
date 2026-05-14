@@ -8,7 +8,7 @@ import YAML from "yaml";
 import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
-import { BusStore, type EventCommand } from "./store.js";
+import { BusStore, ContextParticipantError, type EventCommand } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 
 const EventCommandSchema = z.object({
@@ -27,7 +27,9 @@ const EventCommandSchema = z.object({
       exclude_source: z.boolean().optional()
     })
   ]),
-  thread_id: z.string().min(1),
+  thread_id: z.string().min(1).optional(),
+  context_id: z.string().min(1).nullable().optional(),
+  current_delivery_context_id: z.string().min(1).nullable().optional(),
   correlation_id: z.string().nullable().optional(),
   content: z.record(z.unknown()),
   response: z.object({
@@ -371,20 +373,28 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.post("/v1/events/emit", async (request, reply) => {
     const command = EventCommandSchema.parse(request.body) as EventCommand;
-    const result = store.submitEvent(command, broadcast);
-    return reply.code(202).send({
-      ok: true,
-      event_id: result.event.event_id,
-      accepted_at: result.event.created_at,
-      deliveries_created: result.deliveries_created,
-      event: result.event
-    });
+    try {
+      const result = store.submitEvent(command, broadcast);
+      return reply.code(202).send({
+        ok: true,
+        event_id: result.event.event_id,
+        accepted_at: result.event.created_at,
+        deliveries_created: result.deliveries_created,
+        event: result.event
+      });
+    } catch (err) {
+      if (err instanceof ContextParticipantError) {
+        return reply.code(409).send({ ok: false, error: err.payload });
+      }
+      throw err;
+    }
   });
 
   app.get("/v1/events", async (request) => {
     const query = z.object({
       workspace_id: z.string().optional(),
       thread_id: z.string().optional(),
+      context_id: z.string().optional(),
       limit: z.coerce.number().int().positive().optional()
     }).parse(request.query);
     return { events: store.listEvents(query) };
@@ -583,17 +593,19 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
   if (subscribers.length === 0) return;
 
   const fireTimestamp = new Date().toISOString();
-  const threadId = `pulse:${pulseId}:${fireTimestamp}`;
   const trigger = pulse.trigger as { type: string; schedule?: string; timezone?: string; at?: string };
 
   for (const subscriber of subscribers) {
     const endpointId = store.resolveSubscriberEndpointId(pulse.workspace_id, subscriber.endpoint_ref);
+    // TODO(slice-3): replace this temporary trigger emission path with a
+    // proper target-only context API. For Slice 1 we set __trigger_origin so
+    // submitEvent creates a target-only context and bypasses the
+    // participant rule (per design §3.1.6).
     const command = {
       type: "pulse.fired",
       workspace_id: pulse.workspace_id,
       source_endpoint_id: "system:pulse",
       destination: { kind: "endpoint" as const, endpoint_id: endpointId },
-      thread_id: threadId,
       correlation_id: null,
       content: {
         ...pulse.content,
@@ -605,7 +617,8 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
         trigger_type: trigger.type,
         schedule: trigger.schedule ?? trigger.at ?? null,
         fire_number: (pulse.fire_count ?? 0) + 1
-      }
+      },
+      __trigger_origin: true
     };
     try {
       store.submitEvent(command, broadcast);
@@ -625,7 +638,7 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
     pulseScheduler.addPulse(pulseId, new Date(nextFireAt));
   }
 
-  broadcast("pulse_fired", { pulse_id: pulseId, thread_id: threadId, subscriber_count: subscribers.length });
+  broadcast("pulse_fired", { pulse_id: pulseId, fired_at: fireTimestamp, subscriber_count: subscribers.length });
 }
 
 function loadAuthProfiles(configPath: string, config: LocalConfig): Array<{

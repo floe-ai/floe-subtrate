@@ -5,8 +5,20 @@ import { DatabaseSync } from "node:sqlite";
 import { CronExpressionParser } from "cron-parser";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
+import { ContextStore, applyContextSchema } from "./contexts/store.js";
+import { resolveContext, type NotContextParticipantError } from "./contexts/resolver.js";
 
 type Broadcast = (type: string, payload: Record<string, unknown>) => void;
+
+export class ContextParticipantError extends Error {
+  readonly code = "E_NOT_CONTEXT_PARTICIPANT" as const;
+  readonly payload: NotContextParticipantError["payload"];
+  constructor(payload: NotContextParticipantError["payload"]) {
+    super(payload.message);
+    this.name = "ContextParticipantError";
+    this.payload = payload;
+  }
+}
 
 export type DestinationSelector =
   | { kind: "endpoint"; endpoint_id: string }
@@ -29,12 +41,28 @@ export type EventCommand = {
   workspace_id: string;
   source_endpoint_id: string;
   destination: DestinationSelector;
-  thread_id: string;
+  /**
+   * Legacy field retained for storage compatibility only — no new flow reads it.
+   * Resolver computes the canonical `context_id`. If omitted, `submitEvent` writes
+   * the resolved context_id into this column to satisfy the existing NOT NULL constraint.
+   */
+  thread_id?: string;
   correlation_id?: string | null;
   content: Record<string, unknown>;
   response?: ResponseExpectation;
   metadata?: Record<string, unknown>;
   idempotency_key?: string | null;
+  /** Caller-supplied context_id (rule 1). When omitted, resolver decides. */
+  context_id?: string | null;
+  /** Bridge passes the context_id of the delivery currently being processed (rules 2/3). */
+  current_delivery_context_id?: string | null;
+  /**
+   * Bus-internal flag for trigger-origin events (pulse.fired, webhook ingest).
+   * When true, the resolver/participant rule is bypassed and a target-only
+   * context is created (per design §3.1.6). TODO(slice-3): replace with a
+   * proper trigger emission API; this flag should not be set by external callers.
+   */
+  __trigger_origin?: boolean;
 };
 
 export type EventEnvelope = {
@@ -43,6 +71,7 @@ export type EventEnvelope = {
   workspace_id: string;
   source_endpoint_id: string;
   thread_id: string;
+  context_id: string;
   correlation_id: string | null;
   destination_json: DestinationSelector;
   content: Record<string, unknown>;
@@ -92,6 +121,7 @@ export function workspaceIdForLocator(locator: string): string {
 
 export class BusStore {
   readonly db: DatabaseSync;
+  readonly contextStore: ContextStore;
 
   constructor(configPath: string, readonly config: LocalConfig) {
     const dataDir = resolveLocalPath(configPath, config.home, config.bus.data_dir);
@@ -100,6 +130,7 @@ export class BusStore {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.migrate();
+    this.contextStore = new ContextStore(this.db);
   }
 
   close(): void {
@@ -273,10 +304,12 @@ export class BusStore {
     this.addColumnIfMissing("events", "destination_endpoint_id", "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing("events", "destination_json", "TEXT");
     this.addColumnIfMissing("events", "response_json", "TEXT");
+    this.addColumnIfMissing("events", "context_id", "TEXT");
     this.addColumnIfMissing("delivery_bundles", "wait_id", "TEXT");
     this.addColumnIfMissing("delivery_bundles", "resume_reason", "TEXT NOT NULL DEFAULT 'event'");
     this.addColumnIfMissing("runtime_telemetry", "delivery_id", "TEXT");
     this.addColumnIfMissing("runtime_bindings", "model", "TEXT");
+    applyContextSchema(this.db);
     this.backfillEventDestinationJson();
     this.backfillEventResponseJson();
   }
@@ -447,6 +480,11 @@ export class BusStore {
       this.db.prepare("DELETE FROM pending_responses WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM runtime_telemetry WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM events WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare(`
+        DELETE FROM context_participants
+        WHERE context_id IN (SELECT context_id FROM contexts WHERE workspace_id = ?)
+      `).run(workspaceId);
+      this.db.prepare("DELETE FROM contexts WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM endpoints WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM runtime_bindings WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM workspaces WHERE workspace_id = ?").run(workspaceId);
@@ -577,7 +615,43 @@ export class BusStore {
         const existing = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?").get(command.idempotency_key) as any;
         if (existing) return this.rowToEvent(existing);
       }
-      const inserted = this.insertEvent(command, response);
+
+      let resolvedContextId: string;
+      if (command.__trigger_origin) {
+        // TODO(slice-3): replace this temporary trigger path with a proper
+        // target-only emission API. For Slice 1 we just need pulse/webhook
+        // events to carry a context_id without violating the participant rule.
+        const targetEndpoint =
+          command.destination.kind === "endpoint" ? command.destination.endpoint_id : command.source_endpoint_id;
+        resolvedContextId = this.contextStore.createContext({
+          workspace_id: command.workspace_id,
+          created_by_endpoint_id: targetEndpoint,
+          participants: [targetEndpoint]
+        });
+      } else {
+        const resolution = resolveContext(
+          {
+            source_endpoint_id: command.source_endpoint_id,
+            destination: command.destination,
+            supplied_context_id: command.context_id ?? null,
+            current_delivery_context_id: command.current_delivery_context_id ?? null,
+            workspace_id: command.workspace_id
+          },
+          this.contextStore
+        );
+        if ("error" in resolution) throw new ContextParticipantError(resolution.payload);
+        if (resolution.created) {
+          this.contextStore.createContext({
+            workspace_id: command.workspace_id,
+            created_by_endpoint_id: command.source_endpoint_id,
+            participants: resolution.participants ?? [command.source_endpoint_id],
+            context_id: resolution.context_id
+          });
+        }
+        resolvedContextId = resolution.context_id;
+      }
+
+      const inserted = this.insertEvent(command, response, resolvedContextId);
       const destinationEndpointIds = this.resolveDestinations(inserted);
       for (const destinationEndpointId of destinationEndpointIds) this.queueEvent(inserted.event_id, inserted.workspace_id, destinationEndpointId);
       if (inserted.response.expected) this.createPendingResponse(inserted);
@@ -764,8 +838,20 @@ export class BusStore {
     return rows.reverse();
   }
 
-  listEvents(filters: { workspace_id?: string; thread_id?: string; limit?: number }): EventEnvelope[] {
+  listEvents(filters: { workspace_id?: string; thread_id?: string; context_id?: string; limit?: number }): EventEnvelope[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
+    if (filters.context_id) {
+      const params: any[] = [];
+      let sql = "SELECT * FROM events WHERE context_id = ?";
+      params.push(filters.context_id);
+      if (filters.workspace_id) {
+        sql += " AND workspace_id = ?";
+        params.push(filters.workspace_id);
+      }
+      sql += " ORDER BY created_at ASC LIMIT ?";
+      params.push(limit);
+      return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
+    }
     if (filters.workspace_id && filters.thread_id) {
       return (this.db.prepare(`
         SELECT * FROM events WHERE workspace_id = ? AND thread_id = ? ORDER BY created_at ASC LIMIT ?
@@ -856,18 +942,21 @@ export class BusStore {
       ORDER BY created_at ASC LIMIT 1
     `).get(workspaceId) as any;
     if (!destination) throw new Error("No agent endpoint is registered for this workspace");
+    // TODO(slice-3): redo webhook ingest with proper target-only context and
+    // null source_endpoint_id. For Slice 1 we just ensure the event has a
+    // context_id by using the trigger-origin path.
     const command: EventCommand = {
       type: "webhook_received",
       workspace_id: workspaceId,
       source_endpoint_id: human?.endpoint_id ?? `endpoint:${workspaceId}:webhook:${routeId}`,
       destination: { kind: "endpoint", endpoint_id: destination.endpoint_id },
-      thread_id: `webhook:${routeId}:${randomUUID()}`,
       correlation_id: typeof body.correlation_id === "string" ? body.correlation_id : null,
       content: {
         text: typeof body.text === "string" ? body.text : `Webhook ${routeId} received`,
         data: body
       },
-      metadata: { route_id: routeId }
+      metadata: { route_id: routeId },
+      __trigger_origin: true
     };
     return this.submitEvent(command, broadcast).event;
   }
@@ -1057,17 +1146,21 @@ export class BusStore {
     };
   }
 
-  private insertEvent(command: EventCommand, response: ResponseExpectation): EventEnvelope {
+  private insertEvent(command: EventCommand, response: ResponseExpectation, contextId: string): EventEnvelope {
     const destinationEndpointId =
       command.destination.kind === "endpoint"
         ? command.destination.endpoint_id
         : `broadcast:${command.destination.scope}:${command.destination.target}`;
+    // Legacy thread_id storage: write the resolved context_id so the existing
+    // NOT NULL column is satisfied. No new flow reads thread_id.
+    const threadIdForStorage = command.thread_id && command.thread_id.length > 0 ? command.thread_id : contextId;
     const envelope: EventEnvelope = {
       event_id: `evt_${randomUUID()}`,
       type: command.type,
       workspace_id: command.workspace_id,
       source_endpoint_id: command.source_endpoint_id,
-      thread_id: command.thread_id,
+      thread_id: threadIdForStorage,
+      context_id: contextId,
       correlation_id: command.correlation_id ?? null,
       destination_json: command.destination,
       content: command.content,
@@ -1077,10 +1170,10 @@ export class BusStore {
     };
     this.db.prepare(`
       INSERT INTO events (
-        event_id, type, workspace_id, source_endpoint_id, destination_endpoint_id, thread_id, correlation_id,
+        event_id, type, workspace_id, source_endpoint_id, destination_endpoint_id, thread_id, context_id, correlation_id,
         destination_json, content_json, response_json, metadata_json, idempotency_key, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       envelope.event_id,
       envelope.type,
@@ -1088,6 +1181,7 @@ export class BusStore {
       envelope.source_endpoint_id,
       destinationEndpointId,
       envelope.thread_id,
+      envelope.context_id,
       envelope.correlation_id,
       json(envelope.destination_json),
       json(envelope.content),
@@ -1294,6 +1388,7 @@ export class BusStore {
       workspace_id: row.workspace_id,
       source_endpoint_id: row.source_endpoint_id,
       thread_id: row.thread_id,
+      context_id: row.context_id ?? row.thread_id,
       correlation_id: row.correlation_id ?? null,
       destination_json: parseJson<DestinationSelector>(row.destination_json),
       content: parseJson<Record<string, unknown>>(row.content_json),
