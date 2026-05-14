@@ -245,10 +245,17 @@ describe("Floe local vertical slice", () => {
     // Wait for the pulse to fire — we should see pulse_fired on the WebSocket
     await waitFor(() => sawBusEvents(["pulse_created", "pulse_fired"]), "pulse fired broadcast", 15_000);
 
-    // Verify a pulse.fired event was submitted
+    // Verify a pulse.fired event was submitted with the trigger contract:
+    // null source_endpoint_id (no synthetic system endpoint) and trigger metadata.
     await waitFor(async () => {
       const events = await get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
-      return events.events.some((event) => event.type === "pulse.fired" && event.source_endpoint_id === "system:pulse");
+      return events.events.some(
+        (event) =>
+          event.type === "pulse.fired" &&
+          event.source_endpoint_id === null &&
+          event.metadata?.trigger_kind === "pulse" &&
+          event.metadata?.pulse_id === pulseId
+      );
     }, "pulse.fired event in store");
 
     // Verify the pulse status is now completed

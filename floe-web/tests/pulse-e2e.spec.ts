@@ -125,6 +125,8 @@ test.describe("Pulse E2E", () => {
         e.type === "pulse.fired" && e.content?.pulse_id === pulseId
     );
     expect(pulseEvent).toBeTruthy();
-    expect(pulseEvent.source_endpoint_id).toBe("system:pulse");
+    // Slice 3: pulse triggers carry null source (no synthetic system endpoint).
+    expect(pulseEvent.source_endpoint_id).toBeNull();
+    expect(pulseEvent.metadata?.trigger_kind).toBe("pulse");
   });
 });

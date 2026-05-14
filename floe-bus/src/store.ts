@@ -56,20 +56,31 @@ export type EventCommand = {
   context_id?: string | null;
   /** Bridge passes the context_id of the delivery currently being processed (rules 2/3). */
   current_delivery_context_id?: string | null;
-  /**
-   * Bus-internal flag for trigger-origin events (pulse.fired, webhook ingest).
-   * When true, the resolver/participant rule is bypassed and a target-only
-   * context is created (per design §3.1.6). TODO(slice-3): replace with a
-   * proper trigger emission API; this flag should not be set by external callers.
-   */
-  __trigger_origin?: boolean;
+};
+
+/**
+ * Bus-originated trigger emission (pulse.fired, webhook ingest, etc.).
+ *
+ * Triggers are NOT actor-to-actor messages. Per design §3.1.6, the bus directly
+ * creates a target-only context (`participants = [target_endpoint_id]`) and the
+ * event's `source_endpoint_id` is `null` — never a synthetic system endpoint.
+ * The participant-aware resolver (§3.1.4) does not apply.
+ */
+export type TriggerEventCommand = {
+  type: string;
+  workspace_id: string;
+  target_endpoint_id: string;
+  content: Record<string, unknown>;
+  metadata: Record<string, unknown> & { trigger_kind: "pulse" | "webhook" | string };
+  correlation_id?: string | null;
+  idempotency_key?: string | null;
 };
 
 export type EventEnvelope = {
   event_id: string;
   type: string;
   workspace_id: string;
-  source_endpoint_id: string;
+  source_endpoint_id: string | null;
   thread_id: string;
   context_id: string;
   correlation_id: string | null;
@@ -176,7 +187,7 @@ export class BusStore {
         event_id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
-        source_endpoint_id TEXT NOT NULL,
+        source_endpoint_id TEXT,
         thread_id TEXT NOT NULL,
         correlation_id TEXT,
         destination_json TEXT NOT NULL,
@@ -616,42 +627,42 @@ export class BusStore {
         if (existing) return this.rowToEvent(existing);
       }
 
-      let resolvedContextId: string;
-      if (command.__trigger_origin) {
-        // TODO(slice-3): replace this temporary trigger path with a proper
-        // target-only emission API. For Slice 1 we just need pulse/webhook
-        // events to carry a context_id without violating the participant rule.
-        const targetEndpoint =
-          command.destination.kind === "endpoint" ? command.destination.endpoint_id : command.source_endpoint_id;
-        resolvedContextId = this.contextStore.createContext({
+      const resolution = resolveContext(
+        {
+          source_endpoint_id: command.source_endpoint_id,
+          destination: command.destination,
+          supplied_context_id: command.context_id ?? null,
+          current_delivery_context_id: command.current_delivery_context_id ?? null,
+          workspace_id: command.workspace_id
+        },
+        this.contextStore
+      );
+      if ("error" in resolution) throw new ContextParticipantError(resolution.payload);
+      if (resolution.created) {
+        this.contextStore.createContext({
           workspace_id: command.workspace_id,
-          created_by_endpoint_id: targetEndpoint,
-          participants: [targetEndpoint]
+          created_by_endpoint_id: command.source_endpoint_id,
+          participants: resolution.participants ?? [command.source_endpoint_id],
+          context_id: resolution.context_id
         });
-      } else {
-        const resolution = resolveContext(
-          {
-            source_endpoint_id: command.source_endpoint_id,
-            destination: command.destination,
-            supplied_context_id: command.context_id ?? null,
-            current_delivery_context_id: command.current_delivery_context_id ?? null,
-            workspace_id: command.workspace_id
-          },
-          this.contextStore
-        );
-        if ("error" in resolution) throw new ContextParticipantError(resolution.payload);
-        if (resolution.created) {
-          this.contextStore.createContext({
-            workspace_id: command.workspace_id,
-            created_by_endpoint_id: command.source_endpoint_id,
-            participants: resolution.participants ?? [command.source_endpoint_id],
-            context_id: resolution.context_id
-          });
-        }
-        resolvedContextId = resolution.context_id;
       }
+      const resolvedContextId = resolution.context_id;
 
-      const inserted = this.insertEvent(command, response, resolvedContextId);
+      const inserted = this.insertEvent(
+        {
+          type: command.type,
+          workspace_id: command.workspace_id,
+          source_endpoint_id: command.source_endpoint_id,
+          destination: command.destination,
+          thread_id: command.thread_id,
+          correlation_id: command.correlation_id ?? null,
+          content: command.content,
+          metadata: command.metadata ?? {},
+          idempotency_key: command.idempotency_key ?? null
+        },
+        response,
+        resolvedContextId
+      );
       const destinationEndpointIds = this.resolveDestinations(inserted);
       for (const destinationEndpointId of destinationEndpointIds) this.queueEvent(inserted.event_id, inserted.workspace_id, destinationEndpointId);
       if (inserted.response.expected) this.createPendingResponse(inserted);
@@ -659,6 +670,57 @@ export class BusStore {
       return inserted;
     });
 
+    return this.broadcastEventSubmission(event, broadcast);
+  }
+
+  /**
+   * Bus-originated trigger emission (design §3.1.6).
+   *
+   * Always creates a fresh, target-only context (`participants = [target_endpoint_id]`).
+   * The event row's `source_endpoint_id` is `null` — never a synthetic
+   * `system:*` or `webhook:*` endpoint, never added to the participant set.
+   * The resolver participant-aware rule is intentionally bypassed: triggers
+   * are not actor-to-actor messages.
+   */
+  emitTriggerEvent(command: TriggerEventCommand, broadcast: Broadcast): EventEnvelope {
+    const event = this.transaction(() => {
+      if (command.idempotency_key) {
+        const existing = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?").get(command.idempotency_key) as any;
+        if (existing) return this.rowToEvent(existing);
+      }
+
+      const contextId = this.contextStore.createContext({
+        workspace_id: command.workspace_id,
+        created_by_endpoint_id: command.target_endpoint_id,
+        participants: [command.target_endpoint_id]
+      });
+
+      const inserted = this.insertEvent(
+        {
+          type: command.type,
+          workspace_id: command.workspace_id,
+          source_endpoint_id: null,
+          destination: { kind: "endpoint", endpoint_id: command.target_endpoint_id },
+          thread_id: undefined,
+          correlation_id: command.correlation_id ?? null,
+          content: command.content,
+          metadata: command.metadata,
+          idempotency_key: command.idempotency_key ?? null
+        },
+        this.normalizeResponse({ expected: false }),
+        contextId
+      );
+      const destinationEndpointIds = this.resolveDestinations(inserted);
+      for (const destinationEndpointId of destinationEndpointIds) this.queueEvent(inserted.event_id, inserted.workspace_id, destinationEndpointId);
+      // No pending-response: triggers do not expect a reply.
+      // No resolvePendingResponsesForIncoming: trigger has no source actor.
+      return inserted;
+    });
+
+    return this.broadcastEventSubmission(event, broadcast).event;
+  }
+
+  private broadcastEventSubmission(event: EventEnvelope, broadcast: Broadcast): { event: EventEnvelope; deliveries_created: number } {
     const resolved = this.db.prepare(`
       SELECT destination_endpoint_id
       FROM event_queue
@@ -936,29 +998,23 @@ export class BusStore {
       WHERE workspace_id = ? AND actor_type = 'agent'
       ORDER BY created_at ASC LIMIT 1
     `).get(workspaceId) as any;
-    const human = this.db.prepare(`
-      SELECT endpoint_id FROM endpoints
-      WHERE workspace_id = ? AND actor_type = 'human'
-      ORDER BY created_at ASC LIMIT 1
-    `).get(workspaceId) as any;
     if (!destination) throw new Error("No agent endpoint is registered for this workspace");
-    // TODO(slice-3): redo webhook ingest with proper target-only context and
-    // null source_endpoint_id. For Slice 1 we just ensure the event has a
-    // context_id by using the trigger-origin path.
-    const command: EventCommand = {
-      type: "webhook_received",
-      workspace_id: workspaceId,
-      source_endpoint_id: human?.endpoint_id ?? `endpoint:${workspaceId}:webhook:${routeId}`,
-      destination: { kind: "endpoint", endpoint_id: destination.endpoint_id },
-      correlation_id: typeof body.correlation_id === "string" ? body.correlation_id : null,
-      content: {
-        text: typeof body.text === "string" ? body.text : `Webhook ${routeId} received`,
-        data: body
+    // Per design §3.1.6: webhook ingest is a non-actor trigger. Bus creates a
+    // target-only context and emits with source_endpoint_id = null.
+    return this.emitTriggerEvent(
+      {
+        type: "webhook_received",
+        workspace_id: workspaceId,
+        target_endpoint_id: destination.endpoint_id,
+        correlation_id: typeof body.correlation_id === "string" ? body.correlation_id : null,
+        content: {
+          text: typeof body.text === "string" ? body.text : `Webhook ${routeId} received`,
+          data: body
+        },
+        metadata: { trigger_kind: "webhook", route_id: routeId }
       },
-      metadata: { route_id: routeId },
-      __trigger_origin: true
-    };
-    return this.submitEvent(command, broadcast).event;
+      broadcast
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1146,26 +1202,40 @@ export class BusStore {
     };
   }
 
-  private insertEvent(command: EventCommand, response: ResponseExpectation, contextId: string): EventEnvelope {
+  private insertEvent(
+    input: {
+      type: string;
+      workspace_id: string;
+      source_endpoint_id: string | null;
+      destination: DestinationSelector;
+      thread_id?: string;
+      correlation_id: string | null;
+      content: Record<string, unknown>;
+      metadata: Record<string, unknown>;
+      idempotency_key: string | null;
+    },
+    response: ResponseExpectation,
+    contextId: string
+  ): EventEnvelope {
     const destinationEndpointId =
-      command.destination.kind === "endpoint"
-        ? command.destination.endpoint_id
-        : `broadcast:${command.destination.scope}:${command.destination.target}`;
+      input.destination.kind === "endpoint"
+        ? input.destination.endpoint_id
+        : `broadcast:${input.destination.scope}:${input.destination.target}`;
     // Legacy thread_id storage: write the resolved context_id so the existing
     // NOT NULL column is satisfied. No new flow reads thread_id.
-    const threadIdForStorage = command.thread_id && command.thread_id.length > 0 ? command.thread_id : contextId;
+    const threadIdForStorage = input.thread_id && input.thread_id.length > 0 ? input.thread_id : contextId;
     const envelope: EventEnvelope = {
       event_id: `evt_${randomUUID()}`,
-      type: command.type,
-      workspace_id: command.workspace_id,
-      source_endpoint_id: command.source_endpoint_id,
+      type: input.type,
+      workspace_id: input.workspace_id,
+      source_endpoint_id: input.source_endpoint_id,
       thread_id: threadIdForStorage,
       context_id: contextId,
-      correlation_id: command.correlation_id ?? null,
-      destination_json: command.destination,
-      content: command.content,
+      correlation_id: input.correlation_id ?? null,
+      destination_json: input.destination,
+      content: input.content,
       response,
-      metadata: command.metadata ?? {},
+      metadata: input.metadata ?? {},
       created_at: now()
     };
     this.db.prepare(`
@@ -1187,7 +1257,7 @@ export class BusStore {
       json(envelope.content),
       json(envelope.response),
       json(envelope.metadata),
-      command.idempotency_key ?? null,
+      input.idempotency_key ?? null,
       envelope.created_at
     );
     return envelope;
