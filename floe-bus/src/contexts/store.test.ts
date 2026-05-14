@@ -13,6 +13,7 @@ function freshDb(): DatabaseSync {
       workspace_id TEXT NOT NULL,
       source_endpoint_id TEXT NOT NULL,
       context_id TEXT,
+      content_json TEXT,
       created_at TEXT NOT NULL
     );
   `);
@@ -73,11 +74,11 @@ describe("ContextStore CRUD", () => {
     const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1, E2] });
     expect(store.getLastEventAt(id)).toBeNull();
     db.prepare(
-      "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run("evt_1", "message", WS, E1, id, "2026-01-01T00:00:00.000Z");
+      "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, content_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run("evt_1", "message", WS, E1, id, null, "2026-01-01T00:00:00.000Z");
     db.prepare(
-      "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run("evt_2", "message", WS, E2, id, "2026-01-02T00:00:00.000Z");
+      "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, content_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run("evt_2", "message", WS, E2, id, null, "2026-01-02T00:00:00.000Z");
     expect(store.getLastEventAt(id)).toBe("2026-01-02T00:00:00.000Z");
   });
 
@@ -85,11 +86,11 @@ describe("ContextStore CRUD", () => {
     const a = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1, E2] });
     const b = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1, E2] });
     db.prepare(
-      "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run("evt_a", "message", WS, E1, a, "2026-01-01T00:00:00.000Z");
+      "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, content_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run("evt_a", "message", WS, E1, a, null, "2026-01-01T00:00:00.000Z");
     db.prepare(
-      "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run("evt_b", "message", WS, E1, b, "2026-01-02T00:00:00.000Z");
+      "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, content_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run("evt_b", "message", WS, E1, b, null, "2026-01-02T00:00:00.000Z");
     const list = store.listContextsForParticipant(E1).map((x) => x.context_id);
     expect(list).toEqual([b, a]);
   });
@@ -102,5 +103,69 @@ describe("ContextStore CRUD", () => {
   it("createContext deduplicates participants", () => {
     const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1, E1, E2] });
     expect(store.getContextParticipants(id).sort()).toEqual([E1, E2].sort());
+  });
+
+  describe("getFirstMessagePreview", () => {
+    function insertEvent(opts: { id: string; type: string; ctx: string; text?: string; at: string }) {
+      db.prepare(
+        "INSERT INTO events (event_id, type, workspace_id, source_endpoint_id, context_id, content_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(opts.id, opts.type, WS, E1, opts.ctx, opts.text === undefined ? null : JSON.stringify({ text: opts.text }), opts.at);
+    }
+
+    it("returns null when context has no events", () => {
+      const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      expect(store.getFirstMessagePreview(id)).toBeNull();
+    });
+
+    it("returns null when context has only non-message events", () => {
+      const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      insertEvent({ id: "e1", type: "pulse.fired", ctx: id, text: "ignored", at: "2026-01-01T00:00:00.000Z" });
+      expect(store.getFirstMessagePreview(id)).toBeNull();
+    });
+
+    it("returns text of the first (chronologically earliest) message event", () => {
+      const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      insertEvent({ id: "e1", type: "message", ctx: id, text: "first", at: "2026-01-01T00:00:00.000Z" });
+      insertEvent({ id: "e2", type: "message", ctx: id, text: "second", at: "2026-01-02T00:00:00.000Z" });
+      expect(store.getFirstMessagePreview(id)).toBe("first");
+    });
+
+    it("skips non-message events when looking for first message", () => {
+      const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      insertEvent({ id: "e0", type: "pulse.fired", ctx: id, text: "trigger", at: "2026-01-01T00:00:00.000Z" });
+      insertEvent({ id: "e1", type: "message", ctx: id, text: "hello", at: "2026-01-02T00:00:00.000Z" });
+      expect(store.getFirstMessagePreview(id)).toBe("hello");
+    });
+
+    it("truncates long text to ~80 chars with ellipsis", () => {
+      const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      const long = "x".repeat(200);
+      insertEvent({ id: "e1", type: "message", ctx: id, text: long, at: "2026-01-01T00:00:00.000Z" });
+      const preview = store.getFirstMessagePreview(id);
+      expect(preview).not.toBeNull();
+      expect(preview!.length).toBeLessThanOrEqual(81);
+      expect(preview!.startsWith("xxxx")).toBe(true);
+      expect(preview!.endsWith("…")).toBe(true);
+    });
+
+    it("does not truncate short text", () => {
+      const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      insertEvent({ id: "e1", type: "message", ctx: id, text: "short", at: "2026-01-01T00:00:00.000Z" });
+      expect(store.getFirstMessagePreview(id)).toBe("short");
+    });
+
+    it("returns null when first message has no text", () => {
+      const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      insertEvent({ id: "e1", type: "message", ctx: id, at: "2026-01-01T00:00:00.000Z" });
+      expect(store.getFirstMessagePreview(id)).toBeNull();
+    });
+
+    it("only considers events for the given context", () => {
+      const a = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      const b = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+      insertEvent({ id: "e1", type: "message", ctx: b, text: "from-b", at: "2026-01-01T00:00:00.000Z" });
+      expect(store.getFirstMessagePreview(a)).toBeNull();
+      expect(store.getFirstMessagePreview(b)).toBe("from-b");
+    });
   });
 });

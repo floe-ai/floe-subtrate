@@ -118,6 +118,25 @@ export class ContextStore implements ContextStoreReader {
     return (row?.last as string | null) ?? null;
   }
 
+  getFirstMessagePreview(context_id: string, maxChars = 80): string | null {
+    const row = this.db
+      .prepare(
+        "SELECT content_json FROM events WHERE context_id = ? AND type = 'message' ORDER BY created_at ASC LIMIT 1"
+      )
+      .get(context_id) as { content_json: string | null } | undefined;
+    if (!row || !row.content_json) return null;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(row.content_json);
+    } catch {
+      return null;
+    }
+    const text = parsed && typeof parsed.text === "string" ? parsed.text : null;
+    if (!text) return null;
+    if (text.length <= maxChars) return text;
+    return text.slice(0, maxChars) + "…";
+  }
+
   listContextsForParticipant(endpoint_id: string): ContextListRow[] {
     const rows = this.db
       .prepare(
