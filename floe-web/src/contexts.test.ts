@@ -9,9 +9,9 @@ import {
 } from "./contexts";
 
 const WS = "ws_1";
-const OP = "endpoint:ws_1:user:operator";
-const FLOE = "endpoint:ws_1:agent:floe";
-const REVIEWER = "endpoint:ws_1:agent:reviewer";
+const OP = "actor:ws_1:operator";
+const FLOE = "actor:ws_1:floe";
+const REVIEWER = "actor:ws_1:reviewer";
 
 function makeCtx(overrides: Partial<ContextSummary>): ContextSummary {
   return {

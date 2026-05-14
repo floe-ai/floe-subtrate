@@ -230,7 +230,7 @@ describe("Floe local vertical slice", () => {
       scope: "local",
       trigger: { type: "once", at: fireAt },
       content: { text: "Pulse test message" },
-      subscribers: [{ endpoint_ref: `agent:floe` }],
+      subscribers: [{ endpoint_ref: `floe` }],
       created_by: humanEndpointId
     });
     expect(created.pulse.pulse_id).toBe(pulseId);
@@ -307,7 +307,7 @@ describe("Floe local vertical slice", () => {
       scope: "local",
       trigger: { type: "cron", schedule: "*/2 * * * * *", timezone: "UTC" },
       content: { text: "Cron pulse test" },
-      subscribers: [{ endpoint_ref: "agent:floe" }],
+      subscribers: [{ endpoint_ref: "floe" }],
       created_by: humanEndpointId
     });
     expect(created.pulse.pulse_id).toBe(pulseId);
@@ -469,23 +469,23 @@ You are Floe.
       status: "online"
     });
 
-    // Resolve agent short ref
+    // Resolve actor short ref
     const agentResolved = await get<{ endpoint_id: string; found: boolean }>(
-      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("agent:floe")}`
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("floe")}`
     );
     expect(agentResolved.endpoint_id).toBe(agentEndpointId);
     expect(agentResolved.found).toBe(true);
 
-    // Resolve user short ref
+    // Resolve operator short ref
     const userResolved = await get<{ endpoint_id: string; found: boolean }>(
-      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("user:operator")}`
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("operator")}`
     );
     expect(userResolved.endpoint_id).toBe(humanEndpointId);
     expect(userResolved.found).toBe(true);
 
     // Resolve non-existent ref — should return constructed ID with found=false
     const unknownResolved = await get<{ endpoint_id: string; found: boolean }>(
-      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("agent:nonexistent")}`
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("nonexistent")}`
     );
     expect(unknownResolved.endpoint_id).toBe(`actor:${workspaceId}:nonexistent`);
     expect(unknownResolved.found).toBe(false);

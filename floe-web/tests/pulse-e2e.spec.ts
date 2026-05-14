@@ -34,7 +34,7 @@ test.describe("Pulse E2E", () => {
         scope: "local",
         trigger: { type: "once", at: fireAt },
         content: { text: "E2E pulse test fired!" },
-        subscribers: [{ endpoint_ref: "agent:floe" }]
+        subscribers: [{ endpoint_ref: "floe" }]
       }
     });
     expect(createRes.ok()).toBeTruthy();
@@ -108,7 +108,7 @@ test.describe("Pulse E2E", () => {
         scope: "local",
         trigger: { type: "once", at: fireAt },
         content: { text: "UI pulse test!" },
-        subscribers: [{ endpoint_ref: "agent:floe" }]
+        subscribers: [{ endpoint_ref: "floe" }]
       }
     });
 
