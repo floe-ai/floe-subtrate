@@ -46,6 +46,7 @@ type RuntimeTurnContext = {
   trigger_event_id: string;
   reply_destination_endpoint_id: string;
   context_id: string | null;
+  current_context_participants: string[];
   visible_output: string;
   last_visible_telemetry_text: string;
   finalized: boolean;
@@ -142,7 +143,32 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       console.error("[bridge] failed to fetch visible endpoints", epErr);
     }
 
-    const prompt = deliveryToPrompt(bundle, visibleEndpoints);
+    // Fetch current context participants if the trigger event belongs to a context.
+    // Failure modes (network error, 404, malformed shape) are intentionally non-fatal:
+    // the agent can still process the turn and the bus's resolver remains the
+    // authority for participant-aware continue-vs-branch decisions. We log a warning
+    // so the operator can see when the prompt was rendered with degraded context info.
+    let currentContextParticipants: string[] = [];
+    if (turn.context_id) {
+      try {
+        const ctx = await context.bus.getContext(turn.context_id);
+        if (ctx && Array.isArray(ctx.participants)) {
+          currentContextParticipants = ctx.participants.filter((p): p is string => typeof p === "string");
+        } else if (ctx) {
+          console.warn("[bridge] getContext returned unexpected shape; rendering empty participants", {
+            context_id: turn.context_id
+          });
+        }
+      } catch (ctxErr) {
+        console.warn("[bridge] getContext failed; rendering empty participants", {
+          context_id: turn.context_id,
+          error: ctxErr instanceof Error ? ctxErr.message : String(ctxErr)
+        });
+      }
+    }
+    turn.current_context_participants = currentContextParticipants;
+
+    const prompt = deliveryToPrompt(bundle, visibleEndpoints, currentContextParticipants);
     console.log("[bridge] pi prompt injected", {
       delivery_id: bundle.delivery_id,
       runtime_turn_id: turn.runtime_turn_id,
@@ -579,6 +605,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       trigger_event_id: trigger?.event_id ?? `evt:${bundle.delivery_id}`,
       reply_destination_endpoint_id: sourceEndpoint,
       context_id: trigger?.context_id ?? null,
+      current_context_participants: [],
       visible_output: "",
       last_visible_telemetry_text: "",
       finalized: false,
@@ -823,7 +850,11 @@ export function renderHookInjections(results: Array<{ inject?: Record<string, un
   return lines.join("\n");
 }
 
-function deliveryToPrompt(bundle: DeliveryBundle, visibleEndpoints: Array<{ endpoint_id: string; name: string; actor_type: string; status: string }> = []): string {
+function deliveryToPrompt(
+  bundle: DeliveryBundle,
+  visibleEndpoints: Array<{ endpoint_id: string; name: string; actor_type: string; status: string }> = [],
+  currentContextParticipants: string[] = []
+): string {
   // Render destination context so the agent knows source/reply/thread without hard-coded IDs
   const trigger = bundle.events[0];
   const sourceEndpoint = trigger?.source_endpoint_id || `endpoint:${bundle.workspace_id}:user:operator`;
@@ -835,13 +866,6 @@ function deliveryToPrompt(bundle: DeliveryBundle, visibleEndpoints: Array<{ endp
   const responseExpected = bundle.events.some(
     (e) => e.type === "message"
   );
-
-  // TODO(slice-2): fetch current_context_participants via GET /v1/contexts/:id once that
-  // route lands. For now we render an empty list — the bus's resolver, not the bridge,
-  // is the authority on participant-aware continue/branch decisions, so the agent does
-  // not strictly need this list to make correct emits. The current_delivery_context_id
-  // forwarded by createEmitTool is what drives the rule.
-  const currentContextParticipants: string[] = [];
 
   const contextBlock = renderDestinationContext({
     source_endpoint_id: sourceEndpoint,

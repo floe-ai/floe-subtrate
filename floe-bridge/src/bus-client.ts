@@ -88,6 +88,33 @@ export class BusClient {
     return this.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent(ref)}`) as Promise<{ endpoint_id: string; found: boolean }>;
   }
 
+  /**
+   * Fetch a context by id. Returns null when the bus reports 404. Throws on other non-2xx
+   * responses or network errors — callers are expected to catch and degrade gracefully
+   * (the bridge falls back to an empty participants list and logs a warning).
+   */
+  async getContext(contextId: string): Promise<{
+    context_id: string;
+    workspace_id: string;
+    parent_context_id: string | null;
+    created_by_endpoint_id: string | null;
+    created_at: string;
+    participants: string[];
+  } | null> {
+    const path = `/v1/contexts/${encodeURIComponent(contextId)}`;
+    const response = await fetch(`${this.baseUrl}${path}`);
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
+    return response.json() as Promise<{
+      context_id: string;
+      workspace_id: string;
+      parent_context_id: string | null;
+      created_by_endpoint_id: string | null;
+      created_at: string;
+      participants: string[];
+    }>;
+  }
+
   async registerEndpoint(input: Record<string, unknown>): Promise<void> {
     await this.post("/v1/endpoints/register", input);
   }
