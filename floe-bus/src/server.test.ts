@@ -1,0 +1,228 @@
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import YAML from "yaml";
+import { createBusServer } from "./server.js";
+import { defaultConfig, type LocalConfig } from "./config.js";
+
+const WS = "workspace:server-test";
+const E1 = "endpoint:test:agent:e1";
+const E2 = "endpoint:test:agent:e2";
+const E3 = "endpoint:test:agent:e3";
+
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+
+async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Promise<void> }> {
+  const tmp = mkdtempSync(join(tmpdir(), "floe-bus-srv-"));
+  const cfgPath = join(tmp, "config.yaml");
+  const cfg: LocalConfig = defaultConfig(tmp);
+  writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
+  const handle = await createBusServer(cfgPath, cfg);
+  await handle.app.ready();
+  for (const id of [E1, E2, E3]) {
+    handle.store.registerEndpoint({
+      endpoint_id: id,
+      workspace_id: WS,
+      actor_type: "agent",
+      name: id,
+      bridge_id: null,
+      status: "idle"
+    }, () => {});
+  }
+  return {
+    handle,
+    cleanup: async () => {
+      try { await handle.app.close(); } catch {}
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  };
+}
+
+function emit(handle: ServerHandle, opts: {
+  source: string;
+  destination: string;
+  text?: string;
+  context_id?: string | null;
+  current_delivery_context_id?: string | null;
+  type?: string;
+}): { event: any; status: number; body: any } {
+  const result = handle.store.submitEvent({
+    type: opts.type ?? "message",
+    workspace_id: WS,
+    source_endpoint_id: opts.source,
+    destination: { kind: "endpoint", endpoint_id: opts.destination },
+    thread_id: "",
+    correlation_id: null,
+    content: opts.text === undefined ? {} : { text: opts.text },
+    metadata: {},
+    idempotency_key: null,
+    context_id: opts.context_id,
+    current_delivery_context_id: opts.current_delivery_context_id
+  }, () => {});
+  return { event: result.event, status: 0, body: null };
+}
+
+describe("Slice 2 — Context API HTTP routes", () => {
+  let handle: ServerHandle;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    const made = await makeServer();
+    handle = made.handle;
+    cleanup = made.cleanup;
+  });
+  afterEach(async () => { await cleanup(); });
+
+  describe("GET /v1/contexts?participant=", () => {
+    it("returns empty list when participant has no contexts", async () => {
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ contexts: [] });
+    });
+
+    it("returns only contexts the endpoint participates in", async () => {
+      const a = emit(handle, { source: E1, destination: E2, text: "a" }).event.context_id;
+      const b = emit(handle, { source: E2, destination: E3, text: "b" }).event.context_id;
+      const c = emit(handle, { source: E1, destination: E3, text: "c" }).event.context_id;
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      expect(res.statusCode).toBe(200);
+      const ids = (res.json().contexts as any[]).map((c) => c.context_id).sort();
+      expect(ids).toEqual([a, c].sort());
+      expect(ids).not.toContain(b);
+    });
+
+    it("sorts results by last_event_at descending", async () => {
+      const a = emit(handle, { source: E1, destination: E2, text: "first-a" }).event.context_id;
+      // small delay to ensure distinct timestamps
+      await new Promise((r) => setTimeout(r, 5));
+      const b = emit(handle, { source: E1, destination: E3, text: "first-b" }).event.context_id;
+      await new Promise((r) => setTimeout(r, 5));
+      // bump A by emitting again into it
+      emit(handle, { source: E1, destination: E2, text: "second-a", context_id: a });
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      const ids = (res.json().contexts as any[]).map((c) => c.context_id);
+      expect(ids[0]).toBe(a);
+      expect(ids[1]).toBe(b);
+    });
+
+    it("includes participants, last_event_at, parent_context_id, created_at, created_by_endpoint_id, workspace_id", async () => {
+      const a = emit(handle, { source: E1, destination: E2, text: "hi" }).event.context_id;
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      const entry = (res.json().contexts as any[])[0];
+      expect(entry.context_id).toBe(a);
+      expect(entry.workspace_id).toBe(WS);
+      expect(entry.parent_context_id).toBeNull();
+      expect(entry.created_by_endpoint_id).toBe(E1);
+      expect(typeof entry.created_at).toBe("string");
+      expect(typeof entry.last_event_at).toBe("string");
+      expect(entry.participants.sort()).toEqual([E1, E2].sort());
+    });
+
+    it("first_message_preview reflects the first message event text", async () => {
+      const a = emit(handle, { source: E1, destination: E2, text: "hello world" }).event.context_id;
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      const entry = (res.json().contexts as any[]).find((c) => c.context_id === a);
+      expect(entry.first_message_preview).toBe("hello world");
+    });
+
+    it("first_message_preview is truncated to ~80 chars", async () => {
+      const long = "x".repeat(200);
+      const a = emit(handle, { source: E1, destination: E2, text: long }).event.context_id;
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      const entry = (res.json().contexts as any[]).find((c) => c.context_id === a);
+      expect(entry.first_message_preview.length).toBeLessThanOrEqual(81);
+      expect(entry.first_message_preview.endsWith("…")).toBe(true);
+    });
+
+    it("first_message_preview is null when context has no message events yet", async () => {
+      // Create a context directly without emitting a message.
+      const id = handle.store.contextStore.createContext({
+        workspace_id: WS, created_by_endpoint_id: E1, participants: [E1, E2]
+      });
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      const entry = (res.json().contexts as any[]).find((c) => c.context_id === id);
+      expect(entry).toBeDefined();
+      expect(entry.first_message_preview).toBeNull();
+      expect(entry.last_event_at).toBeNull();
+    });
+
+    it("rejects request when participant query param is missing", async () => {
+      const res = await handle.app.inject({ method: "GET", url: "/v1/contexts" });
+      expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    });
+  });
+
+  describe("GET /v1/contexts/:id", () => {
+    it("returns context metadata + participants", async () => {
+      const a = emit(handle, { source: E1, destination: E2, text: "hi" }).event.context_id;
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(a)}` });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body).toMatchObject({
+        context_id: a,
+        workspace_id: WS,
+        parent_context_id: null,
+        created_by_endpoint_id: E1
+      });
+      expect(typeof body.created_at).toBe("string");
+      expect(body.participants.sort()).toEqual([E1, E2].sort());
+    });
+
+    it("404 when context not found", async () => {
+      const res = await handle.app.inject({ method: "GET", url: "/v1/contexts/ctx_does_not_exist" });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("GET /v1/contexts/:id/events", () => {
+    it("returns events for that context only (T7)", async () => {
+      const r1 = emit(handle, { source: E1, destination: E2, text: "a-1" });
+      const r2 = emit(handle, { source: E1, destination: E3, text: "b-1" });
+      const ctxA = r1.event.context_id;
+      const ctxB = r2.event.context_id;
+      // bump each
+      emit(handle, { source: E1, destination: E2, text: "a-2", context_id: ctxA });
+      emit(handle, { source: E1, destination: E3, text: "b-2", context_id: ctxB });
+
+      const resA = await handle.app.inject({ method: "GET", url: `/v1/contexts/${ctxA}/events` });
+      expect(resA.statusCode).toBe(200);
+      const aEvents = resA.json().events as any[];
+      expect(aEvents.length).toBeGreaterThanOrEqual(2);
+      expect(aEvents.every((e) => e.context_id === ctxA)).toBe(true);
+
+      const resB = await handle.app.inject({ method: "GET", url: `/v1/contexts/${ctxB}/events` });
+      const bEvents = resB.json().events as any[];
+      expect(bEvents.every((e) => e.context_id === ctxB)).toBe(true);
+
+      // No event from B is in A's response
+      const aIds = new Set(aEvents.map((e) => e.event_id));
+      for (const e of bEvents) expect(aIds.has(e.event_id)).toBe(false);
+    });
+
+    it("returns events in chronological order (oldest first)", async () => {
+      const r1 = emit(handle, { source: E1, destination: E2, text: "first" });
+      const ctx = r1.event.context_id;
+      emit(handle, { source: E1, destination: E2, text: "second", context_id: ctx });
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${ctx}/events` });
+      const events = res.json().events as any[];
+      const times = events.map((e) => e.created_at);
+      const sorted = [...times].sort();
+      expect(times).toEqual(sorted);
+    });
+
+    it("404 when context does not exist", async () => {
+      const res = await handle.app.inject({ method: "GET", url: "/v1/contexts/ctx_unknown/events" });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns empty events array for a context with no events yet", async () => {
+      const id = handle.store.contextStore.createContext({
+        workspace_id: WS, created_by_endpoint_id: E1, participants: [E1]
+      });
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${id}/events` });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ events: [] });
+    });
+  });
+});

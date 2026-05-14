@@ -400,6 +400,60 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { events: store.listEvents(query) };
   });
 
+  // ---------------------------------------------------------------------------
+  // Context API (Slice 2) — thin wrappers over ContextStore
+  // ---------------------------------------------------------------------------
+
+  app.get("/v1/contexts", async (request) => {
+    const query = z.object({
+      participant: z.string().min(1),
+      workspace_id: z.string().optional()
+    }).parse(request.query);
+    const rows = store.contextStore.listContextsForParticipant(query.participant);
+    const filtered = query.workspace_id
+      ? rows.filter((r) => r.workspace_id === query.workspace_id)
+      : rows;
+    return {
+      contexts: filtered.map((r) => ({
+        context_id: r.context_id,
+        workspace_id: r.workspace_id,
+        parent_context_id: r.parent_context_id,
+        created_by_endpoint_id: r.created_by_endpoint_id,
+        created_at: r.created_at,
+        last_event_at: r.last_event_at,
+        participants: r.participants,
+        first_message_preview: store.contextStore.getFirstMessagePreview(r.context_id)
+      }))
+    };
+  });
+
+  app.get("/v1/contexts/:id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    return {
+      context_id: ctx.context_id,
+      workspace_id: ctx.workspace_id,
+      parent_context_id: ctx.parent_context_id,
+      created_by_endpoint_id: ctx.created_by_endpoint_id,
+      created_at: ctx.created_at,
+      participants: store.contextStore.getContextParticipants(ctx.context_id)
+    };
+  });
+
+  app.get("/v1/contexts/:id/events", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const query = z.object({
+      limit: z.coerce.number().int().positive().optional()
+    }).parse(request.query);
+    if (!store.contextStore.getContext(params.id)) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    return { events: store.listEvents({ context_id: params.id, limit: query.limit }) };
+  });
+
   app.get("/v1/delivery/claim", async (request) => {
     const query = z.object({
       bridge_id: z.string(),
@@ -597,31 +651,31 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
 
   for (const subscriber of subscribers) {
     const endpointId = store.resolveSubscriberEndpointId(pulse.workspace_id, subscriber.endpoint_ref);
-    // TODO(slice-3): replace this temporary trigger emission path with a
-    // proper target-only context API. For Slice 1 we set __trigger_origin so
-    // submitEvent creates a target-only context and bypasses the
-    // participant rule (per design §3.1.6).
-    const command = {
-      type: "pulse.fired",
-      workspace_id: pulse.workspace_id,
-      source_endpoint_id: "system:pulse",
-      destination: { kind: "endpoint" as const, endpoint_id: endpointId },
-      correlation_id: null,
-      content: {
-        ...pulse.content,
-        pulse_id: pulseId
-      },
-      response: { expected: false },
-      metadata: {
-        pulse_id: pulseId,
-        trigger_type: trigger.type,
-        schedule: trigger.schedule ?? trigger.at ?? null,
-        fire_number: (pulse.fire_count ?? 0) + 1
-      },
-      __trigger_origin: true
-    };
+    // Per design §3.1.6: pulse.fired is a non-actor trigger. Bus creates a
+    // target-only context and emits with source_endpoint_id = null. No
+    // synthetic `system:*` source is created.
     try {
-      store.submitEvent(command, broadcast);
+      store.emitTriggerEvent(
+        {
+          type: "pulse.fired",
+          workspace_id: pulse.workspace_id,
+          target_endpoint_id: endpointId,
+          correlation_id: null,
+          content: {
+            ...pulse.content,
+            pulse_id: pulseId
+          },
+          metadata: {
+            trigger_kind: "pulse",
+            pulse_id: pulseId,
+            pulse_name: (pulse as any).name ?? pulseId,
+            trigger_type: trigger.type,
+            schedule: trigger.schedule ?? trigger.at ?? null,
+            fire_number: (pulse.fire_count ?? 0) + 1
+          }
+        },
+        broadcast
+      );
     } catch (error) {
       console.error("[bus] pulse event emission failed", { pulse_id: pulseId, subscriber, error });
     }
