@@ -194,4 +194,38 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
     expect(inspectorText).not.toMatch(/\bHumans\b.*\d/);
     expect(inspectorText).not.toMatch(/\bAgents\b.*\d/);
   });
+
+  test("no 'Default channel' label in inspector — uses 'Actors' instead", async ({ page }) => {
+    await gotoAndOpenChannel(page);
+    await page.waitForSelector(".channel-message", { timeout: 5000 });
+
+    const bodyText = await page.locator("body").innerText();
+    expect(bodyText).not.toContain("Default channel");
+    expect(bodyText).toContain("Actors");
+  });
+
+  test("no 'agent endpoint' in placeholder text", async ({ page }) => {
+    await setupRoutesForNeutralUI(page);
+    // Override endpoints to return none so we see the no-agent placeholder
+    await page.route(`**/v1/workspaces/${WORKSPACE_ID}/endpoints`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          endpoints: [
+            { endpoint_id: OPERATOR_ID, workspace_id: WORKSPACE_ID, name: "You", status: "online", metadata_json: "{}" },
+          ]
+        })
+      })
+    );
+    await page.goto("/");
+    await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(500);
+    await page.click('.icon-button[title="Toggle Channel"]');
+    await page.waitForTimeout(400);
+
+    const bodyText = await page.locator("body").innerText();
+    expect(bodyText).not.toContain("agent endpoint");
+    expect(bodyText).toContain("No actors available");
+  });
 });

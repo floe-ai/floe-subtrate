@@ -97,14 +97,33 @@ describe("findDefaultContextId", () => {
 });
 
 describe("sortContextsForAgent", () => {
-  it("sorts by last_event_at desc when no default", () => {
+  it("filters to only contexts where both self and selected actor participate", () => {
     const ctxs: ContextSummary[] = [
-      makeCtx({ context_id: "c1", last_event_at: "2024-06-01T00:00:00.000Z", participants: [FLOE, REVIEWER] }),
-      makeCtx({ context_id: "c2", last_event_at: "2024-06-03T00:00:00.000Z", participants: [FLOE, REVIEWER] }),
-      makeCtx({ context_id: "c3", last_event_at: "2024-06-02T00:00:00.000Z", participants: [FLOE, REVIEWER] })
+      makeCtx({ context_id: "ctx-a", participants: [OP, FLOE], last_event_at: "2024-06-01T00:00:00.000Z" }),
+      makeCtx({ context_id: "ctx-b", participants: [FLOE, REVIEWER], last_event_at: "2024-06-03T00:00:00.000Z" }),
+      makeCtx({ context_id: "ctx-c", participants: [OP, REVIEWER], last_event_at: "2024-06-02T00:00:00.000Z" }),
     ];
     const result = sortContextsForAgent(ctxs, OP, FLOE);
+    expect(result.sorted).toHaveLength(1);
+    expect(result.sorted[0].context_id).toBe("ctx-a");
+  });
+
+  it("returns empty when operator has no contexts with selected actor", () => {
+    const ctxs: ContextSummary[] = [
+      makeCtx({ context_id: "ctx-b", participants: [FLOE, REVIEWER], last_event_at: "2024-06-03T00:00:00.000Z" }),
+    ];
+    const result = sortContextsForAgent(ctxs, OP, FLOE);
+    expect(result.sorted).toHaveLength(0);
     expect(result.defaultContextId).toBeNull();
+  });
+
+  it("sorts filtered contexts by last_event_at desc when no default", () => {
+    const ctxs: ContextSummary[] = [
+      makeCtx({ context_id: "c1", last_event_at: "2024-06-01T00:00:00.000Z", participants: [OP, FLOE, REVIEWER] }),
+      makeCtx({ context_id: "c2", last_event_at: "2024-06-03T00:00:00.000Z", participants: [OP, FLOE, REVIEWER] }),
+      makeCtx({ context_id: "c3", last_event_at: "2024-06-02T00:00:00.000Z", participants: [OP, FLOE] })
+    ];
+    const result = sortContextsForAgent(ctxs, OP, FLOE);
     expect(result.sorted.map((c) => c.context_id)).toEqual(["c2", "c3", "c1"]);
   });
 
@@ -130,8 +149,8 @@ describe("sortContextsForAgent", () => {
 
   it("falls back to created_at when last_event_at is null", () => {
     const ctxs: ContextSummary[] = [
-      makeCtx({ context_id: "a", last_event_at: null, created_at: "2024-06-01T00:00:00.000Z", participants: [FLOE] }),
-      makeCtx({ context_id: "b", last_event_at: null, created_at: "2024-06-02T00:00:00.000Z", participants: [FLOE] })
+      makeCtx({ context_id: "a", last_event_at: null, created_at: "2024-06-01T00:00:00.000Z", participants: [OP, FLOE] }),
+      makeCtx({ context_id: "b", last_event_at: null, created_at: "2024-06-02T00:00:00.000Z", participants: [OP, FLOE] })
     ];
     const result = sortContextsForAgent(ctxs, OP, FLOE);
     expect(result.sorted.map((c) => c.context_id)).toEqual(["b", "a"]);

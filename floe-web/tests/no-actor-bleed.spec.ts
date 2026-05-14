@@ -184,6 +184,60 @@ async function gotoAndOpenChannel(page: import("@playwright/test").Page) {
 }
 
 test.describe("No actor bleed between contexts (Slice 8)", () => {
+  test("context query uses operator self ID as participant, not selected agent", async ({ page }) => {
+    const contextRequests: string[] = [];
+    await setupRoutes(page);
+    // Intercept context list requests to capture URL
+    await page.route(/\/v1\/contexts\?/, (route) => {
+      contextRequests.push(route.request().url());
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          contexts: [
+            {
+              context_id: CONTEXT_A,
+              workspace_id: WORKSPACE_ID,
+              parent_context_id: null,
+              created_by_endpoint_id: OPERATOR_ID,
+              created_at: "2025-01-01T00:00:00Z",
+              last_event_at: "2025-01-01T00:00:02Z",
+              participants: [OPERATOR_ID, FLOE_ID],
+              first_message_preview: "Context-A message from operator"
+            }
+          ]
+        })
+      });
+    });
+    await page.goto("/");
+    await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(500);
+    await page.click('.icon-button[title="Toggle Channel"]');
+    await page.waitForTimeout(800);
+
+    // Verify the context list query used the operator's ID, not the agent's
+    const contextListReq = contextRequests.find(u => u.includes("/v1/contexts?"));
+    expect(contextListReq).toBeDefined();
+    expect(contextListReq).toContain(encodeURIComponent(OPERATOR_ID));
+    expect(contextListReq).not.toContain(encodeURIComponent(FLOE_ID));
+  });
+
+  test("context list only shows contexts where both operator and selected agent participate", async ({ page }) => {
+    await setupRoutes(page);
+    await page.goto("/");
+    await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(500);
+    await page.click('.icon-button[title="Toggle Channel"]');
+    await page.waitForTimeout(400);
+
+    // Context B (floe↔reviewer) should not appear in the sidebar context list
+    const contextList = page.locator("[data-testid='context-list']");
+    const listText = await contextList.innerText();
+    expect(listText).not.toContain("Context-B message from floe to reviewer");
+    // Context A (operator↔floe) should be visible
+    expect(listText).toContain("Context-A message from operator");
+  });
+
   test("context A shows only context-A messages, no context-B content", async ({ page }) => {
     await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
