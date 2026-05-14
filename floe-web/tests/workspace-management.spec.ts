@@ -144,7 +144,7 @@ test.describe("Spinner behavior", () => {
 
   test("spinner does not appear when endpoint is idle even with stale streaming turns", async ({ page }) => {
     // Seed with an endpoint that's idle and telemetry with stale visible_output
-    const floeEndpointId = `endpoint:${WORKSPACE_ID}:agent:floe`;
+    const floeEndpointId = `actor:${WORKSPACE_ID}:floe`;
 
     await page.route("**/v1/workspaces", (route) => {
       if (route.request().method() === "GET") {
@@ -173,14 +173,12 @@ test.describe("Spinner behavior", () => {
           endpoints: [{
             endpoint_id: floeEndpointId,
             workspace_id: WORKSPACE_ID,
-            actor_type: "agent",
             name: "Floe",
             agent_id: "floe",
             status: "idle"
           }, {
-            endpoint_id: `endpoint:${WORKSPACE_ID}:user:operator`,
+            endpoint_id: `actor:${WORKSPACE_ID}:operator`,
             workspace_id: WORKSPACE_ID,
-            actor_type: "human",
             name: "Operator",
             status: "online"
           }]

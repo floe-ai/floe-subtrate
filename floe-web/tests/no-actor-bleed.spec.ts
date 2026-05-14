@@ -86,11 +86,8 @@ async function setupRoutes(page: import("@playwright/test").Page) {
     return route.fulfill({ status: 200, body: JSON.stringify({}) });
   });
 
-  await page.route("**/v1/endpoints**", (route) => {
-    if (route.request().method() === "POST") {
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
-    }
-    return route.fulfill({
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/endpoints`, (route) =>
+    route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
@@ -100,8 +97,12 @@ async function setupRoutes(page: import("@playwright/test").Page) {
           { endpoint_id: OPERATOR_ID, workspace_id: WORKSPACE_ID, name: "Operator", status: "online", metadata_json: "{}" },
         ]
       })
-    });
-  });
+    })
+  );
+
+  await page.route("**/v1/endpoints/register", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
+  );
 
   await page.route("**/v1/auth/profiles", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ profiles: [] }) })
@@ -158,8 +159,14 @@ async function setupRoutes(page: import("@playwright/test").Page) {
     });
   });
 
-  await page.route("**/v1/telemetry**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ telemetry: [] }) })
+  await page.route("**/v1/runtime/telemetry**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ records: [] }) })
+  );
+
+  await page.route("**/v1/events/stream", (route) => route.abort());
+
+  await page.route("**/v1/events/emit", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
   );
 
   await page.route("**/v1/events**", (route) =>
@@ -167,24 +174,34 @@ async function setupRoutes(page: import("@playwright/test").Page) {
   );
 }
 
+async function gotoAndOpenChannel(page: import("@playwright/test").Page) {
+  await setupRoutes(page);
+  await page.goto("/");
+  await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(500);
+  await page.click('.icon-button[title="Toggle Channel"]');
+  await page.waitForTimeout(400);
+}
+
 test.describe("No actor bleed between contexts (Slice 8)", () => {
   test("context A shows only context-A messages, no context-B content", async ({ page }) => {
-    await setupRoutes(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
-    const bodyText = await page.locator("body").innerText();
+    // Check only the channel message area, not the sidebar context list
+    const messages = page.locator(".channel-message");
+    const allMessageText = await messages.allInnerTexts();
+    const messageContent = allMessageText.join(" ");
     // Context A messages should be visible (it's the default for floe agent)
-    expect(bodyText).toContain("Context-A message from operator");
-    expect(bodyText).toContain("Context-A reply from floe");
-    // Context B messages must NOT be visible
-    expect(bodyText).not.toContain("Context-B message from floe to reviewer");
-    expect(bodyText).not.toContain("Context-B reply from reviewer");
+    expect(messageContent).toContain("Context-A message from operator");
+    expect(messageContent).toContain("Context-A reply from floe");
+    // Context B messages must NOT appear in the channel messages
+    expect(messageContent).not.toContain("Context-B message from floe to reviewer");
+    expect(messageContent).not.toContain("Context-B reply from reviewer");
   });
 
   test("switching to context B shows only context-B messages", async ({ page }) => {
-    await setupRoutes(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     // Click context B in the context list
@@ -193,16 +210,17 @@ test.describe("No actor bleed between contexts (Slice 8)", () => {
       await contextBItem.click();
       await page.waitForTimeout(500);
 
-      const bodyText = await page.locator("body").innerText();
-      expect(bodyText).toContain("Context-B message from floe to reviewer");
-      expect(bodyText).toContain("Context-B reply from reviewer");
-      expect(bodyText).not.toContain("Context-A message from operator");
+      const messages = page.locator(".channel-message");
+      const allMessageText = await messages.allInnerTexts();
+      const messageContent = allMessageText.join(" ");
+      expect(messageContent).toContain("Context-B message from floe to reviewer");
+      expect(messageContent).toContain("Context-B reply from reviewer");
+      expect(messageContent).not.toContain("Context-A message from operator");
     }
   });
 
   test("no endpoint: prefixed ids visible in any context view", async ({ page }) => {
-    await setupRoutes(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     const bodyText = await page.locator("body").innerText();

@@ -9,9 +9,9 @@ import { test as base, expect, Page, Route } from "@playwright/test";
 const test = base;
 
 const WORKSPACE_ID = "ws_ctx";
-const FLOE = `endpoint:${WORKSPACE_ID}:agent:floe`;
-const REVIEWER = `endpoint:${WORKSPACE_ID}:agent:reviewer`;
-const OPERATOR = `endpoint:${WORKSPACE_ID}:user:operator`;
+const FLOE = `actor:${WORKSPACE_ID}:floe`;
+const REVIEWER = `actor:${WORKSPACE_ID}:reviewer`;
+const OPERATOR = `actor:${WORKSPACE_ID}:operator`;
 
 type ContextSummary = {
   context_id: string;
@@ -111,7 +111,6 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
           {
             endpoint_id: FLOE,
             workspace_id: WORKSPACE_ID,
-            actor_type: "agent",
             name: "Floe",
             status: "active",
             agent_id: "floe",
@@ -120,7 +119,6 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
           {
             endpoint_id: REVIEWER,
             workspace_id: WORKSPACE_ID,
-            actor_type: "agent",
             name: "Reviewer",
             status: "active",
             agent_id: "reviewer",
@@ -129,7 +127,6 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
           {
             endpoint_id: OPERATOR,
             workspace_id: WORKSPACE_ID,
-            actor_type: "human",
             name: "Operator",
             status: "idle",
             agent_id: null,

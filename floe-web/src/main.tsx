@@ -61,7 +61,6 @@ type Workspace = {
 type Endpoint = {
   endpoint_id: string;
   workspace_id: string;
-  actor_type: "human" | "agent";
   name: string;
   status: string;
   agent_id?: string | null;
@@ -196,11 +195,11 @@ function App() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
-  const agents = endpoints.filter((endpoint) => endpoint.actor_type === "agent");
+  const selfActorId = selectedWorkspace ? operatorActorId(selectedWorkspace.workspace_id) : "";
+  const agents = endpoints.filter((endpoint) => endpoint.endpoint_id !== selfActorId);
   const selectedAgent = agents.find((endpoint) => endpoint.agent_id === (selectedAgentId ?? "floe")) ?? agents[0] ?? null;
   const floeAgent = selectedAgent; // alias for backward compat in existing rendering code
-  const humans = endpoints.filter((endpoint) => endpoint.actor_type === "human");
-  const humanEndpoint = selectedWorkspace ? humanEndpointId(selectedWorkspace.workspace_id) : "";
+  const humanEndpoint = selfActorId;
 
   const sortedContexts = useMemo(() => {
     if (!selectedAgent || !humanEndpoint) {
@@ -361,9 +360,9 @@ function App() {
         }
         telemetryIndex++;
       }
-      const isHuman = message.source_endpoint_id === humanEndpoint;
-      if (isHuman) {
-        // Human message starts a new processing cycle.
+      const isSelf = message.source_endpoint_id === humanEndpoint;
+      if (isSelf) {
+        // Self (operator) message starts a new processing cycle.
         // Any pending activity is orphaned from a prior cycle — discard it.
         pendingActivity = [];
         segments.push({ kind: "message", message });
@@ -765,7 +764,7 @@ function App() {
     await api(busUrl, "/v1/endpoints/register", {
       method: "POST",
       body: {
-        endpoint_id: humanEndpointId(workspaceId),
+        endpoint_id: operatorActorId(workspaceId),
         workspace_id: workspaceId,
         actor_type: "human",
         name: "Operator",
@@ -1329,8 +1328,7 @@ function App() {
   function ActorAccessSection() {
     return (
       <InspectorSection title="Actor Access">
-        <Detail label="Humans" value={String(humans.length)} />
-        <Detail label="Agents" value={String(agents.length)} />
+        <Detail label="Actors" value={String(endpoints.length)} />
         <Detail label="Default channel" value={floeAgent ? "Floe" : "Unavailable"} />
       </InspectorSection>
     );
@@ -1520,17 +1518,17 @@ function App() {
                 }
                 if (segment.kind === "streaming") {
                   return (
-                    <div key={segment.turnId} className="channel-message floe streaming">
+                    <div key={segment.turnId} className="channel-message other streaming">
                       <div className="message-meta">{agentName}</div>
                       <div className="message-text">{renderMarkdown(segment.text)}</div>
                     </div>
                   );
                 }
-                const isHuman = segment.message.source_endpoint_id === humanEndpoint;
+                const isSelf = segment.message.source_endpoint_id === humanEndpoint;
                 return (
-                  <div key={segment.message.event_id} className={`channel-message ${isHuman ? "human" : "floe"}`}>
-                    <div className="message-meta">{isHuman ? "You" : agentName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
-                    <div className="message-text">{isHuman ? segment.message.content.text : renderMarkdown(segment.message.content.text ?? "")}</div>
+                  <div key={segment.message.event_id} className={`channel-message ${isSelf ? "self" : "other"}`}>
+                    <div className="message-meta">{isSelf ? "You" : agentName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
+                    <div className="message-text">{isSelf ? segment.message.content.text : renderMarkdown(segment.message.content.text ?? "")}</div>
                     {segment.activity && renderActivityGroup(segment.activity)}
                   </div>
                 );
@@ -1709,8 +1707,8 @@ async function api<T>(baseUrl: string, path: string, options: { method?: string;
   return response.json() as Promise<T>;
 }
 
-function humanEndpointId(workspaceId: string): string {
-  return `endpoint:${workspaceId}:user:operator`;
+function operatorActorId(workspaceId: string): string {
+  return `actor:${workspaceId}:operator`;
 }
 
 function loadLocalFields(workspaceId: string): FieldBlock[] {

@@ -196,7 +196,7 @@ export class BridgeDaemon {
       }
 
       for (const agent of project.agents) {
-        const endpointId = agentEndpointId(workspace.workspace_id, agent.agent_id);
+        const endpointId = actorEndpointId(workspace.workspace_id, agent.agent_id);
         const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
         this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body, workspace_locator: locator, agent_id: agent.agent_id, extensions: agent.extensions });
         const resolvedAuth = await this.resolveAuthProfile(workspace.workspace_id, endpointId, runtimeConfig);
@@ -349,7 +349,7 @@ export class BridgeDaemon {
     const configJson = typeof record.config_json === "string" ? JSON.parse(record.config_json) : record.config_json;
     const project = materializeSavedConfig(locator, configJson);
     for (const agent of project.agents) {
-      const endpointId = agentEndpointId(workspaceId, agent.agent_id);
+      const endpointId = actorEndpointId(workspaceId, agent.agent_id);
       const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
       this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body, workspace_locator: locator, agent_id: agent.agent_id, extensions: agent.extensions });
       const resolvedAuth = await this.resolveAuthProfile(workspaceId, endpointId, runtimeConfig);
@@ -542,8 +542,8 @@ function chooseAdapter(configPath: string, config: LocalConfig): RuntimeAdapter 
   return new FakeRuntimeAdapter();
 }
 
-function agentEndpointId(workspaceId: string, agentId: string): string {
-  return `endpoint:${workspaceId}:agent:${agentId}`;
+function actorEndpointId(workspaceId: string, agentId: string): string {
+  return `actor:${workspaceId}:${agentId}`;
 }
 
 function sleep(ms: number): Promise<void> {

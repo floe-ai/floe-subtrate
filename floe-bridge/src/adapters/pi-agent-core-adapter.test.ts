@@ -195,7 +195,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
   }
 
   it("does not persist input echo as runtime_turn_output — only endpoint visible output is captured", async () => {
-    const deliveryBundleText = "Floe delivery bundle del_abc123\n- [message] from endpoint:workspace:test:user:operator thread=thread-1: hi, tell me about yourself\nRespond naturally to the delivered events.";
+    const deliveryBundleText = "Floe delivery bundle del_abc123\n- [message] from actor:workspace:test:operator thread=thread-1: hi, tell me about yourself\nRespond naturally to the delivered events.";
     const assistantReply = "Hello! I am Floe, a durable multi-actor substrate agent.";
 
     // Simulate Pi emitting both a user-role echo and an assistant reply
@@ -447,7 +447,7 @@ describe("Substrate guidance", () => {
 function makeDelivery(deliveryId: string, threadId: string, text: string): DeliveryBundle {
   return {
     delivery_id: deliveryId,
-    endpoint_id: "endpoint:workspace:test:agent:floe",
+    endpoint_id: "actor:workspace:test:floe",
     workspace_id: "workspace:test",
     trigger_event_id: `evt:${deliveryId}`,
     delivered_at: new Date().toISOString(),
@@ -456,12 +456,12 @@ function makeDelivery(deliveryId: string, threadId: string, text: string): Deliv
         event_id: `evt:${deliveryId}`,
         type: "message",
         workspace_id: "workspace:test",
-        source_endpoint_id: "endpoint:workspace:test:user:operator",
+        source_endpoint_id: "actor:workspace:test:operator",
         thread_id: threadId,
         correlation_id: null,
         destination_json: {
           kind: "endpoint",
-          endpoint_id: "endpoint:workspace:test:agent:floe"
+          endpoint_id: "actor:workspace:test:floe"
         },
         content: {
           text,
@@ -523,7 +523,7 @@ describe("Substrate model — explicit emit only", () => {
         if (emitToolHandler) {
           await (emitToolHandler as (args: any) => Promise<any>)({
             type: "message",
-            destination: "endpoint:workspace:test:user:operator",
+            destination: "actor:workspace:test:operator",
             thread_id: "thread-1",
             content: { text: "Hello from Floe!" },
             response_expected: false
@@ -635,11 +635,11 @@ describe("Substrate model — explicit emit only", () => {
             context_id: contextId,
             workspace_id: "workspace:test",
             parent_context_id: null,
-            created_by_endpoint_id: "endpoint:workspace:test:user:operator",
+            created_by_endpoint_id: "actor:workspace:test:operator",
             created_at: new Date().toISOString(),
             participants: [
-              "endpoint:ws:agent:floe",
-              "endpoint:ws:human:operator"
+              "actor:ws:floe",
+              "actor:ws:operator"
             ]
           };
         }
@@ -664,8 +664,8 @@ describe("Substrate model — explicit emit only", () => {
     // Not rendered as empty placeholder
     expect(capturedPrompt).not.toMatch(/participants:\s*\[\]/);
     // No legacy id leakage
-    expect(capturedPrompt).not.toContain("endpoint:ws:agent:floe");
-    expect(capturedPrompt).not.toContain("endpoint:ws:human:operator");
+    expect(capturedPrompt).not.toContain("actor:ws:floe");
+    expect(capturedPrompt).not.toContain("actor:ws:operator");
     // No global contexts list
     expect(capturedPrompt).not.toContain("available_contexts");
     expect(capturedPrompt).not.toContain("all_contexts");
@@ -861,7 +861,7 @@ describe("Substrate model — explicit emit only", () => {
         if (emitTool) {
           await emitTool.execute("tc_emit_1", {
             type: "message",
-            destination: "endpoint:workspace:test:user:operator",
+            destination: "actor:workspace:test:operator",
             text: "reply continuing context",
             context_id: "ctx_caller_supplied",
             response_expected: false
@@ -943,7 +943,7 @@ describe("Substrate model — explicit emit only", () => {
         if (emitTool) {
           await emitTool.execute("tc_emit_2", {
             type: "message",
-            destination: "endpoint:workspace:test:user:operator",
+            destination: "actor:workspace:test:operator",
             text: "no context_id supplied",
             response_expected: false
           });
@@ -1102,8 +1102,8 @@ describe("Substrate model — explicit emit only", () => {
         // list_endpoints returns workspace-scoped results only
         async listEndpoints(workspaceId: string) {
           return [
-            { endpoint_id: "endpoint:workspace:test:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "endpoint:workspace:test:user:operator", name: "Operator", actor_type: "human", status: "active" }
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" }
           ];
         }
       }
@@ -1175,11 +1175,11 @@ describe("Substrate model — explicit emit only", () => {
     );
 
     const workspaceAEndpoints = [
-      { endpoint_id: "endpoint:ws-a:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
-      { endpoint_id: "endpoint:ws-a:user:operator", name: "Operator", actor_type: "human", status: "active" }
+      { endpoint_id: "actor:ws-a:floe", name: "Floe", actor_type: "agent", status: "idle" },
+      { endpoint_id: "actor:ws-a:operator", name: "Operator", actor_type: "human", status: "active" }
     ];
     const workspaceBEndpoints = [
-      { endpoint_id: "endpoint:ws-b:agent:reviewer", name: "Reviewer", actor_type: "agent", status: "idle" }
+      { endpoint_id: "actor:ws-b:reviewer", name: "Reviewer", actor_type: "agent", status: "idle" }
     ];
 
     const context = {
@@ -1198,7 +1198,7 @@ describe("Substrate model — explicit emit only", () => {
     // Agent in workspace A calls list_endpoints
     const deliveryInA: DeliveryBundle = {
       delivery_id: "del-scope-a",
-      endpoint_id: "endpoint:ws-a:agent:floe",
+      endpoint_id: "actor:ws-a:floe",
       workspace_id: "workspace:a",
       trigger_event_id: "evt:scope-a",
       delivered_at: new Date().toISOString(),
@@ -1206,10 +1206,10 @@ describe("Substrate model — explicit emit only", () => {
         event_id: "evt:scope-a",
         type: "message",
         workspace_id: "workspace:a",
-        source_endpoint_id: "endpoint:ws-a:user:operator",
+        source_endpoint_id: "actor:ws-a:operator",
         thread_id: "thread-scope",
         correlation_id: null,
-        destination_json: { kind: "endpoint", endpoint_id: "endpoint:ws-a:agent:floe" },
+        destination_json: { kind: "endpoint", endpoint_id: "actor:ws-a:floe" },
         content: { text: "list endpoints", data: {} },
         response: { expected: false },
         metadata: {},
@@ -1277,7 +1277,7 @@ describe("Full actor work loop acceptance", () => {
   function makeAcceptanceDelivery(workspaceId: string, text: string): DeliveryBundle {
     return {
       delivery_id: "del-acceptance",
-      endpoint_id: `endpoint:${workspaceId}:agent:floe`,
+      endpoint_id: `actor:${workspaceId}:floe`,
       workspace_id: workspaceId,
       trigger_event_id: "evt:acceptance",
       delivered_at: new Date().toISOString(),
@@ -1285,10 +1285,10 @@ describe("Full actor work loop acceptance", () => {
         event_id: "evt:acceptance",
         type: "message",
         workspace_id: workspaceId,
-        source_endpoint_id: `endpoint:${workspaceId}:user:operator`,
+        source_endpoint_id: `actor:${workspaceId}:operator`,
         thread_id: `thread:${workspaceId}:floe`,
         correlation_id: null,
-        destination_json: { kind: "endpoint", endpoint_id: `endpoint:${workspaceId}:agent:floe` },
+        destination_json: { kind: "endpoint", endpoint_id: `actor:${workspaceId}:floe` },
         content: { text, data: {} },
         response: { expected: false },
         metadata: {},
@@ -1377,8 +1377,8 @@ describe("Full actor work loop acceptance", () => {
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints(_workspaceId: string) {
           return [
-            { endpoint_id: `endpoint:${_workspaceId}:agent:floe`, name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: `endpoint:${_workspaceId}:user:operator`, name: "Operator", actor_type: "human", status: "active" }
+            { endpoint_id: `actor:${_workspaceId}:floe`, name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: `actor:${_workspaceId}:operator`, name: "Operator", actor_type: "human", status: "active" }
           ];
         }
       }
@@ -1445,3 +1445,4 @@ describe("extractShortRef (removed — superseded by toNeutralRef)", () => {
     expect(true).toBe(true);
   });
 });
+

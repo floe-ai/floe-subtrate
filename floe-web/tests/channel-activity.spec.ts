@@ -2,8 +2,8 @@ import { test as base, expect, Page } from "@playwright/test";
 
 const WORKSPACE_ID = "ws_test_qa";
 const WORKSPACE_NAME = "QA Workspace";
-const FLOE_ENDPOINT_ID = `endpoint:${WORKSPACE_ID}:agent:floe`;
-const HUMAN_ENDPOINT_ID = `endpoint:${WORKSPACE_ID}:user:operator`;
+const FLOE_ENDPOINT_ID = `actor:${WORKSPACE_ID}:floe`;
+const HUMAN_ENDPOINT_ID = `actor:${WORKSPACE_ID}:operator`;
 const THREAD_ID = `thread:${WORKSPACE_ID}:floe`;
 
 const test = base;
@@ -86,7 +86,6 @@ async function setupRoutes(
   const floeEndpoint = {
     endpoint_id: FLOE_ENDPOINT_ID,
     workspace_id: WORKSPACE_ID,
-    actor_type: "agent",
     name: "Floe",
     status: agentStatus,
     agent_id: "floe",
@@ -96,7 +95,6 @@ async function setupRoutes(
   const humanEndpoint = {
     endpoint_id: HUMAN_ENDPOINT_ID,
     workspace_id: WORKSPACE_ID,
-    actor_type: "human",
     name: "Operator",
     status: "idle",
     agent_id: null,
@@ -281,8 +279,8 @@ test.describe("Channel activity groups", () => {
     await seedAndOpenChannel(page, { events, telemetry });
 
     // Verify messages are visible
-    await expect(page.locator(".channel-message.human")).toBeVisible();
-    await expect(page.locator(".channel-message.floe:not(.streaming)")).toBeVisible();
+    await expect(page.locator(".channel-message.self")).toBeVisible();
+    await expect(page.locator(".channel-message.other:not(.streaming)")).toBeVisible();
 
     // Verify activity group exists and is done state
     const activityGroup = page.locator(".activity-group.done");
@@ -427,8 +425,8 @@ test.describe("Channel activity groups", () => {
     await seedAndOpenChannel(page, { events, telemetry: [] });
 
     // Messages should be visible
-    await expect(page.locator(".channel-message.human")).toBeVisible();
-    await expect(page.locator(".channel-message.floe:not(.streaming)")).toBeVisible();
+    await expect(page.locator(".channel-message.self")).toBeVisible();
+    await expect(page.locator(".channel-message.other:not(.streaming)")).toBeVisible();
 
     // No activity groups should be rendered
     await expect(page.locator(".activity-group")).toHaveCount(0);
@@ -499,7 +497,7 @@ test.describe("Channel activity groups", () => {
     await seedAndOpenChannel(page, { events, telemetry });
 
     // Activity group should be INSIDE the Floe message, not standalone
-    const floeMessage = page.locator(".channel-message.floe:not(.streaming)");
+    const floeMessage = page.locator(".channel-message.other:not(.streaming)");
     await expect(floeMessage).toBeVisible();
     const nestedActivity = floeMessage.locator(".activity-group");
     await expect(nestedActivity).toBeVisible();
@@ -578,7 +576,7 @@ test.describe("Channel activity groups", () => {
     await expect(allActivityGroups).toHaveCount(1);
 
     // It should be inside the Floe message, not standalone
-    const floeMessage = page.locator(".channel-message.floe:not(.streaming)");
+    const floeMessage = page.locator(".channel-message.other:not(.streaming)");
     await expect(floeMessage).toBeVisible();
     const nestedActivity = floeMessage.locator(".activity-group");
     await expect(nestedActivity).toBeVisible();

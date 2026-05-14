@@ -1120,7 +1120,7 @@ code {
   max-width: 92%;
 }
 
-.channel-message.human {
+.channel-message.self {
   justify-self: end;
   margin-left: auto;
 }
@@ -1130,7 +1130,7 @@ code {
   font-size: 11px;
 }
 
-.channel-message.human .message-meta {
+.channel-message.self .message-meta {
   text-align: right;
 }
 
@@ -1143,7 +1143,7 @@ code {
   line-height: 1.5;
 }
 
-.channel-message.human .message-text {
+.channel-message.self .message-text {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--surface-panel);

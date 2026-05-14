@@ -574,8 +574,8 @@ export class BusStore {
   }
 
   listEndpoints(workspaceId?: string): unknown[] {
-    if (workspaceId) return this.db.prepare("SELECT * FROM endpoints WHERE workspace_id = ? ORDER BY actor_type, name").all(workspaceId);
-    return this.db.prepare("SELECT * FROM endpoints ORDER BY workspace_id, actor_type, name").all();
+    if (workspaceId) return this.db.prepare("SELECT * FROM endpoints WHERE workspace_id = ? ORDER BY name").all(workspaceId);
+    return this.db.prepare("SELECT * FROM endpoints ORDER BY workspace_id, name").all();
   }
 
   getEndpoint(endpointId: string): any {
@@ -1147,10 +1147,15 @@ export class BusStore {
   }
 
   resolveSubscriberEndpointId(workspaceId: string, endpointRef: string): string {
-    // Try to find an endpoint matching the ref pattern
-    const fullId = `endpoint:${workspaceId}:${endpointRef}`;
+    // Strip legacy type prefix (agent:/human:/user:) from endpoint refs
+    const bareId = endpointRef.replace(/^(agent|human|user):/, "");
+    const fullId = `actor:${workspaceId}:${bareId}`;
     const endpoint = this.db.prepare("SELECT endpoint_id FROM endpoints WHERE endpoint_id = ?").get(fullId) as any;
     if (endpoint) return endpoint.endpoint_id;
+    // Try with the ref as-is (for refs that don't have a type prefix)
+    const fullIdRaw = `actor:${workspaceId}:${endpointRef}`;
+    const endpointRaw = this.db.prepare("SELECT endpoint_id FROM endpoints WHERE endpoint_id = ?").get(fullIdRaw) as any;
+    if (endpointRaw) return endpointRaw.endpoint_id;
     // Try direct match
     const direct = this.db.prepare("SELECT endpoint_id FROM endpoints WHERE endpoint_id = ?").get(endpointRef) as any;
     if (direct) return direct.endpoint_id;

@@ -99,8 +99,8 @@ describe("Floe local vertical slice", () => {
     expect(agentFile).not.toContain("endpoint_id");
     expect(agentFile).not.toContain("auth_profile: default");
 
-    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
-    const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
+    const agentEndpointId = `actor:${workspaceId}:floe`;
+    const humanEndpointId = `actor:${workspaceId}:operator`;
     await waitFor(async () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
       return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId);
@@ -196,8 +196,8 @@ describe("Floe local vertical slice", () => {
 
     // Wait for bridge to set up the workspace (agents + endpoints)
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
-    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
-    const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
+    const agentEndpointId = `actor:${workspaceId}:floe`;
+    const humanEndpointId = `actor:${workspaceId}:operator`;
 
     await waitFor(async () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
@@ -276,8 +276,8 @@ describe("Floe local vertical slice", () => {
 
     // Wait for bridge to set up the workspace
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
-    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
-    const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
+    const agentEndpointId = `actor:${workspaceId}:floe`;
+    const humanEndpointId = `actor:${workspaceId}:operator`;
 
     await waitFor(async () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
@@ -426,7 +426,7 @@ You are Floe.
 
     // Wait for bridge to attach and register the agent endpoint
     // The bridge logs "[bridge] extension loaded" when it discovers and loads extensions
-    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
+    const agentEndpointId = `actor:${workspaceId}:floe`;
     await waitFor(async () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
       return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId);
@@ -456,8 +456,8 @@ You are Floe.
 
     // Wait for bridge to set up the workspace (agents + endpoints)
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
-    const agentEndpointId = `endpoint:${workspaceId}:agent:floe`;
-    const humanEndpointId = `endpoint:${workspaceId}:user:operator`;
+    const agentEndpointId = `actor:${workspaceId}:floe`;
+    const humanEndpointId = `actor:${workspaceId}:operator`;
 
     await waitFor(async () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
@@ -491,7 +491,7 @@ You are Floe.
     const unknownResolved = await get<{ endpoint_id: string; found: boolean }>(
       `/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent("agent:nonexistent")}`
     );
-    expect(unknownResolved.endpoint_id).toBe(`endpoint:${workspaceId}:agent:nonexistent`);
+    expect(unknownResolved.endpoint_id).toBe(`actor:${workspaceId}:nonexistent`);
     expect(unknownResolved.found).toBe(false);
 
     // Clean up
@@ -619,3 +619,4 @@ async function freePort(): Promise<number> {
     });
   });
 }
+

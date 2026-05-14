@@ -34,11 +34,8 @@ function setupRoutesForNeutralUI(page: import("@playwright/test").Page) {
       return route.fulfill({ status: 200, body: JSON.stringify({}) });
     }),
 
-    page.route("**/v1/endpoints**", (route) => {
-      if (route.request().method() === "POST") {
-        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
-      }
-      return route.fulfill({
+    page.route(`**/v1/workspaces/${WORKSPACE_ID}/endpoints`, (route) =>
+      route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
@@ -47,8 +44,12 @@ function setupRoutesForNeutralUI(page: import("@playwright/test").Page) {
             { endpoint_id: OPERATOR_ID, workspace_id: WORKSPACE_ID, name: "Operator", status: "online", metadata_json: "{}" },
           ]
         })
-      });
-    }),
+      })
+    ),
+
+    page.route("**/v1/endpoints/register", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
+    ),
 
     page.route("**/v1/auth/profiles", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ profiles: [] }) })
@@ -58,26 +59,7 @@ function setupRoutesForNeutralUI(page: import("@playwright/test").Page) {
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ bindings: [] }) })
     ),
 
-    page.route("**/v1/contexts**", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          contexts: [{
-            context_id: "ctx_default",
-            workspace_id: WORKSPACE_ID,
-            parent_context_id: null,
-            created_by_endpoint_id: OPERATOR_ID,
-            created_at: "2025-01-01T00:00:00Z",
-            last_event_at: "2025-01-01T00:01:00Z",
-            participants: [OPERATOR_ID, FLOE_ID],
-            first_message_preview: "Hello"
-          }]
-        })
-      })
-    ),
-
-    page.route("**/v1/contexts/*/events**", (route) =>
+    page.route(/\/v1\/contexts\/[^/]+\/events/, (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -107,8 +89,33 @@ function setupRoutesForNeutralUI(page: import("@playwright/test").Page) {
       })
     ),
 
-    page.route("**/v1/telemetry**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ telemetry: [] }) })
+    page.route(/\/v1\/contexts\?/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          contexts: [{
+            context_id: "ctx_default",
+            workspace_id: WORKSPACE_ID,
+            parent_context_id: null,
+            created_by_endpoint_id: OPERATOR_ID,
+            created_at: "2025-01-01T00:00:00Z",
+            last_event_at: "2025-01-01T00:01:00Z",
+            participants: [OPERATOR_ID, FLOE_ID],
+            first_message_preview: "Hello"
+          }]
+        })
+      })
+    ),
+
+    page.route("**/v1/runtime/telemetry**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ records: [] }) })
+    ),
+
+    page.route("**/v1/events/stream", (route) => route.abort()),
+
+    page.route("**/v1/events/emit", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
     ),
 
     page.route("**/v1/events**", (route) =>
@@ -117,10 +124,20 @@ function setupRoutesForNeutralUI(page: import("@playwright/test").Page) {
   ]);
 }
 
+async function gotoAndOpenChannel(page: import("@playwright/test").Page) {
+  await setupRoutesForNeutralUI(page);
+  await page.goto("/");
+  // Wait for workspace to load
+  await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(500);
+  // Open channel panel
+  await page.click('.icon-button[title="Toggle Channel"]');
+  await page.waitForTimeout(400);
+}
+
 test.describe("Actor-neutral UI (Slice 8)", () => {
   test("no 'Humans' or 'Agents' section headers in rendered DOM", async ({ page }) => {
-    await setupRoutesForNeutralUI(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     const bodyText = await page.locator("body").innerText();
@@ -130,8 +147,7 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
   });
 
   test("no 'endpoint:' substring visible in DOM text", async ({ page }) => {
-    await setupRoutesForNeutralUI(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     const bodyText = await page.locator("body").innerText();
@@ -139,8 +155,7 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
   });
 
   test("no 'actor_type' text visible in DOM", async ({ page }) => {
-    await setupRoutesForNeutralUI(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     const bodyText = await page.locator("body").innerText();
@@ -148,8 +163,7 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
   });
 
   test("no category badge text (human/agent) rendered alongside actor names", async ({ page }) => {
-    await setupRoutesForNeutralUI(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     const bodyText = await page.locator("body").innerText();
@@ -159,8 +173,7 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
   });
 
   test("self-vs-other styling uses .channel-message.self, not .channel-message.human", async ({ page }) => {
-    await setupRoutesForNeutralUI(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     // .channel-message.human should not exist
@@ -173,8 +186,7 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
   });
 
   test("Inspector does not show Humans/Agents counts", async ({ page }) => {
-    await setupRoutesForNeutralUI(page);
-    await page.goto("/");
+    await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     // The inspector area should not contain "Humans" or "Agents" as labels
