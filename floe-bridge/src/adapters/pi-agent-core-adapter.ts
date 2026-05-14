@@ -6,7 +6,8 @@ import type { AgentRuntimeConfig, BridgeAuthRuntime, RuntimeAuthResolved } from 
 import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
-import { buildSystemPrompt, renderDestinationContext, appendWorkLog } from "../runtime-core/index.js";
+import { buildSystemPrompt, renderDestinationContext, appendWorkLog, toNeutralRef, fromNeutralRef, toNeutralEndpoint } from "../runtime-core/index.js";
+import type { NeutralEndpoint } from "../runtime-core/index.js";
 import type { WorkLogEntry } from "../runtime-core/index.js";
 import { createWorkspaceTools } from "../tools/index.js";
 import type { ToolContext } from "../tools/index.js";
@@ -131,13 +132,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     }
 
     // Fetch visible endpoints for inclusion in prompt context
-    let visibleEndpoints: Array<{ endpoint_id: string; name: string; actor_type: string; status: string }> = [];
+    let visibleEndpoints: NeutralEndpoint[] = [];
     try {
       const eps = await context.bus.listEndpoints(bundle.workspace_id);
       console.log("[bridge] visible endpoints fetched", { count: eps.length, workspace_id: bundle.workspace_id, self: bundle.endpoint_id });
       visibleEndpoints = eps
         .filter((ep: any) => ep.endpoint_id !== bundle.endpoint_id)
-        .map((ep: any) => ({ endpoint_id: ep.endpoint_id, name: ep.name, actor_type: ep.actor_type, status: ep.status }));
+        .map((ep: any) => toNeutralEndpoint({ endpoint_id: ep.endpoint_id, name: ep.name, status: ep.status, actor_type: ep.actor_type }));
       console.log("[bridge] visible endpoints after filter", { count: visibleEndpoints.length });
     } catch (epErr) {
       console.error("[bridge] failed to fetch visible endpoints", epErr);
@@ -360,10 +361,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "emit",
       label: "Emit Floe Event",
-      description: "Publish a canonical event to the Floe event bus. This is the ONLY way to communicate with other endpoints. Nothing you produce (text, tool results, reasoning) is visible to anyone unless you use this tool. Always call emit with type 'message' to reply to a delivered message. You can use short refs like 'agent:floe' or 'user:operator' as destination, or omit destination to reply to the source.",
+      description: "Publish a canonical event to the Floe event bus. This is the ONLY way to communicate with other actors. Nothing you produce (text, tool results, reasoning) is visible to anyone unless you use this tool. Always call emit with type 'message' to reply to a delivered message. Use neutral actor refs from list_endpoints (e.g. 'operator', 'floe') as destination, or omit destination to reply to the source.",
       parameters: Type.Object({
         type: Type.String(),
-        destination: Type.Optional(Type.String({ description: "Target endpoint. Can be a short ref like 'agent:floe' or 'user:operator', or a full endpoint_id. Omit to reply to the delivery source." })),
+        destination: Type.Optional(Type.String({ description: "Target actor's neutral ref (as returned by list_endpoints, e.g. 'operator' or 'floe'). Omit to reply to the delivery source." })),
         text: Type.String(),
         response_expected: Type.Optional(Type.Boolean()),
         correlation_id: Type.Optional(Type.String()),
@@ -375,10 +376,18 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         if (!turn || !context) throw new Error("No active runtime turn context is available for emit.");
 
         let targetEndpoint = params?.destination ?? turn.reply_destination_endpoint_id;
-        // Resolve short refs like "agent:floe" or "user:operator" to full endpoint IDs
-        if (targetEndpoint && !targetEndpoint.startsWith("endpoint:")) {
-          const resolved = await context.bus.resolveEndpoint(turn.workspace_id, targetEndpoint);
-          targetEndpoint = resolved.endpoint_id;
+        // Translate a neutral ref to a legacy endpoint id before forwarding to the bus.
+        if (targetEndpoint && !String(targetEndpoint).startsWith("endpoint:")) {
+          const ref = String(targetEndpoint);
+          const endpoints = await context.bus.listEndpoints(turn.workspace_id);
+          const resolved = fromNeutralRef(ref, endpoints);
+          if (!resolved) {
+            return {
+              content: [{ type: "text", text: `emit: destination '${ref}' did not resolve to a known actor in this workspace. Use list_endpoints to discover valid refs.` }],
+              details: { ok: false, error: "unknown_destination", ref }
+            };
+          }
+          targetEndpoint = resolved;
         }
         await context.bus.emit({
           type: String(params?.type ?? "message"),
@@ -432,8 +441,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     // For V0, workspace-scoped visibility is sufficient (no cross-workspace exposure).
     return {
       name: "list_endpoints",
-      label: "List Visible Endpoints",
-      description: "List endpoints visible/addressable by this endpoint in the current workspace. Returns endpoint_id, ref (short name usable in emit destination), name, actor_type, and status. Results are only visible to you — you MUST use emit to share this information with other endpoints.",
+      label: "List Visible Actors",
+      description: "List actors visible/addressable in the current workspace. Returns a list of { ref, name, status }. Use the 'ref' value as the destination on emit. Results are only visible to you — you MUST use emit to share this information with other actors.",
       parameters: Type.Object({}),
       execute: async () => {
         const turn = session.activeTurn;
@@ -442,20 +451,19 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
         // Scoped to current workspace only — no cross-workspace endpoints exposed
         const endpoints = await context.bus.listEndpoints(turn.workspace_id);
-        const visible = endpoints
+        const visible: NeutralEndpoint[] = endpoints
           .filter((ep: any) => ep.endpoint_id !== turn.endpoint_id)
-          .map((ep: any) => ({
+          .map((ep: any) => toNeutralEndpoint({
             endpoint_id: ep.endpoint_id,
-            ref: extractShortRef(ep.endpoint_id),
             name: ep.name,
+            status: ep.status,
             actor_type: ep.actor_type,
-            status: ep.status
           }));
 
         return {
           content: [
             { type: "text", text: JSON.stringify(visible, null, 2) },
-            { type: "text", text: "Remember: call emit with type 'message' to send this information to the requesting endpoint." }
+            { type: "text", text: "Remember: call emit with type 'message' to send this information to the requesting actor." }
           ],
           details: { ok: true, count: visible.length }
         };
@@ -467,18 +475,32 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "resolve_destination",
       label: "Resolve Destination",
-      description: "Resolve a short endpoint reference (like 'agent:floe' or 'user:operator') to a full endpoint ID. Use list_endpoints to see available destinations first.",
+      description: "Resolve a neutral actor ref (like 'operator' or 'floe') to a known actor in this workspace. Use list_endpoints to discover refs.",
       parameters: Type.Object({
-        ref: Type.String({ description: "Short endpoint reference (e.g., 'agent:review', 'user:operator')" })
+        ref: Type.String({ description: "Neutral actor ref (e.g. 'operator', 'floe')" })
       }),
       execute: async (_toolCallId, params: any) => {
         const turn = session.activeTurn;
         const context = session.context;
         if (!turn || !context) throw new Error("No active runtime turn context.");
-        const resolved = await context.bus.resolveEndpoint(turn.workspace_id, String(params.ref));
+        const ref = String(params.ref);
+        const endpoints = await context.bus.listEndpoints(turn.workspace_id);
+        const matched = endpoints.find((ep: any) => toNeutralRef(ep.endpoint_id) === ref || ep.endpoint_id === ref);
+        if (!matched) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ref, found: false }, null, 2) }],
+            details: { ok: false, ref, found: false }
+          };
+        }
+        const neutral = toNeutralEndpoint({
+          endpoint_id: matched.endpoint_id,
+          name: matched.name,
+          status: matched.status,
+          actor_type: matched.actor_type,
+        });
         return {
-          content: [{ type: "text", text: JSON.stringify(resolved, null, 2) }],
-          details: { ok: true, ...resolved }
+          content: [{ type: "text", text: JSON.stringify(neutral, null, 2) }],
+          details: { ok: true, ...neutral }
         };
       }
     };
@@ -794,16 +816,6 @@ function instructionHash(text: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
-export function extractShortRef(endpointId: string): string {
-  // "endpoint:workspace:abc:agent:floe" → "agent:floe"
-  // "endpoint:workspace:abc:user:operator" → "user:operator"
-  const parts = endpointId.split(":");
-  if (parts.length >= 5) {
-    return `${parts[3]}:${parts.slice(4).join(":")}`;
-  }
-  return endpointId;
-}
-
 /**
  * Render hook injection results into a labelled context block.
  *
@@ -852,7 +864,7 @@ export function renderHookInjections(results: Array<{ inject?: Record<string, un
 
 function deliveryToPrompt(
   bundle: DeliveryBundle,
-  visibleEndpoints: Array<{ endpoint_id: string; name: string; actor_type: string; status: string }> = [],
+  visibleEndpoints: NeutralEndpoint[] = [],
   currentContextParticipants: string[] = []
 ): string {
   // Render destination context so the agent knows source/reply/thread without hard-coded IDs
@@ -877,10 +889,10 @@ function deliveryToPrompt(
     current_context_participants: currentContextParticipants,
   });
 
-  // Include visible endpoints in delivery context
+  // Include visible endpoints in delivery context — neutral refs only
   let endpointsBlock = "";
   if (visibleEndpoints.length > 0) {
-    const epLines = visibleEndpoints.map(ep => `  - ${ep.endpoint_id} (${ep.name}, ${ep.actor_type}, ${ep.status})`);
+    const epLines = visibleEndpoints.map(ep => `  - ${ep.ref} (${ep.name}, ${ep.status})`);
     endpointsBlock = `\n[Visible Endpoints]\n${epLines.join("\n")}`;
   }
 

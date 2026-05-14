@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PiAgentCoreAdapter, extractShortRef } from "./pi-agent-core-adapter.js";
+import { PiAgentCoreAdapter } from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle } from "../bus-client.js";
 
 type FakeEvent = {
@@ -600,9 +600,10 @@ describe("Substrate model — explicit emit only", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
-    // Delivery context should be rendered in the prompt
+    // Delivery context should be rendered in the prompt with neutral refs
     expect(capturedPrompt).toContain("[Delivery Context]");
-    expect(capturedPrompt).toContain("endpoint:workspace:test:user:operator"); // source + reply
+    expect(capturedPrompt).toContain("source_endpoint: operator");
+    expect(capturedPrompt).toContain("reply_destination: operator");
     expect(capturedPrompt).toContain("thread-ctx-1"); // thread
     expect(capturedPrompt).toContain("reply_destination");
   });
@@ -657,12 +658,14 @@ describe("Substrate model — explicit emit only", () => {
     expect(getContextCalls).toContain("ctx_test_abc");
     expect(capturedPrompt).toContain("current_context");
     expect(capturedPrompt).toContain("ctx_test_abc");
-    // Strict: actual participants rendered under participants:
-    expect(capturedPrompt).toContain("endpoint:ws:agent:floe");
-    expect(capturedPrompt).toContain("endpoint:ws:human:operator");
-    expect(capturedPrompt).toMatch(/participants:\s*\n\s*-\s+endpoint:ws:agent:floe/);
+    // Strict: actual participants rendered as neutral refs under participants:
+    expect(capturedPrompt).toMatch(/participants:\s*\n\s*-\s+floe/);
+    expect(capturedPrompt).toMatch(/participants:[\s\S]*-\s+operator/);
     // Not rendered as empty placeholder
     expect(capturedPrompt).not.toMatch(/participants:\s*\[\]/);
+    // No legacy id leakage
+    expect(capturedPrompt).not.toContain("endpoint:ws:agent:floe");
+    expect(capturedPrompt).not.toContain("endpoint:ws:human:operator");
     // No global contexts list
     expect(capturedPrompt).not.toContain("available_contexts");
     expect(capturedPrompt).not.toContain("all_contexts");
@@ -1219,12 +1222,14 @@ describe("Substrate model — explicit emit only", () => {
     expect(listEndpointsResult).not.toBeNull();
     const parsed = JSON.parse(listEndpointsResult.content[0].text);
 
-    // Should only see workspace A endpoints (excluding self)
+    // Should only see workspace A endpoints (excluding self) — neutral refs only
     expect(parsed).toHaveLength(1); // only operator (self excluded)
-    expect(parsed[0].endpoint_id).toBe("endpoint:ws-a:user:operator");
+    expect(parsed[0].ref).toBe("operator");
+    expect(parsed[0]).not.toHaveProperty("endpoint_id");
+    expect(parsed[0]).not.toHaveProperty("actor_type");
 
-    // Should NOT see workspace B endpoints
-    const wsB = parsed.filter((ep: any) => ep.endpoint_id.includes("ws-b"));
+    // Should NOT see workspace B endpoints (no leakage of any ws-b name)
+    const wsB = parsed.filter((ep: any) => ep.name === "Reviewer" || (ep.ref ?? "").includes("reviewer"));
     expect(wsB).toHaveLength(0);
   });
 });
@@ -1431,24 +1436,12 @@ describe("Full actor work loop acceptance", () => {
   });
 });
 
-describe("extractShortRef", () => {
-  it("extracts agent ref from full endpoint ID", () => {
-    expect(extractShortRef("endpoint:workspace:abc:agent:floe")).toBe("agent:floe");
-  });
-
-  it("extracts user ref from full endpoint ID", () => {
-    expect(extractShortRef("endpoint:workspace:abc:user:operator")).toBe("user:operator");
-  });
-
-  it("handles agent names with colons", () => {
-    expect(extractShortRef("endpoint:workspace:abc:agent:my:special:agent")).toBe("agent:my:special:agent");
-  });
-
-  it("returns input unchanged when not enough parts", () => {
-    expect(extractShortRef("short:ref")).toBe("short:ref");
-  });
-
-  it("returns input unchanged for non-endpoint strings", () => {
-    expect(extractShortRef("agent:floe")).toBe("agent:floe");
+describe("extractShortRef (removed — superseded by toNeutralRef)", () => {
+  it("is no longer exported; see runtime-core/neutral-ref.ts for replacement", () => {
+    // extractShortRef returned category-prefixed refs ("agent:floe", "user:operator")
+    // which leaked substrate-category metadata to agents. It has been deleted.
+    // toNeutralRef from runtime-core/neutral-ref returns neutral refs ("floe", "operator")
+    // and is exhaustively unit-tested in runtime-core/neutral-ref.test.ts.
+    expect(true).toBe(true);
   });
 });

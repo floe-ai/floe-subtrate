@@ -99,11 +99,14 @@ describe("renderDestinationContext", () => {
     });
     expect(result).toContain("current_context");
     expect(result).toContain("ctx_abc");
-    // Strict: each participant is rendered as a list item under participants:
-    expect(result).toMatch(/participants:\s*\n\s*-\s+endpoint:ws:user:alice/);
-    expect(result).toMatch(/participants:\s*\n[\s\S]*-\s+endpoint:ws:agent:floe/);
+    // Strict: each participant is rendered as a neutral ref list item under participants:
+    expect(result).toMatch(/participants:\s*\n\s*-\s+alice/);
+    expect(result).toMatch(/participants:\s*\n[\s\S]*-\s+floe/);
     // Negative: not rendered as the literal placeholder "[]"
     expect(result).not.toMatch(/participants:\s*\[\]/);
+    // Negative: no legacy id leakage in the rendered context
+    expect(result).not.toContain("endpoint:ws:user:alice");
+    expect(result).not.toContain("endpoint:ws:agent:floe");
   });
 
   it("does NOT include a global contexts list (no 'available_contexts', no 'all_contexts')", () => {
