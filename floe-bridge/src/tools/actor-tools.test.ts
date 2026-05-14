@@ -153,6 +153,22 @@ describe("actor-tools", () => {
       expect(bus.calls[0].args[0]).toBe("ws_test");
     });
 
+    it("success message contains no category leakage (no endpoint:/agent:/user: substrings)", async () => {
+      const tools = createActorTools(bus, "ws_test", workspace);
+      const createTool = tools.find((t) => t.name === "create_actor")!;
+      const result = await createTool.execute("call-1", {
+        agent_id: "reviewer",
+        name: "Code Reviewer",
+        instructions: "Review code.",
+      });
+
+      const text = (result as any).content[0].text as string;
+      expect(text).not.toContain("endpoint");
+      expect(text).not.toMatch(/\bagent:/);
+      expect(text).not.toMatch(/\buser:/);
+      expect(text).toContain("reviewer"); // should reference the actor_id
+    });
+
     it("handles missing workspace locator", async () => {
       const tools = createActorTools(bus, "ws_test", undefined);
       const createTool = tools.find((t) => t.name === "create_actor")!;
