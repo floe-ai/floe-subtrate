@@ -48,14 +48,14 @@ When you emit, choose the appropriate response behaviour:
 ### Turn lifecycle
 Ending your turn means you have finished processing the current delivered events. It is not itself a message. If you need another actor to respond, emit an event with response_expected: true before ending your turn.
 
-### Destination context
+### Delivery context
 Your delivery context includes:
-- source_endpoint: who sent the triggering event (a neutral actor ref)
-- reply_destination: where to send a reply (a neutral actor ref)
+- source_actor: who sent the triggering event (a neutral actor ref)
+- reply_actor: where to send a reply (a neutral actor ref)
 - thread: the current event grouping
 - correlation_id: if responding to a correlated request
 
-Use provided destination context. Do not invent refs. If you need to address an actor not in your context, use the \`list_endpoints\` tool to discover visible refs.
+Use the provided delivery context. Do not invent refs. If you need to address an actor not in your context, use the \`list_endpoints\` tool to discover visible refs.
 
 ### Work log
 Everything you produce during a processing cycle (visible output, tool calls, file reads, code edits, reasoning) is recorded in your work log. Only explicitly emitted events are communication.
@@ -112,8 +112,8 @@ export function renderDestinationContext(context: {
 }): string {
   const lines = [
     `[Delivery Context]`,
-    `source_endpoint: ${toNeutralRef(context.source_endpoint_id)}`,
-    `reply_destination: ${toNeutralRef(context.reply_destination_endpoint_id)}`,
+    `source_actor: ${toNeutralRef(context.source_endpoint_id)}`,
+    `reply_actor: ${toNeutralRef(context.reply_destination_endpoint_id)}`,
     `thread: ${context.thread_id}`,
     `response_expected: ${context.response_expected}`,
   ];

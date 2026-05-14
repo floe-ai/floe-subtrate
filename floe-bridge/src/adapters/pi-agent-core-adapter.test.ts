@@ -602,10 +602,10 @@ describe("Substrate model — explicit emit only", () => {
 
     // Delivery context should be rendered in the prompt with neutral refs
     expect(capturedPrompt).toContain("[Delivery Context]");
-    expect(capturedPrompt).toContain("source_endpoint: operator");
-    expect(capturedPrompt).toContain("reply_destination: operator");
+    expect(capturedPrompt).toContain("source_actor: operator");
+    expect(capturedPrompt).toContain("reply_actor: operator");
     expect(capturedPrompt).toContain("thread-ctx-1"); // thread
-    expect(capturedPrompt).toContain("reply_destination");
+    expect(capturedPrompt).toContain("reply_actor");
   });
 
   it("delivery prompt includes current_context_id and fetched current_context_participants when trigger has context_id", async () => {

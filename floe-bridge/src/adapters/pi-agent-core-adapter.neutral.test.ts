@@ -451,9 +451,14 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     expect(capturedPrompt).not.toMatch(/\b(user|agent|human|webhook|runtime):/);
     // Visible Endpoints block, if rendered, has no actor_type column
     expect(capturedPrompt).not.toContain("actor_type");
-    // Source/reply lines should mention neutral refs
-    expect(capturedPrompt).toMatch(/source_endpoint:\s*operator/);
-    expect(capturedPrompt).toMatch(/reply_destination:\s*operator/);
+    // Source/reply lines should mention neutral refs and use neutral field names
+    expect(capturedPrompt).toMatch(/source_actor:\s*operator/);
+    expect(capturedPrompt).toMatch(/reply_actor:\s*operator/);
+    // Strict: no `endpoint:` substring anywhere in the rendered prompt,
+    // and no legacy `source_endpoint`/`reply_destination` field labels.
+    expect(capturedPrompt).not.toMatch(/endpoint:/);
+    expect(capturedPrompt).not.toMatch(/reply_destination/);
+    expect(capturedPrompt).not.toMatch(/source_endpoint(?!_id)/);
     // Participants list rendered with neutral refs
     expect(capturedPrompt).toMatch(/participants:[\s\S]*-\s+floe/);
     expect(capturedPrompt).toMatch(/participants:[\s\S]*-\s+operator/);
@@ -473,7 +478,7 @@ describe("SUBSTRATE_GUIDANCE — actor-neutral wording", () => {
   });
 
   it("destination context section names neutral fields, not legacy endpoint_id types", () => {
-    // The guidance may reference source_endpoint / reply_destination — not category prefixes.
+    // The guidance may reference source_actor / reply_actor — not category prefixes.
     expect(SUBSTRATE_GUIDANCE).not.toMatch(/\bhumans see\b/i);
     expect(SUBSTRATE_GUIDANCE).not.toMatch(/\bagents see\b/i);
   });
