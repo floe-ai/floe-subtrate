@@ -63,7 +63,7 @@ export class FakeRuntimeAdapter implements RuntimeAdapter {
 
 function chooseReplyDestination(event: EventEnvelope): string {
   if (event.source_endpoint_id) return event.source_endpoint_id;
-  return `endpoint:${event.workspace_id}:user:operator`;
+  return `actor:${event.workspace_id}:operator`;
 }
 
 function firstText(event: EventEnvelope): string {

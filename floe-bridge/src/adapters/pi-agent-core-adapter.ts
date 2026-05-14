@@ -376,8 +376,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         if (!turn || !context) throw new Error("No active runtime turn context is available for emit.");
 
         let targetEndpoint = params?.destination ?? turn.reply_destination_endpoint_id;
-        // Translate a neutral ref to a legacy endpoint id before forwarding to the bus.
-        if (targetEndpoint && !String(targetEndpoint).startsWith("endpoint:")) {
+        // Translate a neutral ref to a full actor id before forwarding to the bus.
+        // If already a full actor: id, pass through directly.
+        if (targetEndpoint && !String(targetEndpoint).startsWith("actor:")) {
           const ref = String(targetEndpoint);
           const endpoints = await context.bus.listEndpoints(turn.workspace_id);
           const resolved = fromNeutralRef(ref, endpoints);
@@ -612,7 +613,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
   private startTurn(bundle: DeliveryBundle): RuntimeTurnContext {
     const trigger = bundle.events[0];
-    const sourceEndpoint = trigger?.source_endpoint_id || `endpoint:${bundle.workspace_id}:user:operator`;
+    const sourceEndpoint = trigger?.source_endpoint_id || `actor:${bundle.workspace_id}:operator`;
     const threadId = trigger?.thread_id || `thread:${bundle.workspace_id}:pi`;
     return {
       runtime_turn_id: `rt_${randomUUID()}`,
@@ -869,7 +870,7 @@ function deliveryToPrompt(
 ): string {
   // Render destination context so the agent knows source/reply/thread without hard-coded IDs
   const trigger = bundle.events[0];
-  const sourceEndpoint = trigger?.source_endpoint_id || `endpoint:${bundle.workspace_id}:user:operator`;
+  const sourceEndpoint = trigger?.source_endpoint_id || `actor:${bundle.workspace_id}:operator`;
   const threadId = trigger?.thread_id || `thread:${bundle.workspace_id}:default`;
   const correlationId = trigger?.correlation_id ?? null;
   const currentContextId = trigger?.context_id ?? null;

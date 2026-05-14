@@ -42,8 +42,8 @@ describe("buildSystemPrompt", () => {
 describe("renderDestinationContext", () => {
   it("includes response_expected true", () => {
     const result = renderDestinationContext({
-      source_endpoint_id: "endpoint:ws:user:alice",
-      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      source_endpoint_id: "actor:ws:alice",
+      reply_destination_endpoint_id: "actor:ws:alice",
       thread_id: "thread:ws:t1",
       correlation_id: null,
       response_expected: true,
@@ -53,8 +53,8 @@ describe("renderDestinationContext", () => {
 
   it("includes response_expected false", () => {
     const result = renderDestinationContext({
-      source_endpoint_id: "endpoint:ws:system:scheduler",
-      reply_destination_endpoint_id: "endpoint:ws:system:scheduler",
+      source_endpoint_id: "actor:ws:scheduler",
+      reply_destination_endpoint_id: "actor:ws:scheduler",
       thread_id: "thread:ws:t2",
       correlation_id: null,
       response_expected: false,
@@ -64,8 +64,8 @@ describe("renderDestinationContext", () => {
 
   it("includes correlation_id when present", () => {
     const result = renderDestinationContext({
-      source_endpoint_id: "endpoint:ws:user:alice",
-      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      source_endpoint_id: "actor:ws:alice",
+      reply_destination_endpoint_id: "actor:ws:alice",
       thread_id: "thread:ws:t1",
       correlation_id: "corr-123",
       response_expected: true,
@@ -75,8 +75,8 @@ describe("renderDestinationContext", () => {
 
   it("omits correlation_id when null", () => {
     const result = renderDestinationContext({
-      source_endpoint_id: "endpoint:ws:user:alice",
-      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      source_endpoint_id: "actor:ws:alice",
+      reply_destination_endpoint_id: "actor:ws:alice",
       thread_id: "thread:ws:t1",
       correlation_id: null,
       response_expected: true,
@@ -86,15 +86,15 @@ describe("renderDestinationContext", () => {
 
   it("includes current_context_id and current_context_participants when provided", () => {
     const result = renderDestinationContext({
-      source_endpoint_id: "endpoint:ws:user:alice",
-      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      source_endpoint_id: "actor:ws:alice",
+      reply_destination_endpoint_id: "actor:ws:alice",
       thread_id: "thread:ws:t1",
       correlation_id: null,
       response_expected: true,
       current_context_id: "ctx_abc",
       current_context_participants: [
-        "endpoint:ws:user:alice",
-        "endpoint:ws:agent:floe",
+        "actor:ws:alice",
+        "actor:ws:floe",
       ],
     });
     expect(result).toContain("current_context");
@@ -105,19 +105,19 @@ describe("renderDestinationContext", () => {
     // Negative: not rendered as the literal placeholder "[]"
     expect(result).not.toMatch(/participants:\s*\[\]/);
     // Negative: no legacy id leakage in the rendered context
-    expect(result).not.toContain("endpoint:ws:user:alice");
-    expect(result).not.toContain("endpoint:ws:agent:floe");
+    expect(result).not.toContain("actor:ws:alice");
+    expect(result).not.toContain("actor:ws:floe");
   });
 
   it("does NOT include a global contexts list (no 'available_contexts', no 'all_contexts')", () => {
     const result = renderDestinationContext({
-      source_endpoint_id: "endpoint:ws:user:alice",
-      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      source_endpoint_id: "actor:ws:alice",
+      reply_destination_endpoint_id: "actor:ws:alice",
       thread_id: "thread:ws:t1",
       correlation_id: null,
       response_expected: true,
       current_context_id: "ctx_abc",
-      current_context_participants: ["endpoint:ws:user:alice", "endpoint:ws:agent:floe"],
+      current_context_participants: ["actor:ws:alice", "actor:ws:floe"],
     });
     expect(result).not.toContain("available_contexts");
     expect(result).not.toContain("all_contexts");
@@ -126,8 +126,8 @@ describe("renderDestinationContext", () => {
 
   it("omits current_context block when no context_id provided (back-compat)", () => {
     const result = renderDestinationContext({
-      source_endpoint_id: "endpoint:ws:user:alice",
-      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      source_endpoint_id: "actor:ws:alice",
+      reply_destination_endpoint_id: "actor:ws:alice",
       thread_id: "thread:ws:t1",
       correlation_id: null,
       response_expected: true,
@@ -135,3 +135,4 @@ describe("renderDestinationContext", () => {
     expect(result).not.toContain("current_context");
   });
 });
+

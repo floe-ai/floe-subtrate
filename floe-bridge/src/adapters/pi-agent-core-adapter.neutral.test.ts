@@ -36,7 +36,7 @@ function makeAdapter(fakeAgent: any) {
 function makeDelivery(deliveryId: string, threadId: string, text: string): DeliveryBundle {
   return {
     delivery_id: deliveryId,
-    endpoint_id: "endpoint:workspace:test:agent:floe",
+    endpoint_id: "actor:workspace:test:floe",
     workspace_id: "workspace:test",
     trigger_event_id: `evt:${deliveryId}`,
     delivered_at: new Date().toISOString(),
@@ -44,10 +44,10 @@ function makeDelivery(deliveryId: string, threadId: string, text: string): Deliv
       event_id: `evt:${deliveryId}`,
       type: "message",
       workspace_id: "workspace:test",
-      source_endpoint_id: "endpoint:workspace:test:user:operator",
+      source_endpoint_id: "actor:workspace:test:operator",
       thread_id: threadId,
       correlation_id: null,
-      destination_json: { kind: "endpoint", endpoint_id: "endpoint:workspace:test:agent:floe" },
+      destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
       content: { text, data: {} },
       response: { expected: false },
       metadata: {},
@@ -99,8 +99,8 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         async emit() {},
         async listEndpoints() {
           return [
-            { endpoint_id: "endpoint:workspace:test:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "endpoint:workspace:test:user:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
           ];
         },
       },
@@ -174,12 +174,12 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         async emit() {},
         async listEndpoints() {
           return [
-            { endpoint_id: "endpoint:workspace:test:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "endpoint:workspace:test:user:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
           ];
         },
         async resolveEndpoint(_ws: string, ref: string) {
-          if (ref === "operator" || ref === "user:operator") return { endpoint_id: "endpoint:workspace:test:user:operator", found: true };
+          if (ref === "operator") return { endpoint_id: "actor:workspace:test:operator", found: true };
           return { endpoint_id: "", found: false };
         },
       },
@@ -274,12 +274,12 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
           return [
-            { endpoint_id: "endpoint:workspace:test:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "endpoint:workspace:test:user:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
           ];
         },
         async resolveEndpoint(_ws: string, ref: string) {
-          if (ref === "operator") return { endpoint_id: "endpoint:workspace:test:user:operator", found: true };
+          if (ref === "operator") return { endpoint_id: "actor:workspace:test:operator", found: true };
           return { endpoint_id: "", found: false };
         },
       },
@@ -292,7 +292,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     );
 
     expect(emittedEvents).toHaveLength(1);
-    expect(emittedEvents[0].destination.endpoint_id).toBe("endpoint:workspace:test:user:operator");
+    expect(emittedEvents[0].destination.endpoint_id).toBe("actor:workspace:test:operator");
     expect(emittedEvents[0].content.text).toBe("Hello via neutral ref");
 
     // Description neutralised
@@ -310,7 +310,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         const emitTool = this.registeredTools.find((t: any) => t.name === "emit");
         await emitTool!.execute("tc_emit_legacy", {
           type: "message",
-          destination: "endpoint:workspace:test:user:operator",
+          destination: "actor:workspace:test:operator",
           text: "legacy form",
           response_expected: false,
         });
@@ -342,7 +342,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
       makeDelivery("del-emit-legacy", "thread-emit-l", "x"),
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" },
     );
-    expect(emittedEvents[0].destination.endpoint_id).toBe("endpoint:workspace:test:user:operator");
+    expect(emittedEvents[0].destination.endpoint_id).toBe("actor:workspace:test:operator");
   });
 
   it("emit tool returns clear error when neutral ref does not resolve", async () => {
@@ -419,8 +419,8 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         async emit() {},
         async listEndpoints() {
           return [
-            { endpoint_id: "endpoint:workspace:test:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "endpoint:workspace:test:user:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
           ];
         },
         async getContext() {
@@ -428,11 +428,11 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
             context_id: "ctx_neutral",
             workspace_id: "workspace:test",
             parent_context_id: null,
-            created_by_endpoint_id: "endpoint:workspace:test:user:operator",
+            created_by_endpoint_id: "actor:workspace:test:operator",
             created_at: new Date().toISOString(),
             participants: [
-              "endpoint:workspace:test:agent:floe",
-              "endpoint:workspace:test:user:operator",
+              "actor:workspace:test:floe",
+              "actor:workspace:test:operator",
             ],
           };
         },
@@ -445,8 +445,8 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     // Extract the [Delivery Context] block (everything before the next blank line block).
     expect(capturedPrompt).toContain("[Delivery Context]");
     // No legacy id prefixes anywhere in the prompt
-    expect(capturedPrompt).not.toContain("endpoint:workspace:test:user:operator");
-    expect(capturedPrompt).not.toContain("endpoint:workspace:test:agent:floe");
+    expect(capturedPrompt).not.toContain("actor:workspace:test:operator");
+    expect(capturedPrompt).not.toContain("actor:workspace:test:floe");
     // No category prefixes followed by colon
     expect(capturedPrompt).not.toMatch(/\b(user|agent|human|webhook|runtime):/);
     // Visible Endpoints block, if rendered, has no actor_type column
@@ -512,8 +512,8 @@ describe("Integration: agent cannot cite substrate metadata to identify actor ca
         async emit() {},
         async listEndpoints() {
           return [
-            { endpoint_id: "endpoint:workspace:test:agent:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "endpoint:workspace:test:user:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
           ];
         },
       },
@@ -542,7 +542,8 @@ describe("Integration: agent cannot cite substrate metadata to identify actor ca
     expect(dynamicSubstrate).not.toContain("actor_type");
     expect(dynamicSubstrate).not.toMatch(/\b(human|agent):/);
     expect(dynamicSubstrate).not.toMatch(/\bactor_type\b/);
-    expect(allAgentVisibleText).not.toContain("endpoint:workspace:test:user:operator");
-    expect(allAgentVisibleText).not.toContain("endpoint:workspace:test:agent:floe");
+    expect(allAgentVisibleText).not.toContain("actor:workspace:test:operator");
+    expect(allAgentVisibleText).not.toContain("actor:workspace:test:floe");
   });
 });
+

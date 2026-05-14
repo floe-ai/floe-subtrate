@@ -138,7 +138,7 @@ export function createActorTools(
       }
 
       return {
-        content: [{ type: "text", text: `Actor '${name}' created. It will be available as endpoint 'agent:${agentId}' shortly.` }],
+        content: [{ type: "text", text: `Actor '${name}' created. It will be addressable as '${agentId}' shortly.` }],
         details: { ok: true, agent_id: agentId },
       };
     },

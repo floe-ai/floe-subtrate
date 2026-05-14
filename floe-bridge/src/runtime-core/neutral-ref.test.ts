@@ -1,94 +1,84 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { toNeutralRef, fromNeutralRef, toNeutralEndpoint } from "./neutral-ref.js";
 
-describe("toNeutralRef", () => {
-  it("strips workspace + user type segment", () => {
-    expect(toNeutralRef("endpoint:workspace:abc:user:operator")).toBe("operator");
+describe("toNeutralRef — new actor:<ws>:<id> shape", () => {
+  it("extracts actor_id from actor:workspace:<hash>:<id> (production format)", () => {
+    expect(toNeutralRef("actor:workspace:abc123:floe")).toBe("floe");
+    expect(toNeutralRef("actor:workspace:test:operator")).toBe("operator");
   });
 
-  it("strips workspace + agent type segment", () => {
-    expect(toNeutralRef("endpoint:workspace:abc:agent:floe")).toBe("floe");
+  it("extracts actor_id from actor:<short_ws>:<id> (test fixtures)", () => {
+    expect(toNeutralRef("actor:ws-a:operator")).toBe("operator");
+    expect(toNeutralRef("actor:ws_abc:floe")).toBe("floe");
   });
 
-  it("strips workspace + webhook type segment", () => {
-    expect(toNeutralRef("endpoint:ws:abc:webhook:foo")).toBe("foo");
+  it("extracts multi-segment trailing actor_id with workspace: prefix", () => {
+    expect(toNeutralRef("actor:workspace:abc:my:special:agent")).toBe("my:special:agent");
   });
 
-  it("strips workspace + runtime type segment", () => {
-    expect(toNeutralRef("endpoint:ws:abc:runtime:bridge")).toBe("bridge");
+  it("extracts multi-segment trailing actor_id with short ws", () => {
+    expect(toNeutralRef("actor:ws:my:special:agent")).toBe("my:special:agent");
   });
 
-  it("strips workspace + system type segment", () => {
-    expect(toNeutralRef("endpoint:ws:abc:system:scheduler")).toBe("scheduler");
-  });
-
-  it("strips workspace + human type segment (legacy)", () => {
-    expect(toNeutralRef("endpoint:ws:abc:human:operator")).toBe("operator");
-  });
-
-  it("rejoins multi-segment trailing identity", () => {
-    expect(toNeutralRef("endpoint:workspace:abc:agent:my:special:agent")).toBe(
-      "my:special:agent",
-    );
-  });
-
-  it("returns already-neutral input unchanged", () => {
+  it("returns already-neutral single-word ref unchanged", () => {
     expect(toNeutralRef("operator")).toBe("operator");
     expect(toNeutralRef("floe")).toBe("floe");
   });
 
-  it("returns input as-is when no recognised type segment", () => {
-    expect(toNeutralRef("short:ref")).toBe("short:ref");
+  it("throws on legacy endpoint:<ws>:<type>:<id> shape (cutover assertion)", () => {
+    expect(() => toNeutralRef("endpoint:workspace:abc:agent:floe")).toThrow();
+    expect(() => toNeutralRef("endpoint:ws:abc:user:operator")).toThrow();
   });
 
   it("never returns a string containing a category prefix", () => {
-    const out = toNeutralRef("endpoint:workspace:abc:agent:floe");
+    const out = toNeutralRef("actor:workspace:abc:floe");
     expect(out.startsWith("agent:")).toBe(false);
     expect(out.startsWith("user:")).toBe(false);
     expect(out.startsWith("endpoint:")).toBe(false);
+    expect(out.startsWith("actor:")).toBe(false);
   });
 });
 
-describe("fromNeutralRef", () => {
+describe("fromNeutralRef — new actor shape", () => {
   const endpoints = [
-    { endpoint_id: "endpoint:workspace:abc:agent:floe" },
-    { endpoint_id: "endpoint:workspace:abc:user:operator" },
+    { endpoint_id: "actor:workspace:abc:floe" },
+    { endpoint_id: "actor:workspace:abc:operator" },
   ];
 
-  it("returns matching legacy endpoint id when unique", () => {
-    expect(fromNeutralRef("floe", endpoints)).toBe("endpoint:workspace:abc:agent:floe");
-    expect(fromNeutralRef("operator", endpoints)).toBe(
-      "endpoint:workspace:abc:user:operator",
-    );
+  it("resolves neutral ref to actor:<ws>:<id> when unique", () => {
+    expect(fromNeutralRef("floe", endpoints)).toBe("actor:workspace:abc:floe");
+    expect(fromNeutralRef("operator", endpoints)).toBe("actor:workspace:abc:operator");
   });
 
   it("returns null when no candidate matches", () => {
     expect(fromNeutralRef("missing", endpoints)).toBeNull();
   });
 
-  it("returns null and warns on collision across types", () => {
+  it("passes through an already-full actor:<ws>:<id> present in list", () => {
+    expect(fromNeutralRef("actor:workspace:abc:floe", endpoints)).toBe("actor:workspace:abc:floe");
+  });
+
+  it("throws on legacy endpoint: prefix (cutover assertion)", () => {
+    expect(() => fromNeutralRef("endpoint:workspace:abc:agent:floe", endpoints)).toThrow();
+  });
+
+  it("returns null and warns on collision", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const colliding = [
-      { endpoint_id: "endpoint:ws:abc:agent:foo" },
-      { endpoint_id: "endpoint:ws:abc:user:foo" },
+      { endpoint_id: "actor:workspace:ws1:foo" },
+      { endpoint_id: "actor:workspace:ws2:foo" },
     ];
+    // Both resolve to neutral ref "foo"
     expect(fromNeutralRef("foo", colliding)).toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
-
-  it("accepts an already-legacy endpoint id and returns it when present in list", () => {
-    // Pass-through helper for callers that may already hold a legacy id.
-    expect(
-      fromNeutralRef("endpoint:workspace:abc:agent:floe", endpoints),
-    ).toBe("endpoint:workspace:abc:agent:floe");
-  });
 });
 
-describe("toNeutralEndpoint", () => {
+describe("toNeutralEndpoint — new actor shape", () => {
   it("returns exactly { ref, name, status }", () => {
     const out = toNeutralEndpoint({
-      endpoint_id: "endpoint:ws:abc:agent:floe",
+      endpoint_id: "actor:workspace:abc:floe",
       name: "Floe",
       status: "idle",
       actor_type: "agent",
@@ -99,7 +89,7 @@ describe("toNeutralEndpoint", () => {
 
   it("does not include endpoint_id or actor_type", () => {
     const out = toNeutralEndpoint({
-      endpoint_id: "endpoint:ws:abc:user:operator",
+      endpoint_id: "actor:workspace:abc:operator",
       name: "Operator",
       status: "active",
       actor_type: "human",
@@ -110,7 +100,7 @@ describe("toNeutralEndpoint", () => {
 
   it("works without actor_type input field", () => {
     const out = toNeutralEndpoint({
-      endpoint_id: "endpoint:ws:abc:agent:floe",
+      endpoint_id: "actor:workspace:abc:floe",
       name: "Floe",
       status: "idle",
     });
