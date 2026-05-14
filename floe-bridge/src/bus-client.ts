@@ -4,6 +4,7 @@ export type EventEnvelope = {
   workspace_id: string;
   source_endpoint_id: string;
   thread_id: string;
+  context_id?: string | null;
   correlation_id: string | null;
   destination_json: {
     kind: "endpoint" | "broadcast";
@@ -41,12 +42,16 @@ export type RuntimeBindingResolution = {
   global_model: string | null;
 };
 
-export type EventCommand = Omit<EventEnvelope, "event_id" | "created_at" | "metadata" | "correlation_id" | "destination_json" | "response"> & {
+export type EventCommand = Omit<EventEnvelope, "event_id" | "created_at" | "metadata" | "correlation_id" | "destination_json" | "response" | "context_id"> & {
   destination: EventEnvelope["destination_json"];
   correlation_id?: string | null;
   response?: EventEnvelope["response"];
   metadata?: Record<string, unknown>;
   idempotency_key?: string | null;
+  /** Caller-supplied context the event belongs to (rule 1). When omitted, the bus resolver decides. */
+  context_id?: string | null;
+  /** The context_id of the delivery currently being processed. Bridge always sets this from the active turn. */
+  current_delivery_context_id?: string | null;
 };
 
 export class BusClient {

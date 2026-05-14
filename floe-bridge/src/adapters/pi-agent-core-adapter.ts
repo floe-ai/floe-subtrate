@@ -45,6 +45,7 @@ type RuntimeTurnContext = {
   started_at: string;
   trigger_event_id: string;
   reply_destination_endpoint_id: string;
+  context_id: string | null;
   visible_output: string;
   last_visible_telemetry_text: string;
   finalized: boolean;
@@ -339,7 +340,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         destination: Type.Optional(Type.String({ description: "Target endpoint. Can be a short ref like 'agent:floe' or 'user:operator', or a full endpoint_id. Omit to reply to the delivery source." })),
         text: Type.String(),
         response_expected: Type.Optional(Type.Boolean()),
-        correlation_id: Type.Optional(Type.String())
+        correlation_id: Type.Optional(Type.String()),
+        context_id: Type.Optional(Type.String({ description: "Optional context_id to emit into. If the destination is already a participant of the current delivery context, omit this to continue that context. Pass an explicit context_id only to intentionally land in a specific existing context. Omitting context_id when emitting to a non-participant opens a new context." }))
       }),
       execute: async (_toolCallId, params: any) => {
         const turn = session.activeTurn;
@@ -361,6 +363,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             endpoint_id: String(targetEndpoint)
           },
           thread_id: turn.thread_id,
+          context_id: params?.context_id ?? null,
+          current_delivery_context_id: turn.context_id,
           correlation_id: params?.correlation_id ?? turn.correlation_id,
           content: {
             text: String(params?.text ?? ""),
@@ -574,6 +578,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       started_at: new Date().toISOString(),
       trigger_event_id: trigger?.event_id ?? `evt:${bundle.delivery_id}`,
       reply_destination_endpoint_id: sourceEndpoint,
+      context_id: trigger?.context_id ?? null,
       visible_output: "",
       last_visible_telemetry_text: "",
       finalized: false,
@@ -824,11 +829,19 @@ function deliveryToPrompt(bundle: DeliveryBundle, visibleEndpoints: Array<{ endp
   const sourceEndpoint = trigger?.source_endpoint_id || `endpoint:${bundle.workspace_id}:user:operator`;
   const threadId = trigger?.thread_id || `thread:${bundle.workspace_id}:default`;
   const correlationId = trigger?.correlation_id ?? null;
+  const currentContextId = trigger?.context_id ?? null;
 
   // Determine response_expected: true if any event is a direct message
   const responseExpected = bundle.events.some(
     (e) => e.type === "message"
   );
+
+  // TODO(slice-2): fetch current_context_participants via GET /v1/contexts/:id once that
+  // route lands. For now we render an empty list — the bus's resolver, not the bridge,
+  // is the authority on participant-aware continue/branch decisions, so the agent does
+  // not strictly need this list to make correct emits. The current_delivery_context_id
+  // forwarded by createEmitTool is what drives the rule.
+  const currentContextParticipants: string[] = [];
 
   const contextBlock = renderDestinationContext({
     source_endpoint_id: sourceEndpoint,
@@ -836,6 +849,8 @@ function deliveryToPrompt(bundle: DeliveryBundle, visibleEndpoints: Array<{ endp
     thread_id: threadId,
     correlation_id: correlationId,
     response_expected: responseExpected,
+    current_context_id: currentContextId,
+    current_context_participants: currentContextParticipants,
   });
 
   // Include visible endpoints in delivery context

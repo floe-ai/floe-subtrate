@@ -14,6 +14,12 @@ describe("SUBSTRATE_GUIDANCE", () => {
       "MUST emit at least one message event before ending any turn"
     );
   });
+
+  it("contains context model rules", () => {
+    expect(SUBSTRATE_GUIDANCE).toContain("groups related events");
+    expect(SUBSTRATE_GUIDANCE).toContain("non-participant");
+    expect(SUBSTRATE_GUIDANCE).toContain("channels or broadcasts");
+  });
 });
 
 describe("buildSystemPrompt", () => {
@@ -76,5 +82,50 @@ describe("renderDestinationContext", () => {
       response_expected: true,
     });
     expect(result).not.toContain("correlation_id");
+  });
+
+  it("includes current_context_id and current_context_participants when provided", () => {
+    const result = renderDestinationContext({
+      source_endpoint_id: "endpoint:ws:user:alice",
+      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      thread_id: "thread:ws:t1",
+      correlation_id: null,
+      response_expected: true,
+      current_context_id: "ctx_abc",
+      current_context_participants: [
+        "endpoint:ws:user:alice",
+        "endpoint:ws:agent:floe",
+      ],
+    });
+    expect(result).toContain("current_context");
+    expect(result).toContain("ctx_abc");
+    expect(result).toContain("endpoint:ws:user:alice");
+    expect(result).toContain("endpoint:ws:agent:floe");
+  });
+
+  it("does NOT include a global contexts list (no 'available_contexts', no 'all_contexts')", () => {
+    const result = renderDestinationContext({
+      source_endpoint_id: "endpoint:ws:user:alice",
+      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      thread_id: "thread:ws:t1",
+      correlation_id: null,
+      response_expected: true,
+      current_context_id: "ctx_abc",
+      current_context_participants: ["endpoint:ws:user:alice", "endpoint:ws:agent:floe"],
+    });
+    expect(result).not.toContain("available_contexts");
+    expect(result).not.toContain("all_contexts");
+    expect(result).not.toContain("source_contexts");
+  });
+
+  it("omits current_context block when no context_id provided (back-compat)", () => {
+    const result = renderDestinationContext({
+      source_endpoint_id: "endpoint:ws:user:alice",
+      reply_destination_endpoint_id: "endpoint:ws:user:alice",
+      thread_id: "thread:ws:t1",
+      correlation_id: null,
+      response_expected: true,
+    });
+    expect(result).not.toContain("current_context");
   });
 });

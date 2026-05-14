@@ -607,6 +607,210 @@ describe("Substrate model — explicit emit only", () => {
     expect(capturedPrompt).toContain("reply_destination");
   });
 
+  it("delivery prompt includes current_context_id and current_context_participants when trigger has context_id", async () => {
+    let capturedPrompt = "";
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt(message: any) {
+        capturedPrompt = message?.content?.[0]?.text ?? "";
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {}
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-ctx-2", "thread-ctx-2", "hello with context");
+    (delivery.events[0] as any).context_id = "ctx_test_abc";
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(capturedPrompt).toContain("current_context");
+    expect(capturedPrompt).toContain("ctx_test_abc");
+    // No global contexts list
+    expect(capturedPrompt).not.toContain("available_contexts");
+    expect(capturedPrompt).not.toContain("all_contexts");
+    expect(capturedPrompt).not.toContain("source_contexts");
+  });
+
+  it("emit tool accepts optional context_id and forwards it to the bus, plus current_delivery_context_id", async () => {
+    const emittedEvents: any[] = [];
+    let capturedTools: any[] = [];
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        // Find the emit tool and call it WITH a context_id
+        const emitTool = capturedTools.find((t: any) => t.name === "emit");
+        if (emitTool) {
+          await emitTool.execute("tc_emit_1", {
+            type: "message",
+            destination: "endpoint:workspace:test:user:operator",
+            text: "reply continuing context",
+            context_id: "ctx_caller_supplied",
+            response_expected: false
+          });
+        }
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input) => {
+          capturedTools = input.tools ?? [];
+          return fakeAgent;
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(event: any) { emittedEvents.push(event); }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-emit-ctx", "thread-emit-ctx", "go");
+    (delivery.events[0] as any).context_id = "ctx_delivery";
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(emittedEvents).toHaveLength(1);
+    const emitted = emittedEvents[0];
+    // Caller-supplied context_id forwarded
+    expect(emitted.context_id).toBe("ctx_caller_supplied");
+    // current_delivery_context_id always set from active delivery
+    expect(emitted.current_delivery_context_id).toBe("ctx_delivery");
+  });
+
+  it("emit tool always forwards current_delivery_context_id even when context_id omitted", async () => {
+    const emittedEvents: any[] = [];
+    let capturedTools: any[] = [];
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        const emitTool = capturedTools.find((t: any) => t.name === "emit");
+        if (emitTool) {
+          await emitTool.execute("tc_emit_2", {
+            type: "message",
+            destination: "endpoint:workspace:test:user:operator",
+            text: "no context_id supplied",
+            response_expected: false
+          });
+        }
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input) => {
+          capturedTools = input.tools ?? [];
+          return fakeAgent;
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(event: any) { emittedEvents.push(event); }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-emit-noctx", "thread-emit-noctx", "go");
+    (delivery.events[0] as any).context_id = "ctx_delivery_2";
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(emittedEvents).toHaveLength(1);
+    const emitted = emittedEvents[0];
+    // No caller-supplied context_id forwarded
+    expect(emitted.context_id ?? null).toBeNull();
+    // But current_delivery_context_id MUST be set
+    expect(emitted.current_delivery_context_id).toBe("ctx_delivery_2");
+  });
+
   it("turn end does not produce any message event", async () => {
     const fakeAgent = {
       listeners: [] as Array<(event: any) => void | Promise<void>>,

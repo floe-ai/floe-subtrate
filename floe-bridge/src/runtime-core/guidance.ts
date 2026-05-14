@@ -66,6 +66,16 @@ You have access to workspace tools for inspecting, understanding, and modifying 
 - \`bash\` — execute shell commands in the workspace directory (env sanitised, output bounded)
 
 All file tool paths are relative to the workspace root and workspace-contained. \`bash\` runs in the workspace root as working directory but is not strictly path-contained. Tool output is work log material — use \`emit\` to communicate results to other endpoints.
+
+### Contexts
+A \`context\` groups related events. Your delivery context includes \`current_context_id\` and \`current_context_participants\` (the endpoints that share that context). \`destination\` controls who receives an emit; \`context_id\` controls which conversation it belongs to.
+
+Rules:
+- Emitting to a participant in the current context **continues** that context.
+- Emitting to a non-participant **without** a \`context_id\` **opens a new context** containing you and the destination only.
+- To intentionally respond inside the current context, pass the current \`context_id\` on \`emit\`.
+- To consult another endpoint privately, omit \`context_id\` unless that endpoint is already a participant of the current context.
+- Contexts are not channels or broadcasts. They do not fan out — only the explicit \`destination\` receives the event.
 `.trim();
 
 /**
@@ -92,6 +102,8 @@ export function renderDestinationContext(context: {
   thread_id: string;
   correlation_id: string | null;
   response_expected: boolean;
+  current_context_id?: string | null;
+  current_context_participants?: string[];
 }): string {
   const lines = [
     `[Delivery Context]`,
@@ -102,6 +114,19 @@ export function renderDestinationContext(context: {
   ];
   if (context.correlation_id) {
     lines.push(`correlation_id: ${context.correlation_id}`);
+  }
+  if (context.current_context_id) {
+    lines.push(`current_context:`);
+    lines.push(`  id: ${context.current_context_id}`);
+    const participants = context.current_context_participants ?? [];
+    if (participants.length > 0) {
+      lines.push(`  participants:`);
+      for (const p of participants) {
+        lines.push(`    - ${p}`);
+      }
+    } else {
+      lines.push(`  participants: []`);
+    }
   }
   return lines.join("\n");
 }
