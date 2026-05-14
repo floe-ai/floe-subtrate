@@ -11,6 +11,7 @@ const noop = () => {};
 const WS = "workspace:test-trig";
 const TARGET = "endpoint:test:agent:floe";
 const OTHER = "endpoint:test:agent:other";
+const BRIDGE = "bridge:test:b1";
 
 function makeStore(): { store: BusStore; cleanup: () => void } {
   const tmp = mkdtempSync(join(tmpdir(), "floe-bus-trig-"));
@@ -22,9 +23,8 @@ function makeStore(): { store: BusStore; cleanup: () => void } {
     store.registerEndpoint({
       endpoint_id: id,
       workspace_id: WS,
-      actor_type: "agent",
       name: id,
-      bridge_id: null,
+      bridge_id: BRIDGE,
       status: "idle"
     }, noop);
   }

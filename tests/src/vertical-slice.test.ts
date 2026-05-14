@@ -115,7 +115,6 @@ describe("Floe local vertical slice", () => {
     await post("/v1/endpoints/register", {
       endpoint_id: humanEndpointId,
       workspace_id: workspaceId,
-      actor_type: "human",
       name: "Operator",
       status: "online"
     });
@@ -207,7 +206,6 @@ describe("Floe local vertical slice", () => {
     await post("/v1/endpoints/register", {
       endpoint_id: humanEndpointId,
       workspace_id: workspaceId,
-      actor_type: "human",
       name: "Operator",
       status: "online"
     });
@@ -287,7 +285,6 @@ describe("Floe local vertical slice", () => {
     await post("/v1/endpoints/register", {
       endpoint_id: humanEndpointId,
       workspace_id: workspaceId,
-      actor_type: "human",
       name: "Operator",
       status: "online"
     });
@@ -468,7 +465,6 @@ You are Floe.
     await post("/v1/endpoints/register", {
       endpoint_id: humanEndpointId,
       workspace_id: workspaceId,
-      actor_type: "human",
       name: "Operator",
       status: "online"
     });

@@ -234,7 +234,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (body.scope === "workspace_default" && body.workspace_id) {
       const endpoints = store.listEndpoints(body.workspace_id) as any[];
       for (const endpoint of endpoints) {
-        if (endpoint.actor_type === "agent" && String(endpoint.status) === "runtime_unconfigured") {
+        if (endpoint.bridge_id && String(endpoint.status) === "runtime_unconfigured") {
           const resolution = store.getRuntimeBindingResolution(body.workspace_id, String(endpoint.endpoint_id));
           const hasModel = resolution.endpoint_model || resolution.workspace_model || resolution.global_model;
           if (hasModel) store.updateEndpointStatus(String(endpoint.endpoint_id), "idle", broadcast);
@@ -257,7 +257,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (body.scope === "workspace_default" && body.workspace_id) {
       const endpoints = store.listEndpoints(body.workspace_id) as any[];
       for (const endpoint of endpoints) {
-        if (endpoint.actor_type === "agent") {
+        if (endpoint.bridge_id) {
           store.updateEndpointStatus(String(endpoint.endpoint_id), "runtime_unconfigured", broadcast);
         }
       }
@@ -355,7 +355,6 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const body = z.object({
       endpoint_id: z.string().min(1),
       workspace_id: z.string().min(1),
-      actor_type: z.enum(["human", "agent"]),
       name: z.string().min(1),
       agent_id: z.string().nullable().optional(),
       bridge_id: z.string().nullable().optional(),

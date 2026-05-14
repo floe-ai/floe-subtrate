@@ -38,7 +38,6 @@ export type DestinationContext = {
 export type AllowedDestination = {
   endpoint_id: string;
   name: string;
-  actor_type: "agent" | "human" | "system" | "webhook";
 };
 
 /**

@@ -109,7 +109,6 @@ export function toNeutralEndpoint(ep: {
   endpoint_id: string;
   name: string;
   status: string;
-  actor_type?: string;
 }): NeutralEndpoint {
   return {
     ref: toNeutralRef(ep.endpoint_id),

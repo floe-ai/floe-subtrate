@@ -72,9 +72,9 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const envelope = store.submitEvent(cmd, noop);
     expect(envelope).toBeTruthy();
 
-    // Try to create a delivery for the agent endpoint
-    const delivery = store.tryCreateDelivery(BRIDGE, noop);
-    expect(delivery).not.toBeNull();
+    // Try to claim a delivery for the bridge
+    const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
+    expect(deliveries.length).toBeGreaterThan(0);
   });
 
   it("does not create delivery for actor without bridge_id", () => {
@@ -97,9 +97,9 @@ describe("Delivery symmetry (actor_type removed)", () => {
     };
     store.submitEvent(cmd, noop);
 
-    // No delivery should be created for the human endpoint
-    const delivery = store.tryCreateDelivery(BRIDGE, noop);
-    expect(delivery).toBeNull();
+    // No delivery should be created for the human endpoint (no bridge)
+    const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
+    expect(deliveries.length).toBe(0);
   });
 
   it("broadcast with_runtime targets only actors with bridge_id", () => {
@@ -130,9 +130,9 @@ describe("Delivery symmetry (actor_type removed)", () => {
     expect(envelope).toBeTruthy();
 
     // Only the agent (with bridge_id) should have a queued event
-    const delivery = store.tryCreateDelivery(BRIDGE, noop);
-    expect(delivery).not.toBeNull();
-    expect(delivery!.endpoint_id).toBe(AGENT_EP);
+    const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
+    expect(deliveries.length).toBeGreaterThan(0);
+    expect(deliveries[0].endpoint_id).toBe(AGENT_EP);
   });
 
   it("broadcast all targets all actors", () => {
@@ -187,13 +187,15 @@ describe("Delivery symmetry (actor_type removed)", () => {
       response: { expected: false }
     };
     store.submitEvent(cmd, noop);
-    const delivery = store.tryCreateDelivery(BRIDGE, noop);
-    expect(delivery).not.toBeNull();
+    const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
+    expect(deliveries.length).toBeGreaterThan(0);
+    const delivery = deliveries[0];
 
     // Defer the delivery
-    store.deferDelivery({
+    store.reportDeliveryStatus({
       bridge_id: BRIDGE,
-      delivery_id: delivery!.delivery_id,
+      delivery_id: delivery.delivery_id,
+      state: "deferred",
       error: "bridge disconnected"
     }, noop);
 
@@ -223,9 +225,7 @@ describe("Delivery symmetry (actor_type removed)", () => {
     expect(envelope).toBeTruthy();
 
     // Verify the event was queued for the agent endpoint
-    const queued = (store as any).db.prepare(
-      "SELECT * FROM event_queue WHERE destination_endpoint_id = ?"
-    ).all(AGENT_EP);
-    expect(queued.length).toBeGreaterThan(0);
+    const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
+    expect(deliveries.length).toBeGreaterThan(0);
   });
 });

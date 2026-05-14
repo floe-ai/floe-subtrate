@@ -138,7 +138,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       console.log("[bridge] visible endpoints fetched", { count: eps.length, workspace_id: bundle.workspace_id, self: bundle.endpoint_id });
       visibleEndpoints = eps
         .filter((ep: any) => ep.endpoint_id !== bundle.endpoint_id)
-        .map((ep: any) => toNeutralEndpoint({ endpoint_id: ep.endpoint_id, name: ep.name, status: ep.status, actor_type: ep.actor_type }));
+        .map((ep: any) => toNeutralEndpoint({ endpoint_id: ep.endpoint_id, name: ep.name, status: ep.status }));
       console.log("[bridge] visible endpoints after filter", { count: visibleEndpoints.length });
     } catch (epErr) {
       console.error("[bridge] failed to fetch visible endpoints", epErr);
@@ -458,7 +458,6 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             endpoint_id: ep.endpoint_id,
             name: ep.name,
             status: ep.status,
-            actor_type: ep.actor_type,
           }));
 
         return {
@@ -497,7 +496,6 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           endpoint_id: matched.endpoint_id,
           name: matched.name,
           status: matched.status,
-          actor_type: matched.actor_type,
         });
         return {
           content: [{ type: "text", text: JSON.stringify(neutral, null, 2) }],

@@ -25,7 +25,7 @@ export type DestinationSelector =
   | {
       kind: "broadcast";
       scope: "workspace";
-      target: "all" | "agents" | "humans" | "active_agents" | "active_humans";
+      target: "all" | "with_runtime" | "without_runtime" | "active_with_runtime" | "active_without_runtime";
       exclude_source?: boolean;
     };
 
@@ -173,7 +173,6 @@ export class BusStore {
       CREATE TABLE IF NOT EXISTS endpoints (
         endpoint_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
-        actor_type TEXT NOT NULL,
         name TEXT NOT NULL,
         agent_id TEXT,
         bridge_id TEXT,
@@ -532,7 +531,6 @@ export class BusStore {
   registerEndpoint(input: {
     endpoint_id: string;
     workspace_id: string;
-    actor_type: "human" | "agent";
     name: string;
     agent_id?: string | null;
     bridge_id?: string | null;
@@ -542,13 +540,12 @@ export class BusStore {
     const timestamp = now();
     this.db.prepare(`
       INSERT INTO endpoints (
-        endpoint_id, workspace_id, actor_type, name, agent_id, bridge_id, status,
+        endpoint_id, workspace_id, name, agent_id, bridge_id, status,
         metadata_json, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(endpoint_id) DO UPDATE SET
         workspace_id = excluded.workspace_id,
-        actor_type = excluded.actor_type,
         name = excluded.name,
         agent_id = excluded.agent_id,
         bridge_id = excluded.bridge_id,
@@ -558,7 +555,6 @@ export class BusStore {
     `).run(
       input.endpoint_id,
       input.workspace_id,
-      input.actor_type,
       input.name,
       input.agent_id ?? null,
       input.bridge_id ?? null,
@@ -805,7 +801,7 @@ export class BusStore {
       `).run(input.error ?? null, input.delivery_id);
       this.db.prepare(`
         UPDATE endpoints
-        SET status = CASE WHEN actor_type = 'agent' THEN 'runtime_unconfigured' ELSE status END,
+        SET status = CASE WHEN bridge_id IS NOT NULL THEN 'runtime_unconfigured' ELSE status END,
             updated_at = ?
         WHERE endpoint_id = ?
       `).run(now(), delivery.endpoint_id);
@@ -995,7 +991,7 @@ export class BusStore {
   ingestWebhook(workspaceId: string, routeId: string, body: Record<string, unknown>, broadcast: Broadcast): EventEnvelope {
     const destination = this.db.prepare(`
       SELECT endpoint_id FROM endpoints
-      WHERE workspace_id = ? AND actor_type = 'agent'
+      WHERE workspace_id = ? AND bridge_id IS NOT NULL
       ORDER BY created_at ASC LIMIT 1
     `).get(workspaceId) as any;
     if (!destination) throw new Error("No agent endpoint is registered for this workspace");
@@ -1278,10 +1274,10 @@ export class BusStore {
       WHERE workspace_id = ?
         AND (
           (? = 'all')
-          OR (? = 'agents' AND actor_type = 'agent')
-          OR (? = 'humans' AND actor_type = 'human')
-          OR (? = 'active_agents' AND actor_type = 'agent' AND status = 'active')
-          OR (? = 'active_humans' AND actor_type = 'human' AND status = 'active')
+          OR (? = 'with_runtime' AND bridge_id IS NOT NULL)
+          OR (? = 'without_runtime' AND bridge_id IS NULL)
+          OR (? = 'active_with_runtime' AND bridge_id IS NOT NULL AND status = 'active')
+          OR (? = 'active_without_runtime' AND bridge_id IS NULL AND status = 'active')
         )
     `;
     const rows = this.db.prepare(query).all(
@@ -1363,7 +1359,7 @@ export class BusStore {
 
   private tryCreateDeliveryForEndpoint(endpointId: string, broadcast: Broadcast): DeliveryBundle | null {
     const endpoint = this.getEndpoint(endpointId);
-    if (!endpoint || endpoint.actor_type !== "agent") return null;
+    if (!endpoint || !endpoint.bridge_id) return null;
     if (endpoint.status === "active" || endpoint.status === "error" || endpoint.status === "runtime_unconfigured") return null;
 
     const queuedRows = this.db.prepare(`

@@ -81,7 +81,6 @@ describe("toNeutralEndpoint — new actor shape", () => {
       endpoint_id: "actor:workspace:abc:floe",
       name: "Floe",
       status: "idle",
-      actor_type: "agent",
     });
     expect(out).toEqual({ ref: "floe", name: "Floe", status: "idle" });
     expect(Object.keys(out).sort()).toEqual(["name", "ref", "status"]);
@@ -92,7 +91,6 @@ describe("toNeutralEndpoint — new actor shape", () => {
       endpoint_id: "actor:workspace:abc:operator",
       name: "Operator",
       status: "active",
-      actor_type: "human",
     }) as Record<string, unknown>;
     expect("endpoint_id" in out).toBe(false);
     expect("actor_type" in out).toBe(false);

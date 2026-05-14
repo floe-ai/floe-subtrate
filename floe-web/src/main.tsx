@@ -766,7 +766,6 @@ function App() {
       body: {
         endpoint_id: operatorActorId(workspaceId),
         workspace_id: workspaceId,
-        actor_type: "human",
         name: "Operator",
         status: "online",
         metadata: { registered_by: "floe-web" }

@@ -24,7 +24,6 @@ function makeStore(): { store: BusStore; cleanup: () => void } {
     store.registerEndpoint({
       endpoint_id: id,
       workspace_id: WS,
-      actor_type: "agent",
       name: id,
       bridge_id: null,
       status: "idle"

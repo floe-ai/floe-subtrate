@@ -99,8 +99,8 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         async emit() {},
         async listEndpoints() {
           return [
-            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "active" },
           ];
         },
       },
@@ -174,8 +174,8 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         async emit() {},
         async listEndpoints() {
           return [
-            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "active" },
           ];
         },
         async resolveEndpoint(_ws: string, ref: string) {
@@ -274,8 +274,8 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
           return [
-            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "active" },
           ];
         },
         async resolveEndpoint(_ws: string, ref: string) {
@@ -419,8 +419,8 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
         async emit() {},
         async listEndpoints() {
           return [
-            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "active" },
           ];
         },
         async getContext() {
@@ -512,8 +512,8 @@ describe("Integration: agent cannot cite substrate metadata to identify actor ca
         async emit() {},
         async listEndpoints() {
           return [
-            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" },
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "active" },
           ];
         },
       },

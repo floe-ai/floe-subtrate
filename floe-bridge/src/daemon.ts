@@ -203,7 +203,6 @@ export class BridgeDaemon {
         await this.bus.registerEndpoint({
           endpoint_id: endpointId,
           workspace_id: workspace.workspace_id,
-          actor_type: "agent",
           name: agent.name,
           agent_id: agent.agent_id,
           bridge_id: this.bridgeId,
@@ -356,7 +355,6 @@ export class BridgeDaemon {
       await this.bus.registerEndpoint({
         endpoint_id: endpointId,
         workspace_id: workspaceId,
-        actor_type: "agent",
         name: agent.name,
         agent_id: agent.agent_id,
         bridge_id: this.bridgeId,

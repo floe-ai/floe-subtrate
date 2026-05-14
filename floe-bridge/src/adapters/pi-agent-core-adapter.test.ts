@@ -1102,8 +1102,8 @@ describe("Substrate model — explicit emit only", () => {
         // list_endpoints returns workspace-scoped results only
         async listEndpoints(workspaceId: string) {
           return [
-            { endpoint_id: "actor:workspace:test:floe", name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: "actor:workspace:test:operator", name: "Operator", actor_type: "human", status: "active" }
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" },
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "active" }
           ];
         }
       }
@@ -1175,11 +1175,11 @@ describe("Substrate model — explicit emit only", () => {
     );
 
     const workspaceAEndpoints = [
-      { endpoint_id: "actor:ws-a:floe", name: "Floe", actor_type: "agent", status: "idle" },
-      { endpoint_id: "actor:ws-a:operator", name: "Operator", actor_type: "human", status: "active" }
+      { endpoint_id: "actor:ws-a:floe", name: "Floe", status: "idle" },
+      { endpoint_id: "actor:ws-a:operator", name: "Operator", status: "active" }
     ];
     const workspaceBEndpoints = [
-      { endpoint_id: "actor:ws-b:reviewer", name: "Reviewer", actor_type: "agent", status: "idle" }
+      { endpoint_id: "actor:ws-b:reviewer", name: "Reviewer", status: "idle" }
     ];
 
     const context = {
@@ -1377,8 +1377,8 @@ describe("Full actor work loop acceptance", () => {
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints(_workspaceId: string) {
           return [
-            { endpoint_id: `actor:${_workspaceId}:floe`, name: "Floe", actor_type: "agent", status: "idle" },
-            { endpoint_id: `actor:${_workspaceId}:operator`, name: "Operator", actor_type: "human", status: "active" }
+            { endpoint_id: `actor:${_workspaceId}:floe`, name: "Floe", status: "idle" },
+            { endpoint_id: `actor:${_workspaceId}:operator`, name: "Operator", status: "active" }
           ];
         }
       }

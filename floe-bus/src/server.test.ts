@@ -24,7 +24,6 @@ async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Prom
     handle.store.registerEndpoint({
       endpoint_id: id,
       workspace_id: WS,
-      actor_type: "agent",
       name: id,
       bridge_id: null,
       status: "idle"
