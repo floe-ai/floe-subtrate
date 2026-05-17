@@ -135,6 +135,11 @@ program
       label: providerOption.name
     });
     saveProfiles(runtime.paths.profilesYamlPath, runtime.profiles);
+    if (providerOption.id !== "fake" && config.bridge.runtime_adapter !== "pi-agent-core") {
+      config.bridge.runtime_adapter = "pi-agent-core";
+      saveConfig(configPath, config);
+      console.log("Runtime adapter: pi-agent-core");
+    }
     runtime.modelRegistry.refresh();
     console.log(`Saved profile '${profileId}' for provider '${providerOption.id}'.`);
     if (model) console.log(`Default model: ${model}`);

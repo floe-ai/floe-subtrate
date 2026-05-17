@@ -143,7 +143,7 @@ Acceptance for the slice is the nine live proofs in design §6.2. These must pas
 - **Acting instances** (`acting_instance_id`) — opaque correlation handle; deferred until there's a concrete audit/replay use case and a way to emit one without leaking interface identity.
 - **Actor identity migration** to `actor:<workspace_id>:<actor_id>` — the slice keeps `endpoint_id` as the participant reference. Direction is documented; rename is a future slice.
 - **`caused_by_event_id`** on events — not needed for context isolation; deferred.
-- **Broadcast cleanup** (`target: "humans" | "agents"` etc.) — separate concern; deferred.
+- **Broadcast cleanup** — handled in the Broadcast Selector Contract Cleanup slice with delivery-processor selectors, not actor categories.
 - **Authority / permissions** — placeholder only in long-term design; no enforcement in slice.
 - **Context lifecycle** (open/close/archive, status field) — not in slice; contexts are always emittable.
 - **`add_participant` / `remove_participant`** — participant set is frozen at creation in this slice.

@@ -21,7 +21,78 @@ export type HookName =
   | "WebhookReceived"
   | "Error";
 
-export type HookPayload = Record<string, unknown>;
+type RuntimeSessionSummary = {
+  provider: string;
+  model_id: string;
+};
+
+type EndpointDeliveryPayload = {
+  endpoint_id: string;
+  workspace_id: string;
+  delivery_id: string;
+  trigger_event_id: string;
+};
+
+type RuntimeSessionPayload = EndpointDeliveryPayload & {
+  provider: string;
+  model_id: string;
+};
+
+export type HookPayloadByName = {
+  SessionStart: RuntimeSessionPayload & { reason: "session_created" };
+  BeforeTurn: EndpointDeliveryPayload & {
+    thread_id?: string | null;
+  };
+  TurnEnd: EndpointDeliveryPayload & {
+    visible_output: string;
+    tool_activity: Array<Record<string, unknown>>;
+    emitted_events: Array<Record<string, unknown>>;
+  };
+  BeforeToolUse: EndpointDeliveryPayload & {
+    toolCallId: string;
+    toolName: string;
+  };
+  AfterToolUse: EndpointDeliveryPayload & {
+    toolCallId: string;
+    toolName: string;
+    isError: false;
+  };
+  ToolUseFailed: EndpointDeliveryPayload & {
+    toolCallId: string;
+    toolName: string;
+    isError: true;
+  };
+  SessionResume: RuntimeSessionPayload & { reason: "session_reused" };
+  SessionEnd: {
+    endpoint_id: string;
+    workspace_id: string;
+    reason: "session_replaced" | "bridge_shutdown" | "workspace_teardown" | "runtime_session_removed";
+    previous_session: RuntimeSessionSummary;
+    delivery_id?: string;
+    trigger_event_id?: string;
+    next_session?: RuntimeSessionSummary;
+  };
+  Pulse: EndpointDeliveryPayload & {
+    pulse_id?: string;
+    event_id: string;
+    thread_id?: string | null;
+    content: Record<string, unknown>;
+  };
+  WebhookReceived: {
+    workspace_id: string;
+    route_id: string;
+    event_id: string;
+    context_id: string | null;
+    target_endpoint_id: string | null;
+    content: Record<string, unknown>;
+    metadata: Record<string, unknown>;
+  };
+  Error: EndpointDeliveryPayload & {
+    error: string;
+  };
+};
+
+export type HookPayload<Name extends HookName = HookName> = HookPayloadByName[Name];
 
 /**
  * Hook result with optional context injection.
@@ -35,13 +106,13 @@ export type HookResult = {
 };
 
 // Handler can return void (fire-and-forget) or an object with inject data
-export type HookHandler = (payload: HookPayload) => void | Promise<void> | Promise<HookResult | void>;
+export type HookHandler<Name extends HookName = HookName> = (payload: HookPayload<Name>) => void | HookResult | Promise<HookResult | void>;
 
 export class HookRegistry {
-  private handlers = new Map<HookName, Array<{ extensionName: string; handler: HookHandler }>>();
+  private handlers = new Map<HookName, Array<{ extensionName: string; handler: HookHandler<any> }>>();
 
   /** Register a handler for a hook. */
-  on(hook: HookName, extensionName: string, handler: HookHandler): void {
+  on<Name extends HookName>(hook: Name, extensionName: string, handler: HookHandler<Name>): void {
     if (!this.handlers.has(hook)) {
       this.handlers.set(hook, []);
     }
@@ -59,7 +130,7 @@ export class HookRegistry {
   }
 
   /** Fire a hook — runs all handlers sequentially, collects results. */
-  async fire(hook: HookName, payload: HookPayload): Promise<HookResult[]> {
+  async fire<Name extends HookName>(hook: Name, payload: HookPayload<Name>): Promise<HookResult[]> {
     const handlers = this.handlers.get(hook) ?? [];
     const results: HookResult[] = [];
     for (const { extensionName, handler } of handlers) {

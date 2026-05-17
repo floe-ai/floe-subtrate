@@ -96,7 +96,23 @@ The hook vocabulary should be substrate-oriented and should support, at minimum,
 - pulse execution
 - extension lifecycle
 
-The builder should propose the exact minimal hook set and implementation approach before building broad handler execution.
+The current supported implementation approach is programmatic TypeScript registration through `ExtensionContext.hooks.on(...)` while an extension is loaded. Hook registration is distinct from hook firing: active hooks are only those currently fired by bridge/runtime paths.
+
+Active fired hooks:
+
+- `SessionStart`
+- `SessionResume`
+- `BeforeTurn`
+- `Pulse`
+- `TurnEnd`
+- `Error`
+- `BeforeToolUse`
+- `AfterToolUse`
+- `ToolUseFailed`
+- `SessionEnd`
+- `WebhookReceived`
+
+`BeforeTurn` currently supports prompt/context injection through returned `inject` data. The other active hooks are observation hooks. `SessionEnd` fires when runtime sessions are replaced or disposed, and `WebhookReceived` fires from the persisted bus webhook ingest event path. Declarative YAML hook configuration is future/not implemented.
 
 ### 4. Pulse as substrate scheduling
 Pulse should be a substrate-native scheduled event mechanism, not an agent heartbeat or keepalive.

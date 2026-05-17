@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { PiAgentCoreAdapter } from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle } from "../bus-client.js";
+import { HookRegistry, type HookName, type HookPayload } from "../hooks.js";
 
 type FakeEvent = {
   type: string;
@@ -367,6 +368,329 @@ describe("PiAgentCoreAdapter – output classification", () => {
     expect(sessionCount).toBe(2); // new session created
     expect(capturedSystemPrompts[1]).toContain("You are a different agent");
   });
+
+  it("fires SessionEnd when an endpoint runtime session is replaced, not after every turn", async () => {
+    const ended: HookPayload[] = [];
+    const hooks = new HookRegistry();
+    hooks.on("SessionEnd", "test-ext", (payload) => {
+      ended.push(payload);
+    });
+
+    let sessionCount = 0;
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && (modelId === "mock-model" || modelId === "mock-model-2")) {
+              return {
+                id: modelId, name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: () => {
+          sessionCount++;
+          return new FakeAgent();
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const context = {
+      bridge_id: "bridge:test",
+      hooks,
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async listEndpoints() { return []; }
+      }
+    } as any;
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-session-1", "thread-1", "first"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-session-2", "thread-2", "same session"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+    expect(sessionCount).toBe(1);
+    expect(ended).toEqual([]);
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-session-3", "thread-3", "new model"),
+      { provider: "mock-provider", model: "mock-model-2", auth_profile: "test-profile" }
+    );
+
+    expect(sessionCount).toBe(2);
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({
+      reason: "session_replaced",
+      workspace_id: "workspace:test",
+      endpoint_id: "actor:workspace:test:floe",
+      delivery_id: "del-session-3",
+      trigger_event_id: "evt:del-session-3",
+      previous_session: {
+        provider: "mock-provider",
+        model_id: "mock-model"
+      },
+      next_session: {
+        provider: "mock-provider",
+        model_id: "mock-model-2"
+      }
+    });
+  });
+
+  it("fires SessionEnd once when runtime sessions are disposed during bridge shutdown", async () => {
+    const ended: HookPayload[] = [];
+    const hooks = new HookRegistry();
+    hooks.on("SessionEnd", "test-ext", (payload) => {
+      ended.push(payload);
+    });
+
+    let sessionCount = 0;
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "" , profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: () => {
+          sessionCount++;
+          return new FakeAgent();
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const context = {
+      bridge_id: "bridge:test",
+      hooks,
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async listEndpoints() { return []; }
+      }
+    } as any;
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-shutdown-1", "thread-shutdown", "start session"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    await adapter.dispose("bridge_shutdown");
+    await adapter.dispose("bridge_shutdown");
+
+    expect(sessionCount).toBe(1);
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({
+      reason: "bridge_shutdown",
+      workspace_id: "workspace:test",
+      endpoint_id: "actor:workspace:test:floe",
+      previous_session: {
+        provider: "mock-provider",
+        model_id: "mock-model"
+      }
+    });
+  });
+
+  it("fires active runtime hooks with endpoint-neutral delivery payloads", async () => {
+    const hooks = new HookRegistry();
+    const seen: Partial<Record<HookName, HookPayload[]>> = {};
+    const collect = <Name extends HookName>(hook: Name) => {
+      seen[hook] = [];
+      hooks.on(hook, "test-ext", (payload) => {
+        seen[hook]!.push(payload);
+      });
+    };
+    for (const hook of [
+      "SessionStart",
+      "SessionResume",
+      "BeforeTurn",
+      "Pulse",
+      "TurnEnd",
+      "BeforeToolUse",
+      "AfterToolUse",
+      "ToolUseFailed"
+    ] as const) collect(hook);
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        for (const l of this.listeners) await l({ type: "tool_execution_start", toolCallId: "tc-ok", toolName: "read", args: {} });
+        for (const l of this.listeners) await l({ type: "tool_execution_end", toolCallId: "tc-ok", toolName: "read", isError: false });
+        for (const l of this.listeners) await l({ type: "tool_execution_start", toolCallId: "tc-fail", toolName: "write", args: {} });
+        for (const l of this.listeners) await l({ type: "tool_execution_end", toolCallId: "tc-fail", toolName: "write", isError: true });
+        for (const l of this.listeners) await l({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "Done." }] }
+        });
+        for (const l of this.listeners) await l({
+          type: "agent_end",
+          messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }] }]
+        });
+      }
+    };
+
+    const adapter = makeTestAdapter(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      hooks,
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async listEndpoints() { return []; }
+      }
+    } as any;
+
+    const pulseDelivery = makeDelivery("del-hooks-1", "thread-hooks-1", "pulse fired");
+    pulseDelivery.events[0].type = "pulse.fired";
+    pulseDelivery.events[0].content = { pulse_id: "pulse:daily", text: "Daily pulse" };
+
+    await adapter.handleBundle(
+      context,
+      pulseDelivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-hooks-2", "thread-hooks-2", "reuse session"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(seen.SessionStart).toHaveLength(1);
+    expect(seen.SessionStart?.[0]).toMatchObject({
+      reason: "session_created",
+      workspace_id: "workspace:test",
+      endpoint_id: "actor:workspace:test:floe",
+      delivery_id: "del-hooks-1",
+      trigger_event_id: "evt:del-hooks-1",
+      provider: "mock-provider",
+      model_id: "mock-model"
+    });
+    expect(seen.SessionResume).toHaveLength(1);
+    expect(seen.SessionResume?.[0]).toMatchObject({
+      reason: "session_reused",
+      delivery_id: "del-hooks-2",
+      trigger_event_id: "evt:del-hooks-2"
+    });
+    expect(seen.BeforeTurn).toHaveLength(2);
+    expect(seen.BeforeTurn?.[0]).toMatchObject({
+      delivery_id: "del-hooks-1",
+      trigger_event_id: "evt:del-hooks-1",
+      thread_id: "thread-hooks-1"
+    });
+    expect(seen.Pulse).toHaveLength(1);
+    expect(seen.Pulse?.[0]).toMatchObject({
+      delivery_id: "del-hooks-1",
+      trigger_event_id: "evt:del-hooks-1",
+      event_id: "evt:del-hooks-1",
+      pulse_id: "pulse:daily",
+      content: { pulse_id: "pulse:daily", text: "Daily pulse" }
+    });
+    expect(seen.BeforeToolUse).toHaveLength(4);
+    expect(seen.AfterToolUse).toHaveLength(2);
+    expect(seen.ToolUseFailed).toHaveLength(2);
+    expect(seen.BeforeToolUse?.[0]).toMatchObject({
+      delivery_id: "del-hooks-1",
+      trigger_event_id: "evt:del-hooks-1",
+      toolCallId: "tc-ok",
+      toolName: "read"
+    });
+    expect(seen.AfterToolUse?.[0]).toMatchObject({
+      delivery_id: "del-hooks-1",
+      toolCallId: "tc-ok",
+      toolName: "read",
+      isError: false
+    });
+    expect(seen.ToolUseFailed?.[0]).toMatchObject({
+      delivery_id: "del-hooks-1",
+      toolCallId: "tc-fail",
+      toolName: "write",
+      isError: true
+    });
+    expect(seen.TurnEnd).toHaveLength(2);
+    expect(seen.TurnEnd?.[0]).toMatchObject({
+      delivery_id: "del-hooks-1",
+      trigger_event_id: "evt:del-hooks-1",
+      visible_output: "Done."
+    });
+  });
+
+  it("fires Error hook when runtime turn handling fails", async () => {
+    const errors: Array<HookPayload<"Error">> = [];
+    const hooks = new HookRegistry();
+    hooks.on("Error", "test-ext", (payload) => {
+      errors.push(payload);
+    });
+
+    const adapter = makeTestAdapter({
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        throw new Error("runtime failed");
+      }
+    });
+
+    await adapter.handleBundle(
+      {
+        bridge_id: "bridge:test",
+        hooks,
+        bus: {
+          async appendRuntimeTelemetry(_input: any) {},
+          async emit(_event: any) {},
+          async listEndpoints() { return []; }
+        }
+      } as any,
+      makeDelivery("del-error-hook", "thread-error-hook", "fail"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      workspace_id: "workspace:test",
+      endpoint_id: "actor:workspace:test:floe",
+      delivery_id: "del-error-hook",
+      trigger_event_id: "evt:del-error-hook",
+      error: "runtime failed"
+    });
+  });
 });
 
 describe("Substrate guidance", () => {
@@ -606,6 +930,93 @@ describe("Substrate model — explicit emit only", () => {
     expect(capturedPrompt).toContain("reply_actor: operator");
     expect(capturedPrompt).toContain("thread-ctx-1"); // thread
     expect(capturedPrompt).toContain("reply_actor");
+  });
+
+  it("delivery prompt requires replies for operator messages but not unsolicited agent-to-agent messages", async () => {
+    const capturedPrompts: string[] = [];
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt(message: any) {
+        capturedPrompts.push(message?.content?.[0]?.text ?? "");
+        for (const l of this.listeners) await l({
+          type: "turn_end",
+          message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" }
+        });
+      }
+    };
+
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {}
+      }
+    } as any;
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-operator", "thread-operator", "operator asks"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    const agentDelivery = makeDelivery("del-agent", "thread-agent", "agent says FYI");
+    agentDelivery.events[0].source_endpoint_id = "actor:workspace:test:reviewer";
+    agentDelivery.events[0].response = { expected: false };
+    await adapter.handleBundle(
+      context,
+      agentDelivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    const requestedAgentDelivery = makeDelivery("del-agent-requested", "thread-agent", "agent asks for a reply");
+    requestedAgentDelivery.events[0].source_endpoint_id = "actor:workspace:test:reviewer";
+    requestedAgentDelivery.events[0].response = { expected: true };
+    await adapter.handleBundle(
+      context,
+      requestedAgentDelivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(capturedPrompts[0]).toContain("response_expected: true");
+    expect(capturedPrompts[1]).toContain("response_expected: false");
+    expect(capturedPrompts[2]).toContain("response_expected: true");
+  });
+
+  it("runtime telemetry payloads include the active delivery context id", async () => {
+    const fakeAgent = new FakeAgent();
+    const telemetryCalls: any[] = [];
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
+        async emit(_event: any) {},
+        async getContext(_contextId: string) {
+          return {
+            context_id: "ctx_telemetry",
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: "actor:workspace:test:operator",
+            created_at: new Date().toISOString(),
+            participants: ["actor:workspace:test:operator", "actor:workspace:test:floe"]
+          };
+        }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-telemetry-context", "thread-telemetry", "hello");
+    (delivery.events[0] as any).context_id = "ctx_telemetry";
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    const worklog = telemetryCalls.find((item) => item.kind === "visible_output_worklog");
+    expect(worklog?.payload?.context_id).toBe("ctx_telemetry");
   });
 
   it("delivery prompt includes current_context_id and fetched current_context_participants when trigger has context_id", async () => {

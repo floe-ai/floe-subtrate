@@ -225,3 +225,172 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
   });
 });
+
+describe("Broadcast destination selector contract", () => {
+  let handle: ServerHandle;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    const made = await makeServer();
+    handle = made.handle;
+    cleanup = made.cleanup;
+    handle.store.registerEndpoint({
+      endpoint_id: E2,
+      workspace_id: WS,
+      name: E2,
+      bridge_id: "bridge:test",
+      status: "idle"
+    }, () => {});
+  });
+  afterEach(async () => { await cleanup(); });
+
+  it("HTTP emit accepts with_delivery_processor and queues only endpoints with a delivery processor", async () => {
+    const res = await handle.app.inject({
+      method: "POST",
+      url: "/v1/events/emit",
+      payload: {
+        type: "notification",
+        workspace_id: WS,
+        source_endpoint_id: E1,
+        destination: {
+          kind: "broadcast",
+          scope: "workspace",
+          target: "with_delivery_processor",
+          exclude_source: true
+        },
+        content: { text: "processor-only" },
+        response: { expected: false }
+      }
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json().deliveries_created).toBe(1);
+
+    const claim = await handle.app.inject({
+      method: "GET",
+      url: "/v1/delivery/claim?bridge_id=bridge%3Atest&limit=10"
+    });
+    const deliveries = claim.json().deliveries as any[];
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].endpoint_id).toBe(E2);
+    expect(deliveries[0].events[0].destination_json).toMatchObject({
+      kind: "broadcast",
+      target: "with_delivery_processor"
+    });
+  });
+
+  it("HTTP emit accepts without_delivery_processor without creating push delivery for processor-backed endpoints", async () => {
+    const res = await handle.app.inject({
+      method: "POST",
+      url: "/v1/events/emit",
+      payload: {
+        type: "notification",
+        workspace_id: WS,
+        source_endpoint_id: E1,
+        destination: {
+          kind: "broadcast",
+          scope: "workspace",
+          target: "without_delivery_processor",
+          exclude_source: true
+        },
+        content: { text: "pollable-only" },
+        response: { expected: false }
+      }
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json().deliveries_created).toBe(1);
+
+    const eventsRes = await handle.app.inject({
+      method: "GET",
+      url: `/v1/events?workspace_id=${encodeURIComponent(WS)}`
+    });
+    const event = (eventsRes.json().events as any[]).find((candidate) => candidate.content?.text === "pollable-only");
+    expect(event.destination_json).toMatchObject({
+      kind: "broadcast",
+      target: "without_delivery_processor"
+    });
+
+    const claim = await handle.app.inject({
+      method: "GET",
+      url: "/v1/delivery/claim?bridge_id=bridge%3Atest&limit=10"
+    });
+    expect(claim.json().deliveries).toEqual([]);
+  });
+
+  it("HTTP emit accepts active selectors without actor category language", async () => {
+    handle.store.updateEndpointStatus(E2, "active", () => {});
+    handle.store.updateEndpointStatus(E3, "active", () => {});
+
+    const res = await handle.app.inject({
+      method: "POST",
+      url: "/v1/events/emit",
+      payload: {
+        type: "notification",
+        workspace_id: WS,
+        source_endpoint_id: E1,
+        destination: {
+          kind: "broadcast",
+          scope: "workspace",
+          target: "active",
+          exclude_source: true
+        },
+        content: { text: "active-only" },
+        response: { expected: false }
+      }
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json().deliveries_created).toBe(2);
+
+    const claim = await handle.app.inject({
+      method: "GET",
+      url: "/v1/delivery/claim?bridge_id=bridge%3Atest&limit=10"
+    });
+    const deliveries = claim.json().deliveries as any[];
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].endpoint_id).toBe(E2);
+    expect(deliveries[0].events[0].destination_json).toMatchObject({
+      kind: "broadcast",
+      target: "active"
+    });
+  });
+
+  it("HTTP emit rejects old actor-category broadcast selectors without persisting an event", async () => {
+    for (const target of ["agents", "humans", "active_agents", "active_humans"]) {
+      const res = await handle.app.inject({
+        method: "POST",
+        url: "/v1/events/emit",
+        payload: {
+          type: "notification",
+          workspace_id: WS,
+          source_endpoint_id: E1,
+          destination: {
+            kind: "broadcast",
+            scope: "workspace",
+            target,
+            exclude_source: true
+          },
+          content: { text: `old-${target}` },
+          response: { expected: false }
+        }
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatchObject({
+        code: "invalid_event_command",
+        message: "Invalid event command"
+      });
+    }
+
+    const eventsRes = await handle.app.inject({
+      method: "GET",
+      url: `/v1/events?workspace_id=${encodeURIComponent(WS)}`
+    });
+    const texts = (eventsRes.json().events as any[]).map((event) => event.content?.text);
+    expect(texts).not.toContain("old-agents");
+    expect(texts).not.toContain("old-humans");
+    expect(texts).not.toContain("old-active_agents");
+    expect(texts).not.toContain("old-active_humans");
+  });
+});

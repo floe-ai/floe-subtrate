@@ -102,7 +102,7 @@ describe("Delivery symmetry (actor_type removed)", () => {
     expect(deliveries.length).toBe(0);
   });
 
-  it("broadcast with_runtime targets only actors with bridge_id", () => {
+  it("broadcast with_delivery_processor targets only actors with bridge_id", () => {
     store.registerEndpoint({
       endpoint_id: AGENT_EP,
       workspace_id: WS,
@@ -122,7 +122,7 @@ describe("Delivery symmetry (actor_type removed)", () => {
       type: "notification",
       workspace_id: WS,
       source_endpoint_id: HUMAN_EP,
-      destination: { kind: "broadcast", scope: "workspace", target: "with_runtime" },
+      destination: { kind: "broadcast", scope: "workspace", target: "with_delivery_processor" },
       content: { body: "system alert" },
       response: { expected: false }
     };
@@ -133,6 +133,70 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBeGreaterThan(0);
     expect(deliveries[0].endpoint_id).toBe(AGENT_EP);
+  });
+
+  it("broadcast active_with_delivery_processor targets only active actors with bridge_id", () => {
+    store.registerEndpoint({
+      endpoint_id: AGENT_EP,
+      workspace_id: WS,
+      name: "Agent A1",
+      bridge_id: BRIDGE,
+      status: "active"
+    }, noop);
+    store.registerEndpoint({
+      endpoint_id: HUMAN_EP,
+      workspace_id: WS,
+      name: "Operator",
+      bridge_id: null,
+      status: "active"
+    }, noop);
+
+    const cmd: EventCommand = {
+      type: "notification",
+      workspace_id: WS,
+      source_endpoint_id: HUMAN_EP,
+      destination: { kind: "broadcast", scope: "workspace", target: "active_with_delivery_processor" },
+      content: { body: "active processor alert" },
+      response: { expected: false }
+    };
+    store.submitEvent(cmd, noop);
+
+    const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].endpoint_id).toBe(AGENT_EP);
+  });
+
+  it("broadcast active_without_delivery_processor targets active actors without bridge_id", () => {
+    store.registerEndpoint({
+      endpoint_id: AGENT_EP,
+      workspace_id: WS,
+      name: "Agent A1",
+      bridge_id: BRIDGE,
+      status: "active"
+    }, noop);
+    store.registerEndpoint({
+      endpoint_id: HUMAN_EP,
+      workspace_id: WS,
+      name: "Operator",
+      bridge_id: null,
+      status: "active"
+    }, noop);
+
+    const cmd: EventCommand = {
+      type: "notification",
+      workspace_id: WS,
+      source_endpoint_id: AGENT_EP,
+      destination: { kind: "broadcast", scope: "workspace", target: "active_without_delivery_processor" },
+      content: { body: "active pollable alert" },
+      response: { expected: false }
+    };
+    store.submitEvent(cmd, noop);
+
+    const queued = (store as any).db.prepare(
+      "SELECT * FROM event_queue WHERE destination_endpoint_id = ?"
+    ).all(HUMAN_EP);
+    expect(queued).toHaveLength(1);
+    expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
   });
 
   it("broadcast all targets all actors", () => {

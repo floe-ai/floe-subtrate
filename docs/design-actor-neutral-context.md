@@ -498,13 +498,20 @@ The renaming of `endpoint:<ws>:agent:<id>` → `actor:<ws>:<id>` and the `actors
 
 ### 5.4 Broadcast
 
-The current broadcast targets `target: "all" | "agents" | "humans" | "active_agents" | "active_humans"` (see `floe-bus/src/store.ts:11-18`).
+Broadcast targets are actor-neutral delivery-capability selectors:
+
+- `all`
+- `active`
+- `with_delivery_processor`
+- `without_delivery_processor`
+- `active_with_delivery_processor`
+- `active_without_delivery_processor`
 
 Per reviewer correction:
 
-- **`humans` and `agents` targeting is removed** from the new model. Compatibility shim retained: existing code using these targets continues to work but is logged as deprecated.
-- **Broadcast does not auto-activate every actor.** Visibility, delivery, and activation remain separate concerns. A broadcast becomes a notification visible in actor inboxes; whether each actor processes it is a separate decision (currently: only actors with a runtime adapter ever activate; humans may see and ignore).
-- **No new broadcast features in this slice.** If a future slice needs a clean broadcast, it gets designed then.
+- **Actor-category targeting is removed** from the model. There are no compatibility aliases for human/agent category names.
+- **Broadcast does not auto-activate every actor.** Visibility, delivery, and activation remain separate concerns. Endpoints with a delivery processor can receive pushed delivery; endpoints without one can still be included in canonical event routing without pretending push delivery is available.
+- **No new broadcast scopes in this slice.** If a future slice needs team/global broadcast, it gets designed then.
 
 ### 5.5 Authority / permissions
 
@@ -620,7 +627,7 @@ Contexts have **no lifecycle status** in this slice. Once created, a context is 
 | Delivery | Per-endpoint queue | Actor/context-level with adapter observation | Unchanged (deferred) |
 | Causality | None | `caused_by_event_id` + `parent_context_id` | `parent_context_id` only (causal events deferred) |
 | Audit handle | None | Opaque `acting_instance_id` (optional) | Not introduced |
-| Broadcast | `humans`/`agents` targeting | Removed; visibility ≠ activation | Compatibility shim only; deprecation logged |
+| Broadcast | Actor-category targeting | Delivery-capability selectors; visibility ≠ activation | Delivery-processor selectors only; no compatibility aliases |
 | Webhooks/schedulers/transports as actors | N/A | **Not actors.** Remain non-actor sources/integrations | **Not actors.** Unchanged |
 | Migration | N/A | Multi-slice, gradual | **None — fresh-state only; old workspaces wiped** |
 

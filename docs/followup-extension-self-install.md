@@ -40,5 +40,10 @@ A user or developer must manually copy files and edit frontmatter.
 
 - Extension loading works ✅
 - Tool auto-prefixing works ✅  
-- Hook registration works ✅
+- Programmatic hook registration works ✅
+- Public hook firing works for the documented bridge/runtime/webhook hook set ✅
 - Config drift reconciliation works ✅
+
+## Still Not Included
+
+- Declarative YAML hook configuration is future/not implemented.

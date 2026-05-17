@@ -37,23 +37,41 @@ type ContextEvent = {
   created_at: string;
 };
 
+type TelemetryRecord = {
+  telemetry_id: string;
+  workspace_id: string;
+  endpoint_id: string;
+  delivery_id: string | null;
+  kind: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type WorldState = {
   contexts: ContextSummary[];
   eventsByContext: Record<string, ContextEvent[]>;
+  contextEventDelayMs: Record<string, number>;
+  telemetry: TelemetryRecord[];
   emitCalls: unknown[];
   legacyEventsCalls: number;
   contextEventsCalls: Record<string, number>;
   contextsListCalls: number;
+  bridgeRuntimeAdapter: string | null;
+  endpointRuntimeAdapter: string | null;
 };
 
 function makeWorld(initial?: Partial<WorldState>): WorldState {
   return {
     contexts: [],
     eventsByContext: {},
+    contextEventDelayMs: {},
+    telemetry: [],
     emitCalls: [],
     legacyEventsCalls: 0,
     contextEventsCalls: {},
     contextsListCalls: 0,
+    bridgeRuntimeAdapter: "pi-agent-core",
+    endpointRuntimeAdapter: null,
     ...initial
   };
 }
@@ -114,7 +132,9 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
             name: "Floe",
             status: "active",
             agent_id: "floe",
-            metadata_json: "{}"
+            metadata_json: world.endpointRuntimeAdapter
+              ? JSON.stringify({ runtime_adapter: world.endpointRuntimeAdapter })
+              : "{}"
           },
           {
             endpoint_id: REVIEWER,
@@ -147,6 +167,17 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
     })
   );
 
+  await page.route("**/v1/local-config/status", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        bridge: world.bridgeRuntimeAdapter === null ? {} : { runtime_adapter: world.bridgeRuntimeAdapter }
+      })
+    })
+  );
+
   await page.route("**/v1/runtime/bindings**", (route) =>
     route.fulfill({
       status: 200,
@@ -165,7 +196,7 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
   );
 
   await page.route("**/v1/runtime/telemetry**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ records: [] }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ records: world.telemetry }) })
   );
 
   await page.route("**/v1/auth/models**", (route) =>
@@ -173,12 +204,14 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
   );
 
   // Context-scoped events: must be hit (not the legacy workspace-wide one).
-  await page.route(/\/v1\/contexts\/[^/]+\/events(?:\?.*)?$/, (route: Route) => {
+  await page.route(/\/v1\/contexts\/[^/]+\/events(?:\?.*)?$/, async (route: Route) => {
     const url = new URL(route.request().url());
     const m = url.pathname.match(/\/v1\/contexts\/([^/]+)\/events/);
     const id = m?.[1] ?? "";
     world.contextEventsCalls[id] = (world.contextEventsCalls[id] ?? 0) + 1;
     const events = world.eventsByContext[id] ?? [];
+    const delayMs = world.contextEventDelayMs[id] ?? 0;
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     return route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -291,7 +324,29 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     expect(world.contexts.length).toBe(0);
   });
 
-  test("first send creates context with context_id:null and FloeWeb adopts the returned id (E2E-1 mirror)", async ({ page }) => {
+  test("actor selection is a labeled actor list and switches the conversation scope", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_floe",
+      first_message_preview: "floe only conversation",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-01T00:00:00.000Z",
+      last_event_at: "2024-06-01T00:00:00.000Z"
+    }));
+    await bootApp(page, world);
+
+    const actorList = page.getByRole("group", { name: "Actors" });
+    await expect(actorList).toBeVisible();
+    await expect(actorList.getByRole("button", { name: /Floe.*active/i })).toHaveAttribute("aria-pressed", "true");
+    await expect(actorList.getByRole("button", { name: /Reviewer.*active/i })).toBeVisible();
+
+    await actorList.getByRole("button", { name: /Reviewer.*active/i }).click();
+    await expect(actorList.getByRole("button", { name: /Reviewer.*active/i })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator('[data-testid="context-list"]')).toContainText("No conversations with Reviewer yet");
+    await expect(page.locator('[data-testid="context-list"]')).not.toContainText("floe only conversation");
+  });
+
+  test("first draft send omits context_id, adopts the returned id, then reuses it", async ({ page }) => {
     const world = makeWorld();
     await bootApp(page, world);
 
@@ -301,7 +356,7 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
 
     expect(world.emitCalls.length).toBe(1);
     const body = world.emitCalls[0] as Record<string, unknown>;
-    expect(body.context_id).toBeNull();
+    expect(body).not.toHaveProperty("context_id");
     expect((body as any).destination?.endpoint_id).toBe(FLOE);
     expect(world.contexts.length).toBe(1);
 
@@ -309,6 +364,14 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     // Wait for refresh / chat fetch on adopted context
     await page.waitForTimeout(600);
     expect(world.contextEventsCalls[newId]).toBeGreaterThan(0);
+
+    await page.locator(".channel-composer input").fill("second message");
+    await page.locator('.channel-composer .icon-button[title="Send"]').click();
+    await page.waitForTimeout(500);
+
+    expect(world.emitCalls.length).toBe(2);
+    expect((world.emitCalls[1] as any).context_id).toBe(newId);
+    expect(world.contexts.length).toBe(1);
   });
 
   test("continuing an existing conversation sends explicit context_id (User Story 20)", async ({ page }) => {
@@ -338,6 +401,25 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     expect((world.emitCalls[0] as any).context_id).toBe(ctxId);
     // Must NOT pass current_delivery_context_id from UI emits
     expect((world.emitCalls[0] as any).current_delivery_context_id).toBeUndefined();
+  });
+
+  test("selected profile cannot silently send through the fake bridge adapter", async ({ page }) => {
+    const world = makeWorld({ bridgeRuntimeAdapter: null });
+
+    await bootApp(page, world);
+
+    await expect(page.getByText(/bridge is running with the fake runtime adapter/i)).toBeVisible();
+    await expect(page.locator(".channel-composer input")).toBeDisabled();
+    expect(world.emitCalls.length).toBe(0);
+  });
+
+  test("endpoint runtime adapter metadata allows auto-selected pi bridge even when config omits adapter", async ({ page }) => {
+    const world = makeWorld({ bridgeRuntimeAdapter: null, endpointRuntimeAdapter: "pi-agent-core" });
+
+    await bootApp(page, world);
+
+    await expect(page.getByText(/bridge is running with the fake runtime adapter/i)).toHaveCount(0);
+    await expect(page.locator(".channel-composer input")).toBeEnabled();
   });
 
   test("chat fetch hits /v1/contexts/:id/events not /v1/events?workspace_id (E2E-8 mirror)", async ({ page }) => {
@@ -400,6 +482,149 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     await page.waitForTimeout(300);
     await expect(page.locator(".channel-body")).toContainText("ALPHA-MSG");
     await expect(page.locator(".channel-body")).not.toContainText("BETA-MSG");
+  });
+
+  test("delayed stale context event responses do not appear in the active conversation", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_a",
+      first_message_preview: "alpha topic",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-01T10:00:00.000Z",
+      last_event_at: "2024-06-01T10:00:00.000Z"
+    }));
+    world.contexts.push(makeContext({
+      context_id: "ctx_b",
+      first_message_preview: "beta topic",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-02T10:00:00.000Z",
+      last_event_at: "2024-06-02T10:00:00.000Z"
+    }));
+    world.eventsByContext["ctx_a"] = [
+      makeMessage({ context_id: "ctx_a", created_at: "2024-06-01T10:00:00.000Z", content: { text: "ALPHA-ACTIVE" } })
+    ];
+    world.eventsByContext["ctx_b"] = [
+      makeMessage({ context_id: "ctx_b", created_at: "2024-06-02T10:00:00.000Z", content: { text: "BETA-STALE" } })
+    ];
+    world.contextEventDelayMs["ctx_b"] = 800;
+
+    await bootApp(page, world);
+
+    await page.locator('[data-testid="context-list-item"][data-context-id="ctx_a"]').click();
+    await expect(page.locator(".channel-body")).toContainText("ALPHA-ACTIVE");
+    await page.waitForTimeout(1000);
+
+    await expect(page.locator(".channel-body")).toContainText("ALPHA-ACTIVE");
+    await expect(page.locator(".channel-body")).not.toContainText("BETA-STALE");
+  });
+
+  test("unscoped streaming telemetry is not rendered into the selected conversation", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_a",
+      first_message_preview: "alpha topic",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-01T10:00:00.000Z",
+      last_event_at: "2024-06-01T10:00:02.000Z"
+    }));
+    world.contexts.push(makeContext({
+      context_id: "ctx_b",
+      first_message_preview: "beta topic",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-02T10:00:00.000Z",
+      last_event_at: "2024-06-02T10:00:02.000Z"
+    }));
+    world.eventsByContext["ctx_a"] = [
+      makeMessage({ context_id: "ctx_a", source_endpoint_id: OPERATOR, created_at: "2024-06-01T10:00:00.000Z", content: { text: "ALPHA-USER" } }),
+      makeMessage({
+        context_id: "ctx_a",
+        source_endpoint_id: FLOE,
+        created_at: "2024-06-01T10:00:02.000Z",
+        content: { text: "ALPHA-REPLY", data: { runtime_turn_id: "rt_a" } },
+        metadata: { runtime_turn_id: "rt_a" }
+      })
+    ];
+    world.eventsByContext["ctx_b"] = [
+      makeMessage({ context_id: "ctx_b", source_endpoint_id: OPERATOR, created_at: "2024-06-02T10:00:00.000Z", content: { text: "BETA-USER" } })
+    ];
+    world.telemetry = [{
+      telemetry_id: "tel_unscoped_beta",
+      workspace_id: WORKSPACE_ID,
+      endpoint_id: FLOE,
+      delivery_id: "del_beta",
+      kind: "visible_output",
+      payload_json: JSON.stringify({ runtime_turn_id: "rt_b", delivery_id: "del_beta", text: "BETA-STREAM" }),
+      created_at: "2024-06-02T10:00:01.000Z"
+    }];
+
+    await bootApp(page, world);
+    await page.locator('[data-testid="context-list-item"][data-context-id="ctx_a"]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator(".channel-body")).toContainText("ALPHA-REPLY");
+    await expect(page.locator(".channel-body")).not.toContainText("BETA-STREAM");
+  });
+
+  test("activity telemetry from another context is not attached to the selected conversation", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_a",
+      first_message_preview: "alpha topic",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-01T10:00:00.000Z",
+      last_event_at: "2024-06-01T10:00:03.000Z"
+    }));
+    world.contexts.push(makeContext({
+      context_id: "ctx_b",
+      first_message_preview: "beta topic",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-02T10:00:00.000Z",
+      last_event_at: "2024-06-02T10:00:03.000Z"
+    }));
+    world.eventsByContext["ctx_a"] = [
+      makeMessage({ context_id: "ctx_a", source_endpoint_id: OPERATOR, created_at: "2024-06-01T10:00:00.000Z", content: { text: "ALPHA-USER" } }),
+      makeMessage({
+        context_id: "ctx_a",
+        source_endpoint_id: FLOE,
+        created_at: "2024-06-01T10:00:03.000Z",
+        content: { text: "ALPHA-REPLY", data: { runtime_turn_id: "rt_a" } },
+        metadata: { runtime_turn_id: "rt_a" }
+      })
+    ];
+    world.eventsByContext["ctx_b"] = [
+      makeMessage({ context_id: "ctx_b", source_endpoint_id: OPERATOR, created_at: "2024-06-02T10:00:00.000Z", content: { text: "BETA-USER" } }),
+      makeMessage({
+        context_id: "ctx_b",
+        source_endpoint_id: FLOE,
+        created_at: "2024-06-02T10:00:03.000Z",
+        content: { text: "BETA-REPLY", data: { runtime_turn_id: "rt_b" } },
+        metadata: { runtime_turn_id: "rt_b" }
+      })
+    ];
+    world.telemetry = [{
+      telemetry_id: "tel_beta_emit",
+      workspace_id: WORKSPACE_ID,
+      endpoint_id: FLOE,
+      delivery_id: "del_beta",
+      kind: "AfterToolUse",
+      payload_json: JSON.stringify({
+        runtime_turn_id: "rt_b",
+        delivery_id: "del_beta",
+        context_id: "ctx_b",
+        toolCallId: "tool_beta",
+        toolName: "emit"
+      }),
+      created_at: "2024-06-01T10:00:01.000Z"
+    }];
+
+    await bootApp(page, world);
+    await page.locator('[data-testid="context-list-item"][data-context-id="ctx_a"]').click();
+    await page.waitForTimeout(400);
+
+    const body = page.locator(".channel-body");
+    await expect(body).toContainText("ALPHA-REPLY");
+    await expect(body).not.toContainText("Activity");
+    await expect(body).not.toContainText("sent message");
   });
 
   test("rendering does not client-side filter by source_endpoint_id (negative test)", async ({ page }) => {
@@ -471,7 +696,41 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     await expect(page.locator('[data-testid="context-list-item"]').first()).toContainText("Pulse: morning_check");
   });
 
-  test("default context (first operator↔agent) is pinned first regardless of activity", async ({ page }) => {
+  test("pulse.fired context events render as reminder cards, not actor messages", async ({ page }) => {
+    const world = makeWorld();
+    const ctxId = "ctx_reminder";
+    world.contexts.push(makeContext({
+      context_id: ctxId,
+      first_message_preview: null,
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-01T10:00:00.000Z",
+      last_event_at: "2024-06-01T10:00:30.000Z"
+    }));
+    world.eventsByContext[ctxId] = [{
+      event_id: "evt_pulse_reminder",
+      type: "pulse.fired",
+      workspace_id: WORKSPACE_ID,
+      context_id: ctxId,
+      source_endpoint_id: null,
+      destination_json: { kind: "context", context_id: ctxId },
+      content: { text: "Check email.", data: { pulse_id: "pulse_reminder" } },
+      metadata: { trigger_kind: "pulse", pulse_id: "pulse_reminder", pulse_name: "email reminder" },
+      created_at: "2024-06-01T10:00:30.000Z"
+    }];
+
+    await bootApp(page, world);
+
+    const card = page.getByTestId("pulse-event-card");
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("Scheduled reminder");
+    await expect(card).toContainText("Check email.");
+    await expect(card).not.toContainText(FLOE);
+    await expect(card).not.toContainText(OPERATOR);
+    await expect(card).not.toContainText(/actor_type|human|agent|bot|user/i);
+    await expect(page.locator(".channel-message")).toHaveCount(0);
+  });
+
+  test("conversation list orders by recent meaningful activity, not stale default pinning", async ({ page }) => {
     const world = makeWorld();
     // Older operator↔agent context — should be pinned as default
     world.contexts.push(makeContext({
@@ -493,9 +752,86 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
 
     const items = page.locator('[data-testid="context-list-item"]');
     await expect(items).toHaveCount(2);
-    // Default pinned first even though the other has more recent activity
-    await expect(items.nth(0)).toContainText("very first chat");
-    await expect(items.nth(1)).toContainText("fresh activity");
+    await expect(items.nth(0)).toContainText("fresh activity");
+    await expect(items.nth(1)).toContainText("very first chat");
+  });
+
+  test("conversation rows expose preview, timestamp, and active state", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_recent",
+      first_message_preview: "implementation decisions",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-05T00:00:00.000Z",
+      last_event_at: "2024-06-05T10:30:00.000Z"
+    }));
+    await bootApp(page, world);
+
+    const row = page.locator('[data-testid="context-list-item"]').first();
+    await expect(row).toContainText("implementation decisions");
+    await expect(row.locator('[data-testid="context-list-item-time"]')).not.toHaveText("");
+    await expect(row).toHaveAttribute("aria-current", "true");
+  });
+
+  test("actor conversation panel does not create horizontal overflow on mobile or tablet", async ({ page }) => {
+    const world = makeWorld();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await bootApp(page, world);
+    const mobileMetrics = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth
+    }));
+    expect(mobileMetrics.scrollWidth).toBeLessThanOrEqual(mobileMetrics.clientWidth);
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await page.waitForTimeout(200);
+    const tabletMetrics = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth
+    }));
+    expect(tabletMetrics.scrollWidth).toBeLessThanOrEqual(tabletMetrics.clientWidth);
+  });
+
+  test("key actor conversation controls have accessible labels", async ({ page }) => {
+    const world = makeWorld();
+    await bootApp(page, world);
+
+    await expect(page.getByLabel("Message Floe")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Close actor conversation panel" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start new conversation with Floe" })).toBeVisible();
+  });
+
+  test("active conversation header identifies the selected existing context and draft state", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_old",
+      first_message_preview: "old planning thread",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-01T00:00:00.000Z",
+      last_event_at: "2024-06-01T00:00:00.000Z"
+    }));
+    world.contexts.push(makeContext({
+      context_id: "ctx_recent",
+      first_message_preview: "fresh implementation thread",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-05T00:00:00.000Z",
+      last_event_at: "2024-06-05T10:00:00.000Z"
+    }));
+    world.eventsByContext["ctx_recent"] = [
+      makeMessage({ context_id: "ctx_recent", created_at: "2024-06-05T10:00:00.000Z", content: { text: "fresh implementation thread" } })
+    ];
+    await bootApp(page, world);
+
+    const header = page.locator('[data-testid="active-conversation-header"]');
+    await expect(header).toBeVisible();
+    await expect(header).toContainText("Floe");
+    await expect(header).toContainText("fresh implementation thread");
+    await expect(header).toContainText("Existing conversation");
+
+    await page.locator('[data-testid="new-conversation-button"]').click();
+    await expect(header).toContainText("New conversation with Floe");
+    await expect(header).toContainText("Draft");
   });
 
   test("'New conversation' enters draft state and makes no API call until first send (User Story 19)", async ({ page }) => {
@@ -527,7 +863,7 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     await page.waitForTimeout(500);
 
     expect(world.emitCalls.length).toBe(1);
-    expect((world.emitCalls[0] as any).context_id).toBeNull();
+    expect(world.emitCalls[0] as Record<string, unknown>).not.toHaveProperty("context_id");
     expect(world.contexts.length).toBe(ctxsBefore + 1);
   });
 });

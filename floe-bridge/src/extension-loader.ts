@@ -39,7 +39,7 @@ export interface ExtensionContext {
   workspaceId: string;
   extensionName: string;
   hooks: {
-    on(hook: HookName, handler: HookHandler): void;
+    on<Name extends HookName>(hook: Name, handler: HookHandler<Name>): void;
   };
 }
 
@@ -143,7 +143,7 @@ async function loadSingleExtension(
     ...context,
     extensionName: manifest.name,
     hooks: {
-      on(hook: HookName, handler: HookHandler) {
+      on<Name extends HookName>(hook: Name, handler: HookHandler<Name>) {
         hookRegistry?.on(hook, manifest.name, handler);
       }
     }

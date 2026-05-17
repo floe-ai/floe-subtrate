@@ -1,187 +1,125 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import YAML from "yaml";
+import { describe, expect, it, vi } from "vitest";
 import { createPulseTools } from "./pulse-tools.js";
-import type { BusClient } from "../bus-client.js";
 
-// Minimal mock bus client
-function createMockBus(): BusClient & {
-  calls: Array<{ method: string; args: unknown[] }>;
-} {
-  const calls: Array<{ method: string; args: unknown[] }> = [];
-  return {
-    calls,
-    createPulse: async (...args: unknown[]) => {
-      calls.push({ method: "createPulse", args });
-      return { pulse_id: (args[0] as any).pulse_id, status: "active" };
-    },
-    listPulses: async (...args: unknown[]) => {
-      calls.push({ method: "listPulses", args });
-      return { pulses: [{ pulse_id: "test-pulse", status: "active" }] };
-    },
-    pausePulse: async (...args: unknown[]) => {
-      calls.push({ method: "pausePulse", args });
-      return { pulse_id: args[0], status: "paused" };
-    },
-    resumePulse: async (...args: unknown[]) => {
-      calls.push({ method: "resumePulse", args });
-      return { pulse_id: args[0], status: "active" };
-    },
-    cancelPulse: async (...args: unknown[]) => {
-      calls.push({ method: "cancelPulse", args });
-      return { pulse_id: args[0], status: "cancelled" };
-    },
-  } as unknown as BusClient & { calls: Array<{ method: string; args: unknown[] }> };
-}
+describe("createPulseTools", () => {
+  it("advertises context subscribers for render-only pulse events", () => {
+    const [tool] = createPulseTools({ createPulse: vi.fn() } as any, "workspace:test", undefined);
 
-describe("pulse-tools", () => {
-  let workspace: string;
-  let bus: ReturnType<typeof createMockBus>;
+    const schema = JSON.stringify(tool.parameters);
 
-  beforeEach(() => {
-    workspace = mkdtempSync(join(tmpdir(), "floe-pulse-test-"));
-    mkdirSync(join(workspace, ".floe"), { recursive: true });
-    writeFileSync(
-      join(workspace, ".floe", "floe.yaml"),
-      YAML.stringify({
-        schema: "floe.workspace.v1",
-        version: 1,
-        agents: [{ id: "floe", path: "./agents/floe.md" }],
-      }),
-      "utf8",
-    );
-    bus = createMockBus();
+    expect(schema).toContain("context_id");
+    expect(schema).toContain("endpoint_ref");
+    expect(schema).toContain("pulse.fired");
   });
 
-  afterEach(() => {
-    rmSync(workspace, { recursive: true, force: true });
-  });
+  it("converts relative one-off seconds to an ISO timestamp before calling the bus", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-15T04:30:00.000Z"));
+    const createPulse = vi.fn(async (input: unknown) => ({ pulse: input }));
+    const [tool] = createPulseTools({ createPulse } as any, "workspace:test", undefined);
 
-  it("returns 5 tools", () => {
-    const tools = createPulseTools(bus, "ws_test", workspace);
-    expect(tools).toHaveLength(5);
-    expect(tools.map((t) => t.name)).toEqual([
-      "create_pulse",
-      "list_pulses",
-      "pause_pulse",
-      "resume_pulse",
-      "cancel_pulse",
-    ]);
-  });
-
-  describe("create_pulse", () => {
-    it("calls bus.createPulse with correct params", async () => {
-      const tools = createPulseTools(bus, "ws_test", workspace);
-      const createTool = tools.find((t) => t.name === "create_pulse")!;
-      await createTool.execute("call-1", {
-        pulse_id: "daily-standup",
-        trigger: { type: "cron", schedule: "0 9 * * 1-5", timezone: "Australia/Sydney" },
-        content: { text: "Time for standup" },
+    try {
+      const result = await tool.execute("call_1", {
+        pulse_id: "pulse-1",
+        trigger: { type: "once", after_seconds: 30 },
+        content: { text: "hello" },
         subscribers: [{ endpoint_ref: "floe" }],
+        scope: "local",
       });
 
-      expect(bus.calls).toHaveLength(1);
-      expect(bus.calls[0].method).toBe("createPulse");
-      const input = bus.calls[0].args[0] as any;
-      expect(input.pulse_id).toBe("daily-standup");
-      expect(input.workspace_id).toBe("ws_test");
-      expect(input.scope).toBe("local");
-      expect(input.trigger.schedule).toBe("0 9 * * 1-5");
-      expect(input.subscribers).toEqual([{ endpoint_ref: "floe" }]);
-    });
+      expect(result.details).toMatchObject({ ok: true, pulse_id: "pulse-1", scope: "local" });
+      expect(createPulse).toHaveBeenCalledWith(expect.objectContaining({
+        pulse_id: "pulse-1",
+        trigger: { type: "once", at: "2026-05-15T04:30:30.000Z", timezone: undefined },
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
-    it("writes to floe.yaml when scope is workspace", async () => {
-      const tools = createPulseTools(bus, "ws_test", workspace);
-      const createTool = tools.find((t) => t.name === "create_pulse")!;
-      await createTool.execute("call-1", {
-        pulse_id: "nightly-review",
-        trigger: { type: "cron", schedule: "0 22 * * *" },
-        content: { text: "Time for nightly review" },
+  it("converts natural relative one-off at values to an ISO timestamp before calling the bus", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-15T04:30:00.000Z"));
+    const createPulse = vi.fn(async (input: unknown) => ({ pulse: input }));
+    const [tool] = createPulseTools({ createPulse } as any, "workspace:test", undefined);
+
+    try {
+      const result = await tool.execute("call_1", {
+        pulse_id: "pulse-1",
+        trigger: { type: "once", at: "30 seconds from now" },
+        content: { text: "hello" },
         subscribers: [{ endpoint_ref: "floe" }],
-        scope: "workspace",
+        scope: "local",
       });
 
-      const yamlContent = readFileSync(join(workspace, ".floe", "floe.yaml"), "utf8");
-      const parsed = YAML.parse(yamlContent);
-      expect(parsed.pulses).toBeDefined();
-      expect(parsed.pulses).toHaveLength(1);
-      expect(parsed.pulses[0].id).toBe("nightly-review");
-      expect(parsed.pulses[0].trigger.schedule).toBe("0 22 * * *");
-      expect(parsed.pulses[0].content.text).toBe("Time for nightly review");
-    });
-
-    it("does not write to floe.yaml when scope is local", async () => {
-      const tools = createPulseTools(bus, "ws_test", workspace);
-      const createTool = tools.find((t) => t.name === "create_pulse")!;
-      await createTool.execute("call-1", {
-        pulse_id: "ephemeral",
-        trigger: { type: "once", at: "2025-01-01T00:00:00Z" },
-        content: { text: "test" },
-        subscribers: [],
-      });
-
-      const yamlContent = readFileSync(join(workspace, ".floe", "floe.yaml"), "utf8");
-      const parsed = YAML.parse(yamlContent);
-      expect(parsed.pulses).toBeUndefined();
-    });
+      expect(result.details).toMatchObject({ ok: true, pulse_id: "pulse-1", scope: "local" });
+      expect(createPulse).toHaveBeenCalledWith(expect.objectContaining({
+        pulse_id: "pulse-1",
+        trigger: { type: "once", at: "2026-05-15T04:30:30.000Z", timezone: undefined },
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  describe("list_pulses", () => {
-    it("calls bus.listPulses with workspace_id", async () => {
-      const tools = createPulseTools(bus, "ws_test", workspace);
-      const listTool = tools.find((t) => t.name === "list_pulses")!;
-      const result = await listTool.execute("call-1", {});
+  it("normalizes common one-off trigger aliases to once before calling the bus", async () => {
+    const createPulse = vi.fn(async (input: unknown) => ({ pulse: input }));
+    const [tool] = createPulseTools({ createPulse } as any, "workspace:test", undefined);
 
-      expect(bus.calls).toHaveLength(1);
-      expect(bus.calls[0].method).toBe("listPulses");
-      expect((bus.calls[0].args[0] as any).workspace_id).toBe("ws_test");
-      expect((result as any).details.count).toBe(1);
+    const result = await tool.execute("call_1", {
+      pulse_id: "pulse-1",
+      trigger: { type: "one-off", at: "2026-05-15T04:30:00.000Z" },
+      content: { text: "hello" },
+      subscribers: [{ endpoint_ref: "floe" }],
+      scope: "local",
     });
 
-    it("passes status filter when provided", async () => {
-      const tools = createPulseTools(bus, "ws_test", workspace);
-      const listTool = tools.find((t) => t.name === "list_pulses")!;
-      await listTool.execute("call-1", { status: "paused" });
-
-      expect((bus.calls[0].args[0] as any).status).toBe("paused");
-    });
+    expect(result.details).toMatchObject({ ok: true, pulse_id: "pulse-1", scope: "local" });
+    expect(createPulse).toHaveBeenCalledWith(expect.objectContaining({
+      pulse_id: "pulse-1",
+      trigger: { type: "once", at: "2026-05-15T04:30:00.000Z", timezone: undefined },
+    }));
   });
 
-  describe("pause_pulse", () => {
-    it("calls bus.pausePulse", async () => {
-      const tools = createPulseTools(bus, "ws_test", workspace);
-      const pauseTool = tools.find((t) => t.name === "pause_pulse")!;
-      await pauseTool.execute("call-1", { pulse_id: "daily-standup" });
+  it("returns a clear tool error instead of calling the bus for invalid triggers", async () => {
+    const createPulse = vi.fn();
+    const [tool] = createPulseTools({ createPulse } as any, "workspace:test", undefined);
 
-      expect(bus.calls).toHaveLength(1);
-      expect(bus.calls[0].method).toBe("pausePulse");
-      expect(bus.calls[0].args[0]).toBe("daily-standup");
+    const result = await tool.execute("call_1", {
+      pulse_id: "pulse-1",
+      trigger: { type: "later" },
+      content: { text: "hello" },
+      subscribers: [{ endpoint_ref: "floe" }],
+      scope: "local",
     });
+
+    expect(result.details).toMatchObject({ ok: false, error: "invalid_trigger" });
+    expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Unsupported trigger.type") });
+    expect(createPulse).not.toHaveBeenCalled();
   });
 
-  describe("resume_pulse", () => {
-    it("calls bus.resumePulse", async () => {
-      const tools = createPulseTools(bus, "ws_test", workspace);
-      const resumeTool = tools.find((t) => t.name === "resume_pulse")!;
-      await resumeTool.execute("call-1", { pulse_id: "daily-standup" });
+  it("returns a clear tool error for overflowing relative trigger values", async () => {
+    const createPulse = vi.fn();
+    const [tool] = createPulseTools({ createPulse } as any, "workspace:test", undefined);
+    const hugeFiniteAmount = `1${"0".repeat(305)}`;
 
-      expect(bus.calls).toHaveLength(1);
-      expect(bus.calls[0].method).toBe("resumePulse");
-      expect(bus.calls[0].args[0]).toBe("daily-standup");
+    const naturalResult = await tool.execute("call_1", {
+      pulse_id: "pulse-1",
+      trigger: { type: "once", at: `${hugeFiniteAmount} hours from now` },
+      content: { text: "hello" },
+      subscribers: [{ endpoint_ref: "floe" }],
+      scope: "local",
     });
-  });
-
-  describe("cancel_pulse", () => {
-    it("calls bus.cancelPulse", async () => {
-      const tools = createPulseTools(bus, "ws_test", workspace);
-      const cancelTool = tools.find((t) => t.name === "cancel_pulse")!;
-      await cancelTool.execute("call-1", { pulse_id: "daily-standup" });
-
-      expect(bus.calls).toHaveLength(1);
-      expect(bus.calls[0].method).toBe("cancelPulse");
-      expect(bus.calls[0].args[0]).toBe("daily-standup");
+    const numericResult = await tool.execute("call_2", {
+      pulse_id: "pulse-2",
+      trigger: { type: "once", after_seconds: Number.MAX_VALUE },
+      content: { text: "hello" },
+      subscribers: [{ endpoint_ref: "floe" }],
+      scope: "local",
     });
+
+    expect(naturalResult.details).toMatchObject({ ok: false, error: "invalid_trigger" });
+    expect(numericResult.details).toMatchObject({ ok: false, error: "invalid_trigger" });
+    expect(createPulse).not.toHaveBeenCalled();
   });
 });

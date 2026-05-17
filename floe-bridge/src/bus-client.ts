@@ -11,7 +11,13 @@ export type EventEnvelope = {
     kind: "endpoint" | "broadcast";
     endpoint_id?: string;
     scope?: "workspace";
-    target?: "all" | "agents" | "humans" | "active_agents" | "active_humans";
+    target?:
+      | "all"
+      | "active"
+      | "with_delivery_processor"
+      | "without_delivery_processor"
+      | "active_with_delivery_processor"
+      | "active_without_delivery_processor";
     exclude_source?: boolean;
   };
   content: Record<string, unknown>;
@@ -177,8 +183,12 @@ export class BusClient {
     workspace_id: string;
     scope?: string;
     trigger: { type: string; at?: string; schedule?: string; timezone?: string };
-    content: Record<string, unknown>;
-    subscribers: Array<{ endpoint_ref: string }>;
+    event?: { type: "pulse.fired"; content: Record<string, unknown> };
+    content?: Record<string, unknown>;
+    subscribers: Array<
+      | { kind: "context"; context_id: string }
+      | { kind?: "endpoint"; endpoint_ref: string; context_id?: string | null }
+    >;
     created_by?: string;
   }): Promise<unknown> {
     return this.post("/v1/pulses", input);

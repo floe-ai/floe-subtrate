@@ -18,13 +18,26 @@ interface TodoItem {
   updated_at: string;
 }
 
+type ExtensionHookName =
+  | "SessionStart"
+  | "SessionResume"
+  | "BeforeTurn"
+  | "Pulse"
+  | "TurnEnd"
+  | "Error"
+  | "BeforeToolUse"
+  | "AfterToolUse"
+  | "ToolUseFailed"
+  | "SessionEnd"
+  | "WebhookReceived";
+
 interface ExtensionContext {
   workspacePath: string;
   busClient: any;
   workspaceId: string;
   extensionName: string;
   hooks: {
-    on(hook: string, handler: (payload: Record<string, unknown>) => void): void;
+    on(hook: ExtensionHookName, handler: (payload: Record<string, unknown>) => void): void;
   };
 }
 

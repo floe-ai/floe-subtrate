@@ -8,7 +8,7 @@ import YAML from "yaml";
 import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
-import { BusStore, ContextParticipantError, type EventCommand } from "./store.js";
+import { BROADCAST_TARGETS, BusStore, ContextParticipantError, type EventCommand, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 
 const EventCommandSchema = z.object({
@@ -23,7 +23,7 @@ const EventCommandSchema = z.object({
     z.object({
       kind: z.literal("broadcast"),
       scope: z.literal("workspace"),
-      target: z.enum(["all", "agents", "humans", "active_agents", "active_humans"]),
+      target: z.enum(BROADCAST_TARGETS),
       exclude_source: z.boolean().optional()
     })
   ]),
@@ -49,6 +49,18 @@ const RuntimeBindingUpsertSchema = z.object({
   auth_profile: z.string().min(1),
   model: z.string().nullable().optional()
 });
+
+const PulseSubscriberSchema = z.union([
+  z.object({
+    kind: z.literal("context"),
+    context_id: z.string().min(1)
+  }),
+  z.object({
+    kind: z.literal("endpoint").optional(),
+    endpoint_ref: z.string().min(1),
+    context_id: z.string().min(1).nullable().optional()
+  })
+]);
 
 const RuntimeBindingClearSchema = z.object({
   scope: z.enum(["agent", "workspace_default", "global_default"]),
@@ -371,7 +383,18 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   app.post("/v1/events/emit", async (request, reply) => {
-    const command = EventCommandSchema.parse(request.body) as EventCommand;
+    const parsed = EventCommandSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        ok: false,
+        error: {
+          code: "invalid_event_command",
+          message: "Invalid event command",
+          issues: parsed.error.issues
+        }
+      });
+    }
+    const command = parsed.data as EventCommand;
     try {
       const result = store.submitEvent(command, broadcast);
       return reply.code(202).send({
@@ -540,15 +563,21 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
         type: z.enum(["once", "cron"]),
         at: z.string().optional(),
         schedule: z.string().optional(),
-        timezone: z.string().optional()
+          timezone: z.string().optional()
       }),
-      content: z.record(z.unknown()),
-      subscribers: z.array(z.object({
-        endpoint_ref: z.string().min(1)
-      })),
+      event: z.object({
+        type: z.literal("pulse.fired"),
+        content: z.record(z.unknown()).optional()
+      }).optional(),
+      content: z.record(z.unknown()).optional(),
+      subscribers: z.array(PulseSubscriberSchema),
       created_by: z.string().optional()
     }).parse(request.body);
-    const pulse = store.createPulse(body, broadcast);
+    const pulse = store.createPulse({
+      ...body,
+      content: body.event?.content ?? body.content ?? {},
+      subscribers: body.subscribers as PulseSubscriber[]
+    }, broadcast);
     // Schedule in the priority queue
     const record = pulse as any;
     if (record.status === "active" && record.next_fire_at) {
@@ -649,32 +678,53 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
   const trigger = pulse.trigger as { type: string; schedule?: string; timezone?: string; at?: string };
 
   for (const subscriber of subscribers) {
-    const endpointId = store.resolveSubscriberEndpointId(pulse.workspace_id, subscriber.endpoint_ref);
-    // Per design §3.1.6: pulse.fired is a non-actor trigger. Bus creates a
-    // target-only context and emits with source_endpoint_id = null. No
-    // synthetic `system:*` source is created.
+    const content = {
+      ...pulse.content,
+      pulse_id: pulseId
+    };
+    const metadata = {
+      trigger_kind: "pulse",
+      pulse_id: pulseId,
+      pulse_name: (pulse as any).name ?? pulseId,
+      trigger_type: trigger.type,
+      schedule: trigger.schedule ?? trigger.at ?? null,
+      fire_number: (pulse.fire_count ?? 0) + 1
+    };
     try {
-      store.emitTriggerEvent(
-        {
+      if (subscriber.kind === "context") {
+        if (!subscriber.context_id) {
+          console.error("[bus] pulse context subscriber missing context_id", { pulse_id: pulseId, subscriber });
+          continue;
+        }
+        store.appendContextEvent({
           type: "pulse.fired",
           workspace_id: pulse.workspace_id,
-          target_endpoint_id: endpointId,
+          context_id: subscriber.context_id,
           correlation_id: null,
-          content: {
-            ...pulse.content,
-            pulse_id: pulseId
+          content,
+          metadata
+        }, broadcast);
+      } else {
+        if (!subscriber.endpoint_ref) {
+          console.error("[bus] pulse endpoint subscriber missing endpoint_ref", { pulse_id: pulseId, subscriber });
+          continue;
+        }
+        const endpointId = store.resolveSubscriberEndpointId(pulse.workspace_id, subscriber.endpoint_ref);
+        // Per design §3.1.6: pulse.fired is a non-actor trigger. Bus emits with
+        // source_endpoint_id = null. No synthetic `system:*` source is created.
+        store.emitTriggerEvent(
+          {
+            type: "pulse.fired",
+            workspace_id: pulse.workspace_id,
+            target_endpoint_id: endpointId,
+            context_id: subscriber.context_id ?? null,
+            correlation_id: null,
+            content,
+            metadata
           },
-          metadata: {
-            trigger_kind: "pulse",
-            pulse_id: pulseId,
-            pulse_name: (pulse as any).name ?? pulseId,
-            trigger_type: trigger.type,
-            schedule: trigger.schedule ?? trigger.at ?? null,
-            fire_number: (pulse.fire_count ?? 0) + 1
-          }
-        },
-        broadcast
-      );
+          broadcast
+        );
+      }
     } catch (error) {
       console.error("[bus] pulse event emission failed", { pulse_id: pulseId, subscriber, error });
     }

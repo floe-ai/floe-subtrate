@@ -58,6 +58,7 @@ export class BridgeDaemon {
   async stop(): Promise<void> {
     for (const timer of this.timers) clearInterval(timer);
     this.timers = [];
+    await this.adapter.dispose?.("bridge_shutdown");
   }
 
   private async waitForBus(): Promise<void> {
@@ -84,26 +85,7 @@ export class BridgeDaemon {
       socket.addEventListener("message", (event: MessageEvent) => {
         try {
           const message = JSON.parse(String(event.data));
-          if (
-            message.type === "workspace_registered" ||
-            message.type === "workspace_selected" ||
-            message.type === "workspace_attachment_requested" ||
-            message.type === "config_snapshot_requested" ||
-            message.type === "runtime_binding_updated" ||
-            message.type === "runtime_binding_cleared"
-          ) {
-            void this.attachKnownWorkspaces();
-            void this.processDeliveries();
-          }
-          if (message.type === "config_apply_requested" && message.payload?.workspace_id) {
-            void this.applySavedConfig(String(message.payload.workspace_id), message.payload?.config_id ? String(message.payload.config_id) : null);
-          }
-          if (message.type === "delivery_bundle_available") {
-            void this.processDeliveries();
-          }
-          if (message.type === "config_snapshot_requested" && message.payload?.workspace_id) {
-            void this.returnSnapshot(String(message.payload.workspace_id));
-          }
+          this.handleEventStreamMessage(message);
         } catch {
           // Event stream is the normal control path. Reconciliation timers are bounded recovery only.
         }
@@ -111,6 +93,48 @@ export class BridgeDaemon {
     } catch {
       // Startup reconciliation and bounded recovery timers handle degraded socket availability.
     }
+  }
+
+  private handleEventStreamMessage(message: any): void {
+    if (
+      message.type === "workspace_registered" ||
+      message.type === "workspace_selected" ||
+      message.type === "workspace_attachment_requested" ||
+      message.type === "config_snapshot_requested" ||
+      message.type === "runtime_binding_updated" ||
+      message.type === "runtime_binding_cleared"
+    ) {
+      void this.attachKnownWorkspaces();
+      void this.processDeliveries();
+    }
+    if (message.type === "config_apply_requested" && message.payload?.workspace_id) {
+      void this.applySavedConfig(String(message.payload.workspace_id), message.payload?.config_id ? String(message.payload.config_id) : null);
+    }
+    if (message.type === "delivery_bundle_available") {
+      void this.processDeliveries();
+    }
+    if (message.type === "config_snapshot_requested" && message.payload?.workspace_id) {
+      void this.returnSnapshot(String(message.payload.workspace_id));
+    }
+    if (message.type === "event_submitted") {
+      void this.fireWebhookReceived(message.payload?.event);
+    }
+  }
+
+  private async fireWebhookReceived(event: any): Promise<void> {
+    if (!event || event.type !== "webhook_received" || event.metadata?.trigger_kind !== "webhook") return;
+    const hooks = this.workspaceHooks.get(String(event.workspace_id));
+    if (!hooks?.hasHandlers("WebhookReceived")) return;
+    const destination = event.destination_json;
+    await hooks.fire("WebhookReceived", {
+      workspace_id: event.workspace_id,
+      route_id: typeof event.metadata?.route_id === "string" ? event.metadata.route_id : "",
+      event_id: event.event_id,
+      context_id: event.context_id ?? null,
+      target_endpoint_id: destination?.kind === "endpoint" ? destination.endpoint_id : null,
+      content: event.content ?? {},
+      metadata: event.metadata ?? {}
+    });
   }
 
   private async safeLivenessPing(): Promise<void> {
@@ -534,10 +558,19 @@ export class BridgeDaemon {
   }
 }
 
-function chooseAdapter(configPath: string, config: LocalConfig): RuntimeAdapter {
-  const selected = process.env.FLOE_RUNTIME_ADAPTER ?? config.bridge.runtime_adapter ?? "fake";
+export function chooseAdapter(configPath: string, config: LocalConfig): RuntimeAdapter {
+  const configured = process.env.FLOE_RUNTIME_ADAPTER ?? config.bridge.runtime_adapter;
+  if (!configured) {
+    const authRuntime = createBridgeAuthRuntime(configPath, config);
+    if (authRuntime.profiles.profiles.some((profile) => profile.provider !== "fake")) {
+      return new PiAgentCoreAdapter(authRuntime);
+    }
+    return new FakeRuntimeAdapter();
+  }
+  const selected = configured.trim().toLowerCase();
+  if (selected === "fake") return new FakeRuntimeAdapter();
   if (selected === "pi" || selected === "pi-agent-core") return new PiAgentCoreAdapter(createBridgeAuthRuntime(configPath, config));
-  return new FakeRuntimeAdapter();
+  throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake" or "pi-agent-core".`);
 }
 
 function actorEndpointId(workspaceId: string, agentId: string): string {

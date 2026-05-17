@@ -81,11 +81,7 @@ export function sortContextsForAgent(
     const bt = b.last_event_at ?? b.created_at;
     return bt.localeCompare(at);
   });
-  if (!defaultContextId) return { sorted: byActivity, defaultContextId: null };
-  const def = byActivity.find((c) => c.context_id === defaultContextId);
-  if (!def) return { sorted: byActivity, defaultContextId };
-  const rest = byActivity.filter((c) => c.context_id !== defaultContextId);
-  return { sorted: [def, ...rest], defaultContextId };
+  return { sorted: byActivity, defaultContextId };
 }
 
 export type EmitBody = {
@@ -93,7 +89,7 @@ export type EmitBody = {
   workspace_id: string;
   source_endpoint_id: string;
   destination: { kind: "endpoint"; endpoint_id: string };
-  context_id: string | null;
+  context_id?: string;
   content: { text: string; data?: Record<string, unknown> };
   response: { expected: false };
   metadata: Record<string, unknown>;
@@ -116,7 +112,7 @@ export function buildEmitBody(args: {
     workspace_id: args.workspaceId,
     source_endpoint_id: args.source,
     destination: { kind: "endpoint", endpoint_id: args.agentEndpointId },
-    context_id: args.selectedContextId,
+    ...(args.selectedContextId ? { context_id: args.selectedContextId } : {}),
     content,
     response: { expected: false },
     metadata: { submitted_by: "floe-web", channel: "floe" }

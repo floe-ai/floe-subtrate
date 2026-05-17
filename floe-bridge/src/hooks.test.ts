@@ -2,6 +2,44 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { HookRegistry } from "./hooks.js";
 import type { HookPayload, HookResult } from "./hooks.js";
 
+const deliveryPayload = {
+  endpoint_id: "ep:1",
+  workspace_id: "ws:1",
+  delivery_id: "d:1",
+  trigger_event_id: "evt:1"
+} as const;
+
+const turnEndPayload: HookPayload<"TurnEnd"> = {
+  ...deliveryPayload,
+  visible_output: "",
+  tool_activity: [],
+  emitted_events: []
+};
+
+const sessionStartPayload: HookPayload<"SessionStart"> = {
+  ...deliveryPayload,
+  provider: "mock-provider",
+  model_id: "mock-model",
+  reason: "session_created"
+};
+
+const sessionEndPayload: HookPayload<"SessionEnd"> = {
+  endpoint_id: "ep:1",
+  workspace_id: "ws:1",
+  reason: "bridge_shutdown",
+  previous_session: {
+    provider: "mock-provider",
+    model_id: "mock-model"
+  }
+};
+
+const pulsePayload: HookPayload<"Pulse"> = {
+  ...deliveryPayload,
+  event_id: "evt:pulse",
+  pulse_id: "reminder-daily",
+  content: { text: "Daily standup reminder" }
+};
+
 describe("HookRegistry", () => {
   let registry: HookRegistry;
 
@@ -10,15 +48,15 @@ describe("HookRegistry", () => {
   });
 
   it("registers and fires a hook handler with payload", async () => {
-    const received: HookPayload[] = [];
+    const received: Array<HookPayload<"BeforeTurn">> = [];
     registry.on("BeforeTurn", "test-ext", (payload) => {
       received.push(payload);
     });
 
-    await registry.fire("BeforeTurn", { endpoint_id: "ep:1", workspace_id: "ws:1" });
+    await registry.fire("BeforeTurn", deliveryPayload);
 
     expect(received).toHaveLength(1);
-    expect(received[0]).toEqual({ endpoint_id: "ep:1", workspace_id: "ws:1" });
+    expect(received[0]).toEqual(deliveryPayload);
   });
 
   it("fires multiple handlers in registration order", async () => {
@@ -26,7 +64,7 @@ describe("HookRegistry", () => {
     registry.on("TurnEnd", "ext-a", () => { order.push("a"); });
     registry.on("TurnEnd", "ext-b", () => { order.push("b"); });
 
-    await registry.fire("TurnEnd", {});
+    await registry.fire("TurnEnd", turnEndPayload);
 
     expect(order).toEqual(["a", "b"]);
   });
@@ -37,14 +75,14 @@ describe("HookRegistry", () => {
     registry.on("Error", "ext-ok", () => { called.push("ok"); });
 
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    await registry.fire("Error", {});
+    await registry.fire("Error", { ...deliveryPayload, error: "boom" });
     consoleSpy.mockRestore();
 
     expect(called).toEqual(["ok"]);
   });
 
   it("firing a hook with no handlers returns empty results", async () => {
-    const results = await registry.fire("SessionEnd", { reason: "test" });
+    const results = await registry.fire("SessionEnd", sessionEndPayload);
     expect(results).toEqual([]);
   });
 
@@ -56,7 +94,7 @@ describe("HookRegistry", () => {
       // void handler — no result
     });
 
-    const results = await registry.fire("BeforeTurn", { delivery_id: "d:1" });
+    const results = await registry.fire("BeforeTurn", deliveryPayload);
 
     expect(results).toHaveLength(1);
     expect(results[0]).toEqual({ inject: { memory: "prior context" } });
@@ -70,8 +108,8 @@ describe("HookRegistry", () => {
 
     registry.removeAll("remove-ext");
 
-    await registry.fire("SessionStart", {});
-    await registry.fire("TurnEnd", {});
+    await registry.fire("SessionStart", sessionStartPayload);
+    await registry.fire("TurnEnd", turnEndPayload);
 
     expect(called).toEqual(["keep"]);
   });
@@ -97,17 +135,12 @@ describe("HookRegistry", () => {
   });
 
   it("Pulse hook fires when pulse.fired event is processed", async () => {
-    const received: HookPayload[] = [];
+    const received: Array<HookPayload<"Pulse">> = [];
     registry.on("Pulse", "pulse-tracker", (payload) => {
       received.push(payload);
     });
 
-    await registry.fire("Pulse", {
-      endpoint_id: "ep:1",
-      workspace_id: "ws:1",
-      pulse_id: "reminder-daily",
-      content: { text: "Daily standup reminder" }
-    });
+    await registry.fire("Pulse", pulsePayload);
 
     expect(received).toHaveLength(1);
     expect(received[0]).toMatchObject({
@@ -121,7 +154,7 @@ describe("HookRegistry", () => {
     registry.on("Pulse", "bad-ext", () => { throw new Error("pulse hook crash"); });
 
     // Should not throw
-    const results = await registry.fire("Pulse", { pulse_id: "test" });
+    const results = await registry.fire("Pulse", pulsePayload);
     expect(results).toEqual([]);
     consoleSpy.mockRestore();
   });
@@ -134,7 +167,7 @@ describe("HookRegistry", () => {
       inject: { source: "todo", content: "Open tasks: fix bug #42, write docs" }
     }));
 
-    const results = await registry.fire("BeforeTurn", { delivery_id: "d:1" });
+    const results = await registry.fire("BeforeTurn", deliveryPayload);
 
     expect(results).toHaveLength(2);
     expect(results[0].inject).toEqual({ source: "memory", content: "User last discussed: project deadlines" });

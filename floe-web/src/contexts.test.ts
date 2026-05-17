@@ -128,7 +128,7 @@ describe("sortContextsForAgent", () => {
     expect(result.sorted.map((c) => c.context_id)).toEqual(["c2", "c3", "c1"]);
   });
 
-  it("pins default context first regardless of activity", () => {
+  it("orders conversations by recent meaningful activity instead of pinning the oldest pair", () => {
     const ctxs: ContextSummary[] = [
       makeCtx({
         context_id: "c_default",
@@ -145,7 +145,7 @@ describe("sortContextsForAgent", () => {
     ];
     const result = sortContextsForAgent(ctxs, OP, FLOE);
     expect(result.defaultContextId).toBe("c_default");
-    expect(result.sorted.map((c) => c.context_id)).toEqual(["c_default", "c_recent"]);
+    expect(result.sorted.map((c) => c.context_id)).toEqual(["c_recent", "c_default"]);
   });
 
   it("falls back to created_at when last_event_at is null", () => {
@@ -159,7 +159,7 @@ describe("sortContextsForAgent", () => {
 });
 
 describe("buildEmitBody", () => {
-  it("sends context_id: null on new conversation (draft)", () => {
+  it("omits context_id on new conversation drafts", () => {
     const body = buildEmitBody({
       workspaceId: WS,
       source: OP,
@@ -167,7 +167,7 @@ describe("buildEmitBody", () => {
       selectedContextId: null,
       text: "first message"
     });
-    expect(body.context_id).toBeNull();
+    expect(body).not.toHaveProperty("context_id");
     expect(body.destination).toEqual({ kind: "endpoint", endpoint_id: FLOE });
     expect(body.source_endpoint_id).toBe(OP);
     expect(body.workspace_id).toBe(WS);

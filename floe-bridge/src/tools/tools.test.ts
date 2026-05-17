@@ -150,6 +150,13 @@ function createTestContext(workspaceRoot: string): ToolContext & { toolActivity:
   };
 }
 
+function firstText(result: { content: Array<{ type: string; text?: string }> }): string {
+  const first = result.content[0];
+  expect(first.type).toBe("text");
+  expect(first.text).toBeTypeOf("string");
+  return first.text!;
+}
+
 describe("read tool", () => {
   let workspace: string;
 
@@ -168,8 +175,8 @@ describe("read tool", () => {
     // Simulate tool_activity entry (normally done by adapter on tool_execution_start)
     ctx.toolActivity.push({ name: "read", call_id: "tc1" });
     const result = await tool.execute("tc1", { path: "hello.txt" });
-    expect(result.content[0].text).toContain("1. line 1");
-    expect(result.content[0].text).toContain("5. line 5");
+    expect(firstText(result)).toContain("1. line 1");
+    expect(firstText(result)).toContain("5. line 5");
     expect(result.details?.ok).toBe(true);
   });
 
@@ -178,10 +185,10 @@ describe("read tool", () => {
     const tool = createReadTool(ctx);
     ctx.toolActivity.push({ name: "read", call_id: "tc2" });
     const result = await tool.execute("tc2", { path: "hello.txt", start_line: 2, end_line: 4 });
-    expect(result.content[0].text).toContain("2. line 2");
-    expect(result.content[0].text).toContain("4. line 4");
-    expect(result.content[0].text).not.toContain("1. line 1");
-    expect(result.content[0].text).not.toContain("5. line 5");
+    expect(firstText(result)).toContain("2. line 2");
+    expect(firstText(result)).toContain("4. line 4");
+    expect(firstText(result)).not.toContain("1. line 1");
+    expect(firstText(result)).not.toContain("5. line 5");
   });
 
   it("rejects paths outside workspace", async () => {
@@ -190,7 +197,7 @@ describe("read tool", () => {
     ctx.toolActivity.push({ name: "read", call_id: "tc3" });
     const result = await tool.execute("tc3", { path: "../../../etc/passwd" });
     expect(result.details?.ok).toBe(false);
-    expect(result.content[0].text).toContain("outside the workspace root");
+    expect(firstText(result)).toContain("outside the workspace root");
   });
 
   it("reports file not found", async () => {
@@ -199,7 +206,7 @@ describe("read tool", () => {
     ctx.toolActivity.push({ name: "read", call_id: "tc4" });
     const result = await tool.execute("tc4", { path: "nonexistent.txt" });
     expect(result.details?.ok).toBe(false);
-    expect(result.content[0].text).toContain("File not found");
+    expect(firstText(result)).toContain("File not found");
   });
 
   it("enriches tool activity with summary and duration", async () => {
@@ -233,8 +240,8 @@ describe("ls tool", () => {
     const tool = createLsTool(ctx);
     ctx.toolActivity.push({ name: "ls", call_id: "tc1" });
     const result = await tool.execute("tc1", {});
-    expect(result.content[0].text).toContain("src/");
-    expect(result.content[0].text).toContain("README.md");
+    expect(firstText(result)).toContain("src/");
+    expect(firstText(result)).toContain("README.md");
     expect(result.details?.ok).toBe(true);
   });
 
@@ -243,8 +250,8 @@ describe("ls tool", () => {
     const tool = createLsTool(ctx);
     ctx.toolActivity.push({ name: "ls", call_id: "tc2" });
     const result = await tool.execute("tc2", { path: "src" });
-    expect(result.content[0].text).toContain("index.ts");
-    expect(result.content[0].text).not.toContain("README.md");
+    expect(firstText(result)).toContain("index.ts");
+    expect(firstText(result)).not.toContain("README.md");
   });
 
   it("rejects paths outside workspace", async () => {
@@ -276,7 +283,7 @@ describe("grep tool", () => {
     ctx.toolActivity.push({ name: "grep", call_id: "tc1" });
     const result = await tool.execute("tc1", { pattern: "function" });
     expect(result.details?.ok).toBe(true);
-    expect(result.content[0].text).toContain("function");
+    expect(firstText(result)).toContain("function");
     expect((result.details as any).matches).toBeGreaterThanOrEqual(2);
   });
 
@@ -287,7 +294,7 @@ describe("grep tool", () => {
     const result = await tool.execute("tc2", { pattern: "zzz_nonexistent_pattern_zzz" });
     expect(result.details?.ok).toBe(true);
     expect((result.details as any).matches).toBe(0);
-    expect(result.content[0].text).toContain("(no matches)");
+    expect(firstText(result)).toContain("(no matches)");
   });
 
   it("supports fixed string matching", async () => {
@@ -321,7 +328,7 @@ describe("find tool", () => {
     ctx.toolActivity.push({ name: "find", call_id: "tc1" });
     const result = await tool.execute("tc1", { pattern: "*.ts" });
     expect(result.details?.ok).toBe(true);
-    expect(result.content[0].text).toContain("index.ts");
+    expect(firstText(result)).toContain("index.ts");
   });
 
   it("finds files by glob with extension", async () => {
@@ -330,7 +337,7 @@ describe("find tool", () => {
     ctx.toolActivity.push({ name: "find", call_id: "tc2" });
     const result = await tool.execute("tc2", { pattern: "*.tsx" });
     expect(result.details?.ok).toBe(true);
-    expect(result.content[0].text).toContain("Button.tsx");
+    expect(firstText(result)).toContain("Button.tsx");
   });
 
   it("finds directories", async () => {
@@ -339,7 +346,7 @@ describe("find tool", () => {
     ctx.toolActivity.push({ name: "find", call_id: "tc3" });
     const result = await tool.execute("tc3", { pattern: "*", type: "directory" });
     expect(result.details?.ok).toBe(true);
-    expect(result.content[0].text).toContain("src");
+    expect(firstText(result)).toContain("src");
   });
 });
 
@@ -391,7 +398,7 @@ describe("write tool", () => {
     ctx.toolActivity.push({ name: "write", call_id: "w4" });
     const result = await tool.execute("w4", { path: "../../../etc/pwned", content: "hack" });
     expect(result.details?.ok).toBe(false);
-    expect(result.content[0].text).toContain("outside the workspace root");
+    expect(firstText(result)).toContain("outside the workspace root");
   });
 
   it("returns error when path is empty", async () => {
@@ -400,7 +407,7 @@ describe("write tool", () => {
     ctx.toolActivity.push({ name: "write", call_id: "w5" });
     const result = await tool.execute("w5", { path: "", content: "data" });
     expect(result.details?.ok).toBe(false);
-    expect(result.content[0].text).toContain("path is required");
+    expect(firstText(result)).toContain("path is required");
   });
 
   it("enriches tool activity on success", async () => {
@@ -622,7 +629,7 @@ describe("edit tool", () => {
       edits: [{ old_text: "a", new_text: "b" }]
     });
     expect(result.details?.ok).toBe(false);
-    expect(result.content[0].text).toContain("not found");
+    expect(firstText(result)).toContain("not found");
   });
 
   it("returns error for ambiguous match", async () => {
@@ -635,7 +642,7 @@ describe("edit tool", () => {
       edits: [{ old_text: "aaa", new_text: "bbb" }]
     });
     expect(result.details?.ok).toBe(false);
-    expect(result.content[0].text).toContain("occurrences");
+    expect(firstText(result)).toContain("occurrences");
   });
 
   it("rejects paths that escape workspace", async () => {
@@ -647,7 +654,7 @@ describe("edit tool", () => {
       edits: [{ old_text: "a", new_text: "b" }]
     });
     expect(result.details?.ok).toBe(false);
-    expect(result.content[0].text).toContain("outside the workspace root");
+    expect(firstText(result)).toContain("outside the workspace root");
   });
 
   it("accepts oldText/newText camelCase field names", async () => {
@@ -715,7 +722,7 @@ describe("bash tool", () => {
     const result = await tool.execute("b1", { command: cmd });
     expect(result.details?.ok).toBe(true);
     expect((result.details as any).exit_code).toBe(0);
-    expect(result.content[0].text).toContain("hello");
+    expect(firstText(result)).toContain("hello");
   });
 
   it("runs in workspace root directory", async () => {
@@ -725,7 +732,7 @@ describe("bash tool", () => {
     const cmd = isWindows ? "type test.txt" : "cat test.txt";
     const result = await tool.execute("b2", { command: cmd });
     expect(result.details?.ok).toBe(true);
-    expect(result.content[0].text).toContain("hello from workspace");
+    expect(firstText(result)).toContain("hello from workspace");
   });
 
   it("returns exit code for failing command", async () => {
@@ -744,7 +751,7 @@ describe("bash tool", () => {
     ctx.toolActivity.push({ name: "bash", call_id: "b4" });
     const cmd = isWindows ? "echo error message 1>&2" : "echo error message >&2";
     const result = await tool.execute("b4", { command: cmd });
-    expect(result.content[0].text).toContain("error message");
+    expect(firstText(result)).toContain("error message");
   });
 
   it("returns error when command is empty", async () => {
@@ -753,7 +760,7 @@ describe("bash tool", () => {
     ctx.toolActivity.push({ name: "bash", call_id: "b5" });
     const result = await tool.execute("b5", { command: "" });
     expect(result.details?.ok).toBe(false);
-    expect(result.content[0].text).toContain("command is required");
+    expect(firstText(result)).toContain("command is required");
   });
 
   it("enriches tool activity with command summary and duration", async () => {
@@ -779,7 +786,7 @@ describe("bash tool", () => {
       const cmd = isWindows ? "echo %FLOE_TEST_SECRET%" : "echo $FLOE_TEST_SECRET";
       const result = await tool.execute("b7", { command: cmd });
       // The secret should not appear in the output
-      expect(result.content[0].text).not.toContain("super_secret");
+      expect(firstText(result)).not.toContain("super_secret");
     } finally {
       if (oldVal === undefined) delete process.env.FLOE_TEST_SECRET;
       else process.env.FLOE_TEST_SECRET = oldVal;
@@ -797,7 +804,7 @@ describe("bash tool", () => {
     const result = await tool.execute("b8", { command: cmd });
     expect(result.details?.ok).toBe(true);
     expect((result.details as any).truncated).toBe(true);
-    expect(result.content[0].text).toContain("[output truncated");
+    expect(firstText(result)).toContain("[output truncated");
   });
 
   it("reports duration in details", async () => {

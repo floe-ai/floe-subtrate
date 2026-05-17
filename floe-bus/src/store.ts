@@ -10,6 +10,17 @@ import { resolveContext, type NotContextParticipantError } from "./contexts/reso
 
 type Broadcast = (type: string, payload: Record<string, unknown>) => void;
 
+export const BROADCAST_TARGETS = [
+  "all",
+  "active",
+  "with_delivery_processor",
+  "without_delivery_processor",
+  "active_with_delivery_processor",
+  "active_without_delivery_processor"
+] as const;
+
+export type BroadcastTarget = typeof BROADCAST_TARGETS[number];
+
 export class ContextParticipantError extends Error {
   readonly code = "E_NOT_CONTEXT_PARTICIPANT" as const;
   readonly payload: NotContextParticipantError["payload"];
@@ -22,10 +33,11 @@ export class ContextParticipantError extends Error {
 
 export type DestinationSelector =
   | { kind: "endpoint"; endpoint_id: string }
+  | { kind: "context"; context_id: string }
   | {
       kind: "broadcast";
       scope: "workspace";
-      target: "all" | "with_runtime" | "without_runtime" | "active_with_runtime" | "active_without_runtime";
+      target: BroadcastTarget;
       exclude_source?: boolean;
     };
 
@@ -70,11 +82,16 @@ export type TriggerEventCommand = {
   type: string;
   workspace_id: string;
   target_endpoint_id: string;
+  context_id?: string | null;
   content: Record<string, unknown>;
   metadata: Record<string, unknown> & { trigger_kind: "pulse" | "webhook" | string };
   correlation_id?: string | null;
   idempotency_key?: string | null;
 };
+
+export type PulseSubscriber =
+  | { kind: "context"; context_id: string }
+  | { kind?: "endpoint"; endpoint_ref: string; context_id?: string | null };
 
 export type EventEnvelope = {
   event_id: string;
@@ -685,11 +702,20 @@ export class BusStore {
         if (existing) return this.rowToEvent(existing);
       }
 
-      const contextId = this.contextStore.createContext({
-        workspace_id: command.workspace_id,
-        created_by_endpoint_id: command.target_endpoint_id,
-        participants: [command.target_endpoint_id]
-      });
+      let contextId: string;
+      if (command.context_id) {
+        const context = this.contextStore.getContext(command.context_id);
+        if (!context || context.workspace_id !== command.workspace_id) {
+          throw new Error(`Context not found for trigger event: ${command.context_id}`);
+        }
+        contextId = command.context_id;
+      } else {
+        contextId = this.contextStore.createContext({
+          workspace_id: command.workspace_id,
+          created_by_endpoint_id: command.target_endpoint_id,
+          participants: [command.target_endpoint_id]
+        });
+      }
 
       const inserted = this.insertEvent(
         {
@@ -711,6 +737,46 @@ export class BusStore {
       // No pending-response: triggers do not expect a reply.
       // No resolvePendingResponsesForIncoming: trigger has no source actor.
       return inserted;
+    });
+
+    return this.broadcastEventSubmission(event, broadcast).event;
+  }
+
+  appendContextEvent(command: {
+    type: string;
+    workspace_id: string;
+    context_id: string;
+    content: Record<string, unknown>;
+    metadata: Record<string, unknown>;
+    correlation_id?: string | null;
+    idempotency_key?: string | null;
+  }, broadcast: Broadcast): EventEnvelope {
+    const event = this.transaction(() => {
+      if (command.idempotency_key) {
+        const existing = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?").get(command.idempotency_key) as any;
+        if (existing) return this.rowToEvent(existing);
+      }
+
+      const context = this.contextStore.getContext(command.context_id);
+      if (!context || context.workspace_id !== command.workspace_id) {
+        throw new Error(`Context not found for pulse subscriber: ${command.context_id}`);
+      }
+
+      return this.insertEvent(
+        {
+          type: command.type,
+          workspace_id: command.workspace_id,
+          source_endpoint_id: null,
+          destination: { kind: "context", context_id: command.context_id },
+          thread_id: undefined,
+          correlation_id: command.correlation_id ?? null,
+          content: command.content,
+          metadata: command.metadata,
+          idempotency_key: command.idempotency_key ?? null
+        },
+        this.normalizeResponse({ expected: false }),
+        command.context_id
+      );
     });
 
     return this.broadcastEventSubmission(event, broadcast).event;
@@ -1023,7 +1089,7 @@ export class BusStore {
     scope?: string;
     trigger: { type: string; at?: string; schedule?: string; timezone?: string };
     content: Record<string, unknown>;
-    subscribers: Array<{ endpoint_ref: string }>;
+    subscribers: PulseSubscriber[];
     created_by?: string;
   }, broadcast: Broadcast): unknown {
     const timestamp = now();
@@ -1083,10 +1149,10 @@ export class BusStore {
     return rows.map((row) => this.rowToPulse(row));
   }
 
-  getPulseSubscribers(pulseId: string): Array<{ endpoint_ref: string }> {
+  getPulseSubscribers(pulseId: string): PulseSubscriber[] {
     const rows = this.db.prepare("SELECT subscriber_json FROM pulse_subscribers WHERE pulse_id = ?")
       .all(pulseId) as Array<{ subscriber_json: string }>;
-    return rows.map((row) => parseJson<{ endpoint_ref: string }>(row.subscriber_json));
+    return rows.map((row) => parseJson<PulseSubscriber>(row.subscriber_json));
   }
 
   updatePulseStatus(pulseId: string, status: string, broadcast: Broadcast): unknown {
@@ -1098,14 +1164,14 @@ export class BusStore {
     return pulse;
   }
 
-  addPulseSubscriber(pulseId: string, subscriber: { endpoint_ref: string }): void {
+  addPulseSubscriber(pulseId: string, subscriber: PulseSubscriber): void {
     this.db.prepare(`
       INSERT OR IGNORE INTO pulse_subscribers (pulse_id, subscriber_json, created_at)
       VALUES (?, ?, ?)
     `).run(pulseId, json(subscriber), now());
   }
 
-  removePulseSubscriber(pulseId: string, subscriber: { endpoint_ref: string }): void {
+  removePulseSubscriber(pulseId: string, subscriber: PulseSubscriber): void {
     this.db.prepare("DELETE FROM pulse_subscribers WHERE pulse_id = ? AND subscriber_json = ?")
       .run(pulseId, json(subscriber));
   }
@@ -1221,6 +1287,8 @@ export class BusStore {
     const destinationEndpointId =
       input.destination.kind === "endpoint"
         ? input.destination.endpoint_id
+        : input.destination.kind === "context"
+        ? `context:${input.destination.context_id}`
         : `broadcast:${input.destination.scope}:${input.destination.target}`;
     // Legacy thread_id storage: write the resolved context_id so the existing
     // NOT NULL column is satisfied. No new flow reads thread_id.
@@ -1266,6 +1334,7 @@ export class BusStore {
 
   private resolveDestinations(event: EventEnvelope): string[] {
     const destination = event.destination_json;
+    if (destination.kind === "context") return [];
     if (destination.kind === "endpoint") return [destination.endpoint_id];
     const target = destination.target;
     const query = `
@@ -1274,14 +1343,16 @@ export class BusStore {
       WHERE workspace_id = ?
         AND (
           (? = 'all')
-          OR (? = 'with_runtime' AND bridge_id IS NOT NULL)
-          OR (? = 'without_runtime' AND bridge_id IS NULL)
-          OR (? = 'active_with_runtime' AND bridge_id IS NOT NULL AND status = 'active')
-          OR (? = 'active_without_runtime' AND bridge_id IS NULL AND status = 'active')
+          OR (? = 'active' AND status = 'active')
+          OR (? = 'with_delivery_processor' AND bridge_id IS NOT NULL)
+          OR (? = 'without_delivery_processor' AND bridge_id IS NULL)
+          OR (? = 'active_with_delivery_processor' AND bridge_id IS NOT NULL AND status = 'active')
+          OR (? = 'active_without_delivery_processor' AND bridge_id IS NULL AND status = 'active')
         )
     `;
     const rows = this.db.prepare(query).all(
       event.workspace_id,
+      target,
       target,
       target,
       target,

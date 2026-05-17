@@ -60,10 +60,10 @@ Repeat this loop until the agreed objective is complete:
 
 ### 1) Discovery and alignment
 
-Invoke the $grill-me-with-docs skill to:
+Invoke the $grill-with-docs skill to:
 - distil the stable intent
 - identify capability areas
-- produce the next best small vertical slices
+- produce the next best vertical slices
 - flag ambiguities, dependencies, and deferrals
 
 As needed read the relevant docs, code, configuration, tests, and runtime behaviour.
@@ -92,11 +92,13 @@ Then use `Question` to decide whether to:
 - involve another review agent
 - stop and move to the next slice
 
+Make sure to commit and push before moving on to the next slice.
+
 ### 6) Verify live behaviour
 Verify the real product/system path, not only unit tests.
 
 Capture evidence such as:
-- screenshots or user-visible proof using playwright
+- screenshots or user-visible proof using playwright in a live environment
 - console or client logs
 - backend/service logs
 - created or updated artefacts

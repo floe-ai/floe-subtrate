@@ -5,6 +5,7 @@ const WORKSPACE_NAME = "QA Workspace";
 const FLOE_ENDPOINT_ID = `actor:${WORKSPACE_ID}:floe`;
 const HUMAN_ENDPOINT_ID = `actor:${WORKSPACE_ID}:operator`;
 const THREAD_ID = `thread:${WORKSPACE_ID}:floe`;
+const TEST_CONTEXT_ID = "ctx_test_activity";
 
 const test = base;
 
@@ -58,7 +59,7 @@ function makeFloeMessage(text: string, createdAt: string) {
 }
 
 function makeTelemetry(kind: string, toolName: string, createdAt: string, toolCallId?: string) {
-  const payload: Record<string, unknown> = { toolName };
+  const payload: Record<string, unknown> = { toolName, context_id: TEST_CONTEXT_ID };
   if (toolCallId) payload.toolCallId = toolCallId;
   return {
     telemetry_id: `tel_${Math.random().toString(36).slice(2, 10)}`,
@@ -156,7 +157,6 @@ async function setupRoutes(
 
   // Slice 5: chat reads context-scoped events. Wrap the seeded events in a
   // single test context so the rendering pipeline still sees them.
-  const TEST_CONTEXT_ID = "ctx_test_activity";
   const eventsWithCtx = (events as Array<Record<string, unknown>>).map((e) => ({
     ...e,
     context_id: TEST_CONTEXT_ID,

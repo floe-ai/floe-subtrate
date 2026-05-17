@@ -18,7 +18,6 @@ import {
   RefreshCw,
   Send,
   Settings,
-  Sparkles,
   SquareDashedMousePointer,
   Workflow,
   X
@@ -75,6 +74,11 @@ type RuntimeBinding = {
   endpoint_id: string | null;
   auth_profile: string;
   model: string | null;
+};
+type LocalConfigStatus = {
+  bridge?: {
+    runtime_adapter?: string | null;
+  };
 };
 
 type ModelInfo = {
@@ -138,6 +142,7 @@ type ActivityGroup = {
 
 type ChatSegment =
   | { kind: "message"; message: EventEnvelope; activity?: ActivityGroup }
+  | { kind: "pulse"; event: ContextEvent }
   | { kind: "activity"; group: ActivityGroup }
   | { kind: "streaming"; turnId: string; text: string };
 
@@ -175,6 +180,8 @@ function App() {
   const [authProfiles, setAuthProfiles] = useState<AuthProfile[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [runtimeBindings, setRuntimeBindings] = useState<RuntimeBinding[]>([]);
+  const [bridgeRuntimeKnown, setBridgeRuntimeKnown] = useState(false);
+  const [bridgeRuntimeAdapter, setBridgeRuntimeAdapter] = useState<string | null>(null);
   const [view, setView] = useState<View>({ kind: "home" });
   const [fields, setFields] = useState<FieldBlock[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -183,7 +190,10 @@ function App() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [contexts, setContexts] = useState<ContextSummary[]>([]);
   const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
-  const [contextEvents, setContextEvents] = useState<ContextEvent[]>([]);
+  const [contextEventsState, setContextEventsState] = useState<{ contextId: string | null; events: ContextEvent[] }>({
+    contextId: null,
+    events: []
+  });
   const [draftMode, setDraftMode] = useState(false);
   const [pulseLabels, setPulseLabels] = useState<Record<string, string>>({});
   const [expandedActivities, setExpandedActivities] = useState<Set<string>>(new Set());
@@ -192,11 +202,16 @@ function App() {
   const selectedWorkspaceIdRef = useRef("");
   const skipNextSaveRef = useRef(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const contextEventsRequestRef = useRef(0);
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
   const selfActorId = selectedWorkspace ? operatorActorId(selectedWorkspace.workspace_id) : "";
   const agents = endpoints.filter((endpoint) => endpoint.endpoint_id !== selfActorId);
-  const selectedAgent = agents.find((endpoint) => endpoint.agent_id === (selectedAgentId ?? "floe")) ?? agents[0] ?? null;
+  const selectedAgent =
+    agents.find((endpoint) => endpoint.endpoint_id === selectedAgentId) ??
+    agents.find((endpoint) => endpoint.agent_id === selectedAgentId) ??
+    agents[0] ??
+    null;
   const floeAgent = selectedAgent; // alias for backward compat in existing rendering code
   const humanEndpoint = selfActorId;
 
@@ -210,6 +225,7 @@ function App() {
   const selectedContext = selectedContextId
     ? contexts.find((c) => c.context_id === selectedContextId) ?? null
     : null;
+  const contextEvents = contextEventsState.contextId === selectedContextId ? contextEventsState.events : [];
   const selectedField = view.kind === "field" ? fields.find((field) => field.id === view.fieldId) ?? null : null;
   const selectedCanvasFieldId = selectedField?.nodes.find((node) => node.selected) ? fieldIdFromNode(selectedField.nodes.find((node) => node.selected)!) : null;
   const effectiveSelectedBlockId = selectedCanvasFieldId ?? selectedBlockId;
@@ -228,7 +244,32 @@ function App() {
   const effectiveProfileId = agentBinding?.auth_profile || workspaceBinding?.auth_profile || null;
   const effectiveProfile = authProfiles.find((profile) => profile.id === effectiveProfileId) ?? null;
   const effectiveModel = agentBinding?.model ?? workspaceBinding?.model ?? null;
+  const selectedAgentRuntimeAdapter = useMemo(() => endpointRuntimeAdapter(selectedAgent), [selectedAgent]);
+  const workspaceModelOptions = useMemo(() => {
+    const selectedModel = workspaceBinding?.model;
+    if (!selectedModel || availableModels.some((model) => model.id === selectedModel)) return availableModels;
+    return [
+      ...availableModels,
+      {
+        id: selectedModel,
+        name: selectedModel,
+        provider: effectiveProfile?.provider ?? "",
+        reasoning: false
+      }
+    ];
+  }, [availableModels, effectiveProfile?.provider, workspaceBinding?.model]);
   const runtimeReady = !!effectiveProfileId && !!effectiveModel;
+  const bridgeRuntimeAdapterName = selectedAgentRuntimeAdapter
+    ? selectedAgentRuntimeAdapter
+    : bridgeRuntimeKnown
+    ? (bridgeRuntimeAdapter?.trim().toLowerCase() || "fake")
+    : null;
+  const runtimeBlockedByFakeAdapter =
+    runtimeReady &&
+    bridgeRuntimeAdapterName === "fake" &&
+    !!effectiveProfile &&
+    effectiveProfile.provider !== "fake";
+  const canMessageRuntime = runtimeReady && !runtimeBlockedByFakeAdapter;
 
   const floeMessages = useMemo<EventEnvelope[]>(() => {
     if (!floeAgent || !selectedContextId) return [];
@@ -261,16 +302,11 @@ function App() {
     const latest: Record<string, { text: string; created_at: string }> = {};
     for (const record of telemetry) {
       if (record.endpoint_id !== floeAgent.endpoint_id || record.kind !== "visible_output") continue;
-      let payload: Record<string, unknown>;
-      try {
-        payload = JSON.parse(record.payload_json) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+      const payload = parseTelemetryPayload(record);
+      if (!payload) continue;
       const turnId = payload.runtime_turn_id;
       if (typeof turnId !== "string" || finished.has(turnId)) continue;
-      // Restrict streaming preview to the selected context if telemetry carries one.
-      if (typeof payload.context_id === "string" && payload.context_id !== selectedContextId) continue;
+      if (payload.context_id !== selectedContextId) continue;
       if (!latest[turnId] || record.created_at > latest[turnId].created_at) {
         latest[turnId] = { text: String(payload.text ?? ""), created_at: record.created_at };
       }
@@ -299,6 +335,7 @@ function App() {
     const excludedKinds = new Set(["usage", "runtime_config", "visible_output", "runtime_no_visible_output", "visible_output_worklog"]);
     const agentTelemetry = telemetry
       .filter((record) => record.endpoint_id === floeAgent.endpoint_id)
+      .filter((record) => telemetryContextId(record) === selectedContextId)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
 
     const messages = [...floeMessages].sort((a, b) => a.created_at.localeCompare(b.created_at));
@@ -307,12 +344,12 @@ function App() {
       let filesTouched: string[] | undefined;
       let durationMs: number | undefined;
       let toolCallId: string | undefined;
-      try {
-        const payload = JSON.parse(record.payload_json) as Record<string, unknown>;
+      const payload = parseTelemetryPayload(record);
+      if (payload) {
         if (Array.isArray(payload.files_touched)) filesTouched = payload.files_touched as string[];
         if (typeof payload.duration_ms === "number") durationMs = payload.duration_ms;
         if (typeof payload.toolCallId === "string") toolCallId = payload.toolCallId;
-      } catch {}
+      }
       return {
         id: record.telemetry_id,
         kind: runtimeActivityLabel(record.kind),
@@ -407,13 +444,20 @@ function App() {
       });
     }
 
+    const pulseSegments: ChatSegment[] = contextEvents
+      .filter((event) => event.type === "pulse.fired")
+      .map((event) => ({ kind: "pulse", event }));
+    const orderedSegments = [...segments, ...pulseSegments].sort((left, right) =>
+      chatSegmentCreatedAt(left).localeCompare(chatSegmentCreatedAt(right))
+    );
+
     // Append streaming turns
     for (const [turnId, turn] of Object.entries(streamingTurns)) {
-      segments.push({ kind: "streaming", turnId, text: turn.text });
+      orderedSegments.push({ kind: "streaming", turnId, text: turn.text });
     }
 
-    return segments;
-  }, [floeAgent, floeMessages, floeIsActive, humanEndpoint, streamingTurns, telemetry, selectedContextId]);
+    return orderedSegments;
+  }, [floeAgent, floeMessages, floeIsActive, humanEndpoint, streamingTurns, telemetry, selectedContextId, contextEvents]);
 
   const latestRuntimeError = useMemo(() => {
     if (!floeAgent) return null;
@@ -465,24 +509,35 @@ function App() {
   }, [busUrl]);
 
   const refreshContextEvents = useCallback(async (contextId: string) => {
+    const requestId = ++contextEventsRequestRef.current;
     try {
       const result = await api<{ events: ContextEvent[] }>(
         busUrl,
         `/v1/contexts/${encodeURIComponent(contextId)}/events`
       );
-      setContextEvents(result.events);
+      if (requestId !== contextEventsRequestRef.current) return;
+      setContextEventsState({ contextId, events: result.events });
     } catch {
-      setContextEvents([]);
+      if (requestId !== contextEventsRequestRef.current) return;
+      setContextEventsState({ contextId, events: [] });
     }
   }, [busUrl]);
+
+  function clearContextEvents() {
+    contextEventsRequestRef.current += 1;
+    setContextEventsState({ contextId: null, events: [] });
+  }
 
   const refresh = useCallback(async (preferredWorkspaceId?: string) => {
     try {
       setError(null);
-      const [workspaceResult, authResult] = await Promise.all([
+      const [workspaceResult, authResult, configResult] = await Promise.all([
         api<{ workspaces: Workspace[] }>(busUrl, "/v1/workspaces"),
-        api<{ profiles: AuthProfile[] }>(busUrl, "/v1/auth/profiles")
+        api<{ profiles: AuthProfile[] }>(busUrl, "/v1/auth/profiles"),
+        api<LocalConfigStatus>(busUrl, "/v1/local-config/status").catch(() => null)
       ]);
+      setBridgeRuntimeKnown(configResult !== null);
+      setBridgeRuntimeAdapter(configResult?.bridge?.runtime_adapter ?? null);
       setWorkspaces(workspaceResult.workspaces);
       setAuthProfiles(authResult.profiles);
       const knownWorkspaceIds = new Set(workspaceResult.workspaces.map((workspace) => workspace.workspace_id));
@@ -591,7 +646,7 @@ function App() {
     if (!selectedWorkspace || !floeAgent) {
       setContexts([]);
       setSelectedContextId(null);
-      setContextEvents([]);
+      clearContextEvents();
       setDraftMode(false);
       return;
     }
@@ -611,13 +666,13 @@ function App() {
     if (!selectedContextId) return;
     if (!contexts.some((c) => c.context_id === selectedContextId)) {
       setSelectedContextId(null);
-      setContextEvents([]);
+      clearContextEvents();
     }
   }, [contexts, selectedContextId]);
 
   useEffect(() => {
     if (!selectedContextId) {
-      setContextEvents([]);
+      clearContextEvents();
       return;
     }
     void refreshContextEvents(selectedContextId);
@@ -810,7 +865,7 @@ function App() {
   }
 
   async function sendFloeMessage() {
-    if (!selectedWorkspace || !floeAgent || !channelMessage.trim()) return;
+    if (!selectedWorkspace || !floeAgent || !canMessageRuntime || !channelMessage.trim()) return;
     await ensureOperator(selectedWorkspace.workspace_id);
     const text = channelMessage.trim();
     const body = buildEmitBody({
@@ -843,7 +898,7 @@ function App() {
   function startNewConversation() {
     setSelectedContextId(null);
     setDraftMode(true);
-    setContextEvents([]);
+    clearContextEvents();
   }
 
   function createField(name?: string) {
@@ -1275,10 +1330,10 @@ function App() {
               <select
                 value={workspaceBinding?.model ?? ""}
                 onChange={(event) => void setWorkspaceModel(event.target.value)}
-                disabled={!workspaceBinding?.auth_profile || availableModels.length === 0}
+                disabled={!workspaceBinding?.auth_profile || workspaceModelOptions.length === 0}
               >
                 <option value="">Select model</option>
-                {availableModels.map((model) => (
+                {workspaceModelOptions.map((model) => (
                   <option key={model.id} value={model.id}>{model.name}{model.reasoning ? " reasoning" : ""}</option>
                 ))}
               </select>
@@ -1327,9 +1382,9 @@ function App() {
 
   function ActorAccessSection() {
     return (
-      <InspectorSection title="Actor Access">
-        <Detail label="Actors" value={String(endpoints.length)} />
-        <Detail label="Actors" value={String(agents.length)} />
+      <InspectorSection title="Workspace actors">
+        <Detail label="Registered endpoints" value={String(endpoints.length)} />
+        <Detail label="Selectable actors" value={String(agents.length)} />
       </InspectorSection>
     );
   }
@@ -1391,38 +1446,79 @@ function App() {
 
   function renderChannel() {
     if (!channelOpen) return null;
-    const agentName = selectedAgent?.name ?? selectedAgent?.agent_id ?? "Agent";
+    const actorName = selectedAgent ? selectedAgent.name?.trim() || selectedAgent.agent_id || "Actor" : "";
+    const activeContextLabel = selectedContext
+      ? selectedContext.first_message_preview?.trim() || pulseLabels[selectedContext.context_id] || "Conversation"
+      : null;
+    const activeConversationTitle = draftMode
+      ? `New conversation with ${actorName}`
+      : activeContextLabel ?? (
+        sortedContexts.sorted.length === 0
+          ? `No conversations with ${actorName} yet`
+          : "Select a conversation"
+      );
+    const activeConversationState = draftMode
+      ? "Draft"
+      : selectedContext
+        ? "Existing conversation"
+        : sortedContexts.sorted.length === 0
+          ? "No conversations yet"
+          : "No conversation selected";
     return (
       <aside className="channel">
         <div className="channel-header">
-          {agents.length > 1 ? (
-            <div className="channel-title">
-              <div className="channel-avatar"><CircleDot size={16} /></div>
-              <select
-                className="agent-select"
-                value={selectedAgent?.agent_id ?? ""}
-                onChange={(event) => setSelectedAgentId(event.target.value)}
-              >
-                {agents.map((agent) => (
-                  <option key={agent.endpoint_id} value={agent.agent_id ?? ""}>
-                    {agent.name ?? agent.agent_id} {agent.status === "active" ? "●" : ""}
-                  </option>
-                ))}
-              </select>
+          <div className="channel-title">
+            <div className="channel-avatar"><CircleDot size={16} /></div>
+            <div>
+              <strong>Actor conversations</strong>
+              <span>{selectedAgent ? `${actorName} selected` : "No actors available"}</span>
             </div>
-          ) : (
-            <div className="channel-title">
-              <div className="channel-avatar"><Sparkles size={16} /></div>
-              <div>
-                <strong>{agentName}</strong>
-                <span>{selectedAgent?.status ?? "offline"}</span>
-              </div>
-            </div>
-          )}
-          <button className="icon-button" onClick={() => setChannelOpen(false)} title="Close Channel">
+          </div>
+          <button
+            className="icon-button"
+            onClick={() => setChannelOpen(false)}
+            title="Close Channel"
+            aria-label="Close actor conversation panel"
+          >
             <X size={16} />
           </button>
         </div>
+        {agents.length > 0 && (
+          <section className="actor-selector" role="group" aria-label="Actors" data-testid="actor-selector">
+            <div className="actor-selector-heading">
+              <span>Actors</span>
+              <span>{agents.length}</span>
+            </div>
+            <div className="actor-selector-list">
+              {agents.map((agent) => {
+                const name = agent.name?.trim() || agent.agent_id || "Actor";
+                const status = agent.status || "unknown";
+                const selected = selectedAgent?.endpoint_id === agent.endpoint_id;
+                return (
+                  <button
+                    key={agent.endpoint_id}
+                    type="button"
+                    className={`actor-selector-item${selected ? " active" : ""}`}
+                    aria-pressed={selected}
+                    aria-label={`${name} ${status}${selected ? " selected" : ""}`}
+                    onClick={() => {
+                      setSelectedAgentId(agent.endpoint_id);
+                      setSelectedContextId(null);
+                      setDraftMode(false);
+                      clearContextEvents();
+                    }}
+                  >
+                    <span className="actor-selector-avatar" aria-hidden="true">{actorInitial(name)}</span>
+                    <span className="actor-selector-copy">
+                      <strong>{name}</strong>
+                      <span>{status}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
         {selectedAgent && (
           <div className="channel-context-list" data-testid="context-list">
             <div className="channel-context-list-header">
@@ -1431,14 +1527,15 @@ function App() {
                 className="ghost-action small"
                 data-testid="new-conversation-button"
                 onClick={startNewConversation}
-                title={`New conversation with ${agentName}`}
+                title={`New conversation with ${actorName}`}
+                aria-label={`Start new conversation with ${actorName}`}
               >
                 + New conversation
               </button>
             </div>
             {sortedContexts.sorted.length === 0 ? (
               <div className="channel-context-empty" data-testid="context-list-empty">
-                No conversations with {agentName} yet. Send a message to start one.
+                No conversations with {actorName} yet. Send a message to start one.
               </div>
             ) : (
               <ul className="channel-context-items">
@@ -1447,22 +1544,30 @@ function App() {
                     ctx.first_message_preview?.trim()
                       ? ctx.first_message_preview
                       : pulseLabels[ctx.context_id] ?? "Conversation";
-                  const isDefault = ctx.context_id === sortedContexts.defaultContextId;
                   const isActive = ctx.context_id === selectedContextId;
+                  const activityTime = ctx.last_event_at ?? ctx.created_at;
                   return (
                     <li key={ctx.context_id}>
                       <button
                         type="button"
                         data-testid="context-list-item"
                         data-context-id={ctx.context_id}
-                        className={`channel-context-item${isActive ? " active" : ""}${isDefault ? " default" : ""}`}
+                        className={`channel-context-item${isActive ? " active" : ""}`}
+                        aria-current={isActive ? "true" : undefined}
+                        aria-label={`${label}, ${formatContextTimestamp(activityTime)}${isActive ? ", selected" : ""}`}
                         onClick={() => {
                           setSelectedContextId(ctx.context_id);
                           setDraftMode(false);
                         }}
                       >
-                        {isDefault && <span className="default-pin" title="Default conversation">★</span>}
                         <span className="channel-context-label">{label}</span>
+                        <time
+                          className="channel-context-time"
+                          data-testid="context-list-item-time"
+                          dateTime={activityTime}
+                        >
+                          {formatContextTimestamp(activityTime)}
+                        </time>
                       </button>
                     </li>
                   );
@@ -1470,6 +1575,22 @@ function App() {
               </ul>
             )}
           </div>
+        )}
+        {selectedAgent && (
+          <section
+            className="active-conversation-header"
+            data-testid="active-conversation-header"
+            aria-label="Active conversation"
+          >
+            <div className="active-conversation-title">
+              <span>Conversation with {actorName}</span>
+              <strong>{activeConversationTitle}</strong>
+            </div>
+            <div className="active-conversation-meta">
+              <span>{activeConversationState}</span>
+              <span>{selectedAgent.status}</span>
+            </div>
+          </section>
         )}
         <div className="channel-body">
           {!selectedAgent && (
@@ -1481,20 +1602,32 @@ function App() {
           {!runtimeReady && selectedAgent && (
             <div className="callout warning">
               <AlertTriangle size={15} />
-              <span>Select a runtime profile and model before messaging {agentName}.</span>
+              <span>Select a runtime profile and model before messaging {actorName}.</span>
             </div>
           )}
-          {chatSegments.length === 0 ? (
+          {runtimeBlockedByFakeAdapter && selectedAgent && (
+            <div className="callout warning">
+              <AlertTriangle size={15} />
+              <span>The bridge is running with the fake runtime adapter, so {effectiveProfile?.id} will not be used. Set <code>bridge.runtime_adapter</code> to <code>pi-agent-core</code> and restart Floe.</span>
+            </div>
+          )}
+          {!selectedAgent ? (
+            <div className="channel-empty" data-testid="channel-empty-no-actors">
+              <MessageSquare size={22} />
+              <strong>No actors available yet.</strong>
+              <span>Add or register an actor for this workspace to start a conversation.</span>
+            </div>
+          ) : chatSegments.length === 0 ? (
             sortedContexts.sorted.length === 0 ? (
               <div className="channel-empty" data-testid="channel-empty-no-contexts">
                 <MessageSquare size={22} />
-                <strong>No conversations with {agentName} yet.</strong>
+                <strong>No conversations with {actorName} yet.</strong>
                 <span>Send a message to start one.</span>
               </div>
             ) : draftMode ? (
               <div className="channel-empty" data-testid="channel-empty-draft">
                 <MessageSquare size={22} />
-                <strong>New conversation with {agentName}</strong>
+                <strong>New conversation with {actorName}</strong>
                 <span>Type a message below to start. The conversation appears in the list once you send.</span>
               </div>
             ) : !selectedContextId ? (
@@ -1507,7 +1640,7 @@ function App() {
               <div className="channel-empty">
                 <MessageSquare size={22} />
                 <strong>No messages yet in this conversation.</strong>
-                <span>Send a message to {agentName} below.</span>
+                <span>Send a message to {actorName} below.</span>
               </div>
             )
           ) : (
@@ -1519,8 +1652,18 @@ function App() {
                 if (segment.kind === "streaming") {
                   return (
                     <div key={segment.turnId} className="channel-message other streaming">
-                      <div className="message-meta">{agentName}</div>
+                      <div className="message-meta">{actorName}</div>
                       <div className="message-text">{renderMarkdown(segment.text)}</div>
+                    </div>
+                  );
+                }
+                if (segment.kind === "pulse") {
+                  return (
+                    <div key={segment.event.event_id} className="pulse-event-card" data-testid="pulse-event-card">
+                      <div className="pulse-event-meta">
+                        Scheduled reminder · {new Date(segment.event.created_at).toLocaleTimeString()}
+                      </div>
+                      <div className="pulse-event-text">{renderMarkdown(pulseEventText(segment.event))}</div>
                     </div>
                   );
                 }
@@ -1528,7 +1671,7 @@ function App() {
                 const selfName = localStorage.getItem("floe-operator-name") || "You";
                 return (
                   <div key={segment.message.event_id} className={`channel-message ${isSelf ? "self" : "other"}`}>
-                    <div className="message-meta">{isSelf ? selfName : agentName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
+                    <div className="message-meta">{isSelf ? selfName : actorName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
                     <div className="message-text">{isSelf ? segment.message.content.text : renderMarkdown(segment.message.content.text ?? "")}</div>
                     {segment.activity && renderActivityGroup(segment.activity)}
                   </div>
@@ -1539,7 +1682,7 @@ function App() {
           {floeIsActive && !chatSegments.some((s) => s.kind === "activity" && s.group.status === "working") && (
             <div className="thinking-strip">
               <Loader size={13} className="spin" />
-              <span>{agentName} is working…</span>
+              <span>{actorName} is working…</span>
             </div>
           )}
           <div ref={chatEndRef} />
@@ -1554,14 +1697,16 @@ function App() {
                 void sendFloeMessage();
               }
             }}
-            disabled={!selectedAgent || !runtimeReady}
-            placeholder={!selectedAgent ? "No actors available" : !runtimeReady ? "Configure runtime first" : `Message ${agentName}`}
+            disabled={!selectedAgent || !canMessageRuntime}
+            aria-label={selectedAgent ? `Message ${actorName}` : "Message actor"}
+            placeholder={!selectedAgent ? "No actors available" : !runtimeReady ? "Configure runtime first" : runtimeBlockedByFakeAdapter ? "Configure bridge runtime first" : `Message ${actorName}`}
           />
           <button
             className="icon-button primary-icon"
             onClick={() => void sendFloeMessage()}
-            disabled={!selectedAgent || !runtimeReady || !channelMessage.trim()}
+            disabled={!selectedAgent || !canMessageRuntime || !channelMessage.trim()}
             title="Send"
+            aria-label="Send message"
           >
             <Send size={15} />
           </button>
@@ -1595,6 +1740,7 @@ function App() {
                 className="workspace-delete-button"
                 onClick={(e) => { e.stopPropagation(); void deleteWorkspace(workspace.workspace_id); }}
                 title="Remove workspace"
+                aria-label={`Remove workspace ${workspace.name}`}
               >
                 <X size={12} />
               </button>
@@ -1608,7 +1754,13 @@ function App() {
             onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
             placeholder="Workspace path"
           />
-          <button className="icon-button" onClick={() => void registerWorkspace()} disabled={!workspacePath.trim()} title="Create Workspace">
+          <button
+            className="icon-button"
+            onClick={() => void registerWorkspace()}
+            disabled={!workspacePath.trim()}
+            title="Create Workspace"
+            aria-label="Create workspace"
+          >
             <FolderPlus size={15} />
           </button>
         </div>
@@ -1643,10 +1795,15 @@ function App() {
             )}
           </nav>
           <div className="topbar-actions">
-            <button className="icon-button" onClick={() => void refresh()} title="Refresh">
+            <button className="icon-button" onClick={() => void refresh()} title="Refresh" aria-label="Refresh workspace">
               <RefreshCw size={15} />
             </button>
-            <button className="icon-button" onClick={() => setChannelOpen((current) => !current)} title="Toggle Channel">
+            <button
+              className="icon-button"
+              onClick={() => setChannelOpen((current) => !current)}
+              title="Toggle Channel"
+              aria-label={channelOpen ? "Hide actor conversation panel" : "Open actor conversation panel"}
+            >
               {channelOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
             </button>
           </div>
@@ -1681,6 +1838,21 @@ function Detail(props: { label: string; value: React.ReactNode }) {
       <strong>{props.value}</strong>
     </div>
   );
+}
+
+function actorInitial(name: string): string {
+  return name.trim().charAt(0).toUpperCase() || "A";
+}
+
+function formatContextTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown time";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
 }
 
 class ApiError extends Error {
@@ -1744,6 +1916,18 @@ function currentContextLabel(view: View, workspace: Workspace | null, field: Fie
   if (!workspace) return "No workspace";
   if (view.kind === "field" && field) return `Workspace: ${workspace.name}; Field: ${field.name}`;
   return `Workspace: ${workspace.name}; Home`;
+}
+
+function endpointRuntimeAdapter(endpoint: Endpoint | null): string | null {
+  if (!endpoint?.metadata_json) return null;
+  try {
+    const metadata = JSON.parse(endpoint.metadata_json) as Record<string, unknown>;
+    return typeof metadata.runtime_adapter === "string"
+      ? metadata.runtime_adapter.trim().toLowerCase()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function fieldIdFromNode(node: Node): string | null {
@@ -1820,9 +2004,43 @@ function activityWorkingLabel(items: RuntimeActivity[]): string {
   return "Working…";
 }
 
+function parseTelemetryPayload(record: TelemetryRecord): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(record.payload_json);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function telemetryContextId(record: TelemetryRecord): string | null {
+  const payload = parseTelemetryPayload(record);
+  return typeof payload?.context_id === "string" ? payload.context_id : null;
+}
+
+function chatSegmentCreatedAt(segment: ChatSegment): string {
+  if (segment.kind === "message") return segment.message.created_at;
+  if (segment.kind === "pulse") return segment.event.created_at;
+  return "9999-12-31T23:59:59.999Z";
+}
+
+function pulseEventText(event: ContextEvent): string {
+  if (typeof event.content?.text === "string" && event.content.text.trim()) {
+    return event.content.text;
+  }
+  const data = event.content?.data;
+  if (data && typeof data.text === "string" && data.text.trim()) {
+    return data.text;
+  }
+  return "Pulse fired.";
+}
+
 function summarizeTelemetry(record: TelemetryRecord): string {
   try {
-    const payload = JSON.parse(record.payload_json) as Record<string, unknown>;
+    const payload = parseTelemetryPayload(record);
+    if (!payload) return record.kind;
     // For tool calls, show summary if available, then fall back to tool name
     if (typeof payload.summary === "string" && payload.summary.trim()) {
       const summary = payload.summary.trim().slice(0, 140);

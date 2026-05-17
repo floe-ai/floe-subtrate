@@ -335,7 +335,7 @@ Workspace broadcast:
 {
   "kind": "broadcast",
   "scope": "workspace",
-  "target": "agents",
+  "target": "with_delivery_processor",
   "exclude_source": true
 }
 ```
@@ -343,16 +343,17 @@ Workspace broadcast:
 Allowed first-build broadcast targets:
 
 - `all`
-- `agents`
-- `humans`
-- `active_agents`
-- `active_humans`
+- `active`
+- `with_delivery_processor`
+- `without_delivery_processor`
+- `active_with_delivery_processor`
+- `active_without_delivery_processor`
 
 Rules:
 
 - A broadcast submission persists one canonical event.
-- The bus resolves the selector into concrete endpoint delivery records.
-- Each resolved endpoint receives its own durable delivery.
+- The bus resolves the selector into concrete endpoint records by workspace, active status, and delivery-processor capability.
+- Endpoints with a delivery processor receive durable pushed delivery records; endpoints without one remain included in canonical event routing without pretending push delivery is available.
 - Broadcast resolution must be logged with delivery count.
 - Broadcast must respect workspace partitioning and permissions.
 
@@ -554,7 +555,7 @@ Rules:
 
 ## 13. Runtime-observed events and telemetry
 
-Bridge maps Pi events into Floe telemetry/public hooks where available:
+Bridge maps Pi events into Floe telemetry and active public hooks where available:
 
 - session start
 - session resume
@@ -563,7 +564,7 @@ Bridge maps Pi events into Floe telemetry/public hooks where available:
 - before tool use
 - after tool use
 - tool failure
-- session end
+- session end when runtime sessions are replaced or disposed
 - runtime errors
 - usage/token/cost data where available
 
@@ -577,29 +578,35 @@ Rules:
 
 ## 14. Public extension hooks
 
-Public hooks:
+Current supported hook registration is programmatic TypeScript registration through `ExtensionContext.hooks.on(...)` while an extension is loaded. Declarative YAML hook configuration is future/not implemented and must not be treated as active behaviour.
 
-- `SessionStart`
-- `BeforeTurn`
-- `TurnEnd`
-- `BeforeToolUse`
-- `AfterToolUse`
-- `ToolUseFailed`
-- `SessionResume`
-- `SessionEnd`
-- `Pulse`
-- `WebhookReceived`
-- `Error`
+Hook status:
+
+| Hook | Status | Kind | Current behaviour |
+| --- | --- | --- | --- |
+| `SessionStart` | Active | Observation | Fired when the runtime-backed session is created for a delivery. |
+| `SessionResume` | Active | Observation | Fired when an existing runtime-backed session is reused. |
+| `BeforeTurn` | Active | Behaviour-changing injection | Fired before prompt delivery; returned `inject` data is rendered into runtime prompt context. |
+| `Pulse` | Active | Observation | Fired for delivered `pulse.fired` events. |
+| `TurnEnd` | Active | Observation | Fired after runtime turn completion with visible output, tool activity, and emitted event summaries. |
+| `Error` | Active | Observation | Fired when runtime turn handling errors. |
+| `BeforeToolUse` | Active | Observation | Fired from runtime tool execution start telemetry. |
+| `AfterToolUse` | Active | Observation | Fired from successful runtime tool execution end telemetry. |
+| `ToolUseFailed` | Active | Observation | Fired from failed runtime tool execution end telemetry. |
+| `SessionEnd` | Active | Observation | Fired when an endpoint runtime session is replaced or disposed during bridge/session teardown. |
+| `WebhookReceived` | Active | Observation | Fired once when the bridge observes a persisted `webhook_received` bus event from the real webhook ingest path. |
 
 Rules:
 
 - Public hook names are PascalCase.
+- Hook registration and hook firing are separate: an extension can register a handler, but it only runs when the relevant lifecycle path occurs.
 - Runtime adapters map Pi/native events into this vocabulary where available.
-- `BeforeToolUse`, `AfterToolUse`, and `ToolUseFailed` are capability hooks.
-- Unsupported hooks must be advertised as unavailable.
+- Observation hooks may inspect payloads and perform extension side effects, but must not change bus routing, delivery, or runtime prompt input.
+- `BeforeTurn` injection is the current implemented behaviour-changing hook result; broader/general injection or action-runner semantics are future work.
+- Public hook names must have firing paths, typed payloads, and tests before being documented.
 - Internal bus/bridge event names must not leak into ordinary user-authored extension config.
 
-Hook config shape:
+Future declarative hook config (not implemented):
 
 ```yaml
 hooks:
@@ -610,22 +617,9 @@ hooks:
           url: http://127.0.0.1:8787/retrieve
           timeout: 5s
           inject_result_as: memory_context
-
-  Pulse:
-    - matcher: "agent:floe"
-      handlers:
-        - type: command
-          command: ./memory-maintain.sh
-          timeout: 30s
 ```
 
-First-build handler types:
-
-- `http`
-- `command`
-- `prompt` / `inject` if needed
-
-Do not build broad action runner support before the substrate spine works.
+Future handler types such as `http`, `command`, and declarative `inject` require a separate design and implementation pass. Do not describe them as active extension behaviour.
 
 ---
 
@@ -780,7 +774,7 @@ V0 is acceptable when:
 10. Bus persists the emitted event.
 11. Runtime turn end is observed and endpoint state updated.
 12. Pending response records are created when `response.expected: true`.
-13. Broadcast fan-out works for at least `agents` and `humans` targets.
+13. Broadcast fan-out works for canonical delivery-processor selectors, including `with_delivery_processor` and `without_delivery_processor`.
 14. Delivery state reaches `acknowledged` only after runtime injection/acknowledgement.
 15. Runtime visible output/tool telemetry is forwarded to bus/web where available.
 16. No direct Copilot/Codex adapter exists unless Pi lower-layer integration fails and the handoff is revised.

@@ -91,7 +91,7 @@ describe("toNeutralEndpoint — new actor shape", () => {
       endpoint_id: "actor:workspace:abc:operator",
       name: "Operator",
       status: "active",
-    }) as Record<string, unknown>;
+    });
     expect("endpoint_id" in out).toBe(false);
     expect("actor_type" in out).toBe(false);
   });

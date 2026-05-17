@@ -52,7 +52,7 @@ Interface:
 
 Types:
 - `ExtensionManifest` — parsed `extension.json` shape: `{ schema, name, description?, entry, pulses? }`
-- `ExtensionContext` — context passed to factory: `{ workspacePath, busClient, workspaceId, extensionName }`
+- `ExtensionContext` — context passed to factory: `{ workspacePath, busClient, workspaceId, extensionName, hooks }`
 - `LoadedExtension` — result: `{ name, tools: AgentTool[], pulses: PulseConfig[], errors: string[] }`
 
 ### Modified module: Project loader (project.ts)
@@ -105,6 +105,9 @@ export interface ExtensionContext {
   busClient: BusClient;
   workspaceId: string;
   extensionName: string;
+  hooks: {
+    on(hook: HookName, handler: HookHandler): void;
+  };
 }
 
 export default function(ctx: ExtensionContext): AgentTool[] {
@@ -146,7 +149,7 @@ Create temporary directories with real `extension.json` and `index.ts` files. Ca
 
 ## Out of Scope
 
-- **Hook system** — extensions attaching to lifecycle events (PRD §3, separate slice)
+- **Declarative hook configuration** — programmatic `ExtensionContext.hooks.on(...)` registration and public hook firing exist, but YAML hook config remains a separate future slice.
 - **Event type declarations** — extensions declaring custom event schemas
 - **Extension state management** — dedicated state directories or APIs
 - **Work-log contributions** — extensions adding to work logs

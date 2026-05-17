@@ -1,4 +1,4 @@
-# ADR-0001: Pulse as unified scheduled event delivery
+# ADR-0001: Pulse as unified scheduled event creation
 
 ## Status
 Accepted
@@ -15,7 +15,7 @@ We also needed to decide on storage, timer mechanism, and delivery model.
 ## Decision
 
 ### Unified pulse primitive
-Pulse is a single bus-owned scheduling primitive. For this implementation, only scheduled triggers (cron, one-off) are built. Idle-based pulse is deferred as a separate lifecycle concern.
+Pulse is a single bus-owned scheduled event creation primitive. For this implementation, only scheduled triggers (cron, one-off) are built. Idle-based pulse is deferred as a separate lifecycle concern.
 
 ### Portable definitions, ephemeral runtime state
 - **Pulse definitions** are stored in `.floe/floe.yaml` under a `pulses:` array — committed, portable with the workspace.
@@ -29,13 +29,17 @@ The bus uses a priority queue sorted by `next_fire_at` with a single active `set
 Rejected alternative: `setInterval` polling loop — inconsistent with the subscription/push model used elsewhere in Floe.
 
 ### Subscriber model
-Each pulse has a subscriber list. When a pulse fires, it creates independent deliveries for each subscriber (like broadcast fan-out). Endpoints subscribe/unsubscribe via tools.
+Each pulse has a subscriber list. When a pulse fires, it creates the canonical `pulse.fired` event for each subscriber. The subscriber kind determines what happens next:
 
-### system:pulse as source
-Pulse events are emitted with `source_endpoint_id: "system:pulse"` — a synthetic system endpoint. The pulse_id and creator are carried in event metadata.
+- A context subscriber appends `pulse.fired` to that context for rendering only. It does not create endpoint delivery or activate an actor.
+- An endpoint subscriber delivers `pulse.fired` to that endpoint, optionally scoped to a context. Endpoint delivery may activate only if the endpoint has a processor.
+- Future subscriber kinds can target blocks, fields, extension handlers, or external integrations without changing the pulse event type.
 
-### New thread per fire
-Each pulse fire creates a new thread (`pulse:<pulse_id>:<timestamp>`), keeping each execution independent and avoiding unbounded thread growth.
+### No synthetic system actor
+Pulse events have `source_endpoint_id: null`. The pulse_id and creator are carried in event metadata. No synthetic system actor or endpoint is introduced as a participant.
+
+### Context association
+Context subscribers write into the supplied context. Endpoint subscribers may carry a context_id so actor processing and any later explicit emit can stay associated with the originating context. A pulse firing alone is not an actor message.
 
 ## Consequences
 - Agents get `create_pulse`, `list_pulses`, `update_pulse`, `cancel_pulse`, `subscribe_pulse`, `unsubscribe_pulse` tools
@@ -43,3 +47,4 @@ Each pulse fire creates a new thread (`pulse:<pulse_id>:<timestamp>`), keeping e
 - Bridge reads pulse definitions from `.floe/floe.yaml` and registers them in bus during workspace attachment
 - Bridge writes pulse definitions to `.floe/floe.yaml` when agents create pulses via tools
 - Idle pulse and pending response timeout are explicitly deferred as separate concerns
+- Simple reminders use context subscribers; scheduled actor work uses endpoint subscribers scoped to the originating context

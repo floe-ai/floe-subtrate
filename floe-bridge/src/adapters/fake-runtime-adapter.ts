@@ -28,6 +28,7 @@ export class FakeRuntimeAdapter implements RuntimeAdapter {
       destination: { kind: "endpoint", endpoint_id: destination },
       thread_id: threadId,
       correlation_id: trigger.correlation_id,
+      current_delivery_context_id: trigger.context_id ?? null,
       content: {
         text: `Fake Floe is processing ${bundle.events.length} event(s).`,
         data: {
@@ -47,6 +48,7 @@ export class FakeRuntimeAdapter implements RuntimeAdapter {
       destination: { kind: "endpoint", endpoint_id: destination },
       thread_id: threadId,
       correlation_id: trigger.correlation_id,
+      current_delivery_context_id: trigger.context_id ?? null,
       content: {
         text: `Fake Floe received: "${text}". I processed the local delivery bundle and ended the turn normally.`,
         data: {

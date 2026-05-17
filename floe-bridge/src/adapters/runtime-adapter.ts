@@ -1,7 +1,7 @@
 import type { BusClient, DeliveryBundle } from "../bus-client.js";
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { LoadedExtension } from "../extension-loader.js";
-import type { HookRegistry } from "../hooks.js";
+import type { HookPayload, HookRegistry } from "../hooks.js";
 
 export type RuntimeContext = {
   bridge_id: string;
@@ -19,4 +19,5 @@ export type RuntimeContext = {
 export interface RuntimeAdapter {
   readonly name: string;
   handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void>;
+  dispose?(reason?: HookPayload<"SessionEnd">["reason"]): Promise<void>;
 }

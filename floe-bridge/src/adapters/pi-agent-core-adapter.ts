@@ -6,6 +6,7 @@ import type { AgentRuntimeConfig, BridgeAuthRuntime, RuntimeAuthResolved } from 
 import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
+import type { HookPayload } from "../hooks.js";
 import { buildSystemPrompt, renderDestinationContext, appendWorkLog, toNeutralRef, fromNeutralRef, toNeutralEndpoint } from "../runtime-core/index.js";
 import type { NeutralEndpoint } from "../runtime-core/index.js";
 import type { WorkLogEntry } from "../runtime-core/index.js";
@@ -59,6 +60,8 @@ type RuntimeTurnContext = {
 type SessionState = {
   agent: AgentLike;
   initialized: boolean;
+  endpointId: string;
+  workspaceId: string;
   provider: string;
   modelId: string;
   instructionsHash: string;
@@ -98,7 +101,12 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       if (context.hooks?.hasHandlers("SessionStart")) {
         await context.hooks.fire("SessionStart", {
           endpoint_id: bundle.endpoint_id,
-          workspace_id: bundle.workspace_id
+          workspace_id: bundle.workspace_id,
+          delivery_id: bundle.delivery_id,
+          trigger_event_id: bundle.trigger_event_id,
+          provider: resolved.provider,
+          model_id: resolved.model.id,
+          reason: "session_created"
         });
       }
     } else {
@@ -111,7 +119,12 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       if (context.hooks?.hasHandlers("SessionResume")) {
         await context.hooks.fire("SessionResume", {
           endpoint_id: bundle.endpoint_id,
-          workspace_id: bundle.workspace_id
+          workspace_id: bundle.workspace_id,
+          delivery_id: bundle.delivery_id,
+          trigger_event_id: bundle.trigger_event_id,
+          provider: resolved.provider,
+          model_id: resolved.model.id,
+          reason: "session_reused"
         });
       }
     }
@@ -184,6 +197,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           endpoint_id: bundle.endpoint_id,
           workspace_id: bundle.workspace_id,
           delivery_id: bundle.delivery_id,
+          trigger_event_id: bundle.trigger_event_id,
           thread_id: bundle.events[0]?.thread_id
         });
         injectedContext = renderHookInjections(hookResults);
@@ -204,6 +218,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             endpoint_id: bundle.endpoint_id,
             workspace_id: bundle.workspace_id,
             delivery_id: bundle.delivery_id,
+            trigger_event_id: bundle.trigger_event_id,
             pulse_id: (pulseEvent.content as any)?.pulse_id ?? (pulseEvent.metadata as any)?.pulse_id,
             event_id: pulseEvent.event_id,
             thread_id: pulseEvent.thread_id,
@@ -227,6 +242,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           endpoint_id: bundle.endpoint_id,
           workspace_id: bundle.workspace_id,
           delivery_id: bundle.delivery_id,
+          trigger_event_id: bundle.trigger_event_id,
           visible_output: turn.visible_output,
           tool_activity: turn.tool_activity,
           emitted_events: turn.emitted_events
@@ -256,6 +272,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           endpoint_id: bundle.endpoint_id,
           workspace_id: bundle.workspace_id,
           delivery_id: bundle.delivery_id,
+          trigger_event_id: bundle.trigger_event_id,
           error: errorMessage
         });
       }
@@ -276,6 +293,14 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     }
   }
 
+  async dispose(reason: HookPayload<"SessionEnd">["reason"] = "bridge_shutdown"): Promise<void> {
+    const sessions = [...this.sessions.values()];
+    this.sessions.clear();
+    for (const session of sessions) {
+      await this.fireSessionEnd(session, { reason });
+    }
+  }
+
   private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved, runtimeConfig?: AgentRuntimeConfig): Promise<SessionState> {
     const key = bundle.endpoint_id;
     const rawInstructions = runtimeConfig?.instructions?.trim() ?? "";
@@ -289,10 +314,23 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       existing.context = context;
       return existing;
     }
+    if (existing) {
+      await this.fireSessionEnd(existing, {
+        reason: "session_replaced",
+        delivery_id: bundle.delivery_id,
+        trigger_event_id: bundle.trigger_event_id,
+        next_session: {
+          provider: resolved.provider,
+          model_id: resolved.model.id
+        }
+      });
+    }
 
     const state: SessionState = {
       agent: null as unknown as AgentLike,
       initialized: false,
+      endpointId: bundle.endpoint_id,
+      workspaceId: bundle.workspace_id,
       provider: resolved.provider,
       modelId: resolved.model.id,
       instructionsHash,
@@ -355,6 +393,22 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
     this.sessions.set(key, state);
     return state;
+  }
+
+  private async fireSessionEnd(
+    session: SessionState,
+    details: Omit<HookPayload<"SessionEnd">, "endpoint_id" | "workspace_id" | "previous_session">
+  ): Promise<void> {
+    if (!session.context?.hooks?.hasHandlers("SessionEnd")) return;
+    await session.context.hooks.fire("SessionEnd", {
+      ...details,
+      endpoint_id: session.endpointId,
+      workspace_id: session.workspaceId,
+      previous_session: {
+        provider: session.provider,
+        model_id: session.modelId
+      }
+    });
   }
 
   private createEmitTool(session: SessionState): AgentTool {
@@ -548,6 +602,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             await context.hooks.fire("BeforeToolUse", {
               endpoint_id: turn.endpoint_id,
               workspace_id: turn.workspace_id,
+              delivery_id: turn.delivery_id,
+              trigger_event_id: turn.trigger_event_id,
               toolCallId: event.toolCallId,
               toolName: event.toolName
             });
@@ -578,6 +634,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             await context.hooks.fire(hookName, {
               endpoint_id: turn.endpoint_id,
               workspace_id: turn.workspace_id,
+              delivery_id: turn.delivery_id,
+              trigger_event_id: turn.trigger_event_id,
               toolCallId: event.toolCallId,
               toolName: event.toolName,
               isError: event.isError
@@ -732,6 +790,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         endpoint_id: turn.endpoint_id,
         thread_id: turn.thread_id,
         started_at: turn.started_at,
+        trigger_event_id: turn.trigger_event_id,
+        context_id: turn.context_id,
         ...payload
       }
     });
@@ -873,9 +933,9 @@ function deliveryToPrompt(
   const correlationId = trigger?.correlation_id ?? null;
   const currentContextId = trigger?.context_id ?? null;
 
-  // Determine response_expected: true if any event is a direct message
-  const responseExpected = bundle.events.some(
-    (e) => e.type === "message"
+  const responseExpected = bundle.events.some((event) =>
+    event.response?.expected === true ||
+    (event.type === "message" && !!event.source_endpoint_id && toNeutralRef(event.source_endpoint_id) === "operator")
   );
 
   const contextBlock = renderDestinationContext({

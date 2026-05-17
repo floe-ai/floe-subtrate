@@ -8,7 +8,8 @@ Floe is a local daemon-driven substrate with three independent services:
 
 The local development and CI runtime adapter is deterministic fake runtime, so
 the core substrate can be tested without spending Copilot premium requests. It
-is development-only; the first real runtime target remains the Copilot CLI SDK.
+is development-only; real profile-backed execution runs through the
+`pi-agent-core` bridge adapter.
 
 ## Local Start
 
@@ -52,11 +53,15 @@ waiting fake agent with a later message. It also verifies bus-owned
 
 ## Copilot Adapter
 
-`CopilotSdkAdapter` is intentionally gated. The fake adapter is the baseline for
-normal local development and CI. Live Copilot smoke tests should only run with:
+`CopilotSdkAdapter` is intentionally gated/deferred. The fake adapter is only
+the no-login fallback for local development and CI. Once a real auth profile is
+configured, Floe selects the Pi lower-layer adapter automatically. You can also
+force it explicitly:
 
 ```bash
-FLOE_RUNTIME_ADAPTER=copilot FLOE_LIVE_COPILOT=1
+FLOE_RUNTIME_ADAPTER=pi-agent-core
 ```
 
-The live adapter should stay sparse until premium requests are available.
+Or set `bridge.runtime_adapter: pi-agent-core` in `~/.floe/config.yaml` and
+restart Floe. Unsupported adapter names fail fast rather than silently falling
+back to fake.

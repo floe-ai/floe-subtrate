@@ -2,7 +2,7 @@
 
 ## Summary
 
-Remove `actor_type` from the bus schema, registration API, and all code paths. Replace all category-based routing with delivery-processor-presence checks (`bridge_id IS NOT NULL`). Existing local DBs may be reset.
+Remove `actor_type` from the bus schema, registration API, and all code paths. Replace all category-based routing with delivery-processor-presence checks (`bridge_id IS NOT NULL` is the current implementation detail). Existing local DBs may be reset.
 
 ## Scope
 
@@ -11,8 +11,8 @@ Remove `actor_type` from the bus schema, registration API, and all code paths. R
 3. **Delivery gate** (`store.ts:1366`): `actor_type !== "agent"` → `!endpoint.bridge_id` (or `bridge_id IS NULL`).
 4. **Status transition** (`store.ts:808`): `CASE WHEN actor_type = 'agent'` → `CASE WHEN bridge_id IS NOT NULL`.
 5. **Webhook target** (`store.ts:998`): `WHERE actor_type = 'agent'` → `WHERE bridge_id IS NOT NULL`.
-6. **Broadcast filter** (`store.ts:1281-1284`): Replace `agents`/`humans`/`active_agents`/`active_humans` with `with_runtime`/`without_runtime`/`active_with_runtime`/`active_without_runtime` (or just `all`/`active`).
-7. **Runtime binding status** (`server.ts:237,260`): `actor_type === "agent"` → `endpoint.bridge_id IS NOT NULL` (check bridge_id on the endpoint record).
+6. **Broadcast filter** (`store.ts:1281-1284`): Replace actor-category selectors with `with_delivery_processor`/`without_delivery_processor`/`active_with_delivery_processor`/`active_without_delivery_processor` (plus `all`/`active`).
+7. **Delivery processor binding status** (`server.ts:237,260`): `actor_type === "agent"` → `endpoint.bridge_id IS NOT NULL` (check bridge_id on the endpoint record).
 8. **All remaining references**: `git grep actor_type -- floe-bus/src/` must return zero matches after this change (except possibly in migration/wipe comments).
 
 ## Tests
@@ -21,8 +21,8 @@ Remove `actor_type` from the bus schema, registration API, and all code paths. R
 - `actor_type` field is rejected or ignored if sent.
 - Actor with `bridge_id` set receives push delivery.
 - Actor with `bridge_id = null` does NOT receive push delivery.
-- Broadcast with `with_runtime` targets only actors with bridge. `all` targets everyone.
-- Runtime binding status change only affects actors with bridge_id.
+- Broadcast with `with_delivery_processor` targets only endpoints with a delivery processor. `all` targets everyone.
+- Delivery processor binding status change only affects endpoints with `bridge_id`.
 - `git grep actor_type -- floe-bus/src/` returns zero routing/filtering uses.
 
 ## Acceptance

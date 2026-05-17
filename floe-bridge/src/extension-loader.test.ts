@@ -24,6 +24,9 @@ function baseContext(): Omit<ExtensionContext, "extensionName"> {
     workspacePath: tempDir,
     busClient: {},
     workspaceId: "test-workspace",
+    hooks: {
+      on() {}
+    }
   };
 }
 

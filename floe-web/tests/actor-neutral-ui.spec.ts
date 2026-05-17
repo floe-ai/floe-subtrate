@@ -195,16 +195,16 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
     expect(inspectorText).not.toMatch(/\bAgents\b.*\d/);
   });
 
-  test("no 'Default channel' label in inspector — uses 'Actors' instead", async ({ page }) => {
+  test("no 'Default channel' label in inspector — uses actor-neutral wording instead", async ({ page }) => {
     await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     const bodyText = await page.locator("body").innerText();
     expect(bodyText).not.toContain("Default channel");
-    expect(bodyText).toContain("Actors");
+    expect(bodyText).toMatch(/actors/i);
   });
 
-  test("no 'agent endpoint' in placeholder text", async ({ page }) => {
+  test("no system-imposed actor category fallback when no actors are available", async ({ page }) => {
     await setupRoutesForNeutralUI(page);
     // Override endpoints to return none so we see the no-agent placeholder
     await page.route(`**/v1/workspaces/${WORKSPACE_ID}/endpoints`, (route) =>
@@ -226,6 +226,8 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
 
     const bodyText = await page.locator("body").innerText();
     expect(bodyText).not.toContain("agent endpoint");
+    expect(bodyText).not.toMatch(/\bAgent\b/);
+    expect(bodyText).not.toMatch(/\bBot\b/);
     expect(bodyText).toContain("No actors available");
   });
 });
