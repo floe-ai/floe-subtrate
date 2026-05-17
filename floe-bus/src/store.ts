@@ -526,6 +526,95 @@ export class BusStore {
     return { ok: true, workspace_id: workspaceId, locator, locator_deleted: locatorDeleted };
   }
 
+  deleteContext(contextId: string, broadcast: Broadcast): {
+    ok: true;
+    context_id: string;
+    workspace_id: string;
+    events_deleted: number;
+    delivery_bundles_deleted: number;
+    pulse_subscribers_deleted: number;
+  } | null {
+    const context = this.contextStore.getContext(contextId);
+    if (!context) return null;
+    const deliveryIdsWithDeletedContext = new Set<string>();
+    const deliveryIdsToDelete = new Set<string>();
+    let eventsDeleted = 0;
+    let pulseSubscribersDeleted = 0;
+
+    this.transaction(() => {
+      const eventIds = (this.db
+        .prepare("SELECT event_id FROM events WHERE context_id = ?")
+        .all(contextId) as Array<{ event_id: string }>).map((row) => row.event_id);
+      eventsDeleted = eventIds.length;
+
+      const bundles = this.db.prepare("SELECT delivery_id, events_json FROM delivery_bundles WHERE workspace_id = ?")
+        .all(context.workspace_id) as Array<{ delivery_id: string; events_json: string }>;
+      for (const bundle of bundles) {
+        const events = parseJson<EventEnvelope[]>(bundle.events_json);
+        const remainingEvents = events.filter((event) => event.context_id !== contextId);
+        if (remainingEvents.length === events.length) continue;
+        deliveryIdsWithDeletedContext.add(bundle.delivery_id);
+        if (remainingEvents.length === 0) {
+          deliveryIdsToDelete.add(bundle.delivery_id);
+          this.db.prepare("DELETE FROM delivery_bundles WHERE delivery_id = ?").run(bundle.delivery_id);
+          continue;
+        }
+        this.db.prepare(`
+          UPDATE delivery_bundles
+          SET trigger_event_id = ?, events_json = ?
+          WHERE delivery_id = ?
+        `).run(remainingEvents[0].event_id, json(remainingEvents), bundle.delivery_id);
+      }
+
+      for (const eventId of eventIds) {
+        const queuedRows = this.db.prepare("SELECT delivery_id FROM event_queue WHERE event_id = ?")
+          .all(eventId) as Array<{ delivery_id: string | null }>;
+        for (const row of queuedRows) {
+          if (row.delivery_id) deliveryIdsWithDeletedContext.add(row.delivery_id);
+        }
+        this.db.prepare("DELETE FROM event_queue WHERE event_id = ?").run(eventId);
+        this.db.prepare("DELETE FROM pending_responses WHERE source_event_id = ?").run(eventId);
+        this.db.prepare("DELETE FROM events WHERE event_id = ?").run(eventId);
+      }
+
+      for (const deliveryId of deliveryIdsWithDeletedContext) {
+        this.db.prepare("DELETE FROM runtime_telemetry WHERE delivery_id = ?").run(deliveryId);
+      }
+      for (const deliveryId of deliveryIdsToDelete) {
+        this.db.prepare("DELETE FROM event_queue WHERE delivery_id = ?").run(deliveryId);
+      }
+
+      const subscribers = this.db.prepare(`
+        SELECT ps.pulse_id, ps.subscriber_json
+        FROM pulse_subscribers ps
+        JOIN pulses p ON p.pulse_id = ps.pulse_id
+        WHERE p.workspace_id = ?
+      `).all(context.workspace_id) as Array<{ pulse_id: string; subscriber_json: string }>;
+      for (const subscriberRow of subscribers) {
+        const subscriber = parseJson<PulseSubscriber>(subscriberRow.subscriber_json);
+        if (subscriber.context_id !== contextId) continue;
+        const result = this.db.prepare("DELETE FROM pulse_subscribers WHERE pulse_id = ? AND subscriber_json = ?")
+          .run(subscriberRow.pulse_id, subscriberRow.subscriber_json);
+        pulseSubscribersDeleted += Number(result.changes ?? 0);
+      }
+
+      this.db.prepare("UPDATE contexts SET parent_context_id = NULL WHERE parent_context_id = ?").run(contextId);
+      this.db.prepare("DELETE FROM context_participants WHERE context_id = ?").run(contextId);
+      this.db.prepare("DELETE FROM contexts WHERE context_id = ?").run(contextId);
+    });
+
+    const result = {
+      ok: true as const,
+      context_id: contextId,
+      workspace_id: context.workspace_id,
+      events_deleted: eventsDeleted,
+      delivery_bundles_deleted: deliveryIdsToDelete.size,
+      pulse_subscribers_deleted: pulseSubscribersDeleted
+    };
+    broadcast("context_deleted", result);
+    return result;
+  }
+
   registerBridge(input: { bridge_id: string; capabilities?: Record<string, unknown> }, broadcast: Broadcast): unknown {
     const timestamp = now();
     this.db.prepare(`

@@ -476,6 +476,15 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { events: store.listEvents({ context_id: params.id, limit: query.limit }) };
   });
 
+  app.delete("/v1/contexts/:id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const result = store.deleteContext(params.id, broadcast);
+    if (!result) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    return result;
+  });
+
   app.get("/v1/delivery/claim", async (request) => {
     const query = z.object({
       bridge_id: z.string(),

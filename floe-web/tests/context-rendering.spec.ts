@@ -56,6 +56,7 @@ type WorldState = {
   legacyEventsCalls: number;
   contextEventsCalls: Record<string, number>;
   contextsListCalls: number;
+  deleteContextCalls: string[];
   bridgeRuntimeAdapter: string | null;
   endpointRuntimeAdapter: string | null;
 };
@@ -70,6 +71,7 @@ function makeWorld(initial?: Partial<WorldState>): WorldState {
     legacyEventsCalls: 0,
     contextEventsCalls: {},
     contextsListCalls: 0,
+    deleteContextCalls: [],
     bridgeRuntimeAdapter: "pi-agent-core",
     endpointRuntimeAdapter: null,
     ...initial
@@ -216,6 +218,22 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ events })
+    });
+  });
+
+  await page.route(/\/v1\/contexts\/[^/]+$/, async (route: Route) => {
+    if (route.request().method() !== "DELETE") {
+      return route.fulfill({ status: 405, contentType: "application/json", body: JSON.stringify({ error: "method_not_allowed" }) });
+    }
+    const url = new URL(route.request().url());
+    const id = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
+    world.deleteContextCalls.push(id);
+    world.contexts = world.contexts.filter((ctx) => ctx.context_id !== id);
+    delete world.eventsByContext[id];
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, context_id: id, workspace_id: WORKSPACE_ID })
     });
   });
 
@@ -771,6 +789,66 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     await expect(row).toContainText("implementation decisions");
     await expect(row.locator('[data-testid="context-list-item-time"]')).not.toHaveText("");
     await expect(row).toHaveAttribute("aria-current", "true");
+  });
+
+  test("delete conversation confirms, hard-deletes it from the bus, and removes active chat", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_delete",
+      first_message_preview: "delete this conversation",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-06T00:00:00.000Z",
+      last_event_at: "2024-06-06T10:00:00.000Z"
+    }));
+    world.contexts.push(makeContext({
+      context_id: "ctx_keep",
+      first_message_preview: "keep this conversation",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-05T00:00:00.000Z",
+      last_event_at: "2024-06-05T10:00:00.000Z"
+    }));
+    world.eventsByContext["ctx_delete"] = [
+      makeMessage({ context_id: "ctx_delete", created_at: "2024-06-06T10:00:00.000Z", content: { text: "DELETE-MSG" } })
+    ];
+    world.eventsByContext["ctx_keep"] = [
+      makeMessage({ context_id: "ctx_keep", created_at: "2024-06-05T10:00:00.000Z", content: { text: "KEEP-MSG" } })
+    ];
+    await bootApp(page, world);
+
+    await expect(page.locator(".channel-body")).toContainText("DELETE-MSG");
+
+    page.on("dialog", async (dialog) => {
+      expect(dialog.type()).toBe("confirm");
+      expect(dialog.message()).toContain("Delete conversation");
+      expect(dialog.message()).toContain("permanently deletes");
+      await dialog.accept();
+    });
+
+    await page.getByLabel("Delete conversation delete this conversation").click();
+    await expect(page.locator('[data-testid="context-list-item"][data-context-id="ctx_delete"]')).toHaveCount(0);
+    expect(world.deleteContextCalls).toEqual(["ctx_delete"]);
+    await expect(page.locator('[data-testid="context-list-item"][data-context-id="ctx_keep"]')).toBeVisible();
+    await expect(page.locator(".channel-body")).not.toContainText("DELETE-MSG");
+  });
+
+  test("dismissed conversation delete confirmation does not call the bus", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_cancel",
+      first_message_preview: "keep after cancel",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-06T00:00:00.000Z",
+      last_event_at: "2024-06-06T10:00:00.000Z"
+    }));
+    await bootApp(page, world);
+
+    page.on("dialog", async (dialog) => {
+      await dialog.dismiss();
+    });
+
+    await page.getByLabel("Delete conversation keep after cancel").click();
+    await expect(page.locator('[data-testid="context-list-item"][data-context-id="ctx_cancel"]')).toBeVisible();
+    expect(world.deleteContextCalls).toEqual([]);
   });
 
   test("actor conversation panel does not create horizontal overflow on mobile or tablet", async ({ page }) => {

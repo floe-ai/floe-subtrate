@@ -807,10 +807,14 @@ function App() {
   async function deleteWorkspace(workspaceId: string) {
     const workspace = workspaces.find((w) => w.workspace_id === workspaceId);
     const label = workspace?.name ?? workspaceId;
-    if (!window.confirm(`Delete workspace "${label}"?\n\nThis removes the workspace from Floe. The folder on disk is not deleted.`)) return;
+    if (!window.confirm(`Delete workspace "${label}"?\n\nThis removes the workspace from Floe. You can choose whether to keep or delete the folder next.`)) return;
+    const locatorLabel = workspace?.locator ? `\n\n${workspace.locator}` : "";
+    const deleteLocator = window.confirm(
+      `Remove the workspace folder from disk too?${locatorLabel}\n\nChoose OK to delete the folder and its files. Choose Cancel to keep files and only remove it from Floe.`
+    );
     await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, {
       method: "POST",
-      body: { delete_locator: false }
+      body: { delete_locator: deleteLocator }
     });
     if (selectedWorkspaceId === workspaceId) {
       setSelectedWorkspaceId("");
@@ -935,6 +939,25 @@ function App() {
     setSelectedContextId(null);
     setDraftMode(true);
     clearContextEvents();
+  }
+
+  async function deleteConversation(contextId: string, label: string) {
+    if (!selectedWorkspace) return;
+    if (!window.confirm(`Delete conversation "${label}"?\n\nThis permanently deletes the conversation and its events from Floe.`)) return;
+    await api(busUrl, `/v1/contexts/${encodeURIComponent(contextId)}`, { method: "DELETE" });
+    setContexts((prev) => prev.filter((ctx) => ctx.context_id !== contextId));
+    setPulseLabels((prev) => {
+      if (prev[contextId] === undefined) return prev;
+      const next = { ...prev };
+      delete next[contextId];
+      return next;
+    });
+    if (selectedContextId === contextId) {
+      setSelectedContextId(null);
+      setDraftMode(false);
+      clearContextEvents();
+    }
+    await refreshContexts(selectedWorkspace.workspace_id);
   }
 
   function createField(name?: string) {
@@ -1594,7 +1617,7 @@ function App() {
                   const isActive = ctx.context_id === selectedContextId;
                   const activityTime = ctx.last_event_at ?? ctx.created_at;
                   return (
-                    <li key={ctx.context_id}>
+                    <li key={ctx.context_id} className="channel-context-row">
                       <button
                         type="button"
                         data-testid="context-list-item"
@@ -1615,6 +1638,18 @@ function App() {
                         >
                           {formatContextTimestamp(activityTime)}
                         </time>
+                      </button>
+                      <button
+                        type="button"
+                        className="channel-context-delete-button"
+                        aria-label={`Delete conversation ${label}`}
+                        title={`Delete conversation ${label}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteConversation(ctx.context_id, label);
+                        }}
+                      >
+                        <X size={12} />
                       </button>
                     </li>
                   );

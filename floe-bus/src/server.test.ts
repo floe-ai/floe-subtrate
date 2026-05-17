@@ -224,6 +224,47 @@ describe("Slice 2 — Context API HTTP routes", () => {
       expect(res.json()).toEqual({ events: [] });
     });
   });
+
+  describe("DELETE /v1/contexts/:id", () => {
+    it("hard deletes a conversation and removes it from context lists and event reads", async () => {
+      const r1 = emit(handle, { source: E1, destination: E2, text: "delete me" });
+      const ctx = r1.event.context_id;
+      emit(handle, { source: E1, destination: E2, text: "delete me too", context_id: ctx });
+      const other = emit(handle, { source: E1, destination: E2, text: "keep me" });
+      const otherCtx = other.event.context_id;
+
+      const before = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      expect((before.json().contexts as any[]).map((item) => item.context_id)).toContain(ctx);
+      expect((before.json().contexts as any[]).map((item) => item.context_id)).toContain(otherCtx);
+
+      const deleted = await handle.app.inject({ method: "DELETE", url: `/v1/contexts/${encodeURIComponent(ctx)}` });
+      expect(deleted.statusCode).toBe(200);
+      expect(deleted.json()).toMatchObject({
+        ok: true,
+        context_id: ctx,
+        workspace_id: WS,
+        events_deleted: 2
+      });
+
+      const afterList = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
+      expect((afterList.json().contexts as any[]).map((item) => item.context_id)).not.toContain(ctx);
+      expect((afterList.json().contexts as any[]).map((item) => item.context_id)).toContain(otherCtx);
+
+      const afterEvents = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(ctx)}/events` });
+      expect(afterEvents.statusCode).toBe(404);
+
+      const workspaceEvents = await handle.app.inject({ method: "GET", url: `/v1/events?workspace_id=${encodeURIComponent(WS)}` });
+      const workspaceContextIds = (workspaceEvents.json().events as any[]).map((event) => event.context_id);
+      expect(workspaceContextIds).not.toContain(ctx);
+      expect(workspaceContextIds).toContain(otherCtx);
+    });
+
+    it("returns 404 when deleting an unknown context", async () => {
+      const res = await handle.app.inject({ method: "DELETE", url: "/v1/contexts/ctx_unknown" });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ error: "context_not_found", context_id: "ctx_unknown" });
+    });
+  });
 });
 
 describe("Broadcast destination selector contract", () => {

@@ -90,7 +90,7 @@ test.describe("Workspace management", () => {
     expect(registerCalls).toBe(1);
   });
 
-  test("delete button appears on workspace hover and removes workspace", async ({ page }) => {
+  test("delete button appears on workspace hover and removes workspace while keeping files", async ({ page }) => {
     await seedApp(page);
 
     // Verify workspace is visible
@@ -99,9 +99,9 @@ test.describe("Workspace management", () => {
     await expect(workspaceRow.locator(".workspace-button span")).toHaveText(WORKSPACE_NAME);
 
     // Intercept delete call
-    let deleteCalled = false;
+    let deletePayload: unknown = null;
     await page.route(`**/v1/workspaces/${WORKSPACE_ID}/delete`, (route) => {
-      deleteCalled = true;
+      deletePayload = JSON.parse(route.request().postData() ?? "{}");
       return route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -125,10 +125,17 @@ test.describe("Workspace management", () => {
     await workspaceRow.hover();
 
     // Accept the confirmation dialog
+    const dialogMessages: string[] = [];
     page.on("dialog", async (dialog) => {
       expect(dialog.type()).toBe("confirm");
-      expect(dialog.message()).toContain("Delete workspace");
-      await dialog.accept();
+      dialogMessages.push(dialog.message());
+      if (dialogMessages.length === 1) {
+        expect(dialog.message()).toContain("Delete workspace");
+        await dialog.accept();
+        return;
+      }
+      expect(dialog.message()).toContain("Remove the workspace folder from disk");
+      await dialog.dismiss();
     });
 
     // Click delete button
@@ -136,7 +143,49 @@ test.describe("Workspace management", () => {
     await deleteButton.click({ force: true }); // force because opacity might not be fully visible
 
     await page.waitForTimeout(500);
-    expect(deleteCalled).toBe(true);
+    expect(deletePayload).toEqual({ delete_locator: false });
+    expect(dialogMessages).toHaveLength(2);
+  });
+
+  test("delete workspace can also remove files from disk", async ({ page }) => {
+    await seedApp(page);
+
+    const workspaceRow = page.locator(".workspace-row").first();
+    await expect(workspaceRow).toBeVisible();
+
+    let deletePayload: unknown = null;
+    await page.route(`**/v1/workspaces/${WORKSPACE_ID}/delete`, (route) => {
+      deletePayload = JSON.parse(route.request().postData() ?? "{}");
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, workspace_id: WORKSPACE_ID, locator_deleted: true })
+      });
+    });
+    await page.route("**/v1/workspaces", (route) => {
+      if (route.request().method() === "GET") {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ workspaces: [] })
+        });
+      }
+      return route.fulfill({ status: 200, body: JSON.stringify({}) });
+    });
+
+    const dialogMessages: string[] = [];
+    page.on("dialog", async (dialog) => {
+      dialogMessages.push(dialog.message());
+      await dialog.accept();
+    });
+
+    await workspaceRow.hover();
+    await workspaceRow.locator(".workspace-delete-button").click({ force: true });
+
+    await page.waitForTimeout(500);
+    expect(deletePayload).toEqual({ delete_locator: true });
+    expect(dialogMessages[0]).toContain("Delete workspace");
+    expect(dialogMessages[1]).toContain("Remove the workspace folder from disk");
   });
 });
 

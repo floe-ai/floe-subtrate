@@ -988,6 +988,13 @@ code {
   list-style: none;
 }
 
+.channel-context-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 4px;
+}
+
 .channel-context-item {
   display: grid;
   min-height: 44px;
@@ -1018,6 +1025,31 @@ code {
   color: var(--text-muted);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.channel-context-delete-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+
+.channel-context-row:hover .channel-context-delete-button,
+.channel-context-row:focus-within .channel-context-delete-button {
+  opacity: 1;
+}
+
+.channel-context-delete-button:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .channel-context-empty {
