@@ -227,7 +227,7 @@ export type DeliveryRenderingPolicy = {
 export type RuntimeInstructionSet = {
   /** Base agent persona/instructions from .floe/agents/*.md */
   agent_instructions: string;
-  /** Substrate guidance (endpoint/event/emit/turn semantics) */
+  /** Substrate guidance (actor/event/emit/turn semantics) */
   substrate_guidance: string;
   /** Extension-provided instruction profiles */
   extension_profiles: string[];

@@ -34,8 +34,7 @@ test.describe("Live emit E2E", () => {
     // Wait for workspace to load (look for workspace name or home view)
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 10000 });
 
-    // Open the Floe channel (right panel)
-    const channelToggle = page.locator("button[title*='Channel'], button[title*='channel'], .channel-toggle");
+    const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
     if (await channelToggle.count() > 0) {
       await channelToggle.first().click();
       await page.waitForTimeout(500);
@@ -60,7 +59,7 @@ test.describe("Live emit E2E", () => {
     expect(text).not.toContain("tool_call");
   });
 
-  test("endpoint listing via delivery context works", async ({ page }) => {
+  test("actor listing via delivery context works", async ({ page }) => {
     await page.goto(WEB_URL);
     await page.evaluate((busUrl) => {
       localStorage.setItem("floe.busUrl", busUrl);
@@ -69,7 +68,7 @@ test.describe("Live emit E2E", () => {
     await page.waitForTimeout(1000);
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 10000 });
 
-    const channelToggle = page.locator("button[title*='Channel'], button[title*='channel'], .channel-toggle");
+    const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
     if (await channelToggle.count() > 0) {
       await channelToggle.first().click();
       await page.waitForTimeout(500);
@@ -77,11 +76,10 @@ test.describe("Live emit E2E", () => {
 
     const composer = page.locator(".channel-composer input, .channel-composer textarea");
     await expect(composer).toBeVisible({ timeout: 5000 });
-    await composer.fill("What endpoints can you see in this workspace?");
+    await composer.fill("What actors can you see in this workspace?");
     await composer.press("Enter");
 
-    // Wait for agent response — model may not always mention "endpoint" explicitly
-    // but should produce a meaningful reply about what it can see
+    // Wait for agent response — model should produce a meaningful reply about what it can see
     await expect(agentMessages.last()).toBeVisible({ timeout: 30000 });
     const text = await agentMessages.last().textContent();
     expect(text).toBeTruthy();
@@ -98,7 +96,7 @@ test.describe("Live emit E2E", () => {
     await page.waitForTimeout(1000);
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 10000 });
 
-    const channelToggle = page.locator("button[title*='Channel'], button[title*='channel'], .channel-toggle");
+    const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
     if (await channelToggle.count() > 0) {
       await channelToggle.first().click();
       await page.waitForTimeout(500);

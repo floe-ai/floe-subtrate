@@ -70,6 +70,19 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
     expect(content).not.toContain("auth_profile");
   });
 
+  it("uses actor-neutral default agent instructions", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test Project");
+
+    const content = readFileSync(join(workspace, ".floe", "agents", "floe.md"), "utf8");
+
+    expect(content).toContain("You are an actor in Floe.");
+    expect(content).toContain("source actor");
+    expect(content).not.toContain("runtime-backed endpoint");
+    expect(content).not.toContain("another endpoint");
+    expect(content).not.toContain("source endpoint");
+  });
+
   it("is idempotent — does not overwrite an existing .floe directory", () => {
     const workspace = makeTmp();
     ensureProjectTemplate(workspace, "Test Project");
@@ -105,5 +118,23 @@ describe("materializeSavedConfig – agent runtime block (Issue 1)", () => {
     expect(runtime.engine).toBe("pi");
     expect(runtime).not.toHaveProperty("provider");
     expect(runtime).not.toHaveProperty("model");
+  });
+
+  it("uses actor-neutral fallback instructions for configured agents", () => {
+    const workspace = makeTmp();
+    materializeSavedConfig(workspace, {
+      agents: [
+        {
+          id: "reviewer",
+          name: "Reviewer"
+        }
+      ]
+    });
+
+    const content = readFileSync(join(workspace, ".floe", "agents", "reviewer.md"), "utf8");
+
+    expect(content).toContain("You are Reviewer, a Floe actor for this project.");
+    expect(content).not.toContain("runtime-backed agent");
+    expect(content).not.toContain("runtime-backed endpoint");
   });
 });

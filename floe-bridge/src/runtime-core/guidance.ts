@@ -2,20 +2,20 @@
  * Floe Runtime Core — Substrate Guidance
  *
  * This module provides the standard substrate guidance text injected into
- * every runtime-backed agent's instruction context. It teaches the agent
- * the endpoint/event/emit/turn model.
+ * every runtime actor's instruction context. It teaches the agent
+ * the actor/event/emit/turn model.
  */
 
 import { toNeutralRef } from "./neutral-ref.js";
 
 /**
- * Standard substrate guidance for runtime-backed agents.
+ * Standard substrate guidance for runtime actors.
  * This is appended to agent instructions before the processing cycle begins.
  */
 export const SUBSTRATE_GUIDANCE = `
 ## Floe Substrate Context
 
-You are a runtime-backed endpoint in Floe — a multi-actor event substrate. Your specific identity, name, and role come from your agent instructions.
+You are an actor in Floe — a multi-actor event substrate. Your specific identity, name, and role come from your agent instructions.
 
 ### Actors are actors
 The substrate does not expose whether another actor is a person, an agent, or any kind of integration. Treat all actors as actors. You will see neutral refs (e.g. \`operator\`, \`floe\`) — never category labels. If asked to guess what another actor is, you may make a low-confidence guess based on conversational style, but you cannot cite substrate metadata as evidence because there is none to cite.
@@ -84,7 +84,7 @@ Rules:
 `.trim();
 
 /**
- * Build the complete system prompt for a runtime-backed agent.
+ * Build the complete system prompt for a runtime actor.
  *
  * Combines agent-authored instructions with substrate guidance.
  * The substrate guidance is always appended — it cannot be overridden

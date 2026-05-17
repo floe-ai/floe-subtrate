@@ -13,7 +13,11 @@ const WORKSPACE_ID = "ws_neutral";
 const OPERATOR_ID = `actor:${WORKSPACE_ID}:operator`;
 const FLOE_ID = `actor:${WORKSPACE_ID}:floe`;
 
-function setupRoutesForNeutralUI(page: import("@playwright/test").Page) {
+function setupRoutesForNeutralUI(page: import("@playwright/test").Page, options: {
+  operatorName?: string;
+  onRegister?: (body: Record<string, unknown>) => void;
+} = {}) {
+  const operatorName = options.operatorName ?? "Operator";
   return Promise.all([
     page.route("**/v1/workspaces", (route) => {
       if (route.request().method() === "GET") {
@@ -39,17 +43,18 @@ function setupRoutesForNeutralUI(page: import("@playwright/test").Page) {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          endpoints: [
-            { endpoint_id: FLOE_ID, workspace_id: WORKSPACE_ID, name: "Floe", status: "idle", agent_id: "floe", metadata_json: "{}" },
-            { endpoint_id: OPERATOR_ID, workspace_id: WORKSPACE_ID, name: "Operator", status: "online", metadata_json: "{}" },
+             endpoints: [
+             { endpoint_id: FLOE_ID, workspace_id: WORKSPACE_ID, name: "Floe", status: "idle", agent_id: "floe", metadata_json: "{}" },
+            { endpoint_id: OPERATOR_ID, workspace_id: WORKSPACE_ID, name: operatorName, status: "online", metadata_json: "{}" },
           ]
         })
       })
     ),
 
-    page.route("**/v1/endpoints/register", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
-    ),
+    page.route("**/v1/endpoints/register", async (route) => {
+      options.onRegister?.(JSON.parse(route.request().postData() ?? "{}"));
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    }),
 
     page.route("**/v1/auth/profiles", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ profiles: [] }) })
@@ -131,7 +136,7 @@ async function gotoAndOpenChannel(page: import("@playwright/test").Page) {
   await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
   await page.waitForTimeout(500);
   // Open channel panel
-  await page.click('.icon-button[title="Toggle Channel"]');
+  await page.click('.icon-button[aria-label="Open actor conversation panel"]');
   await page.waitForTimeout(400);
 }
 
@@ -185,6 +190,41 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
     expect(selfMessages).toBeGreaterThan(0);
   });
 
+  test("self message label uses the bus endpoint name instead of localStorage", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("floe-operator-name", "Cached Alice"));
+    await setupRoutesForNeutralUI(page, { operatorName: "Bus Bob" });
+    await page.goto("/");
+    await page.click('.icon-button[aria-label="Open actor conversation panel"]');
+    await page.waitForSelector(".channel-message.self", { timeout: 5000 });
+
+    const selfMessage = page.locator(".channel-message.self").first();
+    await expect(selfMessage).toContainText("Bus Bob");
+    await expect(selfMessage).not.toContainText("Cached Alice");
+  });
+
+  test("updating the operator display name upserts the bus endpoint without category fields", async ({ page }) => {
+    const registrations: Array<Record<string, unknown>> = [];
+    await setupRoutesForNeutralUI(page, {
+      operatorName: "Bus Bob",
+      onRegister: (body) => registrations.push(body)
+    });
+    await page.goto("/");
+
+    const displayName = page.getByLabel("Your display name");
+    await displayName.fill("Review Operator");
+    await displayName.blur();
+
+    await expect.poll(() => registrations.find((body) => body.name === "Review Operator")).toBeTruthy();
+    const body = registrations.find((item) => item.name === "Review Operator")!;
+    expect(body).toMatchObject({
+      endpoint_id: OPERATOR_ID,
+      workspace_id: WORKSPACE_ID,
+      name: "Review Operator",
+      status: "online"
+    });
+    expect(body).not.toHaveProperty("actor_type");
+  });
+
   test("Inspector does not show Humans/Agents counts", async ({ page }) => {
     await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
@@ -195,12 +235,12 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
     expect(inspectorText).not.toMatch(/\bAgents\b.*\d/);
   });
 
-  test("no 'Default channel' label in inspector — uses actor-neutral wording instead", async ({ page }) => {
+  test("no legacy default conversation label in inspector — uses actor-neutral wording instead", async ({ page }) => {
     await gotoAndOpenChannel(page);
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     const bodyText = await page.locator("body").innerText();
-    expect(bodyText).not.toContain("Default channel");
+    expect(bodyText).not.toMatch(/Default\s+channel/);
     expect(bodyText).toMatch(/actors/i);
   });
 
@@ -221,7 +261,7 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
     await page.goto("/");
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
     await page.waitForTimeout(500);
-    await page.click('.icon-button[title="Toggle Channel"]');
+    await page.click('.icon-button[aria-label="Open actor conversation panel"]');
     await page.waitForTimeout(400);
 
     const bodyText = await page.locator("body").innerText();

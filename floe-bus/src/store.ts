@@ -818,8 +818,9 @@ export class BusStore {
     `).get(endpointId) as { c: number };
     const status = openPending.c > 0 ? "waiting" : queued.c > 0 ? "queued" : "idle";
     const endpoint = this.updateEndpointStatus(endpointId, status, broadcast);
+    if (status === "queued") this.tryCreateDeliveryForEndpoint(endpointId, broadcast);
     broadcast("turn_end_observed", { endpoint_id: endpointId, status });
-    return endpoint;
+    return this.getEndpoint(endpointId) ?? endpoint;
   }
 
   claimDeliveries(bridgeId: string, limit: number, broadcast: Broadcast): DeliveryBundle[] {
@@ -1371,7 +1372,7 @@ export class BusStore {
     `).run(`q_${randomUUID()}`, eventId, workspaceId, destinationEndpointId, now());
     this.db.prepare(`
       UPDATE endpoints
-      SET status = CASE WHEN status = 'runtime_unconfigured' THEN status ELSE 'queued' END,
+      SET status = CASE WHEN status IN ('active', 'runtime_unconfigured') THEN status ELSE 'queued' END,
           updated_at = ?
       WHERE endpoint_id = ?
     `).run(now(), destinationEndpointId);

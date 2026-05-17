@@ -347,13 +347,11 @@ describe("Broadcast destination selector contract", () => {
       method: "GET",
       url: "/v1/delivery/claim?bridge_id=bridge%3Atest&limit=10"
     });
-    const deliveries = claim.json().deliveries as any[];
-    expect(deliveries).toHaveLength(1);
-    expect(deliveries[0].endpoint_id).toBe(E2);
-    expect(deliveries[0].events[0].destination_json).toMatchObject({
-      kind: "broadcast",
-      target: "active"
-    });
+    expect(claim.json().deliveries).toEqual([]);
+    const queued = (handle.store as any).db.prepare(
+      "SELECT * FROM event_queue WHERE destination_endpoint_id = ? AND state = 'queued'"
+    ).all(E2);
+    expect(queued).toHaveLength(1);
   });
 
   it("HTTP emit rejects old actor-category broadcast selectors without persisting an event", async () => {

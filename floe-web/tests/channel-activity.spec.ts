@@ -254,7 +254,7 @@ async function seedAndOpenChannel(
   await page.waitForTimeout(500);
 
   // Open channel
-  await page.click('.icon-button[title="Toggle Channel"]');
+  await page.click('.icon-button[aria-label="Open actor conversation panel"]');
   await page.waitForTimeout(400);
 }
 

@@ -9,8 +9,8 @@ import { defaultConfig } from "./config.js";
 const noop = () => {};
 
 const WS = "workspace:delivery-sym";
-const AGENT_EP = "actor:sym:a1";
-const HUMAN_EP = "actor:sym:h1";
+const PROCESSOR_EP = "actor:sym:processor";
+const OBSERVER_EP = "actor:sym:observer";
 const BRIDGE = "bridge:sym:b1";
 
 function makeStore(): { store: BusStore; cleanup: () => void } {
@@ -28,7 +28,7 @@ function makeStore(): { store: BusStore; cleanup: () => void } {
   };
 }
 
-describe("Delivery symmetry (actor_type removed)", () => {
+describe("Delivery symmetry", () => {
   let store: BusStore;
   let cleanup: () => void;
 
@@ -37,26 +37,23 @@ describe("Delivery symmetry (actor_type removed)", () => {
   });
   afterEach(() => cleanup());
 
-  it("registers an endpoint without actor_type field", () => {
-    // Registration must succeed with no actor_type in input
+  it("registers an actor-neutral endpoint record", () => {
     const ep = store.registerEndpoint({
-      endpoint_id: AGENT_EP,
+      endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
-      name: "Agent A1",
+      name: "Processor",
       bridge_id: BRIDGE,
       status: "idle"
     }, noop);
     expect(ep).toBeTruthy();
-    expect((ep as any).actor_type).toBeUndefined();
     expect((ep as any).bridge_id).toBe(BRIDGE);
   });
 
   it("creates delivery for actor with bridge_id", () => {
-    // Actor with bridge_id should get deliveries created
     store.registerEndpoint({
-      endpoint_id: AGENT_EP,
+      endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
-      name: "Agent A1",
+      name: "Processor",
       bridge_id: BRIDGE,
       status: "idle"
     }, noop);
@@ -64,23 +61,21 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const cmd: EventCommand = {
       type: "message",
       workspace_id: WS,
-      source_endpoint_id: HUMAN_EP,
-      destination: { kind: "endpoint", endpoint_id: AGENT_EP },
+      source_endpoint_id: OBSERVER_EP,
+      destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
       content: { body: "hello" },
       response: { expected: false }
     };
     const envelope = store.submitEvent(cmd, noop);
     expect(envelope).toBeTruthy();
 
-    // Try to claim a delivery for the bridge
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBeGreaterThan(0);
   });
 
   it("does not create delivery for actor without bridge_id", () => {
-    // Actor without bridge_id should NOT get push deliveries
     store.registerEndpoint({
-      endpoint_id: HUMAN_EP,
+      endpoint_id: OBSERVER_EP,
       workspace_id: WS,
       name: "Operator",
       bridge_id: null,
@@ -90,28 +85,27 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const cmd: EventCommand = {
       type: "message",
       workspace_id: WS,
-      source_endpoint_id: AGENT_EP,
-      destination: { kind: "endpoint", endpoint_id: HUMAN_EP },
-      content: { body: "hello human" },
+      source_endpoint_id: PROCESSOR_EP,
+      destination: { kind: "endpoint", endpoint_id: OBSERVER_EP },
+      content: { body: "hello observer" },
       response: { expected: false }
     };
     store.submitEvent(cmd, noop);
 
-    // No delivery should be created for the human endpoint (no bridge)
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBe(0);
   });
 
   it("broadcast with_delivery_processor targets only actors with bridge_id", () => {
     store.registerEndpoint({
-      endpoint_id: AGENT_EP,
+      endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
-      name: "Agent A1",
+      name: "Processor",
       bridge_id: BRIDGE,
       status: "idle"
     }, noop);
     store.registerEndpoint({
-      endpoint_id: HUMAN_EP,
+      endpoint_id: OBSERVER_EP,
       workspace_id: WS,
       name: "Operator",
       bridge_id: null,
@@ -121,7 +115,7 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const cmd: EventCommand = {
       type: "notification",
       workspace_id: WS,
-      source_endpoint_id: HUMAN_EP,
+      source_endpoint_id: OBSERVER_EP,
       destination: { kind: "broadcast", scope: "workspace", target: "with_delivery_processor" },
       content: { body: "system alert" },
       response: { expected: false }
@@ -129,22 +123,21 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const envelope = store.submitEvent(cmd, noop);
     expect(envelope).toBeTruthy();
 
-    // Only the agent (with bridge_id) should have a queued event
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBeGreaterThan(0);
-    expect(deliveries[0].endpoint_id).toBe(AGENT_EP);
+    expect(deliveries[0].endpoint_id).toBe(PROCESSOR_EP);
   });
 
-  it("broadcast active_with_delivery_processor targets only active actors with bridge_id", () => {
+  it("broadcast active_with_delivery_processor queues active actors with bridge_id without concurrent delivery", () => {
     store.registerEndpoint({
-      endpoint_id: AGENT_EP,
+      endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
-      name: "Agent A1",
+      name: "Processor",
       bridge_id: BRIDGE,
       status: "active"
     }, noop);
     store.registerEndpoint({
-      endpoint_id: HUMAN_EP,
+      endpoint_id: OBSERVER_EP,
       workspace_id: WS,
       name: "Operator",
       bridge_id: null,
@@ -154,28 +147,30 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const cmd: EventCommand = {
       type: "notification",
       workspace_id: WS,
-      source_endpoint_id: HUMAN_EP,
+      source_endpoint_id: OBSERVER_EP,
       destination: { kind: "broadcast", scope: "workspace", target: "active_with_delivery_processor" },
       content: { body: "active processor alert" },
       response: { expected: false }
     };
     store.submitEvent(cmd, noop);
 
-    const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
-    expect(deliveries).toHaveLength(1);
-    expect(deliveries[0].endpoint_id).toBe(AGENT_EP);
+    const queued = (store as any).db.prepare(
+      "SELECT * FROM event_queue WHERE destination_endpoint_id = ? AND state = 'queued'"
+    ).all(PROCESSOR_EP);
+    expect(queued).toHaveLength(1);
+    expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
   });
 
   it("broadcast active_without_delivery_processor targets active actors without bridge_id", () => {
     store.registerEndpoint({
-      endpoint_id: AGENT_EP,
+      endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
-      name: "Agent A1",
+      name: "Processor",
       bridge_id: BRIDGE,
       status: "active"
     }, noop);
     store.registerEndpoint({
-      endpoint_id: HUMAN_EP,
+      endpoint_id: OBSERVER_EP,
       workspace_id: WS,
       name: "Operator",
       bridge_id: null,
@@ -185,7 +180,7 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const cmd: EventCommand = {
       type: "notification",
       workspace_id: WS,
-      source_endpoint_id: AGENT_EP,
+      source_endpoint_id: PROCESSOR_EP,
       destination: { kind: "broadcast", scope: "workspace", target: "active_without_delivery_processor" },
       content: { body: "active pollable alert" },
       response: { expected: false }
@@ -194,21 +189,21 @@ describe("Delivery symmetry (actor_type removed)", () => {
 
     const queued = (store as any).db.prepare(
       "SELECT * FROM event_queue WHERE destination_endpoint_id = ?"
-    ).all(HUMAN_EP);
+    ).all(OBSERVER_EP);
     expect(queued).toHaveLength(1);
     expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
   });
 
   it("broadcast all targets all actors", () => {
     store.registerEndpoint({
-      endpoint_id: AGENT_EP,
+      endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
-      name: "Agent A1",
+      name: "Processor",
       bridge_id: BRIDGE,
       status: "idle"
     }, noop);
     store.registerEndpoint({
-      endpoint_id: HUMAN_EP,
+      endpoint_id: OBSERVER_EP,
       workspace_id: WS,
       name: "Operator",
       bridge_id: null,
@@ -218,35 +213,33 @@ describe("Delivery symmetry (actor_type removed)", () => {
     const cmd: EventCommand = {
       type: "notification",
       workspace_id: WS,
-      source_endpoint_id: AGENT_EP,
+      source_endpoint_id: PROCESSOR_EP,
       destination: { kind: "broadcast", scope: "workspace", target: "all", exclude_source: true },
       content: { body: "hello everyone" },
       response: { expected: false }
     };
     store.submitEvent(cmd, noop);
 
-    // The human endpoint should have a queued event (we check via DB state)
     const queued = (store as any).db.prepare(
       "SELECT * FROM event_queue WHERE destination_endpoint_id = ?"
-    ).all(HUMAN_EP);
+    ).all(OBSERVER_EP);
     expect(queued.length).toBeGreaterThan(0);
   });
 
   it("deferred delivery sets runtime_unconfigured for bridge actors only", () => {
     store.registerEndpoint({
-      endpoint_id: AGENT_EP,
+      endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
-      name: "Agent A1",
+      name: "Processor",
       bridge_id: BRIDGE,
       status: "idle"
     }, noop);
 
-    // Submit event and create delivery
     const cmd: EventCommand = {
       type: "message",
       workspace_id: WS,
-      source_endpoint_id: HUMAN_EP,
-      destination: { kind: "endpoint", endpoint_id: AGENT_EP },
+      source_endpoint_id: OBSERVER_EP,
+      destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
       content: { body: "test deferred" },
       response: { expected: false }
     };
@@ -255,7 +248,6 @@ describe("Delivery symmetry (actor_type removed)", () => {
     expect(deliveries.length).toBeGreaterThan(0);
     const delivery = deliveries[0];
 
-    // Defer the delivery
     store.reportDeliveryStatus({
       bridge_id: BRIDGE,
       delivery_id: delivery.delivery_id,
@@ -263,32 +255,74 @@ describe("Delivery symmetry (actor_type removed)", () => {
       error: "bridge disconnected"
     }, noop);
 
-    // The endpoint should now be runtime_unconfigured (has bridge_id)
-    const ep = store.getEndpoint(AGENT_EP) as any;
+    const ep = store.getEndpoint(PROCESSOR_EP) as any;
     expect(ep.status).toBe("runtime_unconfigured");
+  });
+
+  it("makes queued work deliverable at normal turn end for an active delivery processor", () => {
+    store.registerEndpoint({
+      endpoint_id: PROCESSOR_EP,
+      workspace_id: WS,
+      name: "Processor",
+      bridge_id: BRIDGE,
+      status: "idle"
+    }, noop);
+
+    store.submitEvent({
+      type: "message",
+      workspace_id: WS,
+      source_endpoint_id: OBSERVER_EP,
+      destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
+      content: { body: "first" },
+      response: { expected: false }
+    }, noop);
+
+    const firstDeliveries = store.claimDeliveries(BRIDGE, 10, noop);
+    expect(firstDeliveries).toHaveLength(1);
+    expect((store.getEndpoint(PROCESSOR_EP) as any).status).toBe("active");
+
+    store.submitEvent({
+      type: "message",
+      workspace_id: WS,
+      source_endpoint_id: OBSERVER_EP,
+      destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
+      content: { body: "second" },
+      response: { expected: false }
+    }, noop);
+
+    expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
+
+    store.reportDeliveryStatus({
+      bridge_id: BRIDGE,
+      delivery_id: firstDeliveries[0].delivery_id,
+      state: "acknowledged"
+    }, noop);
+    store.reportTurnEnd(PROCESSOR_EP, noop);
+
+    const nextDeliveries = store.claimDeliveries(BRIDGE, 10, noop);
+    expect(nextDeliveries).toHaveLength(1);
+    expect(nextDeliveries[0].trigger_event_id).not.toBe(firstDeliveries[0].trigger_event_id);
   });
 
   it("webhook ingest targets first actor with bridge_id", () => {
     store.registerEndpoint({
-      endpoint_id: HUMAN_EP,
+      endpoint_id: OBSERVER_EP,
       workspace_id: WS,
       name: "Operator",
       bridge_id: null,
       status: "idle"
     }, noop);
     store.registerEndpoint({
-      endpoint_id: AGENT_EP,
+      endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
-      name: "Agent A1",
+      name: "Processor",
       bridge_id: BRIDGE,
       status: "idle"
     }, noop);
 
-    // Webhook should find the agent (with bridge_id), not the human
     const envelope = store.ingestWebhook(WS, "route-1", { data: "payload" }, noop);
     expect(envelope).toBeTruthy();
 
-    // Verify the event was queued for the agent endpoint
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBeGreaterThan(0);
   });

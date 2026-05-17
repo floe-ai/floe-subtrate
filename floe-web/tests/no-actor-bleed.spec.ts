@@ -179,7 +179,7 @@ async function gotoAndOpenChannel(page: import("@playwright/test").Page) {
   await page.goto("/");
   await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
   await page.waitForTimeout(500);
-  await page.click('.icon-button[title="Toggle Channel"]');
+  await page.click('.icon-button[aria-label="Open actor conversation panel"]');
   await page.waitForTimeout(400);
 }
 
@@ -212,7 +212,7 @@ test.describe("No actor bleed between contexts (Slice 8)", () => {
     await page.goto("/");
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
     await page.waitForTimeout(500);
-    await page.click('.icon-button[title="Toggle Channel"]');
+    await page.click('.icon-button[aria-label="Open actor conversation panel"]');
     await page.waitForTimeout(800);
 
     // Verify the context list query used the operator's ID, not the agent's
@@ -227,7 +227,7 @@ test.describe("No actor bleed between contexts (Slice 8)", () => {
     await page.goto("/");
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
     await page.waitForTimeout(500);
-    await page.click('.icon-button[title="Toggle Channel"]');
+    await page.click('.icon-button[aria-label="Open actor conversation panel"]');
     await page.waitForTimeout(400);
 
     // Context B (floe↔reviewer) should not appear in the sidebar context list

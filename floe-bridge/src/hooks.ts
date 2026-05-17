@@ -66,7 +66,7 @@ export type HookPayloadByName = {
   SessionEnd: {
     endpoint_id: string;
     workspace_id: string;
-    reason: "session_replaced" | "bridge_shutdown" | "workspace_teardown" | "runtime_session_removed";
+    reason: "session_replaced" | "bridge_shutdown";
     previous_session: RuntimeSessionSummary;
     delivery_id?: string;
     trigger_event_id?: string;

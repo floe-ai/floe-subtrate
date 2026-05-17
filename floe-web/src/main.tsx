@@ -206,6 +206,8 @@ function App() {
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
   const selfActorId = selectedWorkspace ? operatorActorId(selectedWorkspace.workspace_id) : "";
+  const operatorEndpoint = endpoints.find((endpoint) => endpoint.endpoint_id === selfActorId) ?? null;
+  const operatorDisplayName = endpointDisplayName(operatorEndpoint) ?? "You";
   const agents = endpoints.filter((endpoint) => endpoint.endpoint_id !== selfActorId);
   const selectedAgent =
     agents.find((endpoint) => endpoint.endpoint_id === selectedAgentId) ??
@@ -580,6 +582,11 @@ function App() {
   }, [selectedWorkspaceId]);
 
   useEffect(() => {
+    const name = endpointDisplayName(operatorEndpoint);
+    if (name) localStorage.setItem("floe-operator-name", name);
+  }, [operatorEndpoint?.name]);
+
+  useEffect(() => {
     skipNextSaveRef.current = true;
     if (!selectedWorkspaceId) {
       setFields([]);
@@ -816,7 +823,8 @@ function App() {
   }
 
   async function ensureOperator(workspaceId: string) {
-    const name = localStorage.getItem("floe-operator-name") || "You";
+    const existing = await fetchOperatorEndpoint(workspaceId);
+    const name = endpointDisplayName(existing) ?? cachedOperatorDisplayName() ?? "You";
     await api(busUrl, "/v1/endpoints/register", {
       method: "POST",
       body: {
@@ -827,6 +835,34 @@ function App() {
         metadata: { registered_by: "floe-web" }
       }
     });
+  }
+
+  async function fetchOperatorEndpoint(workspaceId: string): Promise<Endpoint | null> {
+    const endpointId = operatorActorId(workspaceId);
+    const current = endpoints.find((endpoint) => endpoint.endpoint_id === endpointId);
+    if (current) return current;
+    const result = await api<{ endpoints: Endpoint[] }>(
+      busUrl,
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`
+    );
+    return result.endpoints.find((endpoint) => endpoint.endpoint_id === endpointId) ?? null;
+  }
+
+  async function updateOperatorDisplayName(rawName: string) {
+    if (!selectedWorkspace) return;
+    const name = rawName.trim() || "You";
+    localStorage.setItem("floe-operator-name", name);
+    await api(busUrl, "/v1/endpoints/register", {
+      method: "POST",
+      body: {
+        endpoint_id: operatorActorId(selectedWorkspace.workspace_id),
+        workspace_id: selectedWorkspace.workspace_id,
+        name,
+        status: "online",
+        metadata: { registered_by: "floe-web" }
+      }
+    });
+    await refresh(selectedWorkspace.workspace_id);
   }
 
   async function setWorkspaceProfile(profileId: string) {
@@ -1340,7 +1376,7 @@ function App() {
             </label>
           </>
         )}
-        <Detail label="Floe endpoint" value={floeAgent?.status ?? "not registered"} />
+        <Detail label="Floe actor" value={floeAgent?.status ?? "not registered"} />
         {latestRuntimeError && <Detail label="Latest runtime issue" value={latestRuntimeError.kind} />}
       </InspectorSection>
     );
@@ -1383,7 +1419,18 @@ function App() {
   function ActorAccessSection() {
     return (
       <InspectorSection title="Workspace actors">
-        <Detail label="Registered endpoints" value={String(endpoints.length)} />
+        <label className="stacked-label">
+          Your display name
+          <input
+            key={`${selfActorId}:${operatorDisplayName}`}
+            defaultValue={operatorDisplayName}
+            onBlur={(event) => void updateOperatorDisplayName(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+          />
+        </label>
+        <Detail label="Registered actors" value={String(endpoints.length)} />
         <Detail label="Selectable actors" value={String(agents.length)} />
       </InspectorSection>
     );
@@ -1477,7 +1524,7 @@ function App() {
           <button
             className="icon-button"
             onClick={() => setChannelOpen(false)}
-            title="Close Channel"
+            title="Close actor conversation panel"
             aria-label="Close actor conversation panel"
           >
             <X size={16} />
@@ -1668,10 +1715,9 @@ function App() {
                   );
                 }
                 const isSelf = segment.message.source_endpoint_id === humanEndpoint;
-                const selfName = localStorage.getItem("floe-operator-name") || "You";
                 return (
                   <div key={segment.message.event_id} className={`channel-message ${isSelf ? "self" : "other"}`}>
-                    <div className="message-meta">{isSelf ? selfName : actorName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
+                    <div className="message-meta">{isSelf ? operatorDisplayName : actorName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
                     <div className="message-text">{isSelf ? segment.message.content.text : renderMarkdown(segment.message.content.text ?? "")}</div>
                     {segment.activity && renderActivityGroup(segment.activity)}
                   </div>
@@ -1801,7 +1847,7 @@ function App() {
             <button
               className="icon-button"
               onClick={() => setChannelOpen((current) => !current)}
-              title="Toggle Channel"
+              title="Toggle actor conversations"
               aria-label={channelOpen ? "Hide actor conversation panel" : "Open actor conversation panel"}
             >
               {channelOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
@@ -1882,6 +1928,16 @@ async function api<T>(baseUrl: string, path: string, options: { method?: string;
 
 function operatorActorId(workspaceId: string): string {
   return `actor:${workspaceId}:operator`;
+}
+
+function endpointDisplayName(endpoint: Endpoint | null | undefined): string | null {
+  const name = endpoint?.name?.trim();
+  return name ? name : null;
+}
+
+function cachedOperatorDisplayName(): string | null {
+  const name = localStorage.getItem("floe-operator-name")?.trim();
+  return name ? name : null;
 }
 
 function loadLocalFields(workspaceId: string): FieldBlock[] {

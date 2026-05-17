@@ -759,8 +759,8 @@ describe("Substrate guidance", () => {
     const guidance = capturedSystemPrompts[0];
     // Shared guidance must NOT contain "You are Floe"
     expect(guidance).not.toContain("You are Floe");
-    // But must contain identity-neutral endpoint framing
-    expect(guidance).toContain("runtime-backed endpoint in Floe");
+    expect(guidance).toContain("actor in Floe");
+    expect(guidance).not.toContain("runtime-backed endpoint");
     // Must teach explicit emit as the only communication path
     expect(guidance).toContain("only");
     expect(guidance).toContain("emit");
@@ -1532,8 +1532,9 @@ describe("Substrate model — explicit emit only", () => {
     expect(registeredTools).toContain("emit");
   });
 
-  it("list_endpoints is workspace-scoped and excludes cross-workspace endpoints", async () => {
+  it("list_endpoints and resolve_destination expose only neutral refs, names, and status", async () => {
     let listEndpointsResult: any = null;
+    let resolveDestinationResult: any = null;
 
     // Fake agent that calls list_endpoints tool
     const fakeAgent = {
@@ -1541,10 +1542,13 @@ describe("Substrate model — explicit emit only", () => {
       registeredTools: [] as any[],
       subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
       async prompt() {
-        // Call list_endpoints tool
-        const tool = this.registeredTools.find((t: any) => t.name === "list_endpoints");
-        if (tool) {
-          listEndpointsResult = await tool.execute("tc_list", {});
+        const listTool = this.registeredTools.find((t: any) => t.name === "list_endpoints");
+        if (listTool) {
+          listEndpointsResult = await listTool.execute("tc_list", {});
+        }
+        const resolveTool = this.registeredTools.find((t: any) => t.name === "resolve_destination");
+        if (resolveTool) {
+          resolveDestinationResult = await resolveTool.execute("tc_resolve", { ref: "operator" });
         }
         for (const l of this.listeners) await l({
           type: "turn_end",
@@ -1586,11 +1590,11 @@ describe("Substrate model — explicit emit only", () => {
     );
 
     const workspaceAEndpoints = [
-      { endpoint_id: "actor:ws-a:floe", name: "Floe", status: "idle" },
-      { endpoint_id: "actor:ws-a:operator", name: "Operator", status: "active" }
+      { endpoint_id: "actor:ws-a:floe", name: "Floe", status: "idle", bridge_id: "bridge:a", metadata_json: JSON.stringify({ runtime_adapter: "pi-agent-core" }) },
+      { endpoint_id: "actor:ws-a:operator", name: "Operator", status: "active", bridge_id: null, metadata_json: JSON.stringify({ interface: "operator" }) }
     ];
     const workspaceBEndpoints = [
-      { endpoint_id: "actor:ws-b:reviewer", name: "Reviewer", status: "idle" }
+      { endpoint_id: "actor:ws-b:reviewer", name: "Reviewer", status: "idle", bridge_id: "bridge:b", metadata_json: JSON.stringify({ provider: "mock" }) }
     ];
 
     const context = {
@@ -1621,7 +1625,7 @@ describe("Substrate model — explicit emit only", () => {
         thread_id: "thread-scope",
         correlation_id: null,
         destination_json: { kind: "endpoint", endpoint_id: "actor:ws-a:floe" },
-        content: { text: "list endpoints", data: {} },
+        content: { text: "list actors", data: {} },
         response: { expected: false },
         metadata: {},
         created_at: new Date().toISOString()
@@ -1633,13 +1637,23 @@ describe("Substrate model — explicit emit only", () => {
     expect(listEndpointsResult).not.toBeNull();
     const parsed = JSON.parse(listEndpointsResult.content[0].text);
 
-    // Should only see workspace A endpoints (excluding self) — neutral refs only
+    // Should only see workspace A actors (excluding self) — neutral refs only
     expect(parsed).toHaveLength(1); // only operator (self excluded)
-    expect(parsed[0].ref).toBe("operator");
-    expect(parsed[0]).not.toHaveProperty("endpoint_id");
-    expect(parsed[0]).not.toHaveProperty("actor_type");
+    expect(parsed[0]).toEqual({ ref: "operator", name: "Operator", status: "active" });
+    const listText = JSON.stringify(parsed);
+    for (const forbidden of ["actor:", "endpoint_id", "actor_type", "bridge_id", "runtime_adapter", "metadata_json", "provider", "model", "human", "agent", "user", "bot"]) {
+      expect(listText).not.toContain(forbidden);
+    }
 
-    // Should NOT see workspace B endpoints (no leakage of any ws-b name)
+    expect(resolveDestinationResult).not.toBeNull();
+    const resolved = JSON.parse(resolveDestinationResult.content[0].text);
+    expect(resolved).toEqual({ ref: "operator", name: "Operator", status: "active" });
+    const resolvedText = JSON.stringify(resolved);
+    for (const forbidden of ["actor:", "endpoint_id", "actor_type", "bridge_id", "runtime_adapter", "metadata_json", "provider", "model", "human", "agent", "user", "bot"]) {
+      expect(resolvedText).not.toContain(forbidden);
+    }
+
+    // Should NOT see workspace B actors (no leakage of any ws-b name)
     const wsB = parsed.filter((ep: any) => ep.name === "Reviewer" || (ep.ref ?? "").includes("reviewer"));
     expect(wsB).toHaveLength(0);
   });

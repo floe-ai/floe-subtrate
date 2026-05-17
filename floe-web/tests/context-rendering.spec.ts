@@ -304,7 +304,7 @@ async function bootApp(page: Page, world: WorldState): Promise<void> {
   await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
   await page.waitForTimeout(400);
   // Open the channel
-  await page.click('.icon-button[title="Toggle Channel"]');
+  await page.click('.icon-button[aria-label="Open actor conversation panel"]');
   await page.waitForTimeout(400);
 }
 

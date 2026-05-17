@@ -236,7 +236,7 @@ test.describe("Spinner behavior", () => {
     await page.waitForTimeout(500);
 
     // Open the channel
-    const channelToggle = page.locator("button[title='Toggle Channel']");
+    const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
     await channelToggle.click();
     await page.waitForTimeout(500);
 

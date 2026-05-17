@@ -14,6 +14,7 @@ import { loadExtensions, type LoadedExtension } from "./extension-loader.js";
 import { HookRegistry } from "./hooks.js";
 
 type Timer = ReturnType<typeof setInterval>;
+const WEBHOOK_DEDUPE_MAX_EVENTS = 10_000;
 
 type EndpointEntry = {
   config: AgentRuntimeConfig;
@@ -34,6 +35,7 @@ export class BridgeDaemon {
   private attaching = false;
   private processing = false;
   private reportedAttachments = new Map<string, string>();
+  private firedWebhookEvents = new Set<string>();
 
   constructor(readonly configPath: string, readonly config: LocalConfig) {
     this.bridgeId = process.env.FLOE_BRIDGE_ID ?? "bridge:local";
@@ -58,6 +60,7 @@ export class BridgeDaemon {
   async stop(): Promise<void> {
     for (const timer of this.timers) clearInterval(timer);
     this.timers = [];
+    this.firedWebhookEvents.clear();
     await this.adapter.dispose?.("bridge_shutdown");
   }
 
@@ -123,18 +126,33 @@ export class BridgeDaemon {
 
   private async fireWebhookReceived(event: any): Promise<void> {
     if (!event || event.type !== "webhook_received" || event.metadata?.trigger_kind !== "webhook") return;
-    const hooks = this.workspaceHooks.get(String(event.workspace_id));
+    if (event.source_endpoint_id !== null) return;
+    if (typeof event.event_id !== "string" || !event.event_id) return;
+    if (typeof event.workspace_id !== "string" || !event.workspace_id) return;
+    if (typeof event.metadata?.route_id !== "string" || !event.metadata.route_id) return;
+    if (this.firedWebhookEvents.has(event.event_id)) return;
+    const hooks = this.workspaceHooks.get(event.workspace_id);
     if (!hooks?.hasHandlers("WebhookReceived")) return;
     const destination = event.destination_json;
+    this.firedWebhookEvents.add(event.event_id);
+    this.pruneWebhookDedupe();
     await hooks.fire("WebhookReceived", {
       workspace_id: event.workspace_id,
-      route_id: typeof event.metadata?.route_id === "string" ? event.metadata.route_id : "",
+      route_id: event.metadata.route_id,
       event_id: event.event_id,
       context_id: event.context_id ?? null,
       target_endpoint_id: destination?.kind === "endpoint" ? destination.endpoint_id : null,
       content: event.content ?? {},
       metadata: event.metadata ?? {}
     });
+  }
+
+  private pruneWebhookDedupe(): void {
+    while (this.firedWebhookEvents.size > WEBHOOK_DEDUPE_MAX_EVENTS) {
+      const oldestEventId = this.firedWebhookEvents.keys().next().value;
+      if (oldestEventId === undefined) break;
+      this.firedWebhookEvents.delete(oldestEventId);
+    }
   }
 
   private async safeLivenessPing(): Promise<void> {

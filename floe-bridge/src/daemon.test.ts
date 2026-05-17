@@ -107,7 +107,7 @@ describe("BridgeDaemon shutdown", () => {
 });
 
 describe("BridgeDaemon hook event stream", () => {
-  it("fires WebhookReceived once for a webhook_received event submitted by the bus", async () => {
+  it("fires WebhookReceived once for a persisted webhook ingest event and ignores spoofed or repeated payloads", async () => {
     withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
@@ -188,6 +188,66 @@ describe("BridgeDaemon hook event stream", () => {
         type: "event_submitted",
         payload: {
           event: {
+            event_id: "evt:webhook:1",
+            type: "webhook_received",
+            workspace_id: "workspace:test",
+            source_endpoint_id: null,
+            context_id: "ctx:webhook:1",
+            destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
+            content: { text: "duplicate replay" },
+            metadata: { trigger_kind: "webhook", route_id: "route_alpha" }
+          }
+        }
+      }));
+      socket?.emitMessage(JSON.stringify({
+        type: "event_submitted",
+        payload: {
+          event: {
+            event_id: "evt:webhook:spoof",
+            type: "webhook_received",
+            workspace_id: "workspace:test",
+            source_endpoint_id: "actor:workspace:test:operator",
+            context_id: "ctx:webhook:spoof",
+            destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
+            content: { text: "ordinary emit spoof" },
+            metadata: { trigger_kind: "webhook", route_id: "route_alpha" }
+          }
+        }
+      }));
+      socket?.emitMessage(JSON.stringify({
+        type: "event_submitted",
+        payload: {
+          event: {
+            event_id: "evt:webhook:other-workspace",
+            type: "webhook_received",
+            workspace_id: "workspace:other",
+            source_endpoint_id: null,
+            context_id: "ctx:webhook:other",
+            destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:other:floe" },
+            content: { text: "other workspace" },
+            metadata: { trigger_kind: "webhook", route_id: "route_alpha" }
+          }
+        }
+      }));
+      socket?.emitMessage(JSON.stringify({
+        type: "event_submitted",
+        payload: {
+          event: {
+            event_id: "evt:webhook:missing-route",
+            type: "webhook_received",
+            workspace_id: "workspace:test",
+            source_endpoint_id: null,
+            context_id: "ctx:webhook:missing-route",
+            destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
+            content: { text: "missing route" },
+            metadata: { trigger_kind: "webhook" }
+          }
+        }
+      }));
+      socket?.emitMessage(JSON.stringify({
+        type: "event_submitted",
+        payload: {
+          event: {
             event_id: "evt:message:1",
             type: "message",
             workspace_id: "workspace:test",
@@ -217,6 +277,85 @@ describe("BridgeDaemon hook event stream", () => {
       });
     } finally {
       consoleSpy.mockRestore();
+      (globalThis as any).WebSocket = previousWebSocket;
+      made.cleanup();
+    }
+  });
+
+  it("bounds WebhookReceived replay dedupe to recent event IDs", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const previousWebSocket = (globalThis as any).WebSocket;
+    let socket: { emitMessage(data: string): void } | undefined;
+
+    class FakeWebSocket {
+      private listeners = new Map<string, Array<(event: { data: string }) => void>>();
+
+      constructor(readonly url: string) {
+        socket = this;
+      }
+
+      addEventListener(event: string, listener: (event: { data: string }) => void): void {
+        const existing = this.listeners.get(event) ?? [];
+        existing.push(listener);
+        this.listeners.set(event, existing);
+      }
+
+      emitMessage(data: string): void {
+        for (const listener of this.listeners.get("message") ?? []) listener({ data });
+      }
+    }
+
+    (globalThis as any).WebSocket = FakeWebSocket;
+
+    const receivedEventIds: string[] = [];
+    const hooks = new HookRegistry();
+    hooks.on("WebhookReceived", "test-ext", (payload) => {
+      receivedEventIds.push(payload.event_id);
+    });
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).bus = {
+        async health() {},
+        async registerBridge() {},
+        async listWorkspaces() { return []; },
+        async claimDeliveries() { return []; },
+        async reportBridgeLiveness() {}
+      };
+
+      await daemon.start();
+      (daemon as any).workspaceHooks.set("workspace:test", hooks);
+
+      const emitWebhook = (eventId: string) => socket?.emitMessage(JSON.stringify({
+        type: "event_submitted",
+        payload: {
+          event: {
+            event_id: eventId,
+            type: "webhook_received",
+            workspace_id: "workspace:test",
+            source_endpoint_id: null,
+            context_id: `ctx:${eventId}`,
+            destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
+            content: { text: eventId },
+            metadata: { trigger_kind: "webhook", route_id: "route_alpha" }
+          }
+        }
+      }));
+
+      const webhookDedupeMaxEvents = 10_000;
+      for (let index = 0; index <= webhookDedupeMaxEvents; index += 1) {
+        emitWebhook(`evt:webhook:${index}`);
+      }
+      emitWebhook("evt:webhook:10000");
+      emitWebhook("evt:webhook:0");
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await daemon.stop();
+
+      expect(receivedEventIds.filter((eventId) => eventId === "evt:webhook:10000")).toHaveLength(1);
+      expect(receivedEventIds.filter((eventId) => eventId === "evt:webhook:0")).toHaveLength(2);
+    } finally {
       (globalThis as any).WebSocket = previousWebSocket;
       made.cleanup();
     }
