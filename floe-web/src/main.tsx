@@ -28,15 +28,7 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
-  ReactFlowProvider,
-  applyEdgeChanges,
-  applyNodeChanges,
-  useReactFlow,
-  type Edge,
-  type EdgeChange,
-  type XYPosition,
-  type NodeChange,
-  type Node
+  ReactFlowProvider
 } from "@xyflow/react";
 import "./styles.css";
 import {
@@ -46,6 +38,18 @@ import {
   type ContextEvent,
   type ContextSummary
 } from "./contexts";
+import {
+  fieldToReactFlow,
+  type FieldSummary,
+  type FieldSemantic
+} from "./fields";
+import {
+  listFields,
+  getField,
+  putFieldSemantic,
+  deleteField as deleteFieldApi,
+  type LoadedField
+} from "./fields-api";
 
 type Workspace = {
   workspace_id: string;
@@ -113,17 +117,7 @@ type TelemetryRecord = {
   created_at: string;
 };
 
-type FieldBlock = {
-  id: string;
-  name: string;
-  parent_id?: string | null;
-  created_at: string;
-  updated_at: string;
-  nodes: Node[];
-  edges: Edge[];
-};
-
-type RuntimeActivity = {
+type RuntimeActivity= {
   id: string;
   kind: string;
   summary: string;
@@ -151,8 +145,6 @@ type View =
   | { kind: "field"; fieldId: string };
 
 const defaultBusUrl = localStorage.getItem("floe.busUrl") ?? "http://127.0.0.1:5377";
-const localFieldStoragePrefix = "floe.web.local-fields.";
-const fieldPrimitiveMime = "application/x-floe-primitive";
 
 const runtimeErrorKinds = new Set([
   "runtime_error",
@@ -166,7 +158,6 @@ const runtimeErrorKinds = new Set([
 ]);
 
 function App() {
-  const { screenToFlowPosition } = useReactFlow();
   const [busUrl, setBusUrl] = useState(defaultBusUrl);
   const [showBusSettings, setShowBusSettings] = useState(false);
   const [workspacePath, setWorkspacePath] = useState("");
@@ -183,8 +174,8 @@ function App() {
   const [bridgeRuntimeKnown, setBridgeRuntimeKnown] = useState(false);
   const [bridgeRuntimeAdapter, setBridgeRuntimeAdapter] = useState<string | null>(null);
   const [view, setView] = useState<View>({ kind: "home" });
-  const [fields, setFields] = useState<FieldBlock[]>([]);
-  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [fieldSummaries, setFieldSummaries] = useState<FieldSummary[]>([]);
+  const [loadedField, setLoadedField] = useState<LoadedField | null>(null);
   const [channelOpen, setChannelOpen] = useState(false);
   const [channelMessage, setChannelMessage] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -200,7 +191,6 @@ function App() {
   const [status, setStatus] = useState("Connecting");
   const [error, setError] = useState<string | null>(null);
   const selectedWorkspaceIdRef = useRef("");
-  const skipNextSaveRef = useRef(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const contextEventsRequestRef = useRef(0);
 
@@ -228,14 +218,9 @@ function App() {
     ? contexts.find((c) => c.context_id === selectedContextId) ?? null
     : null;
   const contextEvents = contextEventsState.contextId === selectedContextId ? contextEventsState.events : [];
-  const selectedField = view.kind === "field" ? fields.find((field) => field.id === view.fieldId) ?? null : null;
-  const selectedCanvasFieldId = selectedField?.nodes.find((node) => node.selected) ? fieldIdFromNode(selectedField.nodes.find((node) => node.selected)!) : null;
-  const effectiveSelectedBlockId = selectedCanvasFieldId ?? selectedBlockId;
-  const selectedFieldBlock = effectiveSelectedBlockId && effectiveSelectedBlockId !== selectedField?.id
-    ? fields.find((field) => field.id === effectiveSelectedBlockId) ?? null
+  const selectedFieldSummary = view.kind === "field"
+    ? fieldSummaries.find((field) => field.id === view.fieldId) ?? null
     : null;
-  const currentSelection = selectedFieldBlock ?? selectedField;
-  const workspaceFields = useMemo(() => fields.filter((field) => !field.parent_id), [fields]);
 
   const workspaceBinding = selectedWorkspace
     ? runtimeBindings.find((binding) => binding.scope === "workspace_default" && binding.workspace_id === selectedWorkspace.workspace_id)
@@ -468,34 +453,10 @@ function App() {
     return latest && runtimeErrorKinds.has(latest.kind) ? latest : null;
   }, [floeAgent, telemetry]);
 
-  const fieldNodes = useMemo<Node[]>(() => (selectedField?.nodes ?? []).map((node) => ({
-    ...node,
-    type: fieldIdFromNode(node) ? "field" : node.type,
-    selected: fieldIdFromNode(node) === effectiveSelectedBlockId
-  })), [effectiveSelectedBlockId, selectedField?.nodes]);
-  const fieldEdges = useMemo<Edge[]>(() => selectedField?.edges ?? [], [selectedField?.edges]);
-  const nodeTypes = useMemo(() => ({
-    field: (props: { data: Record<string, unknown> }) => {
-      const fieldId = typeof props.data.field_id === "string" ? props.data.field_id : null;
-      return (
-        <div
-          className="canvas-field-node"
-          role="button"
-          tabIndex={0}
-          onClick={() => { if (fieldId) setSelectedBlockId(fieldId); }}
-          onDoubleClick={() => { if (fieldId) openField(fieldId); }}
-          onKeyDown={(event) => {
-            if (!fieldId) return;
-            if (event.key === "Enter") openField(fieldId);
-            if (event.key === " ") setSelectedBlockId(fieldId);
-          }}
-        >
-          <LayoutPanelLeft size={15} />
-          <span>{typeof props.data.label === "string" ? props.data.label : "Field"}</span>
-        </div>
-      );
-    }
-  }), []);
+  const { nodes: fieldNodes, edges: fieldEdges } = useMemo(() => {
+    if (!loadedField) return { nodes: [], edges: [] };
+    return fieldToReactFlow(loadedField.semantic, loadedField.layout ?? undefined);
+  }, [loadedField]);
 
   const refreshContexts = useCallback(async (workspaceId: string) => {
     try {
@@ -551,7 +512,6 @@ function App() {
         selectedWorkspaceIdRef.current = nextWorkspaceId;
         setSelectedWorkspaceId(nextWorkspaceId);
         setView({ kind: "home" });
-        setSelectedBlockId(null);
       }
       if (nextWorkspaceId) {
         const [endpointResult, bindingResult, eventResult, telemetryResult] = await Promise.all([
@@ -585,24 +545,6 @@ function App() {
     const name = endpointDisplayName(operatorEndpoint);
     if (name) localStorage.setItem("floe-operator-name", name);
   }, [operatorEndpoint?.name]);
-
-  useEffect(() => {
-    skipNextSaveRef.current = true;
-    if (!selectedWorkspaceId) {
-      setFields([]);
-      return;
-    }
-    setFields(loadLocalFields(selectedWorkspaceId));
-  }, [selectedWorkspaceId]);
-
-  useEffect(() => {
-    if (!selectedWorkspaceId) return;
-    if (skipNextSaveRef.current) {
-      skipNextSaveRef.current = false;
-      return;
-    }
-    saveLocalFields(selectedWorkspaceId, fields);
-  }, [fields, selectedWorkspaceId]);
 
   useEffect(() => {
     if (!effectiveProfile?.provider) {
@@ -727,40 +669,41 @@ function App() {
     };
   }, [contexts, busUrl, pulseLabels]);
 
-  useEffect(() => {
-    function handlePointerDown(event: PointerEvent) {
-      const target = event.target as HTMLElement | null;
-      const flowNode = target?.closest(".react-flow__node") as HTMLElement | null;
-      if (flowNode && selectedField) {
-        const nodeId = flowNode.dataset.id;
-        const node = selectedField.nodes.find((item) => item.id === nodeId);
-        if (node) {
-          const fieldId = fieldIdFromNode(node);
-          if (fieldId) setSelectedBlockId(fieldId);
-        }
-        return;
-      }
-      if (!selectedBlockId) return;
-      if (target?.closest(".field-block")) return;
-      if (target?.closest(".inspector")) return;
-      setSelectedBlockId(null);
+  const refreshFields = useCallback(async (workspaceId: string) => {
+    try {
+      const summaries = await listFields(busUrl, workspaceId);
+      setFieldSummaries(summaries);
+    } catch (caught) {
+      setError((caught as Error).message);
     }
-    window.addEventListener("pointerdown", handlePointerDown);
-    return () => window.removeEventListener("pointerdown", handlePointerDown);
-  }, [selectedBlockId, selectedField]);
+  }, [busUrl]);
+
+  const refreshOpenField = useCallback(async (workspaceId: string, fieldId: string) => {
+    try {
+      const result = await getField(busUrl, workspaceId, fieldId);
+      setLoadedField(result);
+    } catch (caught) {
+      setLoadedField(null);
+      setError((caught as Error).message);
+    }
+  }, [busUrl]);
 
   useEffect(() => {
-    function handleDoubleClick(event: MouseEvent) {
-      const target = event.target as HTMLElement | null;
-      const flowNode = target?.closest(".react-flow__node") as HTMLElement | null;
-      if (!flowNode || !selectedField) return;
-      const nodeId = flowNode.dataset.id;
-      const node = selectedField.nodes.find((item) => item.id === nodeId);
-      if (node) openFieldNode(node);
+    setLoadedField(null);
+    if (!selectedWorkspaceId) {
+      setFieldSummaries([]);
+      return;
     }
-    window.addEventListener("dblclick", handleDoubleClick);
-    return () => window.removeEventListener("dblclick", handleDoubleClick);
-  }, [selectedField]);
+    void refreshFields(selectedWorkspaceId);
+  }, [selectedWorkspaceId, refreshFields]);
+
+  useEffect(() => {
+    if (view.kind !== "field" || !selectedWorkspaceId) {
+      setLoadedField(null);
+      return;
+    }
+    void refreshOpenField(selectedWorkspaceId, view.fieldId);
+  }, [view, selectedWorkspaceId, refreshOpenField]);
 
   async function registerWorkspace(createDirectory = false) {
     if (!workspacePath.trim()) return;
@@ -797,7 +740,6 @@ function App() {
   async function selectWorkspace(workspaceId: string) {
     selectedWorkspaceIdRef.current = workspaceId;
     setSelectedWorkspaceId(workspaceId);
-    setSelectedBlockId(null);
     setView({ kind: "home" });
     await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, { method: "POST" });
     await ensureOperator(workspaceId);
@@ -914,7 +856,7 @@ function App() {
       agentEndpointId: floeAgent.endpoint_id,
       selectedContextId: selectedContextId,
       text,
-      contextLabelText: currentContextLabel(view, selectedWorkspace, selectedField)
+      contextLabelText: currentContextLabel(view, selectedWorkspace, loadedField?.semantic.title ?? selectedFieldSummary?.title ?? null)
     });
     setChannelMessage("");
     const result = await api<{ event?: { context_id?: string | null }; ok?: boolean }>(
@@ -960,176 +902,52 @@ function App() {
     await refreshContexts(selectedWorkspace.workspace_id);
   }
 
-  function createField(name?: string) {
+  function createField(name?: string): void {
     if (!selectedWorkspace) return;
-    const nextName = name?.trim() || `Field ${workspaceFields.length + 1}`;
-    const timestamp = new Date().toISOString();
-    const field: FieldBlock = {
-      id: `field_${crypto.randomUUID()}`,
-      name: nextName,
-      parent_id: null,
-      created_at: timestamp,
-      updated_at: timestamp,
-      nodes: [],
-      edges: []
-    };
-    setFields((current) => [field, ...current]);
-    setSelectedBlockId(field.id);
-  }
-
-  function addFieldNodeToOpenField(position?: XYPosition) {
-    if (!selectedField) return;
-    const timestamp = new Date().toISOString();
-    const childId = `field_${crypto.randomUUID()}`;
-    setFields((current) => {
-      const parent = current.find((field) => field.id === selectedField.id) ?? selectedField;
-      const nextIndex = parent.nodes.length + 1;
-      const childName = `Field ${nextIndex}`;
-      const nextNode: Node = {
-        id: `node_${crypto.randomUUID()}`,
-        type: "default",
-        data: { label: childName, field_id: childId, block_type: "field" },
-        position: position ?? { x: 120 + (nextIndex * 20), y: 120 + (nextIndex * 20) }
-      };
-      const childField: FieldBlock = {
-        id: childId,
-        name: childName,
-        parent_id: selectedField.id,
-        created_at: timestamp,
-        updated_at: timestamp,
-        nodes: [],
-        edges: []
-      };
-      return [
-        childField,
-        ...current.map((field) => (
-          field.id === selectedField.id
-            ? { ...field, nodes: [...field.nodes, nextNode], updated_at: timestamp }
-            : field
-        ))
-      ];
-    });
-    setSelectedBlockId(childId);
-  }
-
-  function addFieldFromLibrary() {
-    if (!selectedWorkspace) return;
-    if (view.kind === "field" && selectedField) {
-      addFieldNodeToOpenField();
-      return;
-    }
-    createField();
-  }
-
-  function onFieldPrimitiveDragStart(event: React.DragEvent<HTMLButtonElement>) {
-    event.dataTransfer.setData(fieldPrimitiveMime, "field");
-    event.dataTransfer.effectAllowed = "copy";
-  }
-
-  function onLibraryDropSurface(event: React.DragEvent<HTMLElement>) {
-    event.preventDefault();
-    if (event.dataTransfer.getData(fieldPrimitiveMime) === "field") {
-      if (view.kind === "field" && selectedField) {
-        addFieldNodeToOpenField(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
-      } else {
-        addFieldFromLibrary();
+    const workspaceId = selectedWorkspace.workspace_id;
+    const nextName = name?.trim() || `Field ${fieldSummaries.length + 1}`;
+    const id = slugifyFieldId(nextName);
+    const semantic = emptyFieldSemantic(id, nextName);
+    void (async () => {
+      try {
+        await putFieldSemantic(busUrl, workspaceId, id, semantic);
+        await refreshFields(workspaceId);
+        setView({ kind: "field", fieldId: id });
+      } catch (caught) {
+        setError((caught as Error).message);
       }
-    }
+    })();
   }
 
-  function onLibraryDragOver(event: React.DragEvent<HTMLElement>) {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-  }
-
-  const onFieldNodesChange = useCallback((changes: NodeChange[]) => {
-    if (!selectedField) return;
-    const selectedChange = changes.find(
-      (change): change is Extract<NodeChange, { type: "select" }> => change.type === "select" && change.selected
-    );
-    if (selectedChange) {
-      const selectedNode = selectedField.nodes.find((node) => node.id === selectedChange.id);
-      const fieldId = selectedNode ? fieldIdFromNode(selectedNode) : null;
-      if (fieldId) setSelectedBlockId(fieldId);
-    }
-    setFields((current) => current.map((field) => (
-      field.id === selectedField.id
-        ? { ...field, nodes: applyNodeChanges(changes, field.nodes), updated_at: new Date().toISOString() }
-        : field
-    )));
-  }, [selectedField]);
-
-  const onFieldEdgesChange = useCallback((changes: EdgeChange[]) => {
-    if (!selectedField) return;
-    setFields((current) => current.map((field) => (
-      field.id === selectedField.id
-        ? { ...field, edges: applyEdgeChanges(changes, field.edges), updated_at: new Date().toISOString() }
-        : field
-    )));
-  }, [selectedField]);
-
-  function selectFieldNode(node: Node) {
-    const fieldId = fieldIdFromNode(node);
-    if (fieldId) setSelectedBlockId(fieldId);
-  }
-
-  function openFieldNode(node: Node) {
-    const fieldId = fieldIdFromNode(node);
-    if (fieldId) openField(fieldId);
-  }
-
-  function nodeFromCanvasEvent(event: React.MouseEvent<HTMLElement>): Node | null {
-    if (!selectedField) return null;
-    const target = event.target as HTMLElement | null;
-    const flowNode = target?.closest(".react-flow__node") as HTMLElement | null;
-    const nodeId = flowNode?.dataset.id;
-    return nodeId ? selectedField.nodes.find((node) => node.id === nodeId) ?? null : null;
-  }
-
-  function renameField(fieldId: string, name: string) {
-    const nextName = name.trim();
-    if (!nextName) return;
-    setFields((current) => current.map((field) => {
-      if (field.id === fieldId) {
-        return { ...field, name: nextName, updated_at: new Date().toISOString() };
-      }
-      // Update canvas node labels that reference this field
-      const hasRef = field.nodes.some((node) => node.data.field_id === fieldId);
-      if (hasRef) {
-        return {
-          ...field,
-          nodes: field.nodes.map((node) =>
-            node.data.field_id === fieldId ? { ...node, data: { ...node.data, label: nextName } } : node
-          )
-        };
-      }
-      return field;
-    }));
-  }
-
-  function openField(fieldId: string) {
+  function openField(fieldId: string): void {
     setView({ kind: "field", fieldId });
-    setSelectedBlockId(null);
+    if (selectedWorkspaceId) void refreshOpenField(selectedWorkspaceId, fieldId);
   }
 
-  function navigateUp() {
-    if (!selectedField) {
-      setView({ kind: "home" });
-      setSelectedBlockId(null);
-      return;
-    }
-    const parentId = selectedField.parent_id;
-    if (parentId && fields.some((field) => field.id === parentId)) {
-      setView({ kind: "field", fieldId: parentId });
-    } else {
-      setView({ kind: "home" });
-    }
-    setSelectedBlockId(null);
+  function deleteOpenField(fieldId: string): void {
+    if (!selectedWorkspace) return;
+    const workspaceId = selectedWorkspace.workspace_id;
+    if (!window.confirm(`Delete field "${fieldId}"?`)) return;
+    void (async () => {
+      try {
+        await deleteFieldApi(busUrl, workspaceId, fieldId);
+        setLoadedField(null);
+        setView({ kind: "home" });
+        await refreshFields(workspaceId);
+      } catch (caught) {
+        setError((caught as Error).message);
+      }
+    })();
+  }
+
+  function promptCreateField(): void {
+    const name = window.prompt("New field name?");
+    if (name === null) return;
+    createField(name);
   }
 
   function backToHome() {
     setView({ kind: "home" });
-    setSelectedBlockId(null);
   }
 
   function renderNoWorkspace() {
@@ -1181,14 +999,7 @@ function App() {
 
   function renderHome() {
     return (
-      <section
-        className="workspace-home"
-        onClick={(event) => {
-          if (event.target === event.currentTarget) setSelectedBlockId(null);
-        }}
-        onDrop={onLibraryDropSurface}
-        onDragOver={onLibraryDragOver}
-      >
+      <section className="workspace-home">
         <div className="home-band">
           <div>
             <p className="eyebrow">Workspace Home</p>
@@ -1201,41 +1012,37 @@ function App() {
         </div>
 
         <div className="home-grid">
-          <section
-            className="field-list-pane"
-            onClick={(event) => {
-              if (event.target === event.currentTarget) setSelectedBlockId(null);
-            }}
-          >
+          <section className="field-list-pane">
             <div className="section-title-row">
               <div>
                 <h3>Fields</h3>
-                <p>Field Blocks open into canvas surfaces.</p>
+                <p>Substrate-backed Fields stored under <code>.floe/fields/</code>.</p>
               </div>
-              <span>{workspaceFields.length}</span>
+              <span>{fieldSummaries.length}</span>
             </div>
-            {workspaceFields.length === 0 ? (
+            <button className="primary-action full" onClick={promptCreateField}>
+              <FolderPlus size={15} />
+              Add field
+            </button>
+            {fieldSummaries.length === 0 ? (
               <div className="quiet-empty">
                 <SquareDashedMousePointer size={22} />
                 <strong>No Fields yet</strong>
-                <span>Create one Field Block to start shaping this workspace.</span>
+                <span>Create a Field to start shaping this workspace.</span>
               </div>
             ) : (
               <div className="field-list">
-                {workspaceFields.map((field) => (
+                {fieldSummaries.map((summary) => (
                   <button
-                    key={field.id}
-                    className={`field-block${selectedBlockId === field.id ? " selected" : ""}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedBlockId(field.id);
-                    }}
-                    onDoubleClick={() => openField(field.id)}
+                    key={summary.id}
+                    className="field-block"
+                    onClick={() => openField(summary.id)}
+                    onDoubleClick={() => openField(summary.id)}
                   >
                     <span className="field-icon"><LayoutPanelLeft size={16} /></span>
                     <span>
-                      <strong>{field.name}</strong>
-                      <small>{field.nodes.length} child blocks</small>
+                      <strong>{summary.title}</strong>
+                      <small>{summary.item_count} items</small>
                     </span>
                     <ChevronRight size={16} />
                   </button>
@@ -1249,62 +1056,41 @@ function App() {
   }
 
   function renderField() {
-    if (!selectedField) return null;
+    if (view.kind !== "field") return null;
+    const title = loadedField?.semantic.title ?? selectedFieldSummary?.title ?? view.fieldId;
     return (
       <section className="field-surface">
         <div className="field-toolbar">
-          <button className="icon-button" onClick={navigateUp} title={selectedField.parent_id ? "Back to parent" : "Workspace Home"}>
+          <button className="icon-button" onClick={backToHome} title="Workspace Home">
             <ArrowLeft size={16} />
           </button>
           <div>
             <p className="eyebrow">Field Surface</p>
-            <h2>{selectedField.name}</h2>
+            <h2>{title}</h2>
           </div>
           <button className="ghost-action" onClick={() => setChannelOpen(true)}>
             <MessageSquare size={16} />
             Floe
           </button>
         </div>
-        <div
-          className="canvas-wrap"
-          onClickCapture={(event) => {
-            const node = nodeFromCanvasEvent(event);
-            if (node) selectFieldNode(node);
-          }}
-          onDoubleClickCapture={(event) => {
-            const node = nodeFromCanvasEvent(event);
-            if (node) openFieldNode(node);
-          }}
-        >
+        <div className="canvas-wrap">
           <ReactFlow
             nodes={fieldNodes}
             edges={fieldEdges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onFieldNodesChange}
-            onEdgesChange={onFieldEdgesChange}
-            onNodeClick={(_, node) => selectFieldNode(node)}
-            onNodeDoubleClick={(_, node) => openFieldNode(node)}
-            onSelectionChange={(selection) => {
-              const node = selection.nodes[0];
-              if (node) selectFieldNode(node);
-            }}
             fitView
             minZoom={0.2}
             maxZoom={1.8}
-            onPaneClick={() => setSelectedBlockId(null)}
-            onDrop={(event) => onLibraryDropSurface(event as unknown as React.DragEvent<HTMLElement>)}
-            onDragOver={(event) => onLibraryDragOver(event as unknown as React.DragEvent<HTMLElement>)}
             proOptions={{ hideAttribution: true }}
           >
             <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
             <Controls position="bottom-left" />
             <MiniMap pannable zoomable position="bottom-right" />
           </ReactFlow>
-          {fieldNodes.length === 0 && (
+          {loadedField && fieldNodes.length === 0 && (
             <div className="canvas-empty">
               <SquareDashedMousePointer size={22} />
               <strong>Empty Field</strong>
-              <span>Canvas-backed Blocks will appear here when product-layer storage APIs are added.</span>
+              <span>This field has no items yet. Item editing arrives in a later slice.</span>
             </div>
           )}
         </div>
@@ -1323,41 +1109,32 @@ function App() {
         </div>
         {!selectedWorkspace ? (
           <div className="inspector-section muted">No workspace selected.</div>
-        ) : view.kind === "home" && !selectedFieldBlock ? (
+        ) : view.kind === "home" ? (
           <>
             <InspectorSection title="Workspace">
               <Detail label="Name" value={selectedWorkspace.name} />
               <Detail label="Location" value={selectedWorkspace.locator} />
               <Detail label=".floe" value={workspaceStatusLabel(selectedWorkspace)} />
-              <Detail label="Fields" value={String(workspaceFields.length)} />
+              <Detail label="Fields" value={String(fieldSummaries.length)} />
             </InspectorSection>
             <RuntimeSection />
             <ActorAccessSection />
           </>
-        ) : currentSelection ? (
+        ) : (
           <>
-            <InspectorSection title={selectedFieldBlock ? "Field Block" : "Opened Field"}>
-              <label className="stacked-label">
-                Name
-                <input
-                  key={currentSelection.id}
-                  defaultValue={currentSelection.name}
-                  onBlur={(event) => renameField(currentSelection.id, event.target.value)}
-                />
-              </label>
-              <Detail label="Type" value="Field" />
-              <Detail label="Children" value={String(currentSelection.nodes.length)} />
-              <Detail label="Storage" value="Local draft" />
-              {selectedFieldBlock && (
-                <button className="primary-action full" onClick={() => openField(selectedFieldBlock.id)}>
-                  <FolderOpen size={15} />
-                  Open Field
-                </button>
-              )}
+            <InspectorSection title="Opened Field">
+              <Detail label="Id" value={view.fieldId} />
+              <Detail label="Title" value={loadedField?.semantic.title ?? selectedFieldSummary?.title ?? "—"} />
+              <Detail label="Items" value={String(loadedField?.semantic.items.length ?? selectedFieldSummary?.item_count ?? 0)} />
+              <Detail label="Connections" value={String(loadedField?.semantic.connections.length ?? selectedFieldSummary?.connection_count ?? 0)} />
+              <button className="primary-action full" onClick={() => deleteOpenField(view.fieldId)}>
+                <X size={15} />
+                Delete field
+              </button>
             </InspectorSection>
             <ActorAccessSection />
           </>
-        ) : null}
+        )}
       </aside>
     );
   }
@@ -1410,7 +1187,7 @@ function App() {
       <aside className="library-panel">
         <div className="library-header">
           <h3>Block Library</h3>
-          <p>{view.kind === "field" ? "Drop in canvas or click to add to this Field." : "Click or drag to create in Workspace Home."}</p>
+          <p>Use “Add field” on the workspace home to create a Field.</p>
         </div>
         {!selectedWorkspace ? (
           <div className="quiet-empty small">
@@ -1422,10 +1199,8 @@ function App() {
           <div className="library-items">
             <button
               className="library-primitive"
-              onClick={addFieldFromLibrary}
-              draggable
-              onDragStart={onFieldPrimitiveDragStart}
-              title="Field"
+              onClick={promptCreateField}
+              title="Create a new Field"
             >
               <span className="library-card-icon"><LayoutPanelLeft size={18} /></span>
               <span>
@@ -1862,16 +1637,12 @@ function App() {
         <header className="topbar">
           <nav className="breadcrumb">
             <button onClick={backToHome}><Home size={14} /> Workspace</button>
-            {selectedField && fieldAncestors(selectedField, fields).map((ancestor) => (
-              <React.Fragment key={ancestor.id}>
-                <ChevronRight size={14} />
-                <button onClick={() => openField(ancestor.id)}>{ancestor.name}</button>
-              </React.Fragment>
-            ))}
-            {selectedField && (
+            {view.kind === "field" && (
               <>
                 <ChevronRight size={14} />
-                <button className="breadcrumb-current">{selectedField.name}</button>
+                <button className="breadcrumb-current">
+                  {loadedField?.semantic.title ?? selectedFieldSummary?.title ?? view.fieldId}
+                </button>
               </>
             )}
           </nav>
@@ -1975,21 +1746,6 @@ function cachedOperatorDisplayName(): string | null {
   return name ? name : null;
 }
 
-function loadLocalFields(workspaceId: string): FieldBlock[] {
-  try {
-    const raw = localStorage.getItem(`${localFieldStoragePrefix}${workspaceId}`);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as FieldBlock[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveLocalFields(workspaceId: string, fields: FieldBlock[]) {
-  localStorage.setItem(`${localFieldStoragePrefix}${workspaceId}`, JSON.stringify(fields));
-}
-
 function workspaceStatusLabel(workspace: Workspace): string {
   if (!workspace.init_authorized) return "consent required";
   if (workspace.status === "attached") return "attached";
@@ -2003,9 +1759,9 @@ function connectionClass(status: string): string {
   return "pending";
 }
 
-function currentContextLabel(view: View, workspace: Workspace | null, field: FieldBlock | null): string {
+function currentContextLabel(view: View, workspace: Workspace | null, fieldTitle: string | null): string {
   if (!workspace) return "No workspace";
-  if (view.kind === "field" && field) return `Workspace: ${workspace.name}; Field: ${field.name}`;
+  if (view.kind === "field" && fieldTitle) return `Workspace: ${workspace.name}; Field: ${fieldTitle}`;
   return `Workspace: ${workspace.name}; Home`;
 }
 
@@ -2021,24 +1777,22 @@ function endpointRuntimeAdapter(endpoint: Endpoint | null): string | null {
   }
 }
 
-function fieldIdFromNode(node: Node): string | null {
-  const value = node.data?.field_id;
-  return typeof value === "string" ? value : null;
+function slugifyFieldId(input: string): string {
+  const s = input.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return s || `field-${Date.now().toString(36)}`;
 }
 
-/** Walk up the parent_id chain and return ancestors in root-first order (excludes the field itself). */
-function fieldAncestors(field: FieldBlock, allFields: FieldBlock[]): FieldBlock[] {
-  const ancestors: FieldBlock[] = [];
-  let currentId = field.parent_id;
-  const visited = new Set<string>();
-  while (currentId && !visited.has(currentId)) {
-    visited.add(currentId);
-    const parent = allFields.find((f) => f.id === currentId);
-    if (!parent) break;
-    ancestors.unshift(parent);
-    currentId = parent.parent_id;
-  }
-  return ancestors;
+function emptyFieldSemantic(id: string, title: string): FieldSemantic {
+  const now = new Date().toISOString();
+  return {
+    id,
+    schema: "floe.field.v1",
+    title,
+    items: [],
+    connections: [],
+    created_at: now,
+    updated_at: now
+  };
 }
 
 function runtimeActivityLabel(kind: string): string {
