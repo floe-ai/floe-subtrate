@@ -75,6 +75,26 @@ An Extension Hook whose handler can observe payloads and perform side effects wi
 ### BeforeTurn Injection
 The implemented behaviour-changing Extension Hook result where `BeforeTurn` handlers return `inject` data that is rendered into runtime prompt context.
 
+### Field
+A workspace-local substrate primitive that groups stable references to other substrate primitives and records simple connections between them. Stored as YAML at `.floe/fields/<field-id>.yaml`. The workspace file is the source of truth; bus state is a derived index; FloeWeb is one renderer of a field, not its source of truth. Removing or ignoring FloeWeb does not destroy a field's meaning.
+_Avoid_: "first block type", "block storage", "canvas" as synonyms for Field. A Field is a primitive; canvases and blocks are renderer concerns.
+
+### Field Item
+A field-local entry that references exactly one existing substrate primitive (Actor/Endpoint, Context, Pulse, Webhook, Extension, File, Tool, Work Log, Event, or another Field). Identified by a field-local `item_id` so the same primitive can appear more than once in a field and so Field Connections and Field Layout survive substrate ref edits.
+
+### Field Item Ref
+A stable URI-style string identifying the substrate primitive a Field Item points to, in the form `<kind>:<id>`. Examples: `actor:floe`, `context:ctx_123`, `pulse:morning-standup`, `webhook:github-pr`, `extension:github`, `file:.floe/instructions/pr-review.md`, `tool:todo_add`, `work_log:.floe/agents/reviewer/worklogs/2026-05-19.md`, `field:inbound-pr-review`, `event:evt_abc`. The substrate does not pre-validate resolvability; broken refs are reported by clients at read time. Existing substrate primitives keep their existing storage; Fields only reference them.
+
+### Field Connection
+A minimal `from → to` link between two Field Items inside the same Field, addressed by `item_id`. Optional free-form `label` and `metadata` are user/extension/workspace text only — core does not interpret them and there is no relationship ontology.
+
+### Field Layout
+Renderer-specific arrangement state (item positions, dimensions, collapsed state, viewport, per-renderer preferences) for a Field. Stored as a separate sidecar at `.floe/fields/<field-id>.layout.<renderer>.yaml` (e.g. `.layout.floeweb.yaml`). Multiple renderers may each have their own sidecar; the same item may sit in different positions in different Fields. Layout never lives in the semantic field file.
+
+### Block (representational)
+A way a client renders or interprets a Field Item. "Block" is a representational concept, not a storage category or substrate primitive. FloeWeb renders each Field Item as a block on a canvas; another client may render the same items as an outline or list. Existing substrate primitives (Actor, Context, Pulse, Webhook, Extension, File) are NOT stored as blocks; they are referenced by Fields and rendered as blocks by clients.
+_Avoid_: treating "block" as a storage tree or substrate category.
+
 ## Relationships
 
 - An **Extension** provides **Tools**, optional **Pulse** declarations, and optional **Extension Hooks**
@@ -87,6 +107,11 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 - A **Pulse** creates a canonical **Event** with type `pulse.fired`
 - A **Context Subscriber** appends `pulse.fired` to a **Context** without creating a **Delivery**
 - An **Endpoint Subscriber** creates a **Delivery** for an **Endpoint** and may activate that endpoint's processor
+- A **Field** contains zero or more **Field Items**
+- A **Field Item** holds exactly one **Field Item Ref** pointing to an existing substrate primitive
+- A **Field Connection** links two **Field Items** inside the same Field by `item_id`
+- A **Field Layout** is renderer-specific and stored in a sidecar alongside the Field's semantic file
+- **Field Items** are rendered as **Blocks** by clients; Blocks are representational, not stored
 
 ## Deferred Concepts
 

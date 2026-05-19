@@ -29,7 +29,7 @@ Its job is to let a user operate a portable Workspace without bypassing the subs
 
 Floe Web succeeds when the user understands this mental model:
 
-> I have a portable Workspace. A Field is a Block that opens into a canvas. Actors are humans or agents with access, not objects I drag onto the canvas. Floe is the always-available system interface, not a Field actor or Block.
+> I have a portable Workspace. A Field is a substrate primitive stored in my workspace; FloeWeb is one renderer of it on a canvas. Items in a Field reference other substrate primitives (actors, contexts, files, pulses, webhooks, extensions); FloeWeb draws those items as Blocks. Actors are humans or agents with access, not objects I drag onto the canvas. Floe is the always-available system interface, not a Field item or Block.
 
 ## Source Of Truth
 
@@ -59,9 +59,10 @@ Use these terms consistently:
 
 - Workspace: the portable configuration container, usually a folder or repository containing `.floe/`.
 - Workspace Home: the top-level product surface after a Workspace is opened. It is not a Field.
-- Block: a user-composable product-layer object.
-- Field: a Block type that opens into an infinite-canvas style Surface.
-- Surface: how a Block renders. A Field renders as a canvas Surface.
+- Field: a substrate primitive that groups references to other substrate primitives and records simple connections between them. Stored as workspace YAML under `.floe/fields/`. FloeWeb renders a Field on a canvas Surface, but the Field exists independently of FloeWeb.
+- Field Item: a field-local reference to an existing substrate primitive (actor, context, pulse, webhook, extension, file, tool, work log, event, or another field). Items are what get rendered as Blocks on the canvas.
+- Block: a representational concept — how a client renders or interprets a Field Item. Blocks are not a storage category; existing substrate primitives are not "stored as blocks".
+- Surface: how a client renders state. FloeWeb's canvas Surface renders a Field's items as Blocks and its connections as links.
 - Inspector: configuration and state for the current selection.
 - Channel: a right-side conversation pane.
 - Floe: the global system interface available from any screen.
