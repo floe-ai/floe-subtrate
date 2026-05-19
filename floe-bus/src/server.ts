@@ -10,6 +10,13 @@ import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextParticipantError, type EventCommand, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
+import {
+  loadAllFields,
+  loadField,
+  upsertFieldSemantic,
+  upsertFieldLayout,
+  deleteField
+} from "./fields-store.js";
 
 const EventCommandSchema = z.object({
   type: z.string().min(1),
@@ -141,6 +148,131 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   app.get("/v1/workspaces", async () => ({
     workspaces: store.listWorkspaces()
   }));
+
+  function resolveWorkspaceLocator(workspaceId: string, reply: any): string | null {
+    const ws = store.getWorkspace(workspaceId) as { locator?: string } | undefined;
+    if (!ws?.locator) {
+      reply.code(404);
+      reply.send({ error: "workspace_not_found" });
+      return null;
+    }
+    return ws.locator;
+  }
+
+  function mapFieldError(err: unknown, reply: any): { error: string; message: string } | null {
+    if (!(err instanceof Error)) return null;
+    switch (err.name) {
+      case "FieldValidationError":
+        reply.code(400);
+        return { error: "field_validation_error", message: err.message };
+      case "FieldIdMismatchError":
+        reply.code(400);
+        return { error: "field_id_mismatch", message: err.message };
+      case "FieldAlreadyExistsError":
+        reply.code(409);
+        return { error: "field_already_exists", message: err.message };
+      case "FieldRendererInvalidError":
+        reply.code(400);
+        return { error: "field_renderer_invalid", message: err.message };
+      default:
+        return null;
+    }
+  }
+
+  app.get("/v1/workspaces/:workspace_id/fields", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      return { fields: loadAllFields(locator) };
+    } catch (err) {
+      const mapped = mapFieldError(err, reply);
+      if (mapped) return mapped;
+      throw err;
+    }
+  });
+
+  app.get("/v1/workspaces/:workspace_id/fields/:field_id", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string(), field_id: z.string() }).parse(request.params);
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      const loaded = loadField(locator, params.field_id);
+      if (!loaded) {
+        reply.code(404);
+        return { error: "field_not_found" };
+      }
+      return { semantic: loaded.semantic, layout: loaded.layout ?? null };
+    } catch (err) {
+      const mapped = mapFieldError(err, reply);
+      if (mapped) return mapped;
+      throw err;
+    }
+  });
+
+  app.put("/v1/workspaces/:workspace_id/fields/:field_id", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string(), field_id: z.string() }).parse(request.params);
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      const existed = loadField(locator, params.field_id) !== null;
+      const semantic = upsertFieldSemantic(locator, params.field_id, request.body);
+      broadcast("field_updated", { workspace_id: params.workspace_id, field_id: params.field_id, semantic });
+      reply.code(existed ? 200 : 201);
+      return { semantic };
+    } catch (err) {
+      const mapped = mapFieldError(err, reply);
+      if (mapped) return mapped;
+      throw err;
+    }
+  });
+
+  app.put("/v1/workspaces/:workspace_id/fields/:field_id/layout/:renderer", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      field_id: z.string(),
+      renderer: z.string()
+    }).parse(request.params);
+    if (params.renderer !== "floeweb") {
+      reply.code(400);
+      return { error: "field_renderer_invalid", message: `renderer '${params.renderer}' not supported in slice 1 (only 'floeweb')` };
+    }
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      const layout = upsertFieldLayout(locator, params.field_id, params.renderer, request.body);
+      broadcast("field_layout_updated", {
+        workspace_id: params.workspace_id,
+        field_id: params.field_id,
+        renderer: params.renderer,
+        layout
+      });
+      return { layout };
+    } catch (err) {
+      const mapped = mapFieldError(err, reply);
+      if (mapped) return mapped;
+      throw err;
+    }
+  });
+
+  app.delete("/v1/workspaces/:workspace_id/fields/:field_id", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string(), field_id: z.string() }).parse(request.params);
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      const result = deleteField(locator, params.field_id);
+      if (!result.semanticDeleted && result.layoutsDeleted.length === 0) {
+        reply.code(404);
+        return { error: "field_not_found" };
+      }
+      broadcast("field_deleted", { workspace_id: params.workspace_id, field_id: params.field_id });
+      return result;
+    } catch (err) {
+      const mapped = mapFieldError(err, reply);
+      if (mapped) return mapped;
+      throw err;
+    }
+  });
 
   app.post("/v1/workspaces/register", async (request, reply) => {
     const input = z.object({
