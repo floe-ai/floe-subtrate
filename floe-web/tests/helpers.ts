@@ -3,13 +3,50 @@ import { test as base, Page } from "@playwright/test";
 const WORKSPACE_ID = "ws_test_qa";
 const WORKSPACE_NAME = "QA Workspace";
 
-/**
- * Seed localStorage with a bus URL pointing to a mock, a workspace reference,
- * and optionally a set of pre-built fields. Then intercept bus API routes so
- * the app boots without a real floe-bus running.
- */
-export async function seedApp(page: Page, fields?: unknown[]) {
-  // Mock all bus API routes before navigating
+export type FieldSummary = {
+  id: string;
+  title: string;
+  item_count: number;
+  connection_count: number;
+  updated_at: string;
+};
+
+export type FieldItem = {
+  item_id: string;
+  ref: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type FieldConnection = {
+  id: string;
+  from: string;
+  to: string;
+  label?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type FieldSemantic = {
+  schema: "floe.field.v1";
+  id: string;
+  title: string;
+  description?: string;
+  items: FieldItem[];
+  connections: FieldConnection[];
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FieldLayoutFloeweb = {
+  schema: "floe.field.layout.floeweb.v1";
+  field_id: string;
+  viewport: { x: number; y: number; zoom: number };
+  items: Record<string, { x: number; y: number; width?: number; height?: number }>;
+};
+
+type StoredField = { semantic: FieldSemantic; layout: FieldLayoutFloeweb | null };
+
+async function installBaselineRoutes(page: Page): Promise<void> {
   await page.route("**/v1/workspaces", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({
@@ -54,49 +91,166 @@ export async function seedApp(page: Page, fields?: unknown[]) {
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [] }) })
   );
 
-  // Swallow the WebSocket connection attempt
   await page.route("**/v1/events/stream", (route) => route.abort());
+}
 
-  // Navigate to the app
+async function finishBoot(page: Page): Promise<void> {
   await page.goto("/");
-
-  // Seed localStorage after page loads
-  await page.evaluate(({ workspaceId, busUrl, fieldData }) => {
+  await page.evaluate(({ busUrl }) => {
     localStorage.setItem("floe.busUrl", busUrl);
-    if (fieldData) {
-      localStorage.setItem(`floe.web.local-fields.${workspaceId}`, JSON.stringify(fieldData));
-    }
-  }, {
-    workspaceId: WORKSPACE_ID,
-    busUrl: "http://127.0.0.1:5377",
-    fieldData: fields ?? null
-  });
-
-  // Reload so the app picks up the seeded localStorage
+  }, { busUrl: "http://127.0.0.1:5377" });
   await page.reload();
   await page.waitForSelector("[data-testid='workspace-loaded'], .workspace-home", { timeout: 8000 }).catch(() => {});
-  // Give React time to render
   await page.waitForTimeout(500);
 }
 
-export function makeField(id: string, name: string, parentId?: string, nodes: unknown[] = [], edges: unknown[] = []) {
+/**
+ * Boots the app with mocked bus routes and an empty Field substrate. Specs
+ * that don't care about Fields can call this and they get an empty field
+ * list without leaking real network calls.
+ */
+export async function seedApp(page: Page): Promise<void> {
+  await installBaselineRoutes(page);
+
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields`, (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ fields: [] })
+      });
+    }
+    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
+  });
+
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields/*`, (route) =>
+    route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not_found" }) })
+  );
+
+  await finishBoot(page);
+}
+
+/**
+ * Boots the app with mocked bus routes and a substrate Field store seeded
+ * with `fields`. Keeps an in-memory Map<string, StoredField> so PUTs,
+ * DELETEs and subsequent GETs stay consistent inside a single test.
+ */
+export async function seedAppWithFields(
+  page: Page,
+  fields: Array<{ semantic: FieldSemantic; layout?: FieldLayoutFloeweb | null }>
+): Promise<void> {
+  await installBaselineRoutes(page);
+
+  const store = new Map<string, StoredField>();
+  for (const f of fields) {
+    store.set(f.semantic.id, { semantic: f.semantic, layout: f.layout ?? null });
+  }
+
+  function summariesPayload(): string {
+    const summaries: FieldSummary[] = Array.from(store.values()).map(({ semantic }) => ({
+      id: semantic.id,
+      title: semantic.title,
+      item_count: semantic.items.length,
+      connection_count: semantic.connections.length,
+      updated_at: semantic.updated_at
+    }));
+    return JSON.stringify({ fields: summaries });
+  }
+
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields`, (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: summariesPayload()
+      });
+    }
+    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
+  });
+
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields/*`, async (route) => {
+    const url = new URL(route.request().url());
+    const segments = url.pathname.split("/");
+    const fieldId = decodeURIComponent(segments[segments.length - 1] ?? "");
+    const method = route.request().method();
+
+    if (method === "GET") {
+      const existing = store.get(fieldId);
+      if (!existing) {
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "not_found" })
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ semantic: existing.semantic, layout: existing.layout })
+      });
+    }
+
+    if (method === "PUT") {
+      let semantic: FieldSemantic;
+      try {
+        semantic = JSON.parse(route.request().postData() ?? "{}") as FieldSemantic;
+      } catch {
+        return route.fulfill({ status: 400, body: JSON.stringify({ error: "bad_json" }) });
+      }
+      const prev = store.get(fieldId);
+      store.set(fieldId, { semantic, layout: prev?.layout ?? null });
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ semantic })
+      });
+    }
+
+    if (method === "DELETE") {
+      const had = store.delete(fieldId);
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ semanticDeleted: had, layoutsDeleted: [] })
+      });
+    }
+
+    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
+  });
+
+  await finishBoot(page);
+}
+
+export function makeFieldSummary(
+  id: string,
+  title: string,
+  items = 0,
+  connections = 0
+): FieldSummary {
   return {
     id,
-    name,
-    parent_id: parentId ?? null,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    nodes,
-    edges
+    title,
+    item_count: items,
+    connection_count: connections,
+    updated_at: new Date().toISOString()
   };
 }
 
-export function makeFieldNode(nodeId: string, fieldId: string, label: string, position = { x: 200, y: 150 }) {
+export function makeFieldSemantic(
+  id: string,
+  title: string,
+  items: Array<{ item_id: string; ref: string; metadata?: Record<string, unknown> }> = [],
+  connections: Array<{ id: string; from: string; to: string; label?: string; metadata?: Record<string, unknown> }> = []
+): FieldSemantic {
+  const now = new Date().toISOString();
   return {
-    id: nodeId,
-    type: "default",
-    data: { label, field_id: fieldId, block_type: "field" },
-    position
+    id,
+    schema: "floe.field.v1",
+    title,
+    items,
+    connections,
+    created_at: now,
+    updated_at: now
   };
 }
 
