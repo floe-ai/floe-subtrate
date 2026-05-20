@@ -1,5 +1,5 @@
 import { expect } from "@playwright/test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -152,6 +152,16 @@ test.describe("Field substrate (slice 1)", () => {
     const handle = await createBusServer(configPath, config);
     const busUrl = await handle.app.listen({ host: "127.0.0.1", port: 0 });
     const semanticPath = join(workspacePath, ".floe", "fields", "live-field.yaml");
+    const semanticPutRequests: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "PUT" &&
+        request.url().includes("/fields/live-field") &&
+        !request.url().includes("/layout/")
+      ) {
+        semanticPutRequests.push(request.url());
+      }
+    });
 
     try {
       await page.addInitScript((url) => localStorage.setItem("floe.busUrl", url), busUrl);
@@ -168,6 +178,9 @@ test.describe("Field substrate (slice 1)", () => {
       await page.getByRole("button", { name: /Add field/i }).click();
 
       await expect.poll(() => existsSync(semanticPath)).toBe(true);
+      await expect.poll(() => semanticPutRequests.length).toBe(1);
+      await page.waitForTimeout(500);
+      expect(semanticPutRequests).toHaveLength(1);
       const written = YAML.parse(readFileSync(semanticPath, "utf8")) as Record<string, unknown>;
       expect(written.schema).toBe("floe.field.v1");
       expect(written.id).toBe("live-field");
@@ -184,6 +197,69 @@ test.describe("Field substrate (slice 1)", () => {
 
       await expect.poll(() => existsSync(semanticPath)).toBe(false);
       await expect(page.getByText("No Fields yet")).toBeVisible();
+    } finally {
+      if (!page.isClosed()) {
+        await page.close();
+      }
+      handle.app.server.closeAllConnections();
+      await handle.app.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("real bus stack live-renders external Field YAML edits and persists layout sidecar only", async ({ page }) => {
+    const tmp = mkdtempSync(join(tmpdir(), "floe-field-live-e2e-"));
+    const configPath = join(tmp, "config.yaml");
+    const workspacePath = join(tmp, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const config = defaultConfig(tmp);
+    writeFileSync(configPath, YAML.stringify(config), "utf8");
+    const handle = await createBusServer(configPath, config);
+    const busUrl = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const fieldsDir = join(workspacePath, ".floe", "fields");
+    const semanticPath = join(fieldsDir, "watched-field.yaml");
+    const layoutPath = join(fieldsDir, "watched-field.layout.floeweb.yaml");
+    const createdAt = new Date().toISOString();
+    const semantic = makeFieldSemantic("watched-field", "Watched Field");
+
+    try {
+      await page.addInitScript((url) => localStorage.setItem("floe.busUrl", url), busUrl);
+      await page.goto("/");
+
+      await page.getByLabel("Workspace folder").fill(workspacePath);
+      await page.getByLabel("Name").fill("Field Live Workspace");
+      await page.getByRole("button", { name: "Create Workspace", exact: true }).click();
+      await expect(page.locator(".workspace-home")).toBeVisible();
+
+      mkdirSync(fieldsDir, { recursive: true });
+      writeFileSync(semanticPath, YAML.stringify({ ...semantic, created_at: createdAt, updated_at: createdAt }), "utf8");
+      await expect(page.locator(".field-block", { hasText: "Watched Field" })).toBeVisible();
+      await page.locator(".field-block", { hasText: "Watched Field" }).click();
+
+      const updatedAt = new Date(Date.now() + 1000).toISOString();
+      const withItem = {
+        ...semantic,
+        created_at: createdAt,
+        updated_at: updatedAt,
+        items: [{ item_id: "floe_actor", ref: "actor:floe" }]
+      };
+      writeFileSync(semanticPath, YAML.stringify(withItem), "utf8");
+      const actorNode = page.locator(".react-flow__node").filter({ hasText: "floe" });
+      await expect(actorNode).toHaveCount(1);
+
+      const semanticBeforeLayout = readFileSync(semanticPath, "utf8");
+      const semanticMtimeBeforeLayout = statSync(semanticPath).mtimeMs;
+
+      await expect.poll(() => existsSync(layoutPath)).toBe(true);
+      expect(readFileSync(semanticPath, "utf8")).toBe(semanticBeforeLayout);
+      expect(statSync(semanticPath).mtimeMs).toBe(semanticMtimeBeforeLayout);
+      const layout = YAML.parse(readFileSync(layoutPath, "utf8")) as Record<string, any>;
+      expect(layout.schema).toBe("floe.field.layout.floeweb.v1");
+      expect(layout.field_id).toBe("watched-field");
+      expect(layout.items.floe_actor).toEqual(expect.objectContaining({
+        x: expect.any(Number),
+        y: expect.any(Number)
+      }));
     } finally {
       if (!page.isClosed()) {
         await page.close();

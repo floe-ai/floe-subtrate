@@ -3,7 +3,9 @@ import {
   listFields,
   getField,
   putFieldSemantic,
+  putFieldLayout,
   deleteField,
+  subscribeToFieldEvents,
   FieldsApiError
 } from "./fields-api";
 import type { FieldSemantic, FieldLayoutFloeweb, FieldSummary } from "./fields";
@@ -43,6 +45,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -119,6 +122,27 @@ describe("putFieldSemantic", () => {
   });
 });
 
+describe("putFieldLayout", () => {
+  it("PUTs FloeWeb layout JSON and returns .layout", async () => {
+    const layout: FieldLayoutFloeweb = {
+      schema: "floe.field.layout.floeweb.v1",
+      field_id: "field-1",
+      viewport: { x: 10, y: 20, zoom: 1.5 },
+      items: { item_1: { x: 100, y: 200 } }
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ layout }));
+
+    const result = await putFieldLayout(BUS, "ws-1", "field-1", layout);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:5377/v1/workspaces/ws-1/fields/field-1/layout/floeweb");
+    expect(init.method).toBe("PUT");
+    expect((init.headers as Record<string, string>)["content-type"]).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toEqual(layout);
+    expect(result).toEqual(layout);
+  });
+});
+
 describe("deleteField", () => {
   it("DELETEs and returns the result body", async () => {
     fetchMock.mockResolvedValueOnce(
@@ -134,6 +158,96 @@ describe("deleteField", () => {
       semanticDeleted: true,
       layoutsDeleted: ["/a.layout.floeweb.yaml"]
     });
+  });
+});
+
+describe("subscribeToFieldEvents", () => {
+  it("opens the bus event stream and forwards only canonical Field events", () => {
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = [];
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      close = vi.fn();
+      constructor(readonly url: string) {
+        FakeWebSocket.instances.push(this);
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) });
+      }
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const events: unknown[] = [];
+
+    const unsubscribe = subscribeToFieldEvents(BUS, (event) => events.push(event));
+
+    expect(FakeWebSocket.instances[0].url).toBe("ws://127.0.0.1:5377/v1/events/stream");
+    FakeWebSocket.instances[0].emit({ type: "hello", payload: {} });
+    FakeWebSocket.instances[0].emit({
+      type: "field.upserted",
+      payload: {
+        workspace_id: "ws-1",
+        field_id: "field-1",
+        source: "watcher",
+        changed: "semantic"
+      },
+      at: T0
+    });
+    FakeWebSocket.instances[0].emit({
+      type: "field.deleted",
+      payload: { workspace_id: "ws-1", field_id: "field-1" },
+      at: T0
+    });
+    unsubscribe();
+
+    expect(events).toEqual([
+      {
+        type: "field.upserted",
+        payload: {
+          workspace_id: "ws-1",
+          field_id: "field-1",
+          source: "watcher",
+          changed: "semantic"
+        },
+        at: T0
+      },
+      {
+        type: "field.deleted",
+        payload: { workspace_id: "ws-1", field_id: "field-1" },
+        at: T0
+      }
+    ]);
+    expect(FakeWebSocket.instances[0].close).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconnects when the Field event stream closes", () => {
+    vi.useFakeTimers();
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = [];
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      close = vi.fn();
+      constructor(readonly url: string) {
+        FakeWebSocket.instances.push(this);
+      }
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+
+    const unsubscribe = subscribeToFieldEvents(BUS, () => {}, { reconnectDelayMs: 50 });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    FakeWebSocket.instances[0].onclose?.();
+    vi.advanceTimersByTime(49);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(FakeWebSocket.instances[1].url).toBe("ws://127.0.0.1:5377/v1/events/stream");
+
+    unsubscribe();
+    FakeWebSocket.instances[1].onclose?.();
+    vi.advanceTimersByTime(50);
+    expect(FakeWebSocket.instances).toHaveLength(2);
   });
 });
 

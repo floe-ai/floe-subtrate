@@ -31,7 +31,11 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
-  type NodeProps
+  useOnViewportChange,
+  type Node as ReactFlowNode,
+  type NodeChange,
+  type NodeProps,
+  type Viewport
 } from "@xyflow/react";
 import "./styles.css";
 import {
@@ -42,7 +46,10 @@ import {
   type ContextSummary
 } from "./contexts";
 import {
+  applyNodeChangesToLayout,
   fieldToReactFlow,
+  reactFlowToLayout,
+  type FieldLayoutFloeweb,
   type FieldItemNodeData,
   type FieldSummary,
   type FieldSemantic
@@ -51,7 +58,10 @@ import {
   listFields,
   getField,
   putFieldSemantic,
+  putFieldLayout,
   deleteField as deleteFieldApi,
+  parseFieldStreamMessage,
+  subscribeToFieldEvents,
   type LoadedField
 } from "./fields-api";
 
@@ -178,6 +188,25 @@ const fieldNodeTypes = {
   fieldItem: FieldItemNode
 };
 
+function layoutsEqual(a: FieldLayoutFloeweb, b: FieldLayoutFloeweb): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+type PendingLayoutSave = {
+  workspaceId: string;
+  fieldId: string;
+  layout: FieldLayoutFloeweb;
+};
+
+function fieldLayoutKey(workspaceId: string, fieldId: string): string {
+  return `${workspaceId}\u0000${fieldId}`;
+}
+
+function FieldViewportObserver({ onChange }: { onChange: (viewport: Viewport) => void }) {
+  useOnViewportChange({ onEnd: onChange });
+  return null;
+}
+
 function App() {
   const [busUrl, setBusUrl] = useState(defaultBusUrl);
   const [showBusSettings, setShowBusSettings] = useState(false);
@@ -212,6 +241,12 @@ function App() {
   const [status, setStatus] = useState("Connecting");
   const [error, setError] = useState<string | null>(null);
   const selectedWorkspaceIdRef = useRef("");
+  const viewRef = useRef<View>({ kind: "home" });
+  const loadedFieldRef = useRef<LoadedField | null>(null);
+  const layoutSaveTimersRef = useRef<Map<string, number>>(new Map());
+  const pendingLayoutSavesRef = useRef<Map<string, PendingLayoutSave>>(new Map());
+  const localLayoutWriteUntilRef = useRef<Map<string, number>>(new Map());
+  const autoInitializedLayoutRef = useRef<Set<string>>(new Set());
   const chatEndRef = useRef<HTMLDivElement>(null);
   const contextEventsRequestRef = useRef(0);
 
@@ -478,6 +513,10 @@ function App() {
     if (!loadedField) return { nodes: [], edges: [] };
     return fieldToReactFlow(loadedField.semantic, loadedField.layout ?? undefined);
   }, [loadedField]);
+  const fieldViewport = useMemo<Viewport>(
+    () => loadedField?.layout?.viewport ?? { x: 0, y: 0, zoom: 1 },
+    [loadedField?.layout?.viewport]
+  );
 
   const refreshContexts = useCallback(async (workspaceId: string) => {
     try {
@@ -563,6 +602,22 @@ function App() {
   }, [selectedWorkspaceId]);
 
   useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  useEffect(() => {
+    loadedFieldRef.current = loadedField;
+  }, [loadedField]);
+
+  useEffect(() => () => {
+    for (const timer of layoutSaveTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    layoutSaveTimersRef.current.clear();
+    pendingLayoutSavesRef.current.clear();
+  }, []);
+
+  useEffect(() => {
     const name = endpointDisplayName(operatorEndpoint);
     if (name) localStorage.setItem("floe-operator-name", name);
   }, [operatorEndpoint?.name]);
@@ -597,7 +652,10 @@ function App() {
       });
     };
     socket.onopen = () => setStatus("Connected");
-    socket.onmessage = () => queueRefresh();
+    socket.onmessage = (event) => {
+      if (parseFieldStreamMessage(String(event.data))) return;
+      queueRefresh();
+    };
     socket.onerror = () => setStatus((current) => current === "Offline" ? current : "Reconnecting");
     socket.onclose = () => setStatus((current) => current === "Offline" ? current : "Disconnected");
     const recovery = window.setInterval(() => void refresh(), 30_000);
@@ -708,6 +766,166 @@ function App() {
       setError((caught as Error).message);
     }
   }, [busUrl]);
+
+  const markLocalLayoutWrite = useCallback((workspaceId: string, fieldId: string) => {
+    localLayoutWriteUntilRef.current.set(fieldLayoutKey(workspaceId, fieldId), Date.now() + 2_000);
+  }, []);
+
+  const hasRecentLocalLayoutWrite = useCallback((workspaceId: string, fieldId: string) => {
+    const key = fieldLayoutKey(workspaceId, fieldId);
+    const until = localLayoutWriteUntilRef.current.get(key);
+    if (!until) return false;
+    if (until >= Date.now()) return true;
+    localLayoutWriteUntilRef.current.delete(key);
+    return false;
+  }, []);
+
+  const sendFieldLayoutSave = useCallback((pending: PendingLayoutSave) => {
+    markLocalLayoutWrite(pending.workspaceId, pending.fieldId);
+    void putFieldLayout(busUrl, pending.workspaceId, pending.fieldId, pending.layout)
+      .then(() => markLocalLayoutWrite(pending.workspaceId, pending.fieldId))
+      .catch((caught) => setError((caught as Error).message));
+  }, [busUrl, markLocalLayoutWrite]);
+
+  const scheduleFieldLayoutSave = useCallback((
+    workspaceId: string,
+    fieldId: string,
+    layout: FieldLayoutFloeweb
+  ) => {
+    const key = fieldLayoutKey(workspaceId, fieldId);
+    pendingLayoutSavesRef.current.set(key, { workspaceId, fieldId, layout });
+    const existingTimer = layoutSaveTimersRef.current.get(key);
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer);
+    }
+    const timer = window.setTimeout(() => {
+      const pending = pendingLayoutSavesRef.current.get(key);
+      pendingLayoutSavesRef.current.delete(key);
+      layoutSaveTimersRef.current.delete(key);
+      if (!pending) return;
+      sendFieldLayoutSave(pending);
+    }, 300);
+    layoutSaveTimersRef.current.set(key, timer);
+  }, [sendFieldLayoutSave]);
+
+  const updateLoadedFieldLayout = useCallback((layout: FieldLayoutFloeweb) => {
+    const current = loadedFieldRef.current;
+    if (!current || current.semantic.id !== layout.field_id) return;
+    const next = { ...current, layout };
+    loadedFieldRef.current = next;
+    setLoadedField(next);
+  }, []);
+
+  const handleFieldNodesChange = useCallback((changes: NodeChange[]) => {
+    const workspaceId = selectedWorkspaceIdRef.current;
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!workspaceId || !current || currentView.kind !== "field") return;
+    if (currentView.fieldId !== current.semantic.id) return;
+    const baseLayout = current.layout ?? reactFlowToLayout(
+      current.semantic.id,
+      fieldToReactFlow(current.semantic).nodes,
+      { x: 0, y: 0, zoom: 1 }
+    );
+    const nextLayout = applyNodeChangesToLayout(baseLayout, changes);
+    if (nextLayout === baseLayout) return;
+    if (current.layout && layoutsEqual(current.layout, nextLayout)) return;
+    updateLoadedFieldLayout(nextLayout);
+    scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
+  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
+
+  const handleFieldMoveEnd = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+    const workspaceId = selectedWorkspaceIdRef.current;
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!workspaceId || !current || currentView.kind !== "field") return;
+    if (currentView.fieldId !== current.semantic.id) return;
+    const { nodes } = fieldToReactFlow(current.semantic, current.layout ?? undefined);
+    const nextLayout = reactFlowToLayout(current.semantic.id, nodes, viewport);
+    if (current.layout && layoutsEqual(current.layout, nextLayout)) return;
+    updateLoadedFieldLayout(nextLayout);
+    scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
+  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
+
+  const handleFieldViewportChange = useCallback((viewport: Viewport) => {
+    const workspaceId = selectedWorkspaceIdRef.current;
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!workspaceId || !current || currentView.kind !== "field") return;
+    if (currentView.fieldId !== current.semantic.id) return;
+    const { nodes } = fieldToReactFlow(current.semantic, current.layout ?? undefined);
+    const nextLayout = reactFlowToLayout(current.semantic.id, nodes, viewport);
+    if (current.layout && layoutsEqual(current.layout, nextLayout)) return;
+    updateLoadedFieldLayout(nextLayout);
+    scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
+  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
+
+  const handleFieldNodeDragStop = useCallback((_event: React.MouseEvent, node: ReactFlowNode) => {
+    const workspaceId = selectedWorkspaceIdRef.current;
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!workspaceId || !current || currentView.kind !== "field") return;
+    if (currentView.fieldId !== current.semantic.id) return;
+    const baseLayout = current.layout ?? reactFlowToLayout(
+      current.semantic.id,
+      fieldToReactFlow(current.semantic).nodes,
+      { x: 0, y: 0, zoom: 1 }
+    );
+    const nextLayout: FieldLayoutFloeweb = {
+      ...baseLayout,
+      items: {
+        ...baseLayout.items,
+        [node.id]: {
+          ...(baseLayout.items[node.id] ?? {}),
+          x: node.position.x,
+          y: node.position.y
+        }
+      }
+    };
+    if (current.layout && layoutsEqual(current.layout, nextLayout)) return;
+    updateLoadedFieldLayout(nextLayout);
+    scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
+  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
+
+  useEffect(() => subscribeToFieldEvents(busUrl, (event) => {
+    const workspaceId = selectedWorkspaceIdRef.current;
+    if (!workspaceId || event.payload.workspace_id !== workspaceId) return;
+    void refreshFields(workspaceId);
+    const currentView = viewRef.current;
+    if (currentView.kind !== "field" || currentView.fieldId !== event.payload.field_id) return;
+    if (event.type === "field.deleted") {
+      autoInitializedLayoutRef.current.delete(fieldLayoutKey(workspaceId, event.payload.field_id));
+      setLoadedField(null);
+      setView({ kind: "home" });
+      return;
+    }
+    if (
+      event.payload.changed === "layout" &&
+      hasRecentLocalLayoutWrite(workspaceId, event.payload.field_id)
+    ) {
+      return;
+    }
+    void refreshOpenField(workspaceId, event.payload.field_id);
+  }), [busUrl, hasRecentLocalLayoutWrite, refreshFields, refreshOpenField]);
+
+  useEffect(() => {
+    const workspaceId = selectedWorkspaceIdRef.current;
+    if (!workspaceId || view.kind !== "field" || !loadedField || loadedField.layout) return;
+    if (fieldNodes.length === 0) return;
+    const key = fieldLayoutKey(workspaceId, loadedField.semantic.id);
+    if (autoInitializedLayoutRef.current.has(key)) return;
+    autoInitializedLayoutRef.current.add(key);
+    const layout = reactFlowToLayout(loadedField.semantic.id, fieldNodes, fieldViewport);
+    updateLoadedFieldLayout(layout);
+    scheduleFieldLayoutSave(workspaceId, loadedField.semantic.id, layout);
+  }, [
+    fieldNodes,
+    fieldViewport,
+    loadedField,
+    scheduleFieldLayoutSave,
+    updateLoadedFieldLayout,
+    view
+  ]);
 
   useEffect(() => {
     setLoadedField(null);
@@ -1099,11 +1317,17 @@ function App() {
             nodes={fieldNodes}
             edges={fieldEdges}
             nodeTypes={fieldNodeTypes}
-            fitView
+            onNodesChange={handleFieldNodesChange}
+            onMoveEnd={handleFieldMoveEnd}
+            onNodeDragStop={handleFieldNodeDragStop}
+            viewport={fieldViewport}
+            panOnDrag
+            zoomOnScroll
             minZoom={0.2}
             maxZoom={1.8}
             proOptions={{ hideAttribution: true }}
           >
+            <FieldViewportObserver onChange={handleFieldViewportChange} />
             <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
             <Controls position="bottom-left" />
             <MiniMap pannable zoomable position="bottom-right" />

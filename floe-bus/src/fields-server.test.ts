@@ -62,6 +62,18 @@ function makeLayout(fieldId: string): Record<string, unknown> {
   };
 }
 
+async function eventually<T>(read: () => T | undefined, timeoutMs = 1000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (value !== undefined) return value;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const value = read();
+  if (value !== undefined) return value;
+  throw new Error("timed out waiting for expected value");
+}
+
 describe("Fields HTTP routes", () => {
   let handle: ServerHandle;
   let cleanup: () => Promise<void>;
@@ -259,7 +271,7 @@ describe("Fields HTTP routes", () => {
     expect(res.json().error).toBe("field_renderer_invalid");
   });
 
-  it("PUT field broadcasts field_updated to WS subscribers", async () => {
+  it("PUT field broadcasts field.upserted from api to WS subscribers", async () => {
     const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
     const url = address.replace(/^http/, "ws") + "/v1/events/stream";
     const wsMod = await import("ws" as any);
@@ -282,11 +294,351 @@ describe("Fields HTTP routes", () => {
 
     await new Promise((r) => setTimeout(r, 100));
     ws.close();
-    const updated = messages.find((m) => m.type === "field_updated");
+    const updated = messages.find((m) => m.type === "field.upserted");
     expect(updated).toBeDefined();
-    expect(updated.payload.field_id).toBe("kappa");
-    expect(updated.payload.workspace_id).toBe(wsId);
-    expect(updated.payload.semantic.id).toBe("kappa");
+    expect(updated.payload).toEqual({
+      workspace_id: wsId,
+      field_id: "kappa",
+      source: "api",
+      changed: "semantic"
+    });
+  });
+
+  it("PUT layout broadcasts field.upserted from api as a layout change", async () => {
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const url = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WS = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WS(url);
+    const messages: any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", (e: any) => reject(e));
+    });
+    ws.on("message", (data: any) => {
+      messages.push(JSON.parse(data.toString()));
+    });
+
+    await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/fields/lambda`,
+      payload: makeSemantic("lambda")
+    });
+    await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/fields/lambda/layout/floeweb`,
+      payload: makeLayout("lambda")
+    });
+
+    await new Promise((r) => setTimeout(r, 100));
+    ws.close();
+    const updated = messages.find((m) =>
+      m.type === "field.upserted" &&
+      m.payload.field_id === "lambda" &&
+      m.payload.changed === "layout"
+    );
+    expect(updated).toBeDefined();
+    expect(updated.payload).toEqual({
+      workspace_id: wsId,
+      field_id: "lambda",
+      source: "api",
+      changed: "layout",
+      renderer: "floeweb"
+    });
+  });
+
+  it("DELETE field broadcasts field.deleted to WS subscribers", async () => {
+    await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/fields/mu`,
+      payload: makeSemantic("mu")
+    });
+
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const url = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WS = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WS(url);
+    const messages: any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", (e: any) => reject(e));
+    });
+    ws.on("message", (data: any) => {
+      messages.push(JSON.parse(data.toString()));
+    });
+
+    await handle.app.inject({
+      method: "DELETE",
+      url: `/v1/workspaces/${wsId}/fields/mu`
+    });
+
+    await new Promise((r) => setTimeout(r, 100));
+    ws.close();
+    const deleted = messages.find((m) => m.type === "field.deleted");
+    expect(deleted).toBeDefined();
+    expect(deleted.payload).toEqual({
+      workspace_id: wsId,
+      field_id: "mu"
+    });
+  });
+
+  it("external semantic file write broadcasts field.upserted from watcher", async () => {
+    const watchedLocator = join(wsLocator, "..", "watched-workspace");
+    mkdirSync(watchedLocator, { recursive: true });
+    const register = await handle.app.inject({
+      method: "POST",
+      url: "/v1/workspaces/register",
+      payload: { locator: watchedLocator, name: "watched-workspace" }
+    });
+    const watchedWorkspaceId = register.json().workspace.workspace_id as string;
+
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const url = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WS = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WS(url);
+    const messages: any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", (e: any) => reject(e));
+    });
+    ws.on("message", (data: any) => {
+      messages.push(JSON.parse(data.toString()));
+    });
+
+    const fieldsDir = join(watchedLocator, ".floe", "fields");
+    mkdirSync(fieldsDir, { recursive: true });
+    writeFileSync(
+      join(fieldsDir, "external.yaml"),
+      YAML.stringify(makeSemantic("external")),
+      "utf8"
+    );
+
+    const updated = await eventually(() => messages.find((m) =>
+      m.type === "field.upserted" &&
+      m.payload.workspace_id === watchedWorkspaceId &&
+      m.payload.field_id === "external" &&
+      m.payload.source === "watcher"
+    ));
+    ws.close();
+    expect(updated.payload).toEqual({
+      workspace_id: watchedWorkspaceId,
+      field_id: "external",
+      source: "watcher",
+      changed: "semantic"
+    });
+  });
+
+  it("external semantic file delete broadcasts field.deleted from watcher", async () => {
+    const watchedLocator = join(wsLocator, "..", "delete-watched-workspace");
+    const fieldsDir = join(watchedLocator, ".floe", "fields");
+    mkdirSync(fieldsDir, { recursive: true });
+    const semanticPath = join(fieldsDir, "external-delete.yaml");
+    writeFileSync(
+      semanticPath,
+      YAML.stringify(makeSemantic("external-delete")),
+      "utf8"
+    );
+    const register = await handle.app.inject({
+      method: "POST",
+      url: "/v1/workspaces/register",
+      payload: { locator: watchedLocator, name: "delete-watched-workspace" }
+    });
+    const watchedWorkspaceId = register.json().workspace.workspace_id as string;
+
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const url = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WS = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WS(url);
+    const messages: any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", (e: any) => reject(e));
+    });
+    ws.on("message", (data: any) => {
+      messages.push(JSON.parse(data.toString()));
+    });
+
+    rmSync(semanticPath);
+
+    const deleted = await eventually(() => messages.find((m) =>
+      m.type === "field.deleted" &&
+      m.payload.workspace_id === watchedWorkspaceId &&
+      m.payload.field_id === "external-delete"
+    ));
+    ws.close();
+    expect(deleted.payload).toEqual({
+      workspace_id: watchedWorkspaceId,
+      field_id: "external-delete"
+    });
+  });
+
+  it("external layout sidecar write broadcasts field.upserted without creating phantom fields", async () => {
+    const watchedLocator = join(wsLocator, "..", "layout-watched-workspace");
+    const fieldsDir = join(watchedLocator, ".floe", "fields");
+    mkdirSync(fieldsDir, { recursive: true });
+    writeFileSync(
+      join(fieldsDir, "with-layout.yaml"),
+      YAML.stringify(makeSemantic("with-layout")),
+      "utf8"
+    );
+    const register = await handle.app.inject({
+      method: "POST",
+      url: "/v1/workspaces/register",
+      payload: { locator: watchedLocator, name: "layout-watched-workspace" }
+    });
+    const watchedWorkspaceId = register.json().workspace.workspace_id as string;
+
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const url = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WS = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WS(url);
+    const messages: any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", (e: any) => reject(e));
+    });
+    ws.on("message", (data: any) => {
+      messages.push(JSON.parse(data.toString()));
+    });
+
+    writeFileSync(
+      join(fieldsDir, "with-layout.layout.floeweb.yaml"),
+      YAML.stringify(makeLayout("with-layout")),
+      "utf8"
+    );
+    writeFileSync(
+      join(fieldsDir, "orphan.layout.floeweb.yaml"),
+      YAML.stringify(makeLayout("orphan")),
+      "utf8"
+    );
+
+    const updated = await eventually(() => messages.find((m) =>
+      m.type === "field.upserted" &&
+      m.payload.workspace_id === watchedWorkspaceId &&
+      m.payload.field_id === "with-layout" &&
+      m.payload.changed === "layout"
+    ));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    ws.close();
+    expect(updated.payload).toEqual({
+      workspace_id: watchedWorkspaceId,
+      field_id: "with-layout",
+      source: "watcher",
+      changed: "layout",
+      renderer: "floeweb"
+    });
+    expect(messages.some((m) => m.payload?.field_id === "orphan")).toBe(false);
+  });
+
+  it("external layout sidecar delete does not broadcast a Field update", async () => {
+    const watchedLocator = join(wsLocator, "..", "layout-delete-watched-workspace");
+    const fieldsDir = join(watchedLocator, ".floe", "fields");
+    mkdirSync(fieldsDir, { recursive: true });
+    writeFileSync(
+      join(fieldsDir, "with-layout.yaml"),
+      YAML.stringify(makeSemantic("with-layout")),
+      "utf8"
+    );
+    const layoutPath = join(fieldsDir, "with-layout.layout.floeweb.yaml");
+    writeFileSync(layoutPath, YAML.stringify(makeLayout("with-layout")), "utf8");
+    const register = await handle.app.inject({
+      method: "POST",
+      url: "/v1/workspaces/register",
+      payload: { locator: watchedLocator, name: "layout-delete-watched-workspace" }
+    });
+    const watchedWorkspaceId = register.json().workspace.workspace_id as string;
+
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const url = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WS = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WS(url);
+    const messages: any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", (e: any) => reject(e));
+    });
+    ws.on("message", (data: any) => {
+      messages.push(JSON.parse(data.toString()));
+    });
+
+    rmSync(layoutPath);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    ws.close();
+    expect(messages.some((m) =>
+      m.type === "field.upserted" &&
+      m.payload.workspace_id === watchedWorkspaceId &&
+      m.payload.field_id === "with-layout" &&
+      m.payload.changed === "layout"
+    )).toBe(false);
+  });
+
+  it("workspace delete stops the field watcher and re-register starts one fresh watcher", async () => {
+    const watchedLocator = join(wsLocator, "..", "reregister-watched-workspace");
+    const fieldsDir = join(watchedLocator, ".floe", "fields");
+    mkdirSync(fieldsDir, { recursive: true });
+    const firstRegister = await handle.app.inject({
+      method: "POST",
+      url: "/v1/workspaces/register",
+      payload: { locator: watchedLocator, name: "reregister-watched-workspace" }
+    });
+    const watchedWorkspaceId = firstRegister.json().workspace.workspace_id as string;
+
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const url = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WS = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WS(url);
+    const messages: any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", (e: any) => reject(e));
+    });
+    ws.on("message", (data: any) => {
+      messages.push(JSON.parse(data.toString()));
+    });
+
+    await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${watchedWorkspaceId}/delete`,
+      payload: { delete_locator: false }
+    });
+    writeFileSync(
+      join(fieldsDir, "leaked.yaml"),
+      YAML.stringify(makeSemantic("leaked")),
+      "utf8"
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(messages.some((m) => m.payload?.field_id === "leaked")).toBe(false);
+
+    const secondRegister = await handle.app.inject({
+      method: "POST",
+      url: "/v1/workspaces/register",
+      payload: { locator: watchedLocator, name: "reregister-watched-workspace" }
+    });
+    const secondWorkspaceId = secondRegister.json().workspace.workspace_id as string;
+    writeFileSync(
+      join(fieldsDir, "after-reregister.yaml"),
+      YAML.stringify(makeSemantic("after-reregister")),
+      "utf8"
+    );
+
+    const updated = await eventually(() => messages.find((m) =>
+      m.type === "field.upserted" &&
+      m.payload.workspace_id === secondWorkspaceId &&
+      m.payload.field_id === "after-reregister"
+    ));
+    ws.close();
+    expect(updated.payload.source).toBe("watcher");
+    expect(messages.filter((m) =>
+      m.payload?.workspace_id === secondWorkspaceId &&
+      m.payload?.field_id === "after-reregister"
+    )).toHaveLength(1);
   });
 
   it("returns 404 workspace_not_found for unknown workspace", async () => {

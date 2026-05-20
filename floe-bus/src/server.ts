@@ -17,6 +17,7 @@ import {
   upsertFieldLayout,
   deleteField
 } from "./fields-store.js";
+import { FieldsWatcherRegistry } from "./fields-watcher.js";
 
 const EventCommandSchema = z.object({
   type: z.string().min(1),
@@ -107,12 +108,19 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
   }
 
+  const fieldWatchers = new FieldsWatcherRegistry(
+    broadcast,
+    (error) => app.log.error({ err: error }, "field watcher error")
+  );
+  fieldWatchers.watchWorkspaces(store.listWorkspaces() as { workspace_id?: unknown; locator?: unknown }[]);
+
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
   app.addHook("onClose", async () => {
     clearInterval(timer);
     for (const socket of sockets) socket.close();
+    await fieldWatchers.close();
     store.close();
   });
 
@@ -220,7 +228,12 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       const semantic = upsertFieldSemantic(locator, params.field_id, request.body, {
         ifAbsent: query.if_absent === "true"
       });
-      broadcast("field_updated", { workspace_id: params.workspace_id, field_id: params.field_id, semantic });
+      broadcast("field.upserted", {
+        workspace_id: params.workspace_id,
+        field_id: params.field_id,
+        source: "api",
+        changed: "semantic"
+      });
       reply.code(existed ? 200 : 201);
       return { semantic };
     } catch (err) {
@@ -244,11 +257,12 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (locator === null) return reply;
     try {
       const layout = upsertFieldLayout(locator, params.field_id, params.renderer, request.body);
-      broadcast("field_layout_updated", {
+      broadcast("field.upserted", {
         workspace_id: params.workspace_id,
         field_id: params.field_id,
+        source: "api",
+        changed: "layout",
         renderer: params.renderer,
-        layout
       });
       return { layout };
     } catch (err) {
@@ -268,7 +282,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
         reply.code(404);
         return { error: "field_not_found" };
       }
-      broadcast("field_deleted", { workspace_id: params.workspace_id, field_id: params.field_id });
+      broadcast("field.deleted", { workspace_id: params.workspace_id, field_id: params.field_id });
       return result;
     } catch (err) {
       const mapped = mapFieldError(err, reply);
@@ -296,12 +310,15 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       mkdirSync(resolved, { recursive: true });
     }
     const workspace = store.registerWorkspace(input, broadcast);
+    await fieldWatchers.watchWorkspace(workspace as { workspace_id?: unknown; locator?: unknown });
     return reply.code(201).send({ workspace });
   });
 
   app.post("/v1/workspaces/:workspace_id/select", async (request) => {
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
-    return { workspace: store.selectWorkspace(params.workspace_id, broadcast) };
+    const workspace = store.selectWorkspace(params.workspace_id, broadcast);
+    await fieldWatchers.watchWorkspace(workspace as { workspace_id?: unknown; locator?: unknown });
+    return { workspace };
   });
 
   app.post("/v1/workspaces/:workspace_id/delete", async (request) => {
@@ -309,6 +326,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const body = z.object({
       delete_locator: z.boolean().optional()
     }).parse(request.body ?? {});
+    await fieldWatchers.unwatchWorkspace(params.workspace_id);
     return store.deleteWorkspace(params.workspace_id, { delete_locator: body.delete_locator ?? false }, broadcast);
   });
 
