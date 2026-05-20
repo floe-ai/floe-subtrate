@@ -207,6 +207,78 @@ test.describe("Field substrate (slice 1)", () => {
     }
   });
 
+  test("real bus stack renames a Field title without changing id, filename, items, connections, or layout", async ({ page }) => {
+    const tmp = mkdtempSync(join(tmpdir(), "floe-field-rename-e2e-"));
+    const configPath = join(tmp, "config.yaml");
+    const workspacePath = join(tmp, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const config = defaultConfig(tmp);
+    writeFileSync(configPath, YAML.stringify(config), "utf8");
+    const handle = await createBusServer(configPath, config);
+    const busUrl = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const fieldsDir = join(workspacePath, ".floe", "fields");
+    const semanticPath = join(fieldsDir, "rename-me.yaml");
+    const layoutPath = join(fieldsDir, "rename-me.layout.floeweb.yaml");
+    const semantic = makeFieldSemantic(
+      "rename-me",
+      "Rename Me",
+      [
+        { item_id: "floe_actor", ref: "actor:floe" },
+        { item_id: "nested_field", ref: "field:other-field" }
+      ],
+      [{ id: "connection_1", from: "floe_actor", to: "nested_field", label: "relates" }]
+    );
+    const layout = {
+      schema: "floe.field.layout.floeweb.v1",
+      field_id: "rename-me",
+      viewport: { x: 10, y: 20, zoom: 1.2 },
+      items: { floe_actor: { x: 100, y: 150 }, nested_field: { x: 360, y: 150 } }
+    };
+
+    try {
+      await page.addInitScript((url) => localStorage.setItem("floe.busUrl", url), busUrl);
+      await page.goto("/");
+
+      await page.getByLabel("Workspace folder").fill(workspacePath);
+      await page.getByLabel("Name").fill("Field Rename Workspace");
+      await page.getByRole("button", { name: "Create Workspace", exact: true }).click();
+      await expect(page.locator(".workspace-home")).toBeVisible();
+
+      mkdirSync(fieldsDir, { recursive: true });
+      writeFileSync(semanticPath, YAML.stringify(semantic), "utf8");
+      writeFileSync(layoutPath, YAML.stringify(layout), "utf8");
+      await expect(page.locator(".field-block", { hasText: "Rename Me" })).toBeVisible();
+      await page.locator(".field-block", { hasText: "Rename Me" }).click();
+
+      await page.getByRole("button", { name: /Rename field/i }).click();
+      await page.getByLabel("Field title").fill("Renamed Field");
+      await page.getByRole("button", { name: /^Save rename$/i }).click();
+
+      await expect(page.getByRole("heading", { name: "Renamed Field" })).toBeVisible();
+      await page.getByRole("button", { name: /Workspace Home/i }).click();
+      await expect(page.locator(".field-block", { hasText: "Renamed Field" })).toBeVisible();
+
+      await expect.poll(() => {
+        const written = YAML.parse(readFileSync(semanticPath, "utf8")) as Record<string, unknown>;
+        return written.title;
+      }).toBe("Renamed Field");
+      expect(existsSync(semanticPath)).toBe(true);
+      expect(existsSync(join(fieldsDir, "renamed-field.yaml"))).toBe(false);
+      const written = YAML.parse(readFileSync(semanticPath, "utf8")) as Record<string, any>;
+      expect(written.id).toBe("rename-me");
+      expect(written.items).toEqual(semantic.items);
+      expect(written.connections).toEqual(semantic.connections);
+      expect(YAML.parse(readFileSync(layoutPath, "utf8"))).toEqual(layout);
+    } finally {
+      if (!page.isClosed()) {
+        await page.close();
+      }
+      handle.app.server.closeAllConnections();
+      await handle.app.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test("real bus stack live-renders external Field YAML edits and persists layout sidecar only", async ({ page }) => {
     const tmp = mkdtempSync(join(tmpdir(), "floe-field-live-e2e-"));
     const configPath = join(tmp, "config.yaml");

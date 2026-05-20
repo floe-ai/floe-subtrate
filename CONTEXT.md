@@ -80,10 +80,10 @@ A workspace-local substrate primitive that groups stable references to other sub
 _Avoid_: "first block type", "block storage", "canvas" as synonyms for Field. A Field is a primitive; canvases and blocks are renderer concerns.
 
 ### Field Item
-A field-local entry that references exactly one existing substrate primitive (Actor/Endpoint, Context, Pulse, Webhook, Extension, File, Tool, Work Log, Event, or another Field). Identified by a field-local `item_id` so the same primitive can appear more than once in a field and so Field Connections and Field Layout survive substrate ref edits.
+A field-local entry that references exactly one existing substrate primitive (Actor via a stable actor ref, Context, Pulse, Webhook, Extension, File, Tool, Work Log, Event, or another Field). Identified by a field-local `item_id` so the same primitive can appear more than once in a field and so Field Connections and Field Layout survive substrate ref edits.
 
 ### Field Item Ref
-A stable URI-style string identifying the substrate primitive a Field Item points to, in the form `<kind>:<id>`. Examples: `actor:floe`, `context:ctx_123`, `pulse:morning-standup`, `webhook:github-pr`, `extension:github`, `file:.floe/instructions/pr-review.md`, `tool:todo_add`, `work_log:.floe/agents/reviewer/worklogs/2026-05-19.md`, `field:inbound-pr-review`, `event:evt_abc`. The substrate does not pre-validate resolvability; broken refs are reported by clients at read time. Existing substrate primitives keep their existing storage; Fields only reference them.
+A stable URI-style string identifying the substrate primitive a Field Item points to, in the form `<kind>:<id>`. Examples: `actor:floe`, `actor:<workspace>:operator`, `context:ctx_123`, `pulse:morning-standup`, `webhook:github-pr`, `extension:github`, `file:.floe/instructions/pr-review.md`, `tool:todo_add`, `work_log:.floe/agents/reviewer/worklogs/2026-05-19.md`, `field:inbound-pr-review`, `event:evt_abc`. Actor refs must use the stable actor identity exposed by the substrate and should not leak endpoint implementation details into normal Field UI. The substrate does not pre-validate resolvability; broken refs are reported by clients at read time. Existing substrate primitives keep their existing storage; Fields only reference them.
 
 ### Field Connection
 A minimal `from → to` link between two Field Items inside the same Field, addressed by `item_id`. Optional free-form `label` and `metadata` are user/extension/workspace text only — core does not interpret them and there is no relationship ontology.

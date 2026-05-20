@@ -38,6 +38,17 @@
   box-sizing: border-box;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 html,
 body,
 #root {
@@ -672,9 +683,31 @@ code {
   margin-bottom: 14px;
 }
 
-.field-toolbar > div {
+.field-toolbar > .field-title-area {
   flex: 1;
   min-width: 0;
+}
+
+.field-toolbar > .field-toolbar-actions {
+  flex: 0 0 auto;
+}
+
+.field-toolbar-actions,
+.field-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-rename-row label {
+  flex: 1;
+  min-width: 0;
+}
+
+.field-rename-row input {
+  min-height: 36px;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .canvas-wrap {

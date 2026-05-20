@@ -7,6 +7,8 @@ import {
   ChevronDown,
   ChevronRight,
   CircleDot,
+  Check,
+  Edit3,
   FolderOpen,
   FolderPlus,
   Home,
@@ -47,6 +49,7 @@ import {
 } from "./contexts";
 import {
   applyNodeChangesToLayout,
+  buildSemanticUpdate,
   fieldToReactFlow,
   reactFlowToLayout,
   type FieldLayoutFloeweb,
@@ -226,6 +229,7 @@ function App() {
   const [view, setView] = useState<View>({ kind: "home" });
   const [fieldSummaries, setFieldSummaries] = useState<FieldSummary[]>([]);
   const [loadedField, setLoadedField] = useState<LoadedField | null>(null);
+  const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [channelOpen, setChannelOpen] = useState(false);
   const [channelMessage, setChannelMessage] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -1141,6 +1145,45 @@ function App() {
     await refreshContexts(selectedWorkspace.workspace_id);
   }
 
+  async function saveOpenFieldSemantic(nextSemantic: FieldSemantic): Promise<void> {
+    if (!selectedWorkspace) return;
+    const workspaceId = selectedWorkspace.workspace_id;
+    try {
+      const semantic = await putFieldSemantic(busUrl, workspaceId, nextSemantic.id, nextSemantic);
+      const current = loadedFieldRef.current;
+      if (current?.semantic.id === semantic.id) {
+        const nextLoaded = { ...current, semantic };
+        loadedFieldRef.current = nextLoaded;
+        setLoadedField(nextLoaded);
+      }
+      await refreshFields(workspaceId);
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  }
+
+  function beginRenameField(): void {
+    if (!loadedField) return;
+    setRenameDraft(loadedField.semantic.title);
+  }
+
+  function cancelRenameField(): void {
+    setRenameDraft(null);
+  }
+
+  function submitRenameField(): void {
+    const current = loadedFieldRef.current;
+    if (!current || renameDraft === null) return;
+    const title = renameDraft.trim();
+    if (!title || title === current.semantic.title) {
+      setRenameDraft(null);
+      return;
+    }
+    setRenameDraft(null);
+    const next = buildSemanticUpdate(current.semantic, { type: "rename", title }, new Date().toISOString());
+    void saveOpenFieldSemantic(next);
+  }
+
   function createField(name?: string): void {
     if (!selectedWorkspace) return;
     const workspaceId = selectedWorkspace.workspace_id;
@@ -1186,6 +1229,7 @@ function App() {
   }
 
   function backToHome() {
+    setRenameDraft(null);
     setView({ kind: "home" });
   }
 
@@ -1303,14 +1347,47 @@ function App() {
           <button className="icon-button" onClick={backToHome} title="Workspace Home">
             <ArrowLeft size={16} />
           </button>
-          <div>
+          <div className="field-title-area">
             <p className="eyebrow">Field Surface</p>
-            <h2>{title}</h2>
+            {renameDraft === null ? (
+              <h2>{title}</h2>
+            ) : (
+              <div className="field-rename-row">
+                <label>
+                  <span className="sr-only">Field title</span>
+                  <input
+                    aria-label="Field title"
+                    value={renameDraft}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") submitRenameField();
+                      if (event.key === "Escape") cancelRenameField();
+                    }}
+                    autoFocus
+                  />
+                </label>
+                <button className="primary-action" onClick={submitRenameField}>
+                  <Check size={15} />
+                  Save rename
+                </button>
+                <button className="ghost-action" onClick={cancelRenameField}>
+                  Cancel
+                </button>
+              </div>
+            )}
           </div>
-          <button className="ghost-action" onClick={() => setChannelOpen(true)}>
-            <MessageSquare size={16} />
-            Floe
-          </button>
+          {renameDraft === null && (
+            <div className="field-toolbar-actions">
+              <button className="ghost-action" onClick={beginRenameField} disabled={!loadedField}>
+                <Edit3 size={16} />
+                Rename field
+              </button>
+              <button className="ghost-action" onClick={() => setChannelOpen(true)}>
+                <MessageSquare size={16} />
+                Floe
+              </button>
+            </div>
+          )}
         </div>
         <div className="canvas-wrap">
           <ReactFlow
