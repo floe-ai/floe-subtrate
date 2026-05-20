@@ -86,6 +86,17 @@ describe("fieldToReactFlow", () => {
     expect(data0.label).toBe("floe");
   });
 
+  it("labels workspace-scoped actor refs by actor name without exposing the full ref", () => {
+    const semantic = makeSemantic({
+      items: [{ item_id: "n1", ref: "actor:workspace:test:floe" }]
+    });
+
+    const { nodes } = fieldToReactFlow(semantic);
+
+    const data = nodes[0].data as { label: string };
+    expect(data.label).toBe("floe");
+  });
+
   it("uses layout positions when present; falls back to deterministic grid", () => {
     const semantic = makeSemantic({
       items: [

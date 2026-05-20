@@ -680,26 +680,30 @@ code {
 
 .field-toolbar {
   flex: 0 0 auto;
+  flex-wrap: wrap;
   margin-bottom: 14px;
 }
 
 .field-toolbar > .field-title-area {
-  flex: 1;
+  flex: 1 1 260px;
   min-width: 0;
 }
 
 .field-toolbar > .field-toolbar-actions {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
 }
 
 .field-toolbar-actions,
-.field-rename-row {
+.field-rename-row,
+.field-item-draft-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.field-rename-row label {
+.field-rename-row label,
+.field-item-draft-row label {
   flex: 1;
   min-width: 0;
 }
@@ -708,6 +712,17 @@ code {
   min-height: 36px;
   font-size: 16px;
   font-weight: 700;
+}
+
+.field-item-draft-row {
+  flex: 0 0 auto;
+  margin: -4px 0 14px 52px;
+}
+
+.field-item-draft-row select {
+  min-width: 220px;
+  min-height: 36px;
+  margin-left: 8px;
 }
 
 .canvas-wrap {

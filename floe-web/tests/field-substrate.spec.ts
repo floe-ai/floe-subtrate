@@ -279,6 +279,101 @@ test.describe("Field substrate (slice 1)", () => {
     }
   });
 
+  test("real bus stack adds Actor and nested Field Items with stable substrate refs", async ({ page }) => {
+    const tmp = mkdtempSync(join(tmpdir(), "floe-field-add-items-e2e-"));
+    const configPath = join(tmp, "config.yaml");
+    const workspacePath = join(tmp, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const config = defaultConfig(tmp);
+    writeFileSync(configPath, YAML.stringify(config), "utf8");
+    const handle = await createBusServer(configPath, config);
+    const busUrl = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const fieldsDir = join(workspacePath, ".floe", "fields");
+    const parentPath = join(fieldsDir, "parent-field.yaml");
+    const childPath = join(fieldsDir, "child-field.yaml");
+    const layoutPath = join(fieldsDir, "parent-field.layout.floeweb.yaml");
+
+    try {
+      await page.addInitScript((url) => localStorage.setItem("floe.busUrl", url), busUrl);
+      await page.goto("/");
+
+      await page.getByLabel("Workspace folder").fill(workspacePath);
+      await page.getByLabel("Name").fill("Field Add Items Workspace");
+      await page.getByRole("button", { name: "Create Workspace", exact: true }).click();
+      await expect(page.locator(".workspace-home")).toBeVisible();
+
+      const workspace = handle.store.listWorkspaces()[0] as { workspace_id: string };
+      const actorRef = `actor:${workspace.workspace_id}:floe`;
+      await handle.app.inject({
+        method: "POST",
+        url: "/v1/endpoints/register",
+        payload: {
+          endpoint_id: actorRef,
+          workspace_id: workspace.workspace_id,
+          name: "Floe",
+          agent_id: "floe",
+          status: "idle"
+        }
+      });
+
+      mkdirSync(fieldsDir, { recursive: true });
+      writeFileSync(parentPath, YAML.stringify(makeFieldSemantic("parent-field", "Parent Field")), "utf8");
+      writeFileSync(childPath, YAML.stringify(makeFieldSemantic("child-field", "Child Field")), "utf8");
+      const layout = {
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "parent-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: {}
+      };
+      writeFileSync(layoutPath, YAML.stringify(layout), "utf8");
+
+      await page.getByTitle("Refresh").first().click();
+      await expect(page.locator(".field-block", { hasText: "Parent Field" })).toBeVisible();
+      await page.locator(".field-block", { hasText: "Parent Field" }).click();
+
+      await page.getByRole("button", { name: /Add actor item/i }).click();
+      await expect(page.getByLabel("Actor item")).toBeVisible();
+      await expect(page.getByText(actorRef)).toHaveCount(0);
+      await page.getByLabel("Actor item").selectOption({ label: "Floe" });
+      await page.getByRole("button", { name: /Save actor item/i }).click();
+      await expect(page.locator(".react-flow__node").filter({ hasText: "floe" })).toHaveCount(1);
+      await expect(page.locator(".canvas-field-node[data-kind='actor']")).not.toHaveAttribute("title", actorRef);
+      await expect(page.getByText(actorRef)).toHaveCount(0);
+
+      await page.getByRole("button", { name: /Add field item/i }).click();
+      await expect(page.getByLabel("Field item")).toBeVisible();
+      await expect(page.getByRole("option", { name: "Parent Field" })).toHaveCount(0);
+      await page.getByLabel("Field item").selectOption({ label: "Child Field" });
+      await page.getByRole("button", { name: /Save field item/i }).click();
+      await expect(page.locator(".react-flow__node").filter({ hasText: "child-field" })).toHaveCount(1);
+
+      await expect.poll(() => {
+        const written = YAML.parse(readFileSync(parentPath, "utf8")) as Record<string, any>;
+        return written.items?.length;
+      }).toBe(2);
+      const written = YAML.parse(readFileSync(parentPath, "utf8")) as Record<string, any>;
+      expect(written.items).toEqual([
+        expect.objectContaining({ ref: actorRef }),
+        expect.objectContaining({ ref: "field:child-field" })
+      ]);
+      expect(new Set(written.items.map((item: any) => item.item_id)).size).toBe(2);
+      expect(YAML.parse(readFileSync(layoutPath, "utf8"))).toEqual(layout);
+      const endpointList = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(workspace.workspace_id)}/endpoints`
+      });
+      expect(endpointList.json().endpoints.filter((endpoint: any) => endpoint.endpoint_id === actorRef)).toHaveLength(1);
+      expect(existsSync(childPath)).toBe(true);
+    } finally {
+      if (!page.isClosed()) {
+        await page.close();
+      }
+      handle.app.server.closeAllConnections();
+      await handle.app.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test("real bus stack live-renders external Field YAML edits and persists layout sidecar only", async ({ page }) => {
     const tmp = mkdtempSync(join(tmpdir(), "floe-field-live-e2e-"));
     const configPath = join(tmp, "config.yaml");

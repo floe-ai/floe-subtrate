@@ -129,6 +129,10 @@ export function itemKindFromRef(ref: string): FieldItemKind {
 
 export function deriveLabel(parsed: ParsedFieldRef): string {
   if (parsed.kind === "unknown") return parsed.raw;
+  if (parsed.kind === "actor") {
+    const parts = parsed.id.split(":").filter(Boolean);
+    return parts.at(-1) ?? parsed.id;
+  }
   return parsed.id;
 }
 

@@ -51,6 +51,7 @@ import {
   applyNodeChangesToLayout,
   buildSemanticUpdate,
   fieldToReactFlow,
+  parseFieldRef,
   reactFlowToLayout,
   type FieldLayoutFloeweb,
   type FieldItemNodeData,
@@ -161,6 +162,11 @@ type View =
   | { kind: "home" }
   | { kind: "field"; fieldId: string };
 
+type FieldItemDraft = {
+  kind: "actor" | "field";
+  ref: string;
+};
+
 const defaultBusUrl = localStorage.getItem("floe.busUrl") ?? "http://127.0.0.1:5377";
 
 const runtimeErrorKinds = new Set([
@@ -179,7 +185,11 @@ function FieldItemNode({ data }: NodeProps) {
   return (
     <>
       <Handle type="target" position={Position.Top} />
-      <div className="canvas-field-node" title={item.ref.raw} data-kind={item.kind}>
+      <div
+        className="canvas-field-node"
+        title={item.kind === "actor" ? item.label : item.ref.raw}
+        data-kind={item.kind}
+      >
         <span>{item.label}</span>
       </div>
       <Handle type="source" position={Position.Bottom} />
@@ -230,6 +240,7 @@ function App() {
   const [fieldSummaries, setFieldSummaries] = useState<FieldSummary[]>([]);
   const [loadedField, setLoadedField] = useState<LoadedField | null>(null);
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
+  const [itemDraft, setItemDraft] = useState<FieldItemDraft | null>(null);
   const [channelOpen, setChannelOpen] = useState(false);
   const [channelMessage, setChannelMessage] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -281,6 +292,27 @@ function App() {
   const selectedFieldSummary = view.kind === "field"
     ? fieldSummaries.find((field) => field.id === view.fieldId) ?? null
     : null;
+  const actorItemOptions = useMemo(() => {
+    if (!selectedWorkspace) return [] as Array<{ ref: string; label: string }>;
+    const existingRefs = new Set(loadedField?.semantic.items.map((item) => item.ref) ?? []);
+    const seen = new Set<string>();
+    return agents
+      .map((endpoint) => {
+        const ref = actorFieldItemRef(endpoint, selectedWorkspace.workspace_id);
+        if (!ref || existingRefs.has(ref) || seen.has(ref)) return null;
+        seen.add(ref);
+        return { ref, label: endpointDisplayName(endpoint) ?? actorDisplayNameFromRef(ref) };
+      })
+      .filter((option): option is { ref: string; label: string } => option !== null);
+  }, [agents, loadedField?.semantic.items, selectedWorkspace]);
+  const fieldItemOptions = useMemo(() => {
+    if (view.kind !== "field") return [] as Array<{ ref: string; label: string }>;
+    const existingRefs = new Set(loadedField?.semantic.items.map((item) => item.ref) ?? []);
+    return fieldSummaries
+      .filter((field) => field.id !== view.fieldId)
+      .map((field) => ({ ref: `field:${field.id}`, label: field.title || field.id }))
+      .filter((option) => !existingRefs.has(option.ref));
+  }, [fieldSummaries, loadedField?.semantic.items, view]);
 
   const workspaceBinding = selectedWorkspace
     ? runtimeBindings.find((binding) => binding.scope === "workspace_default" && binding.workspace_id === selectedWorkspace.workspace_id)
@@ -1164,6 +1196,7 @@ function App() {
 
   function beginRenameField(): void {
     if (!loadedField) return;
+    setItemDraft(null);
     setRenameDraft(loadedField.semantic.title);
   }
 
@@ -1184,6 +1217,46 @@ function App() {
     void saveOpenFieldSemantic(next);
   }
 
+  function beginAddFieldItem(kind: FieldItemDraft["kind"]): void {
+    if (!loadedField) return;
+    const options = kind === "actor" ? actorItemOptions : fieldItemOptions;
+    if (options.length === 0) return;
+    setRenameDraft(null);
+    setItemDraft({ kind, ref: options[0].ref });
+  }
+
+  function cancelAddFieldItem(): void {
+    setItemDraft(null);
+  }
+
+  function submitAddFieldItem(): void {
+    const current = loadedFieldRef.current;
+    const draft = itemDraft;
+    if (!current || !draft) return;
+    const options = draft.kind === "actor" ? actorItemOptions : fieldItemOptions;
+    if (!options.some((option) => option.ref === draft.ref)) {
+      setError("That Field item is no longer available.");
+      return;
+    }
+    try {
+      const next = buildSemanticUpdate(
+        current.semantic,
+        {
+          type: "add_item",
+          item: {
+            item_id: nextFieldItemId(current.semantic, draft.ref),
+            ref: draft.ref
+          }
+        },
+        new Date().toISOString()
+      );
+      setItemDraft(null);
+      void saveOpenFieldSemantic(next);
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  }
+
   function createField(name?: string): void {
     if (!selectedWorkspace) return;
     const workspaceId = selectedWorkspace.workspace_id;
@@ -1202,6 +1275,8 @@ function App() {
   }
 
   function openField(fieldId: string): void {
+    setRenameDraft(null);
+    setItemDraft(null);
     setView({ kind: "field", fieldId });
     if (selectedWorkspaceId) void refreshOpenField(selectedWorkspaceId, fieldId);
   }
@@ -1214,6 +1289,7 @@ function App() {
       try {
         await deleteFieldApi(busUrl, workspaceId, fieldId);
         setLoadedField(null);
+        setItemDraft(null);
         setView({ kind: "home" });
         await refreshFields(workspaceId);
       } catch (caught) {
@@ -1230,6 +1306,7 @@ function App() {
 
   function backToHome() {
     setRenameDraft(null);
+    setItemDraft(null);
     setView({ kind: "home" });
   }
 
@@ -1338,6 +1415,38 @@ function App() {
     );
   }
 
+  function renderFieldItemDraft() {
+    if (!itemDraft) return null;
+    const options = itemDraft.kind === "actor" ? actorItemOptions : fieldItemOptions;
+    const label = itemDraft.kind === "actor" ? "Actor item" : "Field item";
+    const saveLabel = itemDraft.kind === "actor" ? "Save actor item" : "Save field item";
+    return (
+      <div className="field-item-draft-row">
+        <label>
+          {label}
+          <select
+            aria-label={label}
+            value={itemDraft.ref}
+            onChange={(event) => setItemDraft({ ...itemDraft, ref: event.target.value })}
+          >
+            {options.map((option) => (
+              <option key={option.ref} value={option.ref}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="primary-action" onClick={submitAddFieldItem} disabled={options.length === 0}>
+          <Check size={15} />
+          {saveLabel}
+        </button>
+        <button className="ghost-action" onClick={cancelAddFieldItem}>
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
   function renderField() {
     if (view.kind !== "field") return null;
     const title = loadedField?.semantic.title ?? selectedFieldSummary?.title ?? view.fieldId;
@@ -1378,6 +1487,22 @@ function App() {
           </div>
           {renameDraft === null && (
             <div className="field-toolbar-actions">
+              <button
+                className="ghost-action"
+                onClick={() => beginAddFieldItem("actor")}
+                disabled={!loadedField || actorItemOptions.length === 0}
+              >
+                <CircleDot size={16} />
+                Add actor item
+              </button>
+              <button
+                className="ghost-action"
+                onClick={() => beginAddFieldItem("field")}
+                disabled={!loadedField || fieldItemOptions.length === 0}
+              >
+                <LayoutPanelLeft size={16} />
+                Add field item
+              </button>
               <button className="ghost-action" onClick={beginRenameField} disabled={!loadedField}>
                 <Edit3 size={16} />
                 Rename field
@@ -1389,6 +1514,7 @@ function App() {
             </div>
           )}
         </div>
+        {itemDraft && renderFieldItemDraft()}
         <div className="canvas-wrap">
           <ReactFlow
             nodes={fieldNodes}
@@ -1413,7 +1539,7 @@ function App() {
             <div className="canvas-empty">
               <SquareDashedMousePointer size={22} />
               <strong>Empty Field</strong>
-              <span>This field has no items yet. Item editing arrives in a later slice.</span>
+              <span>Add an actor or nested Field item to start shaping this Field.</span>
             </div>
           )}
         </div>
@@ -2062,6 +2188,40 @@ function operatorActorId(workspaceId: string): string {
 function endpointDisplayName(endpoint: Endpoint | null | undefined): string | null {
   const name = endpoint?.name?.trim();
   return name ? name : null;
+}
+
+function actorFieldItemRef(endpoint: Endpoint, workspaceId: string): string | null {
+  const endpointId = endpoint.endpoint_id.trim();
+  if (endpointId.startsWith("actor:")) return endpointId;
+  const actorId = endpoint.agent_id?.trim();
+  return actorId ? `actor:${workspaceId}:${actorId}` : null;
+}
+
+function actorDisplayNameFromRef(ref: string): string {
+  const parsed = parseFieldRef(ref);
+  if (parsed.kind !== "actor") return ref;
+  return refTail(parsed.id);
+}
+
+function refTail(value: string): string {
+  const parts = value.split(":").filter(Boolean);
+  return parts.at(-1) ?? value;
+}
+
+function fieldItemIdBase(ref: string): string {
+  const parsed = parseFieldRef(ref);
+  const id = parsed.kind === "actor" ? refTail(parsed.id) : parsed.id;
+  const slug = id.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return `${parsed.kind}-${slug || "item"}`;
+}
+
+function nextFieldItemId(semantic: FieldSemantic, ref: string): string {
+  const existing = new Set(semantic.items.map((item) => item.item_id));
+  const base = fieldItemIdBase(ref);
+  if (!existing.has(base)) return base;
+  let index = 2;
+  while (existing.has(`${base}-${index}`)) index += 1;
+  return `${base}-${index}`;
 }
 
 function cachedOperatorDisplayName(): string | null {
