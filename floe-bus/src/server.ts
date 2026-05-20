@@ -212,11 +212,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.put("/v1/workspaces/:workspace_id/fields/:field_id", async (request, reply) => {
     const params = z.object({ workspace_id: z.string(), field_id: z.string() }).parse(request.params);
+    const query = z.object({ if_absent: z.enum(["true", "false"]).optional() }).parse(request.query);
     const locator = resolveWorkspaceLocator(params.workspace_id, reply);
     if (locator === null) return reply;
     try {
       const existed = loadField(locator, params.field_id) !== null;
-      const semantic = upsertFieldSemantic(locator, params.field_id, request.body);
+      const semantic = upsertFieldSemantic(locator, params.field_id, request.body, {
+        ifAbsent: query.if_absent === "true"
+      });
       broadcast("field_updated", { workspace_id: params.workspace_id, field_id: params.field_id, semantic });
       reply.code(existed ? 200 : 201);
       return { semantic };

@@ -117,6 +117,29 @@ describe("Fields HTTP routes", () => {
     expect(body.semantic.updated_at).not.toBe(created);
   });
 
+  it("PUT create-if-absent returns 409 when the field id already exists", async () => {
+    await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/fields/existing?if_absent=true`,
+      payload: makeSemantic("existing")
+    });
+
+    const res = await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/fields/existing?if_absent=true`,
+      payload: makeSemantic("existing", { title: "Should not overwrite" })
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("field_already_exists");
+
+    const loaded = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${wsId}/fields/existing`
+    });
+    expect(loaded.json().semantic.title).toBe("Field existing");
+  });
+
   it("GET list returns summary after PUT", async () => {
     await handle.app.inject({
       method: "PUT",

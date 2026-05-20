@@ -106,6 +106,17 @@ describe("putFieldSemantic", () => {
     expect(JSON.parse(init.body as string)).toEqual(semantic);
     expect(result).toEqual(semantic);
   });
+
+  it("adds if_absent=true for create-only writes", async () => {
+    const semantic = makeSemantic();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ semantic }));
+
+    await putFieldSemantic(BUS, "ws-1", "field-1", semantic, { ifAbsent: true });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:5377/v1/workspaces/ws-1/fields/field-1?if_absent=true"
+    );
+  });
 });
 
 describe("deleteField", () => {

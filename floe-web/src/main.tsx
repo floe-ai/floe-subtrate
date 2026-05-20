@@ -26,9 +26,12 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  Handle,
   MiniMap,
+  Position,
   ReactFlow,
-  ReactFlowProvider
+  ReactFlowProvider,
+  type NodeProps
 } from "@xyflow/react";
 import "./styles.css";
 import {
@@ -40,6 +43,7 @@ import {
 } from "./contexts";
 import {
   fieldToReactFlow,
+  type FieldItemNodeData,
   type FieldSummary,
   type FieldSemantic
 } from "./fields";
@@ -156,6 +160,23 @@ const runtimeErrorKinds = new Set([
   "runtime_provider_required",
   "runtime_profile_required"
 ]);
+
+function FieldItemNode({ data }: NodeProps) {
+  const item = data as FieldItemNodeData;
+  return (
+    <>
+      <Handle type="target" position={Position.Top} />
+      <div className="canvas-field-node" title={item.ref.raw} data-kind={item.kind}>
+        <span>{item.label}</span>
+      </div>
+      <Handle type="source" position={Position.Bottom} />
+    </>
+  );
+}
+
+const fieldNodeTypes = {
+  fieldItem: FieldItemNode
+};
 
 function App() {
   const [busUrl, setBusUrl] = useState(defaultBusUrl);
@@ -910,7 +931,7 @@ function App() {
     const semantic = emptyFieldSemantic(id, nextName);
     void (async () => {
       try {
-        await putFieldSemantic(busUrl, workspaceId, id, semantic);
+        await putFieldSemantic(busUrl, workspaceId, id, semantic, { ifAbsent: true });
         await refreshFields(workspaceId);
         setView({ kind: "field", fieldId: id });
       } catch (caught) {
@@ -1077,6 +1098,7 @@ function App() {
           <ReactFlow
             nodes={fieldNodes}
             edges={fieldEdges}
+            nodeTypes={fieldNodeTypes}
             fitView
             minZoom={0.2}
             maxZoom={1.8}

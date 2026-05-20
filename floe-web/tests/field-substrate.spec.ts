@@ -1,4 +1,10 @@
 import { expect } from "@playwright/test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import YAML from "yaml";
+import { createBusServer } from "../../floe-bus/src/server";
+import { defaultConfig } from "../../floe-bus/src/config";
 import {
   test,
   seedApp,
@@ -52,10 +58,8 @@ test.describe("Field substrate (slice 1)", () => {
 
     const nodes = page.locator(".react-flow__node");
     await expect(nodes).toHaveCount(2);
-    const text = await nodes.allInnerTexts();
-    const joined = text.join("|");
-    expect(joined).toContain("floe");
-    expect(joined).toContain("default");
+    await expect(nodes.filter({ hasText: "floe" })).toHaveCount(1);
+    await expect(nodes.filter({ hasText: "default" })).toHaveCount(1);
   });
 
   test("opens a field and renders connections as edges", async ({ page }) => {
@@ -91,6 +95,8 @@ test.describe("Field substrate (slice 1)", () => {
     await page.getByRole("button", { name: /Add field/i }).click();
 
     const request = await putWait;
+    const url = new URL(request.url());
+    expect(url.searchParams.get("if_absent")).toBe("true");
     const body = JSON.parse(request.postData() ?? "{}");
     expect(body.id).toBe("my-new-field");
     expect(body.title).toBe("My New Field");
@@ -134,5 +140,57 @@ test.describe("Field substrate (slice 1)", () => {
   test("seedApp (default) still boots cleanly with no fields", async ({ page }) => {
     await seedApp(page);
     await expect(page.locator(".field-block")).toHaveCount(0);
+  });
+
+  test("real bus stack persists a created Field to workspace YAML and deletes it from disk", async ({ page }) => {
+    const tmp = mkdtempSync(join(tmpdir(), "floe-field-substrate-e2e-"));
+    const configPath = join(tmp, "config.yaml");
+    const workspacePath = join(tmp, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const config = defaultConfig(tmp);
+    writeFileSync(configPath, YAML.stringify(config), "utf8");
+    const handle = await createBusServer(configPath, config);
+    const busUrl = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const semanticPath = join(workspacePath, ".floe", "fields", "live-field.yaml");
+
+    try {
+      await page.addInitScript((url) => localStorage.setItem("floe.busUrl", url), busUrl);
+      await page.goto("/");
+
+      await page.getByLabel("Workspace folder").fill(workspacePath);
+      await page.getByLabel("Name").fill("Field E2E Workspace");
+      await page.getByRole("button", { name: "Create Workspace", exact: true }).click();
+      await expect(page.locator(".workspace-home")).toBeVisible();
+
+      page.once("dialog", (dialog) => {
+        void dialog.accept("Live Field");
+      });
+      await page.getByRole("button", { name: /Add field/i }).click();
+
+      await expect.poll(() => existsSync(semanticPath)).toBe(true);
+      const written = YAML.parse(readFileSync(semanticPath, "utf8")) as Record<string, unknown>;
+      expect(written.schema).toBe("floe.field.v1");
+      expect(written.id).toBe("live-field");
+      expect(written.title).toBe("Live Field");
+
+      await page.reload();
+      await expect(page.locator(".field-block", { hasText: "Live Field" })).toBeVisible();
+
+      await page.locator(".field-block", { hasText: "Live Field" }).click();
+      page.once("dialog", (dialog) => {
+        void dialog.accept();
+      });
+      await page.getByRole("button", { name: /Delete field/i }).click();
+
+      await expect.poll(() => existsSync(semanticPath)).toBe(false);
+      await expect(page.getByText("No Fields yet")).toBeVisible();
+    } finally {
+      if (!page.isClosed()) {
+        await page.close();
+      }
+      handle.app.server.closeAllConnections();
+      await handle.app.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

@@ -142,6 +142,43 @@ describe("fieldToReactFlow", () => {
     expect(data.kind).toBe("unknown");
     expect(data.label).toBe("wat:nope");
   });
+
+  it("renders every documented Field Item ref kind without crashing", () => {
+    const refs = [
+      "actor:floe",
+      "context:ctx_1",
+      "pulse:morning",
+      "webhook:github-pr",
+      "extension:github",
+      "file:.floe/instructions/pr-review.md",
+      "tool:todo_add",
+      "work_log:.floe/agents/reviewer/worklogs/2026-05-19.md",
+      "event:evt_1",
+      "field:inbound-pr-review",
+      "future_kind:still-renders"
+    ];
+    const semantic = makeSemantic({
+      items: refs.map((ref, index) => ({ item_id: `item_${index}`, ref }))
+    });
+
+    const { nodes } = fieldToReactFlow(semantic);
+
+    expect(nodes).toHaveLength(refs.length);
+    expect(nodes.map((node) => (node.data as { kind: string }).kind)).toEqual([
+      "actor",
+      "context",
+      "pulse",
+      "webhook",
+      "extension",
+      "file",
+      "tool",
+      "work_log",
+      "event",
+      "field",
+      "unknown"
+    ]);
+    expect(nodes.map((node) => (node.data as { label: string }).label)).toContain("future_kind:still-renders");
+  });
 });
 
 describe("reactFlowToLayout", () => {

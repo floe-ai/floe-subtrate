@@ -67,10 +67,12 @@ export async function putFieldSemantic(
   busUrl: string,
   workspaceId: string,
   fieldId: string,
-  semantic: FieldSemantic
+  semantic: FieldSemantic,
+  options: { ifAbsent?: boolean } = {}
 ): Promise<FieldSemantic> {
+  const url = `${fieldPath(busUrl, workspaceId, fieldId)}${options.ifAbsent ? "?if_absent=true" : ""}`;
   const result = await request<{ semantic: FieldSemantic }>(
-    fieldPath(busUrl, workspaceId, fieldId),
+    url,
     {
       method: "PUT",
       headers: { "content-type": "application/json" },
