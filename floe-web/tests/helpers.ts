@@ -8,6 +8,7 @@ export type FieldSummary = {
   title: string;
   item_count: number;
   connection_count: number;
+  parent_count: number;
   updated_at: string;
 };
 
@@ -147,11 +148,27 @@ export async function seedAppWithFields(
   }
 
   function summariesPayload(): string {
+    const fieldIds = new Set(store.keys());
+    const parentCounts = new Map<string, Set<string>>();
+    for (const [parentId, { semantic }] of store.entries()) {
+      const children = new Set<string>();
+      for (const item of semantic.items) {
+        if (!item.ref.startsWith("field:")) continue;
+        const childId = item.ref.slice("field:".length);
+        if (fieldIds.has(childId)) children.add(childId);
+      }
+      for (const childId of children) {
+        const parents = parentCounts.get(childId) ?? new Set<string>();
+        parents.add(parentId);
+        parentCounts.set(childId, parents);
+      }
+    }
     const summaries: FieldSummary[] = Array.from(store.values()).map(({ semantic }) => ({
       id: semantic.id,
       title: semantic.title,
       item_count: semantic.items.length,
       connection_count: semantic.connections.length,
+      parent_count: parentCounts.get(semantic.id)?.size ?? 0,
       updated_at: semantic.updated_at
     }));
     return JSON.stringify({ fields: summaries });
@@ -263,6 +280,7 @@ export function makeFieldSummary(
     title,
     item_count: items,
     connection_count: connections,
+    parent_count: 0,
     updated_at: new Date().toISOString()
   };
 }

@@ -192,6 +192,28 @@ test.describe("Field substrate (slice 1)", () => {
     await expect(page.getByRole("button", { name: "Rename field" })).toBeVisible();
   });
 
+  test("nested Fields stay out of the workspace root list and Back returns to the parent Field", async ({ page }) => {
+    const parent = makeFieldSemantic(
+      "parent-field",
+      "Parent Field",
+      [{ item_id: "field-child-field", ref: "field:child-field" }]
+    );
+    const child = makeFieldSemantic("child-field", "Child Field");
+    await seedAppWithFields(page, [{ semantic: parent }, { semantic: child }]);
+
+    await expect(page.locator(".field-block", { hasText: "Parent Field" })).toHaveCount(1);
+    await expect(page.locator(".field-block", { hasText: "Child Field" })).toHaveCount(0);
+
+    await page.locator(".field-block", { hasText: "Parent Field" }).click();
+    await page.locator(".react-flow__node").filter({ hasText: /child-field|Child Field/ }).dblclick();
+    await expect(page.getByRole("heading", { name: "Child Field" })).toBeVisible();
+
+    await page.getByRole("button", { name: /Back to Parent Field|Workspace Home/i }).click();
+
+    await expect(page.getByRole("heading", { name: "Parent Field" })).toBeVisible();
+    await expect(page.locator(".workspace-home")).toHaveCount(0);
+  });
+
   test("dragging React Flow handles creates a persisted Field Connection without touching layout", async ({ page }) => {
     const semantic = makeFieldSemantic(
       "connection-field",

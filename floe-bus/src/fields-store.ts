@@ -78,6 +78,7 @@ export type FieldSummary = {
   title: string;
   item_count: number;
   connection_count: number;
+  parent_count: number;
   updated_at: string;
 };
 
@@ -120,6 +121,12 @@ export class FieldRendererInvalidError extends Error {
 
 function fieldsDir(workspacePath: string): string {
   return join(workspacePath, ".floe", "fields");
+}
+
+function fieldRefTarget(ref: string): string | null {
+  if (!ref.startsWith("field:")) return null;
+  const id = ref.slice("field:".length);
+  return FIELD_ID_PATTERN.test(id) ? id : null;
 }
 
 function semanticPath(workspacePath: string, fieldId: string): string {
@@ -235,7 +242,7 @@ export function loadAllFields(workspacePath: string): FieldSummary[] {
   const dir = fieldsDir(workspacePath);
   if (!existsSync(dir)) return [];
 
-  const summaries: FieldSummary[] = [];
+  const fields: FieldSemantic[] = [];
   for (const name of readdirSync(dir)) {
     if (!name.endsWith(".yaml")) continue;
     if (name.includes(".layout.")) continue;
@@ -250,14 +257,32 @@ export function loadAllFields(workspacePath: string): FieldSummary[] {
         result.error.issues
       );
     }
-    summaries.push({
-      id: result.data.id,
-      title: result.data.title,
-      item_count: result.data.items.length,
-      connection_count: result.data.connections.length,
-      updated_at: result.data.updated_at
-    });
+    fields.push(result.data);
   }
+
+  const fieldIds = new Set(fields.map((field) => field.id));
+  const parentCounts = new Map<string, Set<string>>();
+  for (const field of fields) {
+    const referencedChildren = new Set<string>();
+    for (const item of field.items) {
+      const childId = fieldRefTarget(item.ref);
+      if (childId && fieldIds.has(childId)) referencedChildren.add(childId);
+    }
+    for (const childId of referencedChildren) {
+      const parents = parentCounts.get(childId) ?? new Set<string>();
+      parents.add(field.id);
+      parentCounts.set(childId, parents);
+    }
+  }
+
+  const summaries: FieldSummary[] = fields.map((field) => ({
+    id: field.id,
+    title: field.title,
+    item_count: field.items.length,
+    connection_count: field.connections.length,
+    parent_count: parentCounts.get(field.id)?.size ?? 0,
+    updated_at: field.updated_at
+  }));
   summaries.sort((a, b) => a.id.localeCompare(b.id));
   return summaries;
 }

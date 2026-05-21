@@ -169,7 +169,8 @@ describe("Fields HTTP routes", () => {
       id: "gamma",
       title: "Field gamma",
       item_count: 2,
-      connection_count: 1
+      connection_count: 1,
+      parent_count: 0
     });
   });
 

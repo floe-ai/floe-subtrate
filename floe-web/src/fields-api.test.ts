@@ -52,7 +52,7 @@ afterEach(() => {
 describe("listFields", () => {
   it("GETs the workspace fields URL and unwraps .fields", async () => {
     const fields: FieldSummary[] = [
-      { id: "a", title: "A", item_count: 0, connection_count: 0, updated_at: T0 }
+      { id: "a", title: "A", item_count: 0, connection_count: 0, parent_count: 0, updated_at: T0 }
     ];
     fetchMock.mockResolvedValueOnce(jsonResponse({ fields }));
 

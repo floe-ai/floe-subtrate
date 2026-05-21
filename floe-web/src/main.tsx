@@ -169,7 +169,7 @@ type ChatSegment =
 
 type View =
   | { kind: "home" }
-  | { kind: "field"; fieldId: string };
+  | { kind: "field"; fieldId: string; backStack?: string[] };
 
 type FieldItemDraft = {
   kind: "actor" | "field";
@@ -394,6 +394,10 @@ function App() {
   const selectedFieldSummary = view.kind === "field"
     ? fieldSummaries.find((field) => field.id === view.fieldId) ?? null
     : null;
+  const rootFieldSummaries = useMemo(
+    () => fieldSummaries.filter((field) => field.parent_count === 0),
+    [fieldSummaries]
+  );
   const actorItemOptions = useMemo(() => {
     if (!selectedWorkspace) return [] as Array<{ ref: string; label: string }>;
     const existingRefs = new Set(loadedField?.semantic.items.map((item) => item.ref) ?? []);
@@ -1712,19 +1716,45 @@ function App() {
 
   const handleFieldNodeDoubleClick = useCallback((_: React.MouseEvent, node: ReactFlowNode) => {
     const current = loadedFieldRef.current;
-    const item = current?.semantic.items.find((candidate) => candidate.item_id === node.id);
+    const currentView = viewRef.current;
+    if (!current || currentView.kind !== "field") return;
+    const item = current.semantic.items.find((candidate) => candidate.item_id === node.id);
     if (!item) return;
     const parsed = parseFieldRef(item.ref);
     if (parsed.kind !== "field") return;
     clearFieldEditingState();
     loadedFieldRef.current = null;
     setLoadedField(null);
-    setView({ kind: "field", fieldId: parsed.id });
+    setView({
+      kind: "field",
+      fieldId: parsed.id,
+      backStack: [...(currentView.backStack ?? []), current.semantic.id]
+    });
     const workspaceId = selectedWorkspaceIdRef.current;
     if (workspaceId) void refreshOpenField(workspaceId, parsed.id);
   }, [refreshOpenField]);
 
-  function backToHome() {
+  function backFromField() {
+    clearFieldEditingState();
+    const currentView = viewRef.current;
+    if (currentView.kind === "field" && currentView.backStack?.length) {
+      const backStack = currentView.backStack.slice(0, -1);
+      const parentFieldId = currentView.backStack[currentView.backStack.length - 1];
+      loadedFieldRef.current = null;
+      setLoadedField(null);
+      setView({
+        kind: "field",
+        fieldId: parentFieldId,
+        ...(backStack.length > 0 ? { backStack } : {})
+      });
+      const workspaceId = selectedWorkspaceIdRef.current;
+      if (workspaceId) void refreshOpenField(workspaceId, parentFieldId);
+      return;
+    }
+    setView({ kind: "home" });
+  }
+
+  function goToWorkspaceHome() {
     clearFieldEditingState();
     setView({ kind: "home" });
   }
@@ -1797,13 +1827,13 @@ function App() {
                 <h3>Fields</h3>
                 <p>Substrate-backed Fields stored under <code>.floe/fields/</code>.</p>
               </div>
-              <span>{fieldSummaries.length}</span>
+              <span>{rootFieldSummaries.length}</span>
             </div>
             <button className="primary-action full" onClick={promptCreateField}>
               <FolderPlus size={15} />
               Add field
             </button>
-            {fieldSummaries.length === 0 ? (
+            {rootFieldSummaries.length === 0 ? (
               <div className="quiet-empty">
                 <SquareDashedMousePointer size={22} />
                 <strong>No Fields yet</strong>
@@ -1811,7 +1841,7 @@ function App() {
               </div>
             ) : (
               <div className="field-list">
-                {fieldSummaries.map((summary) => (
+                {rootFieldSummaries.map((summary) => (
                   <button
                     key={summary.id}
                     className="field-block"
@@ -1869,10 +1899,15 @@ function App() {
   function renderField() {
     if (view.kind !== "field") return null;
     const title = loadedField?.semantic.title ?? selectedFieldSummary?.title ?? view.fieldId;
+    const parentFieldId = view.backStack?.at(-1);
+    const parentTitle = parentFieldId
+      ? fieldSummaries.find((field) => field.id === parentFieldId)?.title ?? parentFieldId
+      : null;
+    const backLabel = parentTitle ? `Back to ${parentTitle}` : "Workspace Home";
     return (
       <section className="field-surface">
         <div className="field-toolbar">
-          <button className="icon-button" onClick={backToHome} title="Workspace Home">
+          <button className="icon-button" onClick={backFromField} title={backLabel} aria-label={backLabel}>
             <ArrowLeft size={16} />
           </button>
           <div className="field-title-area">
@@ -2517,7 +2552,7 @@ function App() {
         {error && <div className="error-bar">{error}</div>}
         <header className="topbar">
           <nav className="breadcrumb">
-            <button onClick={backToHome}><Home size={14} /> Workspace</button>
+            <button onClick={goToWorkspaceHome}><Home size={14} /> Workspace</button>
             {view.kind === "field" && (
               <>
                 <ChevronRight size={14} />

@@ -148,7 +148,7 @@ describe("fields-store", () => {
       makeSemantic({
         id: "beta",
         title: "Beta",
-        items: [{ item_id: "only", ref: "actor:floe" }],
+        items: [{ item_id: "child", ref: "field:alpha" }],
         connections: []
       })
     );
@@ -160,9 +160,12 @@ describe("fields-store", () => {
     expect(alpha.title).toBe("Alpha");
     expect(alpha.item_count).toBe(2);
     expect(alpha.connection_count).toBe(1);
+    expect(alpha.parent_count).toBe(1);
     const beta = summaries.find((s) => s.id === "beta")!;
     expect(beta.item_count).toBe(1);
     expect(beta.connection_count).toBe(0);
+    expect(beta.parent_count).toBe(0);
+    expect(loadField(workspace, "alpha")?.semantic.id).toBe("alpha");
   });
 
   it("loadAllFields returns an empty array when .floe/fields/ is missing", () => {

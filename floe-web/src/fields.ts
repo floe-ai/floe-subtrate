@@ -83,6 +83,7 @@ export type FieldSummary = {
   title: string;
   item_count: number;
   connection_count: number;
+  parent_count: number;
   updated_at: string;
 };
 
