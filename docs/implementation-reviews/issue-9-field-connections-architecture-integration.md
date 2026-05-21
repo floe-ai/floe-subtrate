@@ -142,5 +142,6 @@
 - Scope decision:
   - User chose to include Field Connection delete and reconnect in issue #9.
   - Field Item deletion remains out of scope and should stay with issue #10 or a re-triaged successor.
-- Open questions:
-  - What exact React Flow-native label edit UX is preferred: immediate unlabeled edge then selected-edge label edit, or edge-local `EdgeLabelRenderer` input?
+- Label UX decision:
+  - User rejected toolbar label controls and directed that connection work use React Flow events and tooling.
+  - Use an edge-local `EdgeLabelRenderer` label editor for selected/new edges; do not add toolbar or inspector label controls.
