@@ -870,6 +870,185 @@ test.describe("Field substrate (slice 1)", () => {
     }
   });
 
+  test("real bus stack preserves referenced Actor and child Field when deleting Field Items", async ({ page }) => {
+    const tmp = mkdtempSync(join(tmpdir(), "floe-field-delete-refs-e2e-"));
+    const configPath = join(tmp, "config.yaml");
+    const workspacePath = join(tmp, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const config = defaultConfig(tmp);
+    writeFileSync(configPath, YAML.stringify(config), "utf8");
+    const handle = await createBusServer(configPath, config);
+    const busUrl = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const fieldsDir = join(workspacePath, ".floe", "fields");
+    const parentPath = join(fieldsDir, "parent-field.yaml");
+    const childPath = join(fieldsDir, "child-field.yaml");
+    const layoutPath = join(fieldsDir, "parent-field.layout.floeweb.yaml");
+    const childDeleteRequests: string[] = [];
+    const layoutRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "DELETE" && request.url().includes("/fields/child-field")) {
+        childDeleteRequests.push(request.url());
+      }
+      if (request.method() === "PUT" && request.url().includes("/fields/parent-field/layout/floeweb")) {
+        layoutRequests.push(request.url());
+      }
+    });
+    const readParent = () => YAML.parse(readFileSync(parentPath, "utf8")) as Record<string, any>;
+    const endpointList = async () => {
+      const response = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(workspace.workspace_id)}/endpoints`
+      });
+      return response.json().endpoints as Array<{ endpoint_id: string }>;
+    };
+    let workspace: { workspace_id: string };
+    let actorRef = "";
+
+    try {
+      await page.addInitScript((url) => localStorage.setItem("floe.busUrl", url), busUrl);
+      await page.goto("/");
+
+      await page.getByLabel("Workspace folder").fill(workspacePath);
+      await page.getByLabel("Name").fill("Field Delete Refs Workspace");
+      await page.getByRole("button", { name: "Create Workspace", exact: true }).click();
+      await expect(page.locator(".workspace-home")).toBeVisible();
+
+      workspace = handle.store.listWorkspaces()[0] as { workspace_id: string };
+      actorRef = `actor:${workspace.workspace_id}:floe`;
+      await handle.app.inject({
+        method: "POST",
+        url: "/v1/endpoints/register",
+        payload: {
+          endpoint_id: actorRef,
+          workspace_id: workspace.workspace_id,
+          name: "Floe",
+          agent_id: "floe",
+          status: "idle"
+        }
+      });
+
+      mkdirSync(fieldsDir, { recursive: true });
+      writeFileSync(parentPath, YAML.stringify(makeFieldSemantic("parent-field", "Parent Field")), "utf8");
+      writeFileSync(childPath, YAML.stringify(makeFieldSemantic("child-field", "Child Field")), "utf8");
+      writeFileSync(layoutPath, YAML.stringify({
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "parent-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: {}
+      }), "utf8");
+
+      await page.getByTitle("Refresh").first().click();
+      await expect(page.locator(".field-block", { hasText: "Parent Field" })).toBeVisible();
+      await page.locator(".field-block", { hasText: "Parent Field" }).click();
+
+      await page.getByRole("button", { name: /Add actor item/i }).click();
+      await page.getByLabel("Actor item").selectOption({ label: "Floe" });
+      await page.getByRole("button", { name: /Save actor item/i }).click();
+      await expect(page.locator(".react-flow__node").filter({ hasText: "floe" })).toHaveCount(1);
+
+      await page.getByRole("button", { name: /Add field item/i }).click();
+      await page.getByLabel("Field item").selectOption({ label: "Child Field" });
+      await page.getByRole("button", { name: /Save field item/i }).click();
+      await expect(page.locator(".react-flow__node").filter({ hasText: "child-field" })).toHaveCount(1);
+
+      await expect.poll(() => readParent().items?.length).toBe(2);
+      const withItems = readParent();
+      const actorItem = withItems.items.find((item: any) => item.ref === actorRef);
+      const childItem = withItems.items.find((item: any) => item.ref === "field:child-field");
+      expect(actorItem).toBeTruthy();
+      expect(childItem).toBeTruthy();
+      writeFileSync(parentPath, YAML.stringify({
+        ...withItems,
+        connections: [{ id: "actor-to-child", from: actorItem.item_id, to: childItem.item_id, label: "touches child" }],
+        updated_at: new Date().toISOString()
+      }), "utf8");
+      writeFileSync(layoutPath, YAML.stringify({
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "parent-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: {
+          [actorItem.item_id]: { x: 80, y: 120, width: 180, height: 72 },
+          [childItem.item_id]: { x: 420, y: 120, width: 180, height: 72 }
+        }
+      }), "utf8");
+      await page.reload();
+      await expect(page.locator(".field-block", { hasText: "Parent Field" })).toBeVisible();
+      await page.locator(".field-block", { hasText: "Parent Field" }).click();
+      await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+      await expect.poll(() => readParent().connections?.length).toBe(1);
+
+      await page.getByRole("button", { name: "Workspace Home" }).click();
+      await expect(page.locator(".field-block", { hasText: "Parent Field" })).toHaveCount(1);
+      await expect(page.locator(".field-block", { hasText: "Child Field" })).toHaveCount(0);
+      await page.getByRole("button", { name: /Show all fields/i }).click();
+      await expect(page.locator(".field-block", { hasText: "Child Field" })).toContainText("nested");
+      await page.getByRole("button", { name: /Show root fields/i }).click();
+
+      await page.locator(".field-block", { hasText: "Parent Field" }).click();
+      await page.locator(".react-flow__node").filter({ hasText: "child-field" }).dblclick();
+      await expect(page.getByRole("heading", { name: "Child Field" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Back to Parent Field" })).toBeVisible();
+      await page.getByRole("button", { name: "Back to Parent Field" }).click();
+      await expect(page.getByRole("heading", { name: "Parent Field" })).toBeVisible();
+
+      await page.waitForTimeout(500);
+      layoutRequests.length = 0;
+      page.once("dialog", (dialog) => {
+        expect(dialog.message()).toContain("child-field");
+        expect(dialog.message()).toContain("1 Field Connection");
+        void dialog.accept();
+      });
+      await page.locator(".react-flow__node").filter({ hasText: "child-field" }).click();
+      await page.keyboard.press("Delete");
+
+      await expect.poll(() => readParent().items?.some((item: any) => item.ref === "field:child-field")).toBe(false);
+      const afterChildDelete = readParent();
+      expect(afterChildDelete.connections).toEqual([]);
+      expect(existsSync(childPath)).toBe(true);
+      const childLoad = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(workspace.workspace_id)}/fields/child-field`
+      });
+      expect(childLoad.statusCode).toBe(200);
+      expect(childDeleteRequests).toEqual([]);
+      expect(layoutRequests).toEqual([]);
+
+      await page.getByRole("button", { name: "Workspace Home" }).click();
+      await expect(page.locator(".field-block", { hasText: "Parent Field" })).toHaveCount(1);
+      const childCard = page.locator(".field-block", { hasText: "Child Field" });
+      await expect(childCard).toHaveCount(1);
+      await expect(childCard).not.toContainText("nested");
+      await expect(page.getByRole("button", { name: /Show all fields/i })).toHaveCount(0);
+      await childCard.click();
+      await expect(page.getByRole("heading", { name: "Child Field" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Workspace Home" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Back to Parent Field" })).toHaveCount(0);
+      await page.getByRole("button", { name: "Workspace Home" }).click();
+
+      await page.locator(".field-block", { hasText: "Parent Field" }).click();
+      await page.waitForTimeout(500);
+      layoutRequests.length = 0;
+      page.once("dialog", (dialog) => {
+        expect(dialog.message()).toContain("floe");
+        void dialog.accept();
+      });
+      await page.locator(".react-flow__node").filter({ hasText: "floe" }).click();
+      await page.keyboard.press("Delete");
+
+      await expect.poll(() => readParent().items?.some((item: any) => item.ref === actorRef)).toBe(false);
+      expect((await endpointList()).filter((endpoint) => endpoint.endpoint_id === actorRef)).toHaveLength(1);
+      expect(existsSync(childPath)).toBe(true);
+      expect(layoutRequests).toEqual([]);
+    } finally {
+      if (!page.isClosed()) {
+        await page.close();
+      }
+      handle.app.server.closeAllConnections();
+      await handle.app.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test("real bus stack live-renders external Field YAML edits and persists layout sidecar only", async ({ page }) => {
     const tmp = mkdtempSync(join(tmpdir(), "floe-field-live-e2e-"));
     const configPath = join(tmp, "config.yaml");
