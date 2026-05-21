@@ -37,7 +37,7 @@
 ## Existing extension points
 
 - APIs/hooks/components/library features/stores/conventions to use:
-  - React Flow `onConnect`, connection validation, edge `label`, edge selection/focus, `onEdgesChange`, `onEdgesDelete`, `onReconnect`, `onBeforeDelete`, and `deleteKeyCode` where the issue scope requires them.
+  - React Flow `onConnect`, connection validation, edge `label`, edge selection/focus, `onEdgesChange`, `onEdgesDelete`, `onReconnect`, `onBeforeDelete`, and `deleteKeyCode`.
   - Existing `buildSemanticUpdate({ type: "add_connection" | "remove_connection" })`.
   - Existing `saveOpenFieldSemantic`.
   - Existing `fieldToReactFlow` edge mapping.
@@ -45,6 +45,7 @@
   - React Flow `onConnect` fires when a connection line completes.
   - React Flow edges support `source`, `target`, `label`, reconnectability, focus, and selection.
   - Keyboard deletion defaults to Backspace for selected edges/nodes.
+  - Reconnection should use React Flow's reconnect hooks rather than custom delete-and-recreate controls.
   - `EdgeLabelRenderer` is available for richer edge-local label editing if simple edge labels are insufficient.
 - Existing examples in this codebase:
   - `fieldToReactFlow` maps `FieldConnection.from`, `to`, and optional `label` to React Flow edges.
@@ -76,7 +77,8 @@
   - Add memoized handlers beside existing node/layout handlers:
     - `handleFieldConnect`
     - optional `isValidFieldConnection`
-    - deletion/reconnection handlers only if this issue scope includes them.
+    - `handleFieldEdgesDelete`
+    - `handleFieldReconnect`
   - Pass handlers to `<ReactFlow>`.
   - Use `buildSemanticUpdate` and `saveOpenFieldSemantic`.
   - Keep edge label rendering in `fieldToReactFlow`; add label editing through a React Flow-native edge label or selected-edge path, not a toolbar row.
@@ -94,6 +96,8 @@
 
 - Behavior: existing seeded connections still render as `.react-flow__edge`.
 - Behavior: Block Library Field drag/drop into open canvas still creates a nested Field at the drop position.
+- Behavior: selected-edge deletion removes the semantic connection without deleting items or touching layout.
+- Behavior: reconnecting an edge updates semantic `from`/`to` item ids without creating duplicate edges.
 - Behavior: pan, zoom, drag, and viewport restore remain smooth and persist only layout sidecar state.
 
 ## Test plan
@@ -108,20 +112,25 @@
   - Playwright: labeled connection persists the label and reload renders the edge label.
   - Assert `from`/`to` are item ids, not refs.
   - Assert layout sidecar is unchanged.
-  - If deletion/reconnection is included: selecting an edge plus Backspace removes semantic connection; reconnect updates `from`/`to`.
+  - Playwright: selecting an edge plus Backspace removes the semantic connection and reload keeps it removed.
+  - Playwright: reconnecting an edge updates `from`/`to` and reload keeps the new endpoints.
 - Live proof required:
   - Real bus/file-backed Field with two items.
   - Create a connection via handles.
+  - Delete a selected connection using native keyboard deletion.
+  - Reconnect a connection using React Flow reconnection.
   - Inspect `.floe\fields\<id>.yaml`.
-  - Reload FloeWeb and verify the edge/label remains.
+  - Reload FloeWeb and verify the edge/label/deleted/reconnected states remain.
 
 ## Risk assessment
 
 - Risk: controlled `nodes`/`edges` plus React Flow deletion/reconnection may emit UI changes before semantic save.
 - Risk: reintroducing custom label UX around the toolbar recreates the rejected path.
+- Risk: issue #9 now overlaps the previously planned issue #10 deletion scope; after #9 is complete, issue #10 should be re-triaged to avoid duplicate delete-connection work.
 - Mitigation:
   - Treat React Flow events as intent; persist semantic update, then re-render from loaded Field.
   - Use React Flow edge labels, selection, keyboard, and reconnection primitives first; use custom UI only as edge-local label editing if justified.
+  - Keep delete/reconnect scoped to Field Connections only; do not implement Field Item deletion in this slice.
 
 ## Decision confidence
 
@@ -130,6 +139,8 @@
   - Current code already maps semantic connections to React Flow edges.
   - React Flow directly supports the missing interaction primitives.
   - Existing helper validation already covers core semantic invariants.
+- Scope decision:
+  - User chose to include Field Connection delete and reconnect in issue #9.
+  - Field Item deletion remains out of scope and should stay with issue #10 or a re-triaged successor.
 - Open questions:
-  - Should issue #9 include deletion/reconnection now, or reserve full delete/reconnect for #10/#11 while architecting on native hooks?
   - What exact React Flow-native label edit UX is preferred: immediate unlabeled edge then selected-edge label edit, or edge-local `EdgeLabelRenderer` input?
