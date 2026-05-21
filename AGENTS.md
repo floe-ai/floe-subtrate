@@ -88,7 +88,7 @@ Once the slice is agreed, use the $to-prd skill to turn it into a focused produc
 
 This PRD must be about the slice only.
 
-### 4) Break the slice into issues
+### 3) Break the slice into issues
 Use the $to-issues skill to breakdown workflow to turn the approved PRD into implementable, verifiable issues.
 
 Use `Question` after issue breakdown to confirm whether to:
