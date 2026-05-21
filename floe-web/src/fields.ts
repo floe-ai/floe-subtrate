@@ -181,7 +181,7 @@ export function fieldToReactFlow(
       id: item.item_id,
       type: "fieldItem",
       position,
-      deletable: false,
+      deletable: true,
       data: data as unknown as Record<string, unknown>
     };
     if (positioned?.width !== undefined) node.width = positioned.width;

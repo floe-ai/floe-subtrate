@@ -341,6 +341,7 @@ function App() {
   const [loadedField, setLoadedField] = useState<LoadedField | null>(null);
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [itemDraft, setItemDraft] = useState<FieldItemDraft | null>(null);
+  const [selectedFieldItemIds, setSelectedFieldItemIds] = useState<Set<string>>(() => new Set());
   const [selectedFieldConnectionId, setSelectedFieldConnectionId] = useState<string | null>(null);
   const [editingFieldConnectionId, setEditingFieldConnectionId] = useState<string | null>(null);
   const [fieldConnectionLabelDraft, setFieldConnectionLabelDraft] = useState("");
@@ -677,8 +678,12 @@ function App() {
         }
       };
     });
-    return { nodes: flow.nodes, edges };
-  }, [editingFieldConnectionId, fieldConnectionLabelDraft, loadedField, selectedFieldConnectionId]);
+    const nodes = flow.nodes.map((node) => ({
+      ...node,
+      selected: selectedFieldItemIds.has(node.id)
+    }));
+    return { nodes, edges };
+  }, [editingFieldConnectionId, fieldConnectionLabelDraft, loadedField, selectedFieldConnectionId, selectedFieldItemIds]);
   const fieldViewport = useMemo<Viewport>(
     () => loadedField?.layout?.viewport ?? { x: 0, y: 0, zoom: 1 },
     [loadedField?.layout?.viewport]
@@ -1015,6 +1020,18 @@ function App() {
     const currentView = viewRef.current;
     if (!workspaceId || !current || currentView.kind !== "field") return;
     if (currentView.fieldId !== current.semantic.id) return;
+    const selections = changes.filter((change) => change.type === "select");
+    if (selections.length > 0) {
+      setSelectedFieldItemIds((selected) => {
+        const next = new Set(selected);
+        for (const selection of selections) {
+          if (selection.type !== "select") continue;
+          if (selection.selected) next.add(selection.id);
+          else next.delete(selection.id);
+        }
+        return next;
+      });
+    }
     const baseLayout = current.layout ?? reactFlowToLayout(
       current.semantic.id,
       fieldToReactFlow(current.semantic).nodes,
@@ -1129,7 +1146,65 @@ function App() {
     } catch (caught) {
       setError((caught as Error).message);
     }
-  }, [saveOpenFieldSemantic]);
+  }, [editingFieldConnectionId, saveOpenFieldSemantic]);
+
+  const handleFieldBeforeDelete = useCallback(async ({
+    nodes
+  }: {
+    nodes: ReactFlowNode[];
+    edges: FieldConnectionEdge[];
+  }) => {
+    if (nodes.length === 0) return true;
+    if (nodes.length !== 1) {
+      setError("Delete one Field Item at a time.");
+      return false;
+    }
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return false;
+
+    const node = nodes[0];
+    const item = current.semantic.items.find((candidate) => candidate.item_id === node.id);
+    if (!item) {
+      setError(`Field Item not found: ${node.id}`);
+      return false;
+    }
+    const labelData = (node.data as { label?: unknown } | undefined)?.label;
+    const label = typeof labelData === "string" && labelData.trim() ? labelData.trim() : item.ref || item.item_id;
+    const touchingConnections = current.semantic.connections.filter(
+      (connection) => connection.from === item.item_id || connection.to === item.item_id
+    );
+    const connectionLabel = touchingConnections.length === 1 ? "1 Field Connection" : `${touchingConnections.length} Field Connections`;
+    const confirmed = window.confirm(
+      `Delete Field Item "${label}"?\n\nThis removes the item from this Field and also removes ${connectionLabel}. Referenced substrate primitives are preserved.`
+    );
+    if (!confirmed) return false;
+
+    try {
+      const next = buildSemanticUpdate(
+        current.semantic,
+        { type: "remove_item", item_id: item.item_id },
+        new Date().toISOString()
+      );
+      const removedConnectionIds = new Set(touchingConnections.map((connection) => connection.id));
+      const saved = await saveOpenFieldSemantic(next);
+      if (saved) {
+        setSelectedFieldItemIds((selected) => {
+          const nextSelected = new Set(selected);
+          nextSelected.delete(item.item_id);
+          return nextSelected;
+        });
+        setSelectedFieldConnectionId((selected) => selected && removedConnectionIds.has(selected) ? null : selected);
+        setEditingFieldConnectionId((editing) => editing && removedConnectionIds.has(editing) ? null : editing);
+        if (removedConnectionIds.has(editingFieldConnectionId ?? "")) {
+          setFieldConnectionLabelDraft("");
+        }
+      }
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+    return false;
+  }, [editingFieldConnectionId, saveOpenFieldSemantic]);
 
   const handleFieldReconnect = useCallback((oldEdge: FieldConnectionEdge, connection: Connection) => {
     const current = loadedFieldRef.current;
@@ -1161,6 +1236,7 @@ function App() {
   function clearFieldEditingState(): void {
     setRenameDraft(null);
     setItemDraft(null);
+    setSelectedFieldItemIds(new Set());
     setSelectedFieldConnectionId(null);
     setEditingFieldConnectionId(null);
     setFieldConnectionLabelDraft("");
@@ -1994,6 +2070,7 @@ function App() {
             edgeTypes={fieldEdgeTypes}
             onNodesChange={handleFieldNodesChange}
             onEdgesChange={handleFieldEdgesChange}
+            onBeforeDelete={handleFieldBeforeDelete}
             onEdgesDelete={handleFieldEdgesDelete}
             onMoveEnd={handleFieldMoveEnd}
             onNodeDragStop={handleFieldNodeDragStop}
@@ -2003,6 +2080,7 @@ function App() {
             onReconnect={handleFieldReconnect}
             onDrop={handleLibraryDropSurface}
             onDragOver={handleLibraryDragOver}
+            deleteKeyCode={["Delete", "Backspace"]}
             defaultViewport={fieldViewport}
             edgesReconnectable
             panOnDrag

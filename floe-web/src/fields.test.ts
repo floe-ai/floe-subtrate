@@ -82,7 +82,7 @@ describe("fieldToReactFlow", () => {
     expect(nodes).toHaveLength(2);
     expect(nodes[0].id).toBe("n1");
     expect(nodes[0].type).toBe("fieldItem");
-    expect(nodes[0].deletable).toBe(false);
+    expect(nodes[0].deletable).toBe(true);
     const data0 = nodes[0].data as { ref: { kind: string; id: string }; kind: string; label: string };
     expect(data0.ref).toEqual({ kind: "actor", id: "floe", raw: "actor:floe" });
     expect(data0.kind).toBe("actor");
@@ -323,6 +323,7 @@ describe("buildSemanticUpdate", () => {
     const next = buildSemanticUpdate(prev, { type: "remove_item", item_id: "n2" }, T1);
     expect(next.items.map((i) => i.item_id)).toEqual(["n1", "n3"]);
     expect(next.connections.map((c) => c.id)).toEqual(["e3"]);
+    expect(next.connections.every((c) => c.from !== "n2" && c.to !== "n2")).toBe(true);
     expect(next.updated_at).toBe(T1);
   });
 

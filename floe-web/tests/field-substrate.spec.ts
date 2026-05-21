@@ -383,54 +383,143 @@ test.describe("Field substrate (slice 1)", () => {
     await expect(page.locator(".react-flow__node")).toHaveCount(2);
   });
 
-  test("selected Field Item nodes do not cascade-delete connections", async ({ page }) => {
+  test("selected Field Item deletion confirms before cascading touching connections", async ({ page }) => {
     const semantic = makeFieldSemantic(
-      "node-delete-guard-field",
-      "Node Delete Guard Field",
+      "node-delete-confirm-field",
+      "Node Delete Confirm Field",
       [
         { item_id: "actor-a", ref: "actor:a" },
-        { item_id: "actor-b", ref: "actor:b" }
+        { item_id: "actor-b", ref: "actor:b" },
+        { item_id: "actor-c", ref: "actor:c" },
+        { item_id: "actor-d", ref: "actor:d" }
       ],
-      [{ id: "connection-actor-a-to-actor-b", from: "actor-a", to: "actor-b", label: "keep me" }]
+      [
+        { id: "a-to-b", from: "actor-a", to: "actor-b", label: "remove 1" },
+        { id: "b-to-c", from: "actor-b", to: "actor-c", label: "remove 2" },
+        { id: "a-to-c", from: "actor-a", to: "actor-c", label: "keep me" }
+      ]
     );
     await seedAppWithFields(page, [{
       semantic,
       layout: {
         schema: "floe.field.layout.floeweb.v1",
-        field_id: "node-delete-guard-field",
+        field_id: "node-delete-confirm-field",
         viewport: { x: 0, y: 0, zoom: 1 },
         items: {
           "actor-a": { x: 100, y: 100, width: 180, height: 72 },
-          "actor-b": { x: 380, y: 100, width: 180, height: 72 }
+          "actor-b": { x: 380, y: 100, width: 180, height: 72 },
+          "actor-c": { x: 660, y: 100, width: 180, height: 72 },
+          "actor-d": { x: 380, y: 260, width: 180, height: 72 }
         }
       }
     }]);
-    await page.locator(".field-block", { hasText: "Node Delete Guard Field" }).click();
-    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    await page.locator(".field-block", { hasText: "Node Delete Confirm Field" }).click();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(3);
 
     const semanticRequests: string[] = [];
+    const layoutRequests: string[] = [];
     page.on("request", (request) => {
       if (
         request.method() === "PUT" &&
-        request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/node-delete-guard-field`) &&
+        request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/node-delete-confirm-field`) &&
         !request.url().includes("/layout/")
       ) {
         semanticRequests.push(request.postData() ?? "");
       }
+      if (request.method() === "PUT" && request.url().includes("/layout/floeweb")) {
+        layoutRequests.push(request.url());
+      }
     });
 
-    await page.locator(".react-flow__node").filter({ hasText: "a" }).click();
+    let cancelMessage = "";
+    page.once("dialog", (dialog) => {
+      cancelMessage = dialog.message();
+      void dialog.dismiss();
+    });
+    await page.locator(".react-flow__node").filter({ hasText: "b" }).click();
     await page.keyboard.press("Backspace");
+    await expect.poll(() => cancelMessage).toContain("b");
+    expect(cancelMessage).toContain("2 Field Connections");
     await page.waitForTimeout(350);
 
     expect(semanticRequests).toEqual([]);
-    await expect(page.locator(".react-flow__node")).toHaveCount(2);
+    expect(layoutRequests).toEqual([]);
+    await expect(page.locator(".react-flow__node")).toHaveCount(4);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(3);
+
+    const deletePut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/node-delete-confirm-field`) &&
+      !request.url().includes("/layout/") &&
+      JSON.parse(request.postData() ?? "{}").items?.every((item: { item_id: string }) => item.item_id !== "actor-b")
+    , { timeout: 3_000 });
+    page.once("dialog", (dialog) => {
+      expect(dialog.message()).toContain("b");
+      expect(dialog.message()).toContain("2 Field Connections");
+      void dialog.accept();
+    });
+    await page.locator(".react-flow__node").filter({ hasText: "b" }).click();
+    await page.keyboard.press("Delete");
+
+    const request = await deletePut;
+    const body = JSON.parse(request.postData() ?? "{}");
+    expect(body.items.map((item: { item_id: string }) => item.item_id)).toEqual(["actor-a", "actor-c", "actor-d"]);
+    expect(body.connections).toEqual([
+      { id: "a-to-c", from: "actor-a", to: "actor-c", label: "keep me" }
+    ]);
+    await expect(page.locator(".react-flow__node")).toHaveCount(3);
     await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    expect(layoutRequests).toEqual([]);
+
     await page.reload();
-    await page.locator(".field-block", { hasText: "Node Delete Guard Field" }).click();
-    await expect(page.locator(".react-flow__node")).toHaveCount(2);
+    await page.locator(".field-block", { hasText: "Node Delete Confirm Field" }).click();
+    await expect(page.locator(".react-flow__node")).toHaveCount(3);
     await expect(page.locator(".react-flow__edge")).toHaveCount(1);
     await expect(page.locator(".field-edge-label", { hasText: "keep me" })).toHaveCount(1);
+  });
+
+  test("deleting a nested Field Item preserves the referenced child Field", async ({ page }) => {
+    const child = makeFieldSemantic("child-field", "Child Field");
+    const parent = makeFieldSemantic(
+      "parent-field",
+      "Parent Field",
+      [{ item_id: "child-item", ref: "field:child-field" }]
+    );
+    const fieldDeleteRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "DELETE" && request.url().includes("/fields/child-field")) {
+        fieldDeleteRequests.push(request.url());
+      }
+    });
+    await seedAppWithFields(page, [{
+      semantic: parent,
+      layout: {
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "parent-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: { "child-item": { x: 160, y: 120, width: 180, height: 72 } }
+      }
+    }, { semantic: child }]);
+    await page.locator(".field-block", { hasText: "Parent Field" }).click();
+    await expect(page.locator(".react-flow__node")).toHaveCount(1);
+
+    const parentPut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/parent-field`) &&
+      !request.url().includes("/layout/") &&
+      JSON.parse(request.postData() ?? "{}").items?.length === 0
+    , { timeout: 3_000 });
+    page.once("dialog", (dialog) => {
+      expect(dialog.message()).toContain("child-field");
+      void dialog.accept();
+    });
+    await page.locator(".react-flow__node").filter({ hasText: "child-field" }).click();
+    await page.keyboard.press("Delete");
+    await parentPut;
+
+    expect(fieldDeleteRequests).toEqual([]);
+    await page.getByRole("button", { name: "Workspace Home" }).click();
+    await expect(page.locator(".field-block", { hasText: "Child Field" })).toBeVisible();
   });
 
   test("reconnecting a Field Connection updates the existing semantic connection", async ({ page }) => {
