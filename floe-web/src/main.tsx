@@ -33,7 +33,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
-  useOnViewportChange,
+  useReactFlow,
   type Node as ReactFlowNode,
   type NodeChange,
   type NodeProps,
@@ -179,6 +179,7 @@ const runtimeErrorKinds = new Set([
   "runtime_provider_required",
   "runtime_profile_required"
 ]);
+const fieldPrimitiveMime = "application/x-floe-field-primitive";
 
 function FieldItemNode({ data }: NodeProps) {
   const item = data as FieldItemNodeData;
@@ -215,12 +216,8 @@ function fieldLayoutKey(workspaceId: string, fieldId: string): string {
   return `${workspaceId}\u0000${fieldId}`;
 }
 
-function FieldViewportObserver({ onChange }: { onChange: (viewport: Viewport) => void }) {
-  useOnViewportChange({ onEnd: onChange });
-  return null;
-}
-
 function App() {
+  const reactFlow = useReactFlow();
   const [busUrl, setBusUrl] = useState(defaultBusUrl);
   const [showBusSettings, setShowBusSettings] = useState(false);
   const [workspacePath, setWorkspacePath] = useState("");
@@ -258,6 +255,7 @@ function App() {
   const selectedWorkspaceIdRef = useRef("");
   const viewRef = useRef<View>({ kind: "home" });
   const loadedFieldRef = useRef<LoadedField | null>(null);
+  const restoredViewportKeyRef = useRef<string | null>(null);
   const layoutSaveTimersRef = useRef<Map<string, number>>(new Map());
   const pendingLayoutSavesRef = useRef<Map<string, PendingLayoutSave>>(new Map());
   const localLayoutWriteUntilRef = useRef<Map<string, number>>(new Map());
@@ -796,9 +794,15 @@ function App() {
   const refreshOpenField = useCallback(async (workspaceId: string, fieldId: string) => {
     try {
       const result = await getField(busUrl, workspaceId, fieldId);
-      setLoadedField(result);
+      const currentView = viewRef.current;
+      if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
+        setLoadedField(result);
+      }
     } catch (caught) {
-      setLoadedField(null);
+      const currentView = viewRef.current;
+      if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
+        setLoadedField(null);
+      }
       setError((caught as Error).message);
     }
   }, [busUrl]);
@@ -883,19 +887,6 @@ function App() {
     scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
   }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
 
-  const handleFieldViewportChange = useCallback((viewport: Viewport) => {
-    const workspaceId = selectedWorkspaceIdRef.current;
-    const current = loadedFieldRef.current;
-    const currentView = viewRef.current;
-    if (!workspaceId || !current || currentView.kind !== "field") return;
-    if (currentView.fieldId !== current.semantic.id) return;
-    const { nodes } = fieldToReactFlow(current.semantic, current.layout ?? undefined);
-    const nextLayout = reactFlowToLayout(current.semantic.id, nodes, viewport);
-    if (current.layout && layoutsEqual(current.layout, nextLayout)) return;
-    updateLoadedFieldLayout(nextLayout);
-    scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
-  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
-
   const handleFieldNodeDragStop = useCallback((_event: React.MouseEvent, node: ReactFlowNode) => {
     const workspaceId = selectedWorkspaceIdRef.current;
     const current = loadedFieldRef.current;
@@ -964,6 +955,25 @@ function App() {
   ]);
 
   useEffect(() => {
+    if (view.kind !== "field") {
+      restoredViewportKeyRef.current = null;
+      return;
+    }
+    if (!loadedField?.layout || loadedField.semantic.id !== view.fieldId) return;
+    const viewport = loadedField.layout.viewport;
+    const key = `${view.fieldId}:${viewport.x}:${viewport.y}:${viewport.zoom}`;
+    if (restoredViewportKeyRef.current === key) return;
+    restoredViewportKeyRef.current = key;
+    void reactFlow.setViewport(viewport, { duration: 0 });
+  }, [
+    loadedField?.layout,
+    loadedField?.semantic.id,
+    reactFlow,
+    view
+  ]);
+
+  useEffect(() => {
+    loadedFieldRef.current = null;
     setLoadedField(null);
     if (!selectedWorkspaceId) {
       setFieldSummaries([]);
@@ -974,8 +984,14 @@ function App() {
 
   useEffect(() => {
     if (view.kind !== "field" || !selectedWorkspaceId) {
+      loadedFieldRef.current = null;
       setLoadedField(null);
       return;
+    }
+    if (loadedFieldRef.current?.semantic.id !== view.fieldId) {
+      loadedFieldRef.current = null;
+      setLoadedField(null);
+      restoredViewportKeyRef.current = null;
     }
     void refreshOpenField(selectedWorkspaceId, view.fieldId);
   }, [view, selectedWorkspaceId, refreshOpenField]);
@@ -1257,6 +1273,85 @@ function App() {
     }
   }
 
+  function promptCreateNestedFieldItem(position?: { x: number; y: number }): void {
+    if (!selectedWorkspace || !loadedFieldRef.current) return;
+    const name = window.prompt("New nested field name?");
+    if (name === null) return;
+    void createNestedFieldItem(name, position);
+  }
+
+  async function createNestedFieldItem(name: string, position?: { x: number; y: number }): Promise<void> {
+    if (!selectedWorkspace) return;
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
+
+    const workspaceId = selectedWorkspace.workspace_id;
+    const title = name.trim() || `Field ${fieldSummaries.length + 1}`;
+    const fieldId = slugifyFieldId(title);
+    const itemRef = `field:${fieldId}`;
+    if (current.semantic.items.some((item) => item.ref === itemRef)) {
+      setError("That Field is already in this Field.");
+      return;
+    }
+    const itemId = nextFieldItemId(current.semantic, itemRef);
+    const now = new Date().toISOString();
+    const childSemantic = emptyFieldSemantic(fieldId, title);
+    const nextSemantic = buildSemanticUpdate(
+      current.semantic,
+      {
+        type: "add_item",
+        item: {
+          item_id: itemId,
+          ref: itemRef
+        }
+      },
+      now
+    );
+    const baseLayout = current.layout ?? reactFlowToLayout(
+      current.semantic.id,
+      fieldToReactFlow(current.semantic).nodes,
+      reactFlow.getViewport()
+    );
+    const nextLayout = position
+      ? {
+          ...baseLayout,
+          items: {
+            ...baseLayout.items,
+            [itemId]: {
+              ...(baseLayout.items[itemId] ?? {}),
+              x: position.x,
+              y: position.y
+            }
+          }
+        }
+      : null;
+
+    try {
+      await putFieldSemantic(busUrl, workspaceId, fieldId, childSemantic, { ifAbsent: true });
+      const semantic = await putFieldSemantic(busUrl, workspaceId, nextSemantic.id, nextSemantic);
+      let layout = current.layout;
+      if (nextLayout) {
+        try {
+          markLocalLayoutWrite(workspaceId, current.semantic.id);
+          layout = await putFieldLayout(busUrl, workspaceId, current.semantic.id, nextLayout);
+          markLocalLayoutWrite(workspaceId, current.semantic.id);
+        } catch (caught) {
+          setError((caught as Error).message);
+        }
+      }
+      const latest = loadedFieldRef.current;
+      if (latest?.semantic.id === semantic.id) {
+        const nextLoaded = { ...latest, semantic, layout };
+        loadedFieldRef.current = nextLoaded;
+        setLoadedField(nextLoaded);
+      }
+      await refreshFields(workspaceId);
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  }
+
   function createField(name?: string): void {
     if (!selectedWorkspace) return;
     const workspaceId = selectedWorkspace.workspace_id;
@@ -1267,6 +1362,8 @@ function App() {
       try {
         await putFieldSemantic(busUrl, workspaceId, id, semantic, { ifAbsent: true });
         await refreshFields(workspaceId);
+        loadedFieldRef.current = null;
+        setLoadedField(null);
         setView({ kind: "field", fieldId: id });
       } catch (caught) {
         setError((caught as Error).message);
@@ -1277,6 +1374,8 @@ function App() {
   function openField(fieldId: string): void {
     setRenameDraft(null);
     setItemDraft(null);
+    loadedFieldRef.current = null;
+    setLoadedField(null);
     setView({ kind: "field", fieldId });
     if (selectedWorkspaceId) void refreshOpenField(selectedWorkspaceId, fieldId);
   }
@@ -1303,6 +1402,55 @@ function App() {
     if (name === null) return;
     createField(name);
   }
+
+  function handleFieldPrimitiveClick(): void {
+    if (view.kind === "field") {
+      if (loadedField) promptCreateNestedFieldItem();
+      return;
+    }
+    promptCreateField();
+  }
+
+  function handleFieldPrimitiveDragStart(event: React.DragEvent<HTMLButtonElement>): void {
+    event.dataTransfer.setData(fieldPrimitiveMime, "field");
+    event.dataTransfer.effectAllowed = "copy";
+  }
+
+  function handleLibraryDragOver(event: React.DragEvent<Element>): void {
+    if (!event.dataTransfer.types.includes(fieldPrimitiveMime)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleLibraryDropSurface(event: React.DragEvent<Element>): void {
+    if (event.dataTransfer.getData(fieldPrimitiveMime) !== "field") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (viewRef.current.kind === "field" && loadedFieldRef.current) {
+      const position = reactFlow.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY
+      });
+      promptCreateNestedFieldItem(position);
+      return;
+    }
+    promptCreateField();
+  }
+
+  const handleFieldNodeDoubleClick = useCallback((_: React.MouseEvent, node: ReactFlowNode) => {
+    const current = loadedFieldRef.current;
+    const item = current?.semantic.items.find((candidate) => candidate.item_id === node.id);
+    if (!item) return;
+    const parsed = parseFieldRef(item.ref);
+    if (parsed.kind !== "field") return;
+    setRenameDraft(null);
+    setItemDraft(null);
+    loadedFieldRef.current = null;
+    setLoadedField(null);
+    setView({ kind: "field", fieldId: parsed.id });
+    const workspaceId = selectedWorkspaceIdRef.current;
+    if (workspaceId) void refreshOpenField(workspaceId, parsed.id);
+  }, [refreshOpenField]);
 
   function backToHome() {
     setRenameDraft(null);
@@ -1517,20 +1665,23 @@ function App() {
         {itemDraft && renderFieldItemDraft()}
         <div className="canvas-wrap">
           <ReactFlow
+            key={view.fieldId}
             nodes={fieldNodes}
             edges={fieldEdges}
             nodeTypes={fieldNodeTypes}
             onNodesChange={handleFieldNodesChange}
             onMoveEnd={handleFieldMoveEnd}
             onNodeDragStop={handleFieldNodeDragStop}
-            viewport={fieldViewport}
+            onNodeDoubleClick={handleFieldNodeDoubleClick}
+            onDrop={handleLibraryDropSurface}
+            onDragOver={handleLibraryDragOver}
+            defaultViewport={fieldViewport}
             panOnDrag
             zoomOnScroll
             minZoom={0.2}
             maxZoom={1.8}
             proOptions={{ hideAttribution: true }}
           >
-            <FieldViewportObserver onChange={handleFieldViewportChange} />
             <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
             <Controls position="bottom-left" />
             <MiniMap pannable zoomable position="bottom-right" />
@@ -1636,7 +1787,7 @@ function App() {
       <aside className="library-panel">
         <div className="library-header">
           <h3>Block Library</h3>
-          <p>Use “Add field” on the workspace home to create a Field.</p>
+          <p>{view.kind === "field" ? "Drop into the canvas or click to add a nested Field." : "Click or drag to create a Field."}</p>
         </div>
         {!selectedWorkspace ? (
           <div className="quiet-empty small">
@@ -1648,7 +1799,10 @@ function App() {
           <div className="library-items">
             <button
               className="library-primitive"
-              onClick={promptCreateField}
+              onClick={handleFieldPrimitiveClick}
+              disabled={view.kind === "field" && !loadedField}
+              draggable
+              onDragStart={handleFieldPrimitiveDragStart}
               title="Create a new Field"
             >
               <span className="library-card-icon"><LayoutPanelLeft size={18} /></span>
@@ -2111,7 +2265,11 @@ function App() {
         </header>
         <div className="content-row">
           {renderBlockLibrary()}
-          <div className="surface-area">
+          <div
+            className="surface-area"
+            onDrop={handleLibraryDropSurface}
+            onDragOver={handleLibraryDragOver}
+          >
             {!selectedWorkspace ? renderNoWorkspace() : view.kind === "field" ? renderField() : renderHome()}
           </div>
           {renderInspector()}

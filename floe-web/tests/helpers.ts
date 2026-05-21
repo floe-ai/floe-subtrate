@@ -168,8 +168,39 @@ export async function seedAppWithFields(
     return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
   });
 
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields/*/layout/floeweb`, async (route) => {
+    const url = new URL(route.request().url());
+    const segments = url.pathname.split("/");
+    const fieldId = decodeURIComponent(segments[segments.length - 3] ?? "");
+    const method = route.request().method();
+
+    if (method === "PUT") {
+      let layout: FieldLayoutFloeweb;
+      try {
+        layout = JSON.parse(route.request().postData() ?? "{}") as FieldLayoutFloeweb;
+      } catch {
+        return route.fulfill({ status: 400, body: JSON.stringify({ error: "bad_json" }) });
+      }
+      const prev = store.get(fieldId);
+      if (!prev) {
+        return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not_found" }) });
+      }
+      store.set(fieldId, { semantic: prev.semantic, layout });
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ layout })
+      });
+    }
+
+    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
+  });
+
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields/*`, async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/layout/floeweb")) {
+      return route.fallback();
+    }
     const segments = url.pathname.split("/");
     const fieldId = decodeURIComponent(segments[segments.length - 1] ?? "");
     const method = route.request().method();

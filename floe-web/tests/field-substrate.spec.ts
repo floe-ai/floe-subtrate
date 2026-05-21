@@ -80,6 +80,118 @@ test.describe("Field substrate (slice 1)", () => {
     await expect(page.locator(".react-flow__edge")).toHaveCount(1);
   });
 
+  test("opens each Field with its persisted viewport instead of stale canvas position", async ({ page }) => {
+    const first = makeFieldSemantic(
+      "first-field",
+      "First Field",
+      [{ item_id: "actor-a", ref: "actor:a" }]
+    );
+    const second = makeFieldSemantic(
+      "second-field",
+      "Second Field",
+      [{ item_id: "actor-b", ref: "actor:b" }]
+    );
+    await seedAppWithFields(page, [
+      {
+        semantic: first,
+        layout: {
+          schema: "floe.field.layout.floeweb.v1",
+          field_id: "first-field",
+          viewport: { x: 80, y: 45, zoom: 1.2 },
+          items: { "actor-a": { x: 10, y: 10 } }
+        }
+      },
+      {
+        semantic: second,
+        layout: {
+          schema: "floe.field.layout.floeweb.v1",
+          field_id: "second-field",
+          viewport: { x: -120, y: 30, zoom: 0.75 },
+          items: { "actor-b": { x: 20, y: 20 } }
+        }
+      }
+    ]);
+
+    await page.locator(".field-block", { hasText: "First Field" }).click();
+    await expect.poll(async () =>
+      page.locator(".react-flow__viewport").evaluate((element) => (element as HTMLElement).style.transform)
+    ).toContain("translate(80px, 45px) scale(1.2)");
+
+    await page.getByRole("button", { name: /Workspace Home/i }).click();
+    await page.locator(".field-block", { hasText: "Second Field" }).click();
+    await expect.poll(async () =>
+      page.locator(".react-flow__viewport").evaluate((element) => (element as HTMLElement).style.transform)
+    ).toContain("translate(-120px, 30px) scale(0.75)");
+  });
+
+  test("dragging the Field primitive into an open Field canvas creates a nested Field item there", async ({ page }) => {
+    const parent = makeFieldSemantic("parent-field", "Parent Field");
+    await seedAppWithFields(page, [{ semantic: parent }]);
+    await page.locator(".field-block", { hasText: "Parent Field" }).click();
+
+    page.once("dialog", (dialog) => {
+      void dialog.accept("Dropped Field");
+    });
+
+    const childPut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/dropped-field`) &&
+      request.url().includes("if_absent=true")
+    );
+    const parentPut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/parent-field`) &&
+      !request.url().includes("/layout/")
+    );
+
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    const source = page.locator(".library-primitive", { hasText: "Field" });
+    const target = page.locator(".react-flow").first();
+    const box = await target.boundingBox();
+    expect(box).not.toBeNull();
+    await source.dispatchEvent("dragstart", { dataTransfer });
+    await target.dispatchEvent("dragover", {
+      dataTransfer,
+      clientX: box!.x + 180,
+      clientY: box!.y + 140
+    });
+    await target.dispatchEvent("drop", {
+      dataTransfer,
+      clientX: box!.x + 180,
+      clientY: box!.y + 140
+    });
+
+    const [childRequest, parentRequest] = await Promise.all([childPut, parentPut]);
+    const childBody = JSON.parse(childRequest.postData() ?? "{}");
+    expect(childBody).toEqual(expect.objectContaining({ id: "dropped-field", title: "Dropped Field" }));
+    const parentBody = JSON.parse(parentRequest.postData() ?? "{}");
+    expect(parentBody.items).toEqual([
+      expect.objectContaining({
+        item_id: "field-dropped-field",
+        ref: "field:dropped-field"
+      })
+    ]);
+
+    await expect(page.getByRole("heading", { name: "Parent Field" })).toBeVisible();
+    await expect(page.locator(".react-flow__node").filter({ hasText: /dropped-field|Dropped Field/ })).toHaveCount(1);
+  });
+
+  test("double-clicking a nested Field node opens that Field for editing", async ({ page }) => {
+    const parent = makeFieldSemantic(
+      "parent-field",
+      "Parent Field",
+      [{ item_id: "field-child-field", ref: "field:child-field" }]
+    );
+    const child = makeFieldSemantic("child-field", "Child Field");
+    await seedAppWithFields(page, [{ semantic: parent }, { semantic: child }]);
+    await page.locator(".field-block", { hasText: "Parent Field" }).click();
+
+    await page.locator(".react-flow__node").filter({ hasText: /child-field|Child Field/ }).dblclick();
+
+    await expect(page.getByRole("heading", { name: "Child Field" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Rename field" })).toBeVisible();
+  });
+
   test("create field — sends PUT and the new field appears in the list", async ({ page }) => {
     await seedAppWithFields(page, []);
 
