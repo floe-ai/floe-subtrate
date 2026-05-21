@@ -689,7 +689,7 @@ test.describe("Field substrate (slice 1)", () => {
       page.once("dialog", (dialog) => {
         void dialog.accept();
       });
-      await page.getByRole("button", { name: /Delete field/i }).click();
+      await page.getByRole("button", { name: "Delete field", exact: true }).click();
 
       await expect.poll(() => existsSync(semanticPath)).toBe(false);
       await expect(page.getByText("No Fields yet")).toBeVisible();
@@ -1039,6 +1039,113 @@ test.describe("Field substrate (slice 1)", () => {
       expect((await endpointList()).filter((endpoint) => endpoint.endpoint_id === actorRef)).toHaveLength(1);
       expect(existsSync(childPath)).toBe(true);
       expect(layoutRequests).toEqual([]);
+    } finally {
+      if (!page.isClosed()) {
+        await page.close();
+      }
+      handle.app.server.closeAllConnections();
+      await handle.app.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("real bus stack moves Items through React Flow layout only and deletes Field sidecars", async ({ page }) => {
+    const tmp = mkdtempSync(join(tmpdir(), "floe-field-layout-delete-e2e-"));
+    const configPath = join(tmp, "config.yaml");
+    const workspacePath = join(tmp, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const config = defaultConfig(tmp);
+    writeFileSync(configPath, YAML.stringify(config), "utf8");
+    const handle = await createBusServer(configPath, config);
+    const busUrl = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const fieldsDir = join(workspacePath, ".floe", "fields");
+    const semanticPath = join(fieldsDir, "move-delete-field.yaml");
+    const layoutPath = join(fieldsDir, "move-delete-field.layout.floeweb.yaml");
+    const cliLayoutPath = join(fieldsDir, "move-delete-field.layout.cli.yaml");
+    const layoutPutRequests: string[] = [];
+    const semanticPutRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() !== "PUT") return;
+      if (request.url().includes("/fields/move-delete-field/layout/floeweb")) {
+        layoutPutRequests.push(request.url());
+      } else if (request.url().includes("/fields/move-delete-field")) {
+        semanticPutRequests.push(request.url());
+      }
+    });
+    const readLayout = () => YAML.parse(readFileSync(layoutPath, "utf8")) as {
+      items: Record<string, { x: number; y: number; width?: number; height?: number }>;
+    };
+
+    try {
+      await page.addInitScript((url) => localStorage.setItem("floe.busUrl", url), busUrl);
+      await page.goto("/");
+
+      await page.getByLabel("Workspace folder").fill(workspacePath);
+      await page.getByLabel("Name").fill("Field Layout Delete Workspace");
+      await page.getByRole("button", { name: "Create Workspace", exact: true }).click();
+      await expect(page.locator(".workspace-home")).toBeVisible();
+
+      mkdirSync(fieldsDir, { recursive: true });
+      const semantic = makeFieldSemantic(
+        "move-delete-field",
+        "Move Delete Field",
+        [{ item_id: "actor-floe", ref: "actor:floe" }]
+      );
+      const layout = {
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "move-delete-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: { "actor-floe": { x: 120, y: 140, width: 180, height: 72 } }
+      };
+      writeFileSync(semanticPath, YAML.stringify(semantic), "utf8");
+      writeFileSync(layoutPath, YAML.stringify(layout), "utf8");
+      await page.getByTitle("Refresh").first().click();
+      await expect(page.locator(".field-block", { hasText: "Move Delete Field" })).toBeVisible();
+      await page.locator(".field-block", { hasText: "Move Delete Field" }).click();
+
+      const node = page.locator(".react-flow__node").filter({ hasText: "floe" });
+      await expect(node).toHaveCount(1);
+      await page.waitForTimeout(500);
+      layoutPutRequests.length = 0;
+      semanticPutRequests.length = 0;
+      const semanticBeforeMove = readFileSync(semanticPath, "utf8");
+      const semanticMtimeBeforeMove = statSync(semanticPath).mtimeMs;
+      const layoutBeforeMove = readLayout();
+      const nodeBox = await node.boundingBox();
+      expect(nodeBox).not.toBeNull();
+      await page.mouse.move(nodeBox!.x + nodeBox!.width / 2, nodeBox!.y + nodeBox!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(nodeBox!.x + nodeBox!.width / 2 + 180, nodeBox!.y + nodeBox!.height / 2 + 90, { steps: 12 });
+      await page.mouse.up();
+
+      await expect.poll(() => readLayout().items["actor-floe"]).not.toEqual(layoutBeforeMove.items["actor-floe"]);
+      await expect.poll(() => layoutPutRequests.length).toBeGreaterThan(0);
+      expect(semanticPutRequests).toEqual([]);
+      expect(readFileSync(semanticPath, "utf8")).toBe(semanticBeforeMove);
+      expect(statSync(semanticPath).mtimeMs).toBe(semanticMtimeBeforeMove);
+
+      writeFileSync(cliLayoutPath, YAML.stringify({
+        ...layout,
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "move-delete-field"
+      }), "utf8");
+      expect(existsSync(cliLayoutPath)).toBe(true);
+      page.once("dialog", (dialog) => {
+        void dialog.accept();
+      });
+      const deleteWait = page.waitForRequest((request) =>
+        request.method() === "DELETE" &&
+        request.url().includes("/fields/move-delete-field")
+      );
+      await page.getByRole("button", { name: "Delete field", exact: true }).click();
+      await deleteWait;
+
+      await expect.poll(() => existsSync(semanticPath)).toBe(false);
+      expect(existsSync(layoutPath)).toBe(false);
+      expect(existsSync(cliLayoutPath)).toBe(false);
+      await expect(page.locator(".field-block", { hasText: "Move Delete Field" })).toHaveCount(0);
+      await expect(page.getByText("No Fields yet")).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Move Delete Field" })).toHaveCount(0);
     } finally {
       if (!page.isClosed()) {
         await page.close();
