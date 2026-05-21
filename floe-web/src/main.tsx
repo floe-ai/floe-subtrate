@@ -58,6 +58,7 @@ import {
   applyNodeChangesToLayout,
   buildSemanticUpdate,
   fieldToReactFlow,
+  isRootFieldSummary,
   nextFieldConnectionId,
   parseFieldRef,
   reactFlowToLayout,
@@ -336,6 +337,7 @@ function App() {
   const [bridgeRuntimeAdapter, setBridgeRuntimeAdapter] = useState<string | null>(null);
   const [view, setView] = useState<View>({ kind: "home" });
   const [fieldSummaries, setFieldSummaries] = useState<FieldSummary[]>([]);
+  const [showAllFields, setShowAllFields] = useState(false);
   const [loadedField, setLoadedField] = useState<LoadedField | null>(null);
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [itemDraft, setItemDraft] = useState<FieldItemDraft | null>(null);
@@ -395,9 +397,11 @@ function App() {
     ? fieldSummaries.find((field) => field.id === view.fieldId) ?? null
     : null;
   const rootFieldSummaries = useMemo(
-    () => fieldSummaries.filter((field) => field.parent_count === 0),
+    () => fieldSummaries.filter(isRootFieldSummary),
     [fieldSummaries]
   );
+  const homeFieldSummaries = showAllFields ? fieldSummaries : rootFieldSummaries;
+  const nestedFieldCount = fieldSummaries.length - rootFieldSummaries.length;
   const actorItemOptions = useMemo(() => {
     if (!selectedWorkspace) return [] as Array<{ ref: string; label: string }>;
     const existingRefs = new Set(loadedField?.semantic.items.map((item) => item.ref) ?? []);
@@ -1825,15 +1829,27 @@ function App() {
             <div className="section-title-row">
               <div>
                 <h3>Fields</h3>
-                <p>Substrate-backed Fields stored under <code>.floe/fields/</code>.</p>
+                <p>
+                  {showAllFields
+                    ? "All workspace Fields."
+                    : <>Root Fields stored under <code>.floe/fields/</code>.</>}
+                </p>
               </div>
-              <span>{rootFieldSummaries.length}</span>
+              <span>{homeFieldSummaries.length}</span>
             </div>
+            {nestedFieldCount > 0 && (
+              <button
+                className="ghost-action full"
+                onClick={() => setShowAllFields((current) => !current)}
+              >
+                {showAllFields ? "Show root fields" : `Show all fields (${fieldSummaries.length})`}
+              </button>
+            )}
             <button className="primary-action full" onClick={promptCreateField}>
               <FolderPlus size={15} />
               Add field
             </button>
-            {rootFieldSummaries.length === 0 ? (
+            {homeFieldSummaries.length === 0 ? (
               <div className="quiet-empty">
                 <SquareDashedMousePointer size={22} />
                 <strong>No Fields yet</strong>
@@ -1841,7 +1857,7 @@ function App() {
               </div>
             ) : (
               <div className="field-list">
-                {rootFieldSummaries.map((summary) => (
+                {homeFieldSummaries.map((summary) => (
                   <button
                     key={summary.id}
                     className="field-block"
@@ -1851,7 +1867,7 @@ function App() {
                     <span className="field-icon"><LayoutPanelLeft size={16} /></span>
                     <span>
                       <strong>{summary.title}</strong>
-                      <small>{summary.item_count} items</small>
+                      <small>{summary.item_count} items{(summary.parent_count ?? 0) > 0 ? " - nested" : ""}</small>
                     </span>
                     <ChevronRight size={16} />
                   </button>

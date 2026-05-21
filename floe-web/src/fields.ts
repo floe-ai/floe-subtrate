@@ -83,7 +83,7 @@ export type FieldSummary = {
   title: string;
   item_count: number;
   connection_count: number;
-  parent_count: number;
+  parent_count?: number;
   updated_at: string;
 };
 
@@ -156,6 +156,10 @@ export function nextFieldConnectionId(semantic: FieldSemantic, from: string, to:
   let index = 2;
   while (existing.has(`${base}-${index}`)) index += 1;
   return `${base}-${index}`;
+}
+
+export function isRootFieldSummary(summary: FieldSummary): boolean {
+  return summary.parent_count === undefined || summary.parent_count === 0;
 }
 
 export function fieldToReactFlow(

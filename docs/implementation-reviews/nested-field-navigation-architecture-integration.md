@@ -23,6 +23,7 @@ Derive workspace-root visibility from Field graph semantics, not paths and not a
 2. Prefer doing the root/nested classification in the bus list endpoint or store layer if the implementation can inspect all semantic files while listing. This keeps the home list source-of-truth close to `loadAllFields()` and ensures every client gets the same root list semantics.
 3. If preserving the existing `/fields` response as "all fields" is needed for pickers, add an explicit client-side selector in FloeWeb: `rootFieldSummaries` for workspace home and `fieldItemOptions` sourced from all summaries. Do not silently break nested-field picker options.
 4. Keep every Field as `.floe\fields\<id>.yaml`; nested child files remain sibling files in `.floe\fields\`. Do not introduce `.floe\fields\parent\child.yaml`, `parent_id` metadata, or layout-driven hierarchy.
+5. Workspace home should default to Root Fields for orientation, but must provide an explicit Show all toggle/filter so users can still see every Field in the workspace. When nested Fields are shown, mark them as nested rather than implying they are roots. If a Field summary has no parent metadata, treat it as a Root Field; no known parent must not hide a Field.
 
 Important nuance: a child can be referenced by more than one parent. The brief does not introduce ownership or containment. "Nested" means "referenced by at least one Field item" for workspace-home filtering.
 
@@ -42,7 +43,9 @@ Toolbar UX should reflect the target: title/aria-label should say "Back to <Pare
 
 ## Regression checklist
 
-- Workspace home lists only root Fields; a Field referenced as `field:<id>` by another Field does not render as a `.field-block` at home.
+- Workspace home defaults to root Fields; a Field referenced as `field:<id>` by another Field does not render as a `.field-block` in the default root view.
+- Workspace home provides a Show all toggle/filter that reveals nested Fields and marks them as nested.
+- Field summaries without parent metadata remain visible as Root Fields.
 - Nested child Field files still exist as `.floe\fields\<child-id>.yaml` and can be loaded by id.
 - Root Field creation still creates a root Field and opens it.
 - Creating/dropping a nested Field in an open Field creates the child semantic file and parent `field:<child-id>` item, then home still shows only the parent/root Fields.
@@ -57,9 +60,9 @@ Toolbar UX should reflect the target: title/aria-label should say "Back to <Pare
 - `floe-bus\src\fields-store.test.ts`: add a store-level test for deriving/listing root Fields when `parent.yaml` contains item `{ ref: "field:child" }`; child remains loadable via `loadField()`.
 - `floe-bus\src\fields-server.test.ts`: assert `GET /fields` behavior matches the chosen contract. If it becomes root-only, assert child omission. If API stays all-fields, document and test the separate root derivation elsewhere.
 - `floe-web\src\fields.test.ts`: add a pure helper test for collecting nested Field ids / deriving root summaries if implemented in web helpers.
-- `floe-web\tests\field-substrate.spec.ts`: keep/add Playwright coverage for "nested Fields stay out of workspace root list and Back returns to parent". The current file already contains this scenario around lines 195-215; ensure it fails before the fix and passes after.
+- `floe-web\tests\field-substrate.spec.ts`: keep/add Playwright coverage for "nested Fields stay out of workspace root list, Show all reveals them, and Back returns to parent". The current file already contains this scenario around lines 195-215; ensure it fails before the fix and passes after.
 - Add/keep a companion Playwright test for direct/root open: opening a root Field and pressing Back returns home; directly opening a child without parent provenance also returns home.
-- Live QA: with a real bus workspace, create/open parent, drop/create child, verify `.floe\fields\parent.yaml` references `field:child`, `.floe\fields\child.yaml` is a sibling file, home hides child, nested Back returns parent, root Back returns home.
+- Live QA: with a real bus workspace, create/open parent, drop/create child, verify `.floe\fields\parent.yaml` references `field:child`, `.floe\fields\child.yaml` is a sibling file, home hides child by default, Show all reveals and marks child as nested, nested Back returns parent, root Back returns home.
 
 ## Risks
 

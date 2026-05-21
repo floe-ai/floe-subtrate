@@ -7,6 +7,7 @@ import {
   applyNodeChangesToLayout,
   buildSemanticUpdate,
   defaultLayout,
+  isRootFieldSummary,
   nextFieldConnectionId,
   FieldSemanticOpError,
   type FieldSemantic,
@@ -191,6 +192,37 @@ describe("fieldToReactFlow", () => {
       "unknown"
     ]);
     expect(nodes.map((node) => (node.data as { label: string }).label)).toContain("future_kind:still-renders");
+  });
+});
+
+describe("isRootFieldSummary", () => {
+  it("treats missing or zero parent_count as a root Field", () => {
+    expect(isRootFieldSummary({
+      id: "legacy-root",
+      title: "Legacy Root",
+      item_count: 0,
+      connection_count: 0,
+      updated_at: T0
+    })).toBe(true);
+    expect(isRootFieldSummary({
+      id: "root",
+      title: "Root",
+      item_count: 0,
+      connection_count: 0,
+      parent_count: 0,
+      updated_at: T0
+    })).toBe(true);
+  });
+
+  it("treats Fields with at least one parent as nested", () => {
+    expect(isRootFieldSummary({
+      id: "child",
+      title: "Child",
+      item_count: 0,
+      connection_count: 0,
+      parent_count: 1,
+      updated_at: T0
+    })).toBe(false);
   });
 });
 

@@ -203,6 +203,12 @@ test.describe("Field substrate (slice 1)", () => {
 
     await expect(page.locator(".field-block", { hasText: "Parent Field" })).toHaveCount(1);
     await expect(page.locator(".field-block", { hasText: "Child Field" })).toHaveCount(0);
+    await page.getByRole("button", { name: /Show all fields/i }).click();
+    await expect(page.locator(".field-block", { hasText: "Parent Field" })).toHaveCount(1);
+    await expect(page.locator(".field-block", { hasText: "Child Field" })).toHaveCount(1);
+    await expect(page.locator(".field-block", { hasText: "Child Field" })).toContainText("nested");
+    await page.getByRole("button", { name: /Show root fields/i }).click();
+    await expect(page.locator(".field-block", { hasText: "Child Field" })).toHaveCount(0);
 
     await page.locator(".field-block", { hasText: "Parent Field" }).click();
     await page.locator(".react-flow__node").filter({ hasText: /child-field|Child Field/ }).dblclick();
