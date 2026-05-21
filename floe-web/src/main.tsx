@@ -27,13 +27,20 @@ import {
 import {
   Background,
   BackgroundVariant,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MiniMap,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  getBezierPath,
   useReactFlow,
+  type Connection,
+  type Edge as ReactFlowEdge,
+  type EdgeChange,
+  type EdgeProps,
   type Node as ReactFlowNode,
   type NodeChange,
   type NodeProps,
@@ -51,8 +58,10 @@ import {
   applyNodeChangesToLayout,
   buildSemanticUpdate,
   fieldToReactFlow,
+  nextFieldConnectionId,
   parseFieldRef,
   reactFlowToLayout,
+  type FieldConnection,
   type FieldLayoutFloeweb,
   type FieldItemNodeData,
   type FieldSummary,
@@ -167,6 +176,18 @@ type FieldItemDraft = {
   ref: string;
 };
 
+type FieldConnectionEdgeData = Record<string, unknown> & {
+  label: string;
+  isEditing: boolean;
+  draft: string;
+  onBeginEdit: (id: string, label: string) => void;
+  onDraftChange: (value: string) => void;
+  onCommit: (id: string) => void;
+  onCancel: () => void;
+};
+
+type FieldConnectionEdge = ReactFlowEdge<FieldConnectionEdgeData, "fieldConnection">;
+
 const defaultBusUrl = localStorage.getItem("floe.busUrl") ?? "http://127.0.0.1:5377";
 
 const runtimeErrorKinds = new Set([
@@ -200,6 +221,86 @@ function FieldItemNode({ data }: NodeProps) {
 
 const fieldNodeTypes = {
   fieldItem: FieldItemNode
+};
+
+function FieldConnectionEdgeComponent({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  markerStart,
+  style,
+  data
+}: EdgeProps<FieldConnectionEdge>) {
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition
+  });
+  const label = data?.label ?? "";
+  const draft = data?.draft ?? label;
+  const isEditing = data?.isEditing ?? false;
+  const showLabel = isEditing || label.trim().length > 0;
+
+  return (
+    <>
+      <BaseEdge id={id} path={edgePath} markerStart={markerStart} markerEnd={markerEnd} style={style} />
+      {showLabel && (
+        <EdgeLabelRenderer>
+          <div
+            className={`field-edge-label${isEditing ? " editing" : ""}`}
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: "all"
+            }}
+          >
+            {isEditing ? (
+              <input
+                className="nodrag nopan"
+                aria-label="Connection label"
+                value={draft}
+                placeholder="Label"
+                autoFocus
+                onChange={(event) => data?.onDraftChange(event.target.value)}
+                onBlur={() => data?.onCommit(id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    data?.onCommit(id);
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    data?.onCancel();
+                  }
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="field-edge-label-button nodrag nopan"
+                aria-label={`Edit connection label ${label}`}
+                onClick={() => data?.onBeginEdit(id, label)}
+              >
+                {label}
+              </button>
+            )}
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
+
+const fieldEdgeTypes = {
+  fieldConnection: FieldConnectionEdgeComponent
 };
 
 function layoutsEqual(a: FieldLayoutFloeweb, b: FieldLayoutFloeweb): boolean {
@@ -238,6 +339,9 @@ function App() {
   const [loadedField, setLoadedField] = useState<LoadedField | null>(null);
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
   const [itemDraft, setItemDraft] = useState<FieldItemDraft | null>(null);
+  const [selectedFieldConnectionId, setSelectedFieldConnectionId] = useState<string | null>(null);
+  const [editingFieldConnectionId, setEditingFieldConnectionId] = useState<string | null>(null);
+  const [fieldConnectionLabelDraft, setFieldConnectionLabelDraft] = useState("");
   const [channelOpen, setChannelOpen] = useState(false);
   const [channelMessage, setChannelMessage] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -545,8 +649,28 @@ function App() {
 
   const { nodes: fieldNodes, edges: fieldEdges } = useMemo(() => {
     if (!loadedField) return { nodes: [], edges: [] };
-    return fieldToReactFlow(loadedField.semantic, loadedField.layout ?? undefined);
-  }, [loadedField]);
+    const flow = fieldToReactFlow(loadedField.semantic, loadedField.layout ?? undefined);
+    const edges: FieldConnectionEdge[] = flow.edges.map((edge) => {
+      const label = typeof edge.label === "string" ? edge.label : "";
+      const isEditing = editingFieldConnectionId === edge.id;
+      return {
+        ...edge,
+        type: "fieldConnection",
+        selected: selectedFieldConnectionId === edge.id,
+        data: {
+          ...(edge.data ?? {}),
+          label,
+          isEditing,
+          draft: isEditing ? fieldConnectionLabelDraft : label,
+          onBeginEdit: beginFieldConnectionLabelEdit,
+          onDraftChange: setFieldConnectionLabelDraft,
+          onCommit: commitFieldConnectionLabel,
+          onCancel: cancelFieldConnectionLabelEdit
+        }
+      };
+    });
+    return { nodes: flow.nodes, edges };
+  }, [editingFieldConnectionId, fieldConnectionLabelDraft, loadedField, selectedFieldConnectionId]);
   const fieldViewport = useMemo<Viewport>(
     () => loadedField?.layout?.viewport ?? { x: 0, y: 0, zoom: 1 },
     [loadedField?.layout?.viewport]
@@ -606,6 +730,7 @@ function App() {
         selectedWorkspaceIdRef.current = nextWorkspaceId;
         setSelectedWorkspaceId(nextWorkspaceId);
         setView({ kind: "home" });
+        clearFieldEditingState();
       }
       if (nextWorkspaceId) {
         const [endpointResult, bindingResult, eventResult, telemetryResult] = await Promise.all([
@@ -802,10 +927,30 @@ function App() {
       const currentView = viewRef.current;
       if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
         setLoadedField(null);
+        clearFieldEditingState();
       }
       setError((caught as Error).message);
     }
   }, [busUrl]);
+
+  const saveOpenFieldSemantic = useCallback(async (nextSemantic: FieldSemantic): Promise<boolean> => {
+    const workspaceId = selectedWorkspaceIdRef.current;
+    if (!workspaceId) return false;
+    try {
+      const semantic = await putFieldSemantic(busUrl, workspaceId, nextSemantic.id, nextSemantic);
+      const current = loadedFieldRef.current;
+      if (current?.semantic.id === semantic.id) {
+        const nextLoaded = { ...current, semantic };
+        loadedFieldRef.current = nextLoaded;
+        setLoadedField(nextLoaded);
+      }
+      await refreshFields(workspaceId);
+      return true;
+    } catch (caught) {
+      setError((caught as Error).message);
+      return false;
+    }
+  }, [busUrl, refreshFields]);
 
   const markLocalLayoutWrite = useCallback((workspaceId: string, fieldId: string) => {
     localLayoutWriteUntilRef.current.set(fieldLayoutKey(workspaceId, fieldId), Date.now() + 2_000);
@@ -914,6 +1059,105 @@ function App() {
     scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
   }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
 
+  const handleFieldConnect = useCallback((connection: Connection) => {
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
+    if (!connection.source || !connection.target) return;
+    try {
+      const connectionId = nextFieldConnectionId(current.semantic, connection.source, connection.target);
+      const next = buildSemanticUpdate(
+        current.semantic,
+        {
+          type: "add_connection",
+          connection: {
+            id: connectionId,
+            from: connection.source,
+            to: connection.target
+          }
+        },
+        new Date().toISOString()
+      );
+      void (async () => {
+        if (await saveOpenFieldSemantic(next)) {
+          beginFieldConnectionLabelEdit(connectionId, "");
+        }
+      })();
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  }, [saveOpenFieldSemantic]);
+
+  const handleFieldEdgesChange = useCallback((changes: EdgeChange<FieldConnectionEdge>[]) => {
+    const selection = [...changes].reverse().find((change) => change.type === "select");
+    if (!selection || selection.type !== "select") return;
+    if (selection.selected) {
+      setSelectedFieldConnectionId(selection.id);
+      return;
+    }
+    setSelectedFieldConnectionId((current) => current === selection.id ? null : current);
+  }, []);
+
+  const handleFieldEdgeDoubleClick = useCallback((_: React.MouseEvent, edge: FieldConnectionEdge) => {
+    const label = typeof edge.label === "string" ? edge.label : "";
+    beginFieldConnectionLabelEdit(edge.id, label);
+  }, []);
+
+  const handleFieldEdgesDelete = useCallback((edges: FieldConnectionEdge[]) => {
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
+    const ids = new Set(edges.map((edge) => edge.id));
+    if (ids.size === 0) return;
+    try {
+      let next = current.semantic;
+      for (const id of ids) {
+        next = buildSemanticUpdate(next, { type: "remove_connection", id }, new Date().toISOString());
+      }
+      if (next === current.semantic) return;
+      setSelectedFieldConnectionId((selected) => selected && ids.has(selected) ? null : selected);
+      setEditingFieldConnectionId((editing) => editing && ids.has(editing) ? null : editing);
+      void saveOpenFieldSemantic(next);
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  }, [saveOpenFieldSemantic]);
+
+  const handleFieldReconnect = useCallback((oldEdge: FieldConnectionEdge, connection: Connection) => {
+    const current = loadedFieldRef.current;
+    const currentView = viewRef.current;
+    if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
+    if (!connection.source || !connection.target) return;
+    const existing = current.semantic.connections.find((candidate) => candidate.id === oldEdge.id);
+    if (!existing) return;
+    if (existing.from === connection.source && existing.to === connection.target) return;
+    try {
+      const next = buildSemanticUpdate(
+        current.semantic,
+        {
+          type: "update_connection",
+          connection: {
+            ...existing,
+            from: connection.source,
+            to: connection.target
+          }
+        },
+        new Date().toISOString()
+      );
+      void saveOpenFieldSemantic(next);
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  }, [saveOpenFieldSemantic]);
+
+  function clearFieldEditingState(): void {
+    setRenameDraft(null);
+    setItemDraft(null);
+    setSelectedFieldConnectionId(null);
+    setEditingFieldConnectionId(null);
+    setFieldConnectionLabelDraft("");
+  }
+
   useEffect(() => subscribeToFieldEvents(busUrl, (event) => {
     const workspaceId = selectedWorkspaceIdRef.current;
     if (!workspaceId || event.payload.workspace_id !== workspaceId) return;
@@ -923,6 +1167,7 @@ function App() {
     if (event.type === "field.deleted") {
       autoInitializedLayoutRef.current.delete(fieldLayoutKey(workspaceId, event.payload.field_id));
       setLoadedField(null);
+      clearFieldEditingState();
       setView({ kind: "home" });
       return;
     }
@@ -975,6 +1220,7 @@ function App() {
   useEffect(() => {
     loadedFieldRef.current = null;
     setLoadedField(null);
+    clearFieldEditingState();
     if (!selectedWorkspaceId) {
       setFieldSummaries([]);
       return;
@@ -986,11 +1232,13 @@ function App() {
     if (view.kind !== "field" || !selectedWorkspaceId) {
       loadedFieldRef.current = null;
       setLoadedField(null);
+      clearFieldEditingState();
       return;
     }
     if (loadedFieldRef.current?.semantic.id !== view.fieldId) {
       loadedFieldRef.current = null;
       setLoadedField(null);
+      clearFieldEditingState();
       restoredViewportKeyRef.current = null;
     }
     void refreshOpenField(selectedWorkspaceId, view.fieldId);
@@ -1015,6 +1263,7 @@ function App() {
       await refresh(result.workspace.workspace_id);
       setWorkspacePath("");
       setWorkspaceName("");
+      clearFieldEditingState();
       setView({ kind: "home" });
     } catch (err) {
       if (err instanceof ApiError && (err.body as any)?.error === "directory_not_found") {
@@ -1031,6 +1280,7 @@ function App() {
   async function selectWorkspace(workspaceId: string) {
     selectedWorkspaceIdRef.current = workspaceId;
     setSelectedWorkspaceId(workspaceId);
+    clearFieldEditingState();
     setView({ kind: "home" });
     await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, { method: "POST" });
     await ensureOperator(workspaceId);
@@ -1193,18 +1443,41 @@ function App() {
     await refreshContexts(selectedWorkspace.workspace_id);
   }
 
-  async function saveOpenFieldSemantic(nextSemantic: FieldSemantic): Promise<void> {
-    if (!selectedWorkspace) return;
-    const workspaceId = selectedWorkspace.workspace_id;
+  function beginFieldConnectionLabelEdit(connectionId: string, label: string): void {
+    setSelectedFieldConnectionId(connectionId);
+    setEditingFieldConnectionId(connectionId);
+    setFieldConnectionLabelDraft(label);
+  }
+
+  function cancelFieldConnectionLabelEdit(): void {
+    setEditingFieldConnectionId(null);
+    setFieldConnectionLabelDraft("");
+  }
+
+  function commitFieldConnectionLabel(connectionId: string): void {
+    const current = loadedFieldRef.current;
+    if (!current) return;
+    const existing = current.semantic.connections.find((connection) => connection.id === connectionId);
+    if (!existing) {
+      cancelFieldConnectionLabelEdit();
+      return;
+    }
+    const label = fieldConnectionLabelDraft.trim();
+    const nextConnection = label
+      ? { ...existing, label }
+      : withoutConnectionLabel(existing);
+    if ((existing.label ?? "") === (nextConnection.label ?? "")) {
+      cancelFieldConnectionLabelEdit();
+      return;
+    }
     try {
-      const semantic = await putFieldSemantic(busUrl, workspaceId, nextSemantic.id, nextSemantic);
-      const current = loadedFieldRef.current;
-      if (current?.semantic.id === semantic.id) {
-        const nextLoaded = { ...current, semantic };
-        loadedFieldRef.current = nextLoaded;
-        setLoadedField(nextLoaded);
-      }
-      await refreshFields(workspaceId);
+      const next = buildSemanticUpdate(
+        current.semantic,
+        { type: "update_connection", connection: nextConnection },
+        new Date().toISOString()
+      );
+      cancelFieldConnectionLabelEdit();
+      void saveOpenFieldSemantic(next);
     } catch (caught) {
       setError((caught as Error).message);
     }
@@ -1364,6 +1637,7 @@ function App() {
         await refreshFields(workspaceId);
         loadedFieldRef.current = null;
         setLoadedField(null);
+        clearFieldEditingState();
         setView({ kind: "field", fieldId: id });
       } catch (caught) {
         setError((caught as Error).message);
@@ -1372,8 +1646,7 @@ function App() {
   }
 
   function openField(fieldId: string): void {
-    setRenameDraft(null);
-    setItemDraft(null);
+    clearFieldEditingState();
     loadedFieldRef.current = null;
     setLoadedField(null);
     setView({ kind: "field", fieldId });
@@ -1388,7 +1661,7 @@ function App() {
       try {
         await deleteFieldApi(busUrl, workspaceId, fieldId);
         setLoadedField(null);
-        setItemDraft(null);
+        clearFieldEditingState();
         setView({ kind: "home" });
         await refreshFields(workspaceId);
       } catch (caught) {
@@ -1443,8 +1716,7 @@ function App() {
     if (!item) return;
     const parsed = parseFieldRef(item.ref);
     if (parsed.kind !== "field") return;
-    setRenameDraft(null);
-    setItemDraft(null);
+    clearFieldEditingState();
     loadedFieldRef.current = null;
     setLoadedField(null);
     setView({ kind: "field", fieldId: parsed.id });
@@ -1453,8 +1725,7 @@ function App() {
   }, [refreshOpenField]);
 
   function backToHome() {
-    setRenameDraft(null);
-    setItemDraft(null);
+    clearFieldEditingState();
     setView({ kind: "home" });
   }
 
@@ -1669,13 +1940,20 @@ function App() {
             nodes={fieldNodes}
             edges={fieldEdges}
             nodeTypes={fieldNodeTypes}
+            edgeTypes={fieldEdgeTypes}
             onNodesChange={handleFieldNodesChange}
+            onEdgesChange={handleFieldEdgesChange}
+            onEdgesDelete={handleFieldEdgesDelete}
             onMoveEnd={handleFieldMoveEnd}
             onNodeDragStop={handleFieldNodeDragStop}
             onNodeDoubleClick={handleFieldNodeDoubleClick}
+            onEdgeDoubleClick={handleFieldEdgeDoubleClick}
+            onConnect={handleFieldConnect}
+            onReconnect={handleFieldReconnect}
             onDrop={handleLibraryDropSurface}
             onDragOver={handleLibraryDragOver}
             defaultViewport={fieldViewport}
+            edgesReconnectable
             panOnDrag
             zoomOnScroll
             minZoom={0.2}
@@ -2380,6 +2658,11 @@ function nextFieldItemId(semantic: FieldSemantic, ref: string): string {
   let index = 2;
   while (existing.has(`${base}-${index}`)) index += 1;
   return `${base}-${index}`;
+}
+
+function withoutConnectionLabel(connection: FieldConnection): FieldConnection {
+  const { label: _label, ...rest } = connection;
+  return rest;
 }
 
 function cachedOperatorDisplayName(): string | null {

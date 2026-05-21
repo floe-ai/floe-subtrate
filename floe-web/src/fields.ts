@@ -101,6 +101,7 @@ export type FieldSemanticOp =
   | { type: "add_item"; item: FieldItem }
   | { type: "remove_item"; item_id: string }
   | { type: "add_connection"; connection: FieldConnection }
+  | { type: "update_connection"; connection: FieldConnection }
   | { type: "remove_connection"; id: string };
 
 export class FieldSemanticOpError extends Error {
@@ -143,6 +144,19 @@ export function defaultLayout(index: number): { x: number; y: number } {
   };
 }
 
+function slugifyConnectionPart(value: string): string {
+  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "item";
+}
+
+export function nextFieldConnectionId(semantic: FieldSemantic, from: string, to: string): string {
+  const existing = new Set(semantic.connections.map((connection) => connection.id));
+  const base = `connection-${slugifyConnectionPart(from)}-to-${slugifyConnectionPart(to)}`;
+  if (!existing.has(base)) return base;
+  let index = 2;
+  while (existing.has(`${base}-${index}`)) index += 1;
+  return `${base}-${index}`;
+}
+
 export function fieldToReactFlow(
   semantic: FieldSemantic,
   layout?: FieldLayoutFloeweb
@@ -162,6 +176,7 @@ export function fieldToReactFlow(
       id: item.item_id,
       type: "fieldItem",
       position,
+      deletable: false,
       data: data as unknown as Record<string, unknown>
     };
     if (positioned?.width !== undefined) node.width = positioned.width;
@@ -292,6 +307,32 @@ export function buildSemanticUpdate(
         connections: [...prev.connections, op.connection],
         updated_at: now
       };
+    }
+
+    case "update_connection": {
+      const ids = new Set(prev.items.map((i) => i.item_id));
+      if (!ids.has(op.connection.from)) {
+        throw new FieldSemanticOpError(
+          `connection.from references unknown item_id: ${op.connection.from}`
+        );
+      }
+      if (!ids.has(op.connection.to)) {
+        throw new FieldSemanticOpError(
+          `connection.to references unknown item_id: ${op.connection.to}`
+        );
+      }
+      let found = false;
+      const connections = prev.connections.map((conn) => {
+        if (conn.id !== op.connection.id) return conn;
+        found = true;
+        return op.connection;
+      });
+      if (!found) {
+        throw new FieldSemanticOpError(
+          `connection id does not exist: ${op.connection.id}`
+        );
+      }
+      return { ...prev, connections, updated_at: now };
     }
 
     case "remove_connection": {

@@ -7,6 +7,7 @@ import {
   applyNodeChangesToLayout,
   buildSemanticUpdate,
   defaultLayout,
+  nextFieldConnectionId,
   FieldSemanticOpError,
   type FieldSemantic,
   type FieldLayoutFloeweb
@@ -80,6 +81,7 @@ describe("fieldToReactFlow", () => {
     expect(nodes).toHaveLength(2);
     expect(nodes[0].id).toBe("n1");
     expect(nodes[0].type).toBe("fieldItem");
+    expect(nodes[0].deletable).toBe(false);
     const data0 = nodes[0].data as { ref: { kind: string; id: string }; kind: string; label: string };
     expect(data0.ref).toEqual({ kind: "actor", id: "floe", raw: "actor:floe" });
     expect(data0.kind).toBe("actor");
@@ -329,6 +331,46 @@ describe("buildSemanticUpdate", () => {
     ).toThrow(FieldSemanticOpError);
   });
 
+  it("update_connection replaces an existing connection while preserving its id and order", () => {
+    const prev = makeSemantic({
+      items: [
+        { item_id: "n1", ref: "actor:a" },
+        { item_id: "n2", ref: "actor:b" },
+        { item_id: "n3", ref: "actor:c" }
+      ],
+      connections: [
+        { id: "e1", from: "n1", to: "n2", label: "old" },
+        { id: "e2", from: "n2", to: "n3" }
+      ]
+    });
+
+    const next = buildSemanticUpdate(
+      prev,
+      { type: "update_connection", connection: { id: "e1", from: "n3", to: "n2", label: "new" } },
+      T1
+    );
+
+    expect(next.connections).toEqual([
+      { id: "e1", from: "n3", to: "n2", label: "new" },
+      { id: "e2", from: "n2", to: "n3" }
+    ]);
+    expect(next.updated_at).toBe(T1);
+    expect(() =>
+      buildSemanticUpdate(
+        prev,
+        { type: "update_connection", connection: { id: "missing", from: "n1", to: "n2" } },
+        T1
+      )
+    ).toThrow(FieldSemanticOpError);
+    expect(() =>
+      buildSemanticUpdate(
+        prev,
+        { type: "update_connection", connection: { id: "e1", from: "unknown", to: "n2" } },
+        T1
+      )
+    ).toThrow(FieldSemanticOpError);
+  });
+
   it("remove_connection removes by id and is idempotent on missing", () => {
     const prev = makeSemantic({
       items: [
@@ -346,5 +388,20 @@ describe("buildSemanticUpdate", () => {
 
     const noop = buildSemanticUpdate(prev, { type: "remove_connection", id: "missing" }, T1);
     expect(noop).toBe(prev);
+  });
+});
+
+describe("nextFieldConnectionId", () => {
+  it("generates stable collision-safe connection ids from item ids", () => {
+    const semantic = makeSemantic({
+      connections: [
+        { id: "connection-actor-a-to-field-b", from: "actor-a", to: "field-b" },
+        { id: "connection-actor-a-to-field-b-2", from: "actor-a", to: "field-b" }
+      ]
+    });
+
+    expect(nextFieldConnectionId(makeSemantic(), "actor-a", "field-b")).toBe("connection-actor-a-to-field-b");
+    expect(nextFieldConnectionId(semantic, "actor-a", "field-b")).toBe("connection-actor-a-to-field-b-3");
+    expect(nextFieldConnectionId(makeSemantic(), "source item", "target:item")).toBe("connection-source-item-to-target-item");
   });
 });

@@ -192,6 +192,273 @@ test.describe("Field substrate (slice 1)", () => {
     await expect(page.getByRole("button", { name: "Rename field" })).toBeVisible();
   });
 
+  test("dragging React Flow handles creates a persisted Field Connection without touching layout", async ({ page }) => {
+    const semantic = makeFieldSemantic(
+      "connection-field",
+      "Connection Field",
+      [
+        { item_id: "actor-a", ref: "actor:a" },
+        { item_id: "actor-b", ref: "actor:b" }
+      ]
+    );
+    const layout = {
+      schema: "floe.field.layout.floeweb.v1" as const,
+      field_id: "connection-field",
+      viewport: { x: 0, y: 0, zoom: 1 },
+      items: {
+        "actor-a": { x: 100, y: 100, width: 180, height: 72 },
+        "actor-b": { x: 380, y: 100, width: 180, height: 72 }
+      }
+    };
+    const layoutRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "PUT" && request.url().includes("/layout/floeweb")) {
+        layoutRequests.push(request.url());
+      }
+    });
+    await seedAppWithFields(page, [{ semantic, layout }]);
+    await page.locator(".field-block", { hasText: "Connection Field" }).click();
+    await page.waitForTimeout(350);
+    layoutRequests.length = 0;
+
+    const putWait = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/connection-field`) &&
+      !request.url().includes("/layout/")
+    , { timeout: 3_000 });
+    const source = page.locator(".react-flow__node").filter({ hasText: "a" }).locator(".react-flow__handle-bottom");
+    const target = page.locator(".react-flow__node").filter({ hasText: "b" }).locator(".react-flow__handle-top");
+    await source.dragTo(target);
+
+    const request = await putWait;
+    const body = JSON.parse(request.postData() ?? "{}");
+    expect(body.connections).toEqual([
+      expect.objectContaining({
+        id: "connection-actor-a-to-actor-b",
+        from: "actor-a",
+        to: "actor-b"
+      })
+    ]);
+    expect(body.connections[0].label).toBeUndefined();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    await page.waitForTimeout(350);
+    expect(layoutRequests).toEqual([]);
+  });
+
+  test("new Field Connection labels are edited on the edge and persisted", async ({ page }) => {
+    const semantic = makeFieldSemantic(
+      "labeled-connection-field",
+      "Labeled Connection Field",
+      [
+        { item_id: "actor-a", ref: "actor:a" },
+        { item_id: "actor-b", ref: "actor:b" }
+      ]
+    );
+    await seedAppWithFields(page, [{
+      semantic,
+      layout: {
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "labeled-connection-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: {
+          "actor-a": { x: 100, y: 100 },
+          "actor-b": { x: 380, y: 100 }
+        }
+      }
+    }]);
+    await page.locator(".field-block", { hasText: "Labeled Connection Field" }).click();
+
+    const source = page.locator(".react-flow__node").filter({ hasText: "a" }).locator(".react-flow__handle-bottom");
+    const target = page.locator(".react-flow__node").filter({ hasText: "b" }).locator(".react-flow__handle-top");
+    await source.dragTo(target);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+
+    const labelInput = page.getByLabel("Connection label");
+    await expect(labelInput).toBeVisible();
+    await expect(page.locator(".field-toolbar", { hasText: /Connection label|Save connection/i })).toHaveCount(0);
+
+    const labelPut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/labeled-connection-field`) &&
+      !request.url().includes("/layout/") &&
+      JSON.parse(request.postData() ?? "{}").connections?.[0]?.label === "reviews"
+    );
+    await labelInput.fill("reviews");
+    await labelInput.press("Enter");
+
+    const request = await labelPut;
+    const body = JSON.parse(request.postData() ?? "{}");
+    expect(body.connections[0]).toEqual(expect.objectContaining({
+      from: "actor-a",
+      to: "actor-b",
+      label: "reviews"
+    }));
+    await expect(page.locator(".field-edge-label", { hasText: "reviews" })).toHaveCount(1);
+
+    await page.reload();
+    await page.locator(".field-block", { hasText: "Labeled Connection Field" }).click();
+    await expect(page.locator(".field-edge-label", { hasText: "reviews" })).toHaveCount(1);
+  });
+
+  test("selected Field Connection deletes through React Flow keyboard deletion only", async ({ page }) => {
+    const semantic = makeFieldSemantic(
+      "delete-connection-field",
+      "Delete Connection Field",
+      [
+        { item_id: "actor-a", ref: "actor:a" },
+        { item_id: "actor-b", ref: "actor:b" }
+      ],
+      [{ id: "connection-actor-a-to-actor-b", from: "actor-a", to: "actor-b", label: "remove me" }]
+    );
+    const layout = {
+      schema: "floe.field.layout.floeweb.v1" as const,
+      field_id: "delete-connection-field",
+      viewport: { x: 0, y: 0, zoom: 1 },
+      items: {
+        "actor-a": { x: 100, y: 100 },
+        "actor-b": { x: 380, y: 100 }
+      }
+    };
+    const layoutRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "PUT" && request.url().includes("/layout/floeweb")) {
+        layoutRequests.push(request.url());
+      }
+    });
+    await seedAppWithFields(page, [{ semantic, layout }]);
+    await page.locator(".field-block", { hasText: "Delete Connection Field" }).click();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    await page.waitForTimeout(350);
+    layoutRequests.length = 0;
+
+    const deletePut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/delete-connection-field`) &&
+      !request.url().includes("/layout/") &&
+      JSON.parse(request.postData() ?? "{}").connections?.length === 0
+    , { timeout: 3_000 });
+    await page.locator(".react-flow__edge").focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Backspace");
+
+    const request = await deletePut;
+    const body = JSON.parse(request.postData() ?? "{}");
+    expect(body.items).toHaveLength(2);
+    expect(body.connections).toEqual([]);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(0);
+    await expect(page.locator(".react-flow__node")).toHaveCount(2);
+    expect(layoutRequests).toEqual([]);
+
+    await page.reload();
+    await page.locator(".field-block", { hasText: "Delete Connection Field" }).click();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(0);
+    await expect(page.locator(".react-flow__node")).toHaveCount(2);
+  });
+
+  test("selected Field Item nodes do not cascade-delete connections", async ({ page }) => {
+    const semantic = makeFieldSemantic(
+      "node-delete-guard-field",
+      "Node Delete Guard Field",
+      [
+        { item_id: "actor-a", ref: "actor:a" },
+        { item_id: "actor-b", ref: "actor:b" }
+      ],
+      [{ id: "connection-actor-a-to-actor-b", from: "actor-a", to: "actor-b", label: "keep me" }]
+    );
+    await seedAppWithFields(page, [{
+      semantic,
+      layout: {
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "node-delete-guard-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: {
+          "actor-a": { x: 100, y: 100, width: 180, height: 72 },
+          "actor-b": { x: 380, y: 100, width: 180, height: 72 }
+        }
+      }
+    }]);
+    await page.locator(".field-block", { hasText: "Node Delete Guard Field" }).click();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+
+    const semanticRequests: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "PUT" &&
+        request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/node-delete-guard-field`) &&
+        !request.url().includes("/layout/")
+      ) {
+        semanticRequests.push(request.postData() ?? "");
+      }
+    });
+
+    await page.locator(".react-flow__node").filter({ hasText: "a" }).click();
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(350);
+
+    expect(semanticRequests).toEqual([]);
+    await expect(page.locator(".react-flow__node")).toHaveCount(2);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    await page.reload();
+    await page.locator(".field-block", { hasText: "Node Delete Guard Field" }).click();
+    await expect(page.locator(".react-flow__node")).toHaveCount(2);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    await expect(page.locator(".field-edge-label", { hasText: "keep me" })).toHaveCount(1);
+  });
+
+  test("reconnecting a Field Connection updates the existing semantic connection", async ({ page }) => {
+    const semantic = makeFieldSemantic(
+      "reconnect-field",
+      "Reconnect Field",
+      [
+        { item_id: "actor-a", ref: "actor:a" },
+        { item_id: "actor-b", ref: "actor:b" },
+        { item_id: "actor-c", ref: "actor:c" }
+      ],
+      [{ id: "connection-actor-a-to-actor-b", from: "actor-a", to: "actor-b", label: "routes" }]
+    );
+    await seedAppWithFields(page, [{
+      semantic,
+      layout: {
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "reconnect-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: {
+          "actor-a": { x: 80, y: 120 },
+          "actor-b": { x: 330, y: 80 },
+          "actor-c": { x: 330, y: 240 }
+        }
+      }
+    }]);
+    await page.locator(".field-block", { hasText: "Reconnect Field" }).click();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+
+    const reconnectPut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/reconnect-field`) &&
+      !request.url().includes("/layout/") &&
+      JSON.parse(request.postData() ?? "{}").connections?.[0]?.to === "actor-c"
+    , { timeout: 3_000 });
+    const targetUpdater = page.locator(".react-flow__edgeupdater-target");
+    const newTarget = page.locator(".react-flow__node").filter({ hasText: "c" }).locator(".react-flow__handle-top");
+    await targetUpdater.dragTo(newTarget);
+
+    const request = await reconnectPut;
+    const body = JSON.parse(request.postData() ?? "{}");
+    expect(body.connections).toEqual([
+      {
+        id: "connection-actor-a-to-actor-b",
+        from: "actor-a",
+        to: "actor-c",
+        label: "routes"
+      }
+    ]);
+
+    await page.reload();
+    await page.locator(".field-block", { hasText: "Reconnect Field" }).click();
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    await expect(page.locator(".field-edge-label", { hasText: "routes" })).toHaveCount(1);
+  });
+
   test("create field — sends PUT and the new field appears in the list", async ({ page }) => {
     await seedAppWithFields(page, []);
 
