@@ -54,6 +54,21 @@ When sources conflict, use this order of evidence:
 
 If docs and code conflict, surface the conflict with `Question` and do not silently resolve it.
 
+## Architecture Integration Gate
+
+Before any non-trivial feature implementation, UX change, behaviour change, refactor, or uncertain placement decision, invoke the global `$architecture-integration-gate` skill.
+
+Implementation must not start until:
+- a separate high-calibre Architecture Scout subagent has inspected existing code, tests, docs, runtime behaviour, and relevant library/framework capabilities
+- the scout has produced `docs/implementation-reviews/<issue-or-slice-id>-architecture-integration.md`
+- the brief identifies existing ownership, interaction model, extension points, do-not-bypass systems, integration plan, regression checklist, test plan, risks, and decision confidence
+
+The scout must be separate from the implementer and must not modify product code. Use a model at least as strong as the active main agent; prefer the strongest available model for this gate.
+
+The implementer must follow the brief, cite it for structural decisions, and stop for `Question` if implementation evidence conflicts with the brief. After implementation, involve a separate review agent to check whether the diff respected the brief and preserved listed invariants.
+
+For FloeWeb Field/canvas work, the brief must protect React Flow-native interaction patterns, Block Library drag/drop, node icons/labels/handles/selection, pan/zoom/drag performance, rename/open affordances, and connection affordances unless explicitly redesigned.
+
 ## Workflow loop
 
 Repeat this loop until the agreed objective is complete:
@@ -81,6 +96,10 @@ Use `Question` after issue breakdown to confirm whether to:
 - revise scope
 - reorder work
 - split issues further
+
+### 4) Run the Architecture Integration Gate
+
+For non-trivial slices, use `$architecture-integration-gate` before implementation. Do not write code until the integration brief exists and the user has approved moving from architecture alignment into implementation when confidence is not high.
 
 ### 5) Implement with TDD
 Use the $tdd skill to work using a red-green-refactor approach. 
