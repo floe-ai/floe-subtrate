@@ -1814,17 +1814,50 @@ function App() {
   function deleteOpenField(fieldId: string): void {
     if (!selectedWorkspace) return;
     const workspaceId = selectedWorkspace.workspace_id;
-    if (!window.confirm(`Delete field "${fieldId}"?`)) return;
     void (async () => {
+      let latestSummaries: FieldSummary[];
       try {
-        await deleteFieldApi(busUrl, workspaceId, fieldId);
-        setLoadedField(null);
-        clearFieldEditingState();
-        setView({ kind: "home" });
-        await refreshFields(workspaceId);
+        latestSummaries = await listFields(busUrl, workspaceId);
+        setFieldSummaries(latestSummaries);
       } catch (caught) {
         setError((caught as Error).message);
+        return;
       }
+      const current = loadedFieldRef.current;
+      const summary = latestSummaries.find((field) => field.id === fieldId) ?? null;
+      const title = current?.semantic.id === fieldId
+        ? current.semantic.title
+        : summary?.title || fieldId;
+      const referencedByCount = summary?.parent_count ?? 0;
+      const referenced = referencedByCount > 0;
+      await confirmDialog({
+        title: referenced ? "Delete referenced Field" : "Delete Field",
+        body: referenced ? (
+          <>
+            <p>Delete the Field <strong>{title}</strong>?</p>
+            <p>
+              It is currently referenced by {referencedByCount} other {referencedByCount === 1 ? "Field" : "Fields"}.
+              Deleting it will leave broken <code>field:{fieldId}</code> refs in those Fields. Floe will keep showing the broken refs visibly so you can repair them.
+            </p>
+            <p>This removes <code>{fieldId}.yaml</code> and every renderer sidecar (<code>{fieldId}.layout.*.yaml</code>) from the workspace.</p>
+          </>
+        ) : (
+          <>
+            <p>Delete the Field <strong>{title}</strong>?</p>
+            <p>This removes <code>{fieldId}.yaml</code> and every renderer sidecar (<code>{fieldId}.layout.*.yaml</code>) from the workspace.</p>
+          </>
+        ),
+        confirmLabel: referenced ? "Delete anyway" : "Delete",
+        cancelLabel: "Cancel",
+        variant: "danger",
+        onConfirm: async () => {
+          await deleteFieldApi(busUrl, workspaceId, fieldId);
+          setLoadedField(null);
+          clearFieldEditingState();
+          setView({ kind: "home" });
+          await refreshFields(workspaceId);
+        }
+      });
     })();
   }
 

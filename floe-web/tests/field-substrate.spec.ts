@@ -790,13 +790,16 @@ test.describe("Field substrate (slice 1)", () => {
   });
 
   test("delete field — sends DELETE and field disappears", async ({ page }) => {
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
     const semantic = makeFieldSemantic("foo-field", "Foo");
     await seedAppWithFields(page, [{ semantic }]);
 
     // Open it
     await page.locator(".field-block", { hasText: "Foo" }).click();
-
-    page.on("dialog", (dialog) => { void dialog.accept(); });
 
     const deleteWait = page.waitForRequest((request) =>
       request.method() === "DELETE" &&
@@ -804,11 +807,93 @@ test.describe("Field substrate (slice 1)", () => {
     );
 
     await page.getByRole("button", { name: /Delete field/i }).click();
+    const dialog = page.getByRole("dialog", { name: "Delete Field" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("foo-field.yaml");
+    await expect(dialog).toContainText("foo-field.layout.*.yaml");
+    await dialog.getByRole("button", { name: "Delete" }).click();
     await deleteWait;
 
+    expect(nativeDialogs).toEqual([]);
     // Returned to home with empty field list
     await expect(page.locator(".field-block")).toHaveCount(0);
     await expect(page.getByText("No Fields yet")).toBeVisible();
+  });
+
+  test("referenced whole-Field delete warns and leaves visible broken refs", async ({ page }) => {
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    const parent = makeFieldSemantic(
+      "parent-field",
+      "Parent Field",
+      [{ item_id: "child-item", ref: "field:child-field" }]
+    );
+    const child = makeFieldSemantic("child-field", "Child Field");
+    const parentSemanticPuts: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "PUT" &&
+        request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/parent-field`) &&
+        !request.url().includes("/layout/")
+      ) {
+        parentSemanticPuts.push(request.postData() ?? "");
+      }
+    });
+    await seedAppWithFields(page, [{ semantic: parent }, { semantic: child }]);
+
+    await page.getByRole("button", { name: /Show all fields/i }).click();
+    await page.locator(".field-block", { hasText: "Child Field" }).click();
+
+    const deleteWait = page.waitForRequest((request) =>
+      request.method() === "DELETE" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/child-field`)
+    );
+    await page.getByRole("button", { name: "Delete field", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Delete referenced Field" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("referenced by 1 other Field");
+    await expect(dialog).toContainText("broken");
+    await expect(dialog).toContainText("field:child-field");
+    await dialog.getByRole("button", { name: "Delete anyway" }).click();
+    await deleteWait;
+
+    await expect(page.locator(".workspace-home")).toBeVisible();
+    await expect(page.locator(".field-block", { hasText: "Child Field" })).toHaveCount(0);
+    await page.locator(".field-block", { hasText: "Parent Field" }).click();
+    await expect(page.locator(".react-flow__node").filter({ hasText: "child-field" })).toHaveCount(1);
+    expect(parentSemanticPuts).toEqual([]);
+    expect(nativeDialogs).toEqual([]);
+  });
+
+  test("canceling whole-Field delete leaves the open Field untouched", async ({ page }) => {
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    const semantic = makeFieldSemantic("cancel-delete-field", "Cancel Delete Field");
+    const deleteRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "DELETE" && request.url().includes("/fields/cancel-delete-field")) {
+        deleteRequests.push(request.url());
+      }
+    });
+    await seedAppWithFields(page, [{ semantic }]);
+    await page.locator(".field-block", { hasText: "Cancel Delete Field" }).click();
+
+    await page.getByRole("button", { name: "Delete field", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Delete Field" });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Cancel Delete Field" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Delete field", exact: true })).toBeVisible();
+    await expect(page.locator(".field-block", { hasText: "Cancel Delete Field" })).toHaveCount(0);
+    expect(deleteRequests).toEqual([]);
+    expect(nativeDialogs).toEqual([]);
   });
 
   // App selects fields via in-memory `view` state only; there's no deep-link
@@ -876,16 +961,16 @@ test.describe("Field substrate (slice 1)", () => {
       await page.reload();
       await expect(page.locator(".field-block", { hasText: "Live Field" })).toBeVisible();
       expect(nativeDialogs).toEqual([]);
-      page.off("dialog", nativeDialogRecorder);
 
       await page.locator(".field-block", { hasText: "Live Field" }).click();
-      page.once("dialog", (dialog) => {
-        void dialog.accept();
-      });
       await page.getByRole("button", { name: "Delete field", exact: true }).click();
+      const deleteDialog = page.getByRole("dialog", { name: "Delete Field" });
+      await expect(deleteDialog).toBeVisible();
+      await deleteDialog.getByRole("button", { name: "Delete" }).click();
 
       await expect.poll(() => existsSync(semanticPath)).toBe(false);
       await expect(page.getByText("No Fields yet")).toBeVisible();
+      expect(nativeDialogs).toEqual([]);
     } finally {
       if (!page.isClosed()) {
         await page.close();
@@ -1377,6 +1462,11 @@ test.describe("Field substrate (slice 1)", () => {
     const cliLayoutPath = join(fieldsDir, "move-delete-field.layout.cli.yaml");
     const layoutPutRequests: string[] = [];
     const semanticPutRequests: string[] = [];
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
     page.on("request", (request) => {
       if (request.method() !== "PUT") return;
       if (request.url().includes("/fields/move-delete-field/layout/floeweb")) {
@@ -1443,14 +1533,14 @@ test.describe("Field substrate (slice 1)", () => {
         field_id: "move-delete-field"
       }), "utf8");
       expect(existsSync(cliLayoutPath)).toBe(true);
-      page.once("dialog", (dialog) => {
-        void dialog.accept();
-      });
       const deleteWait = page.waitForRequest((request) =>
         request.method() === "DELETE" &&
         request.url().includes("/fields/move-delete-field")
       );
       await page.getByRole("button", { name: "Delete field", exact: true }).click();
+      const deleteDialog = page.getByRole("dialog", { name: "Delete Field" });
+      await expect(deleteDialog).toBeVisible();
+      await deleteDialog.getByRole("button", { name: "Delete" }).click();
       await deleteWait;
 
       await expect.poll(() => existsSync(semanticPath)).toBe(false);
@@ -1459,6 +1549,7 @@ test.describe("Field substrate (slice 1)", () => {
       await expect(page.locator(".field-block", { hasText: "Move Delete Field" })).toHaveCount(0);
       await expect(page.getByText("No Fields yet")).toBeVisible();
       await expect(page.getByRole("heading", { name: "Move Delete Field" })).toHaveCount(0);
+      expect(nativeDialogs).toEqual([]);
     } finally {
       if (!page.isClosed()) {
         await page.close();
