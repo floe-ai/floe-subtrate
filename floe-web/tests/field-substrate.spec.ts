@@ -429,6 +429,11 @@ test.describe("Field substrate (slice 1)", () => {
   });
 
   test("selected Field Item deletion confirms before cascading touching connections", async ({ page }) => {
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
     const semantic = makeFieldSemantic(
       "node-delete-confirm-field",
       "Node Delete Confirm Field",
@@ -476,17 +481,16 @@ test.describe("Field substrate (slice 1)", () => {
       }
     });
 
-    let cancelMessage = "";
-    page.once("dialog", (dialog) => {
-      cancelMessage = dialog.message();
-      void dialog.dismiss();
-    });
     await page.locator(".react-flow__node").filter({ hasText: "b" }).click();
     await page.keyboard.press("Backspace");
-    await expect.poll(() => cancelMessage).toContain("b");
-    expect(cancelMessage).toContain("2 Field Connections");
+    const cancelDialog = page.getByRole("dialog", { name: "Delete Field Item" });
+    await expect(cancelDialog).toBeVisible();
+    await expect(cancelDialog).toContainText('Delete Field Item "b"?');
+    await expect(cancelDialog).toContainText("2 Field Connections");
+    await cancelDialog.getByRole("button", { name: "Cancel" }).click();
     await page.waitForTimeout(350);
 
+    expect(nativeDialogs).toEqual([]);
     expect(semanticRequests).toEqual([]);
     expect(layoutRequests).toEqual([]);
     await expect(page.locator(".react-flow__node")).toHaveCount(4);
@@ -498,13 +502,13 @@ test.describe("Field substrate (slice 1)", () => {
       !request.url().includes("/layout/") &&
       JSON.parse(request.postData() ?? "{}").items?.every((item: { item_id: string }) => item.item_id !== "actor-b")
     , { timeout: 3_000 });
-    page.once("dialog", (dialog) => {
-      expect(dialog.message()).toContain("b");
-      expect(dialog.message()).toContain("2 Field Connections");
-      void dialog.accept();
-    });
     await page.locator(".react-flow__node").filter({ hasText: "b" }).click();
     await page.keyboard.press("Delete");
+    const confirmDialog = page.getByRole("dialog", { name: "Delete Field Item" });
+    await expect(confirmDialog).toBeVisible();
+    await expect(confirmDialog).toContainText('Delete Field Item "b"?');
+    await expect(confirmDialog).toContainText("2 Field Connections");
+    await confirmDialog.getByRole("button", { name: "Delete" }).click();
 
     const request = await deletePut;
     const body = JSON.parse(request.postData() ?? "{}");
@@ -521,9 +525,15 @@ test.describe("Field substrate (slice 1)", () => {
     await expect(page.locator(".react-flow__node")).toHaveCount(3);
     await expect(page.locator(".react-flow__edge")).toHaveCount(1);
     await expect(page.locator(".field-edge-label", { hasText: "keep me" })).toHaveCount(1);
+    expect(nativeDialogs).toEqual([]);
   });
 
   test("deleting a nested Field Item preserves the referenced child Field", async ({ page }) => {
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
     const child = makeFieldSemantic("child-field", "Child Field");
     const parent = makeFieldSemantic(
       "parent-field",
@@ -554,17 +564,114 @@ test.describe("Field substrate (slice 1)", () => {
       !request.url().includes("/layout/") &&
       JSON.parse(request.postData() ?? "{}").items?.length === 0
     , { timeout: 3_000 });
-    page.once("dialog", (dialog) => {
-      expect(dialog.message()).toContain("child-field");
-      void dialog.accept();
-    });
     await page.locator(".react-flow__node").filter({ hasText: "child-field" }).click();
     await page.keyboard.press("Delete");
+    const dialog = page.getByRole("dialog", { name: "Delete Nested Field Item" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("Child Field");
+    await expect(dialog.getByTestId("dialog-checkbox")).not.toBeChecked();
+    await dialog.getByRole("button", { name: "Delete" }).click();
     await parentPut;
 
+    expect(nativeDialogs).toEqual([]);
     expect(fieldDeleteRequests).toEqual([]);
     await page.getByRole("button", { name: "Workspace Home" }).click();
     await expect(page.locator(".field-block", { hasText: "Child Field" })).toBeVisible();
+  });
+
+  test("deleting a nested Field Item that is still used elsewhere does not offer child cleanup", async ({ page }) => {
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    const child = makeFieldSemantic("shared-child-field", "Shared Child Field");
+    const parent = makeFieldSemantic(
+      "parent-field",
+      "Parent Field",
+      [{ item_id: "child-item", ref: "field:shared-child-field" }]
+    );
+    const otherParent = makeFieldSemantic(
+      "other-parent-field",
+      "Alternate Owner",
+      [{ item_id: "other-child-item", ref: "field:shared-child-field" }]
+    );
+    const fieldDeleteRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "DELETE" && request.url().includes("/fields/shared-child-field")) {
+        fieldDeleteRequests.push(request.url());
+      }
+    });
+    await seedAppWithFields(page, [{ semantic: parent }, { semantic: otherParent }, { semantic: child }]);
+    await page.locator(".field-block", { hasText: "Parent Field" }).click();
+
+    const parentPut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/parent-field`) &&
+      !request.url().includes("/layout/") &&
+      JSON.parse(request.postData() ?? "{}").items?.length === 0
+    , { timeout: 3_000 });
+    await page.locator(".react-flow__node").filter({ hasText: "shared-child-field" }).click();
+    await page.keyboard.press("Delete");
+    const dialog = page.getByRole("dialog", { name: "Delete Nested Field Item" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("still used elsewhere");
+    await expect(dialog.getByTestId("dialog-checkbox")).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Delete" }).click();
+    await parentPut;
+
+    expect(nativeDialogs).toEqual([]);
+    expect(fieldDeleteRequests).toEqual([]);
+    await page.getByRole("button", { name: "Workspace Home" }).click();
+    await page.getByRole("button", { name: /Show all fields/i }).click();
+    await expect(page.locator(".field-block", { hasText: "Shared Child Field" })).toContainText("nested");
+  });
+
+  test("deleting an unused nested Field Item can also delete the child Field", async ({ page }) => {
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    const child = makeFieldSemantic("cleanup-child-field", "Cleanup Child Field");
+    const parent = makeFieldSemantic(
+      "parent-field",
+      "Parent Field",
+      [{ item_id: "child-item", ref: "field:cleanup-child-field" }]
+    );
+    const fieldDeleteRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "DELETE" && request.url().includes("/fields/cleanup-child-field")) {
+        fieldDeleteRequests.push(request.url());
+      }
+    });
+    await seedAppWithFields(page, [{ semantic: parent }, { semantic: child }]);
+    await page.locator(".field-block", { hasText: "Parent Field" }).click();
+
+    const parentPut = page.waitForRequest((request) =>
+      request.method() === "PUT" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/parent-field`) &&
+      !request.url().includes("/layout/") &&
+      JSON.parse(request.postData() ?? "{}").items?.length === 0
+    , { timeout: 3_000 });
+    const childDelete = page.waitForRequest((request) =>
+      request.method() === "DELETE" &&
+      request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/cleanup-child-field`)
+    , { timeout: 3_000 });
+    await page.locator(".react-flow__node").filter({ hasText: "cleanup-child-field" }).click();
+    await page.keyboard.press("Delete");
+    const dialog = page.getByRole("dialog", { name: "Delete Nested Field Item" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("Cleanup Child Field");
+    await dialog.getByTestId("dialog-checkbox").check();
+    await dialog.getByRole("button", { name: "Delete" }).click();
+    await parentPut;
+    await childDelete;
+
+    expect(nativeDialogs).toEqual([]);
+    expect(fieldDeleteRequests).toHaveLength(1);
+    await page.getByRole("button", { name: "Workspace Home" }).click();
+    await expect(page.locator(".field-block", { hasText: "Cleanup Child Field" })).toHaveCount(0);
   });
 
   test("reconnecting a Field Connection updates the existing semantic connection", async ({ page }) => {
@@ -969,8 +1076,13 @@ test.describe("Field substrate (slice 1)", () => {
     const parentPath = join(fieldsDir, "parent-field.yaml");
     const childPath = join(fieldsDir, "child-field.yaml");
     const layoutPath = join(fieldsDir, "parent-field.layout.floeweb.yaml");
+    const nativeDialogs: string[] = [];
     const childDeleteRequests: string[] = [];
     const layoutRequests: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
     page.on("request", (request) => {
       if (request.method() === "DELETE" && request.url().includes("/fields/child-field")) {
         childDeleteRequests.push(request.url());
@@ -1079,13 +1191,14 @@ test.describe("Field substrate (slice 1)", () => {
 
       await page.waitForTimeout(500);
       layoutRequests.length = 0;
-      page.once("dialog", (dialog) => {
-        expect(dialog.message()).toContain("child-field");
-        expect(dialog.message()).toContain("1 Field Connection");
-        void dialog.accept();
-      });
       await page.locator(".react-flow__node").filter({ hasText: "child-field" }).click();
       await page.keyboard.press("Delete");
+      const childDeleteDialog = page.getByRole("dialog", { name: "Delete Nested Field Item" });
+      await expect(childDeleteDialog).toBeVisible();
+      await expect(childDeleteDialog).toContainText("Child Field");
+      await expect(childDeleteDialog).toContainText("1 Field Connection");
+      await expect(childDeleteDialog.getByTestId("dialog-checkbox")).not.toBeChecked();
+      await childDeleteDialog.getByRole("button", { name: "Delete" }).click();
 
       await expect.poll(() => readParent().items?.some((item: any) => item.ref === "field:child-field")).toBe(false);
       const afterChildDelete = readParent();
@@ -1114,17 +1227,131 @@ test.describe("Field substrate (slice 1)", () => {
       await page.locator(".field-block", { hasText: "Parent Field" }).click();
       await page.waitForTimeout(500);
       layoutRequests.length = 0;
-      page.once("dialog", (dialog) => {
-        expect(dialog.message()).toContain("floe");
-        void dialog.accept();
-      });
       await page.locator(".react-flow__node").filter({ hasText: "floe" }).click();
       await page.keyboard.press("Delete");
+      const actorDeleteDialog = page.getByRole("dialog", { name: "Delete Field Item" });
+      await expect(actorDeleteDialog).toBeVisible();
+      await expect(actorDeleteDialog).toContainText("floe");
+      await actorDeleteDialog.getByRole("button", { name: "Delete" }).click();
 
       await expect.poll(() => readParent().items?.some((item: any) => item.ref === actorRef)).toBe(false);
       expect((await endpointList()).filter((endpoint) => endpoint.endpoint_id === actorRef)).toHaveLength(1);
       expect(existsSync(childPath)).toBe(true);
       expect(layoutRequests).toEqual([]);
+      expect(nativeDialogs).toEqual([]);
+    } finally {
+      if (!page.isClosed()) {
+        await page.close();
+      }
+      handle.app.server.closeAllConnections();
+      await handle.app.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("real bus stack can clean up an unused nested Field and its sidecars", async ({ page }) => {
+    const tmp = mkdtempSync(join(tmpdir(), "floe-field-nested-cleanup-e2e-"));
+    const configPath = join(tmp, "config.yaml");
+    const workspacePath = join(tmp, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const config = defaultConfig(tmp);
+    writeFileSync(configPath, YAML.stringify(config), "utf8");
+    const handle = await createBusServer(configPath, config);
+    const busUrl = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const fieldsDir = join(workspacePath, ".floe", "fields");
+    const parentPath = join(fieldsDir, "parent-field.yaml");
+    const childPath = join(fieldsDir, "child-field.yaml");
+    const grandchildPath = join(fieldsDir, "grandchild-field.yaml");
+    const parentLayoutPath = join(fieldsDir, "parent-field.layout.floeweb.yaml");
+    const childLayoutPath = join(fieldsDir, "child-field.layout.floeweb.yaml");
+    const childCliLayoutPath = join(fieldsDir, "child-field.layout.cli.yaml");
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+
+    try {
+      await page.addInitScript((url) => localStorage.setItem("floe.busUrl", url), busUrl);
+      await page.goto("/");
+
+      await page.getByLabel("Workspace folder").fill(workspacePath);
+      await page.getByLabel("Name").fill("Nested Field Cleanup Workspace");
+      await page.getByRole("button", { name: "Create Workspace", exact: true }).click();
+      await expect(page.locator(".workspace-home")).toBeVisible();
+
+      const workspace = handle.store.listWorkspaces()[0] as { workspace_id: string };
+      mkdirSync(fieldsDir, { recursive: true });
+      writeFileSync(parentPath, YAML.stringify(makeFieldSemantic(
+        "parent-field",
+        "Parent Field",
+        [{ item_id: "child-item", ref: "field:child-field" }]
+      )), "utf8");
+      writeFileSync(childPath, YAML.stringify(makeFieldSemantic(
+        "child-field",
+        "Child Field",
+        [{ item_id: "grandchild-item", ref: "field:grandchild-field" }]
+      )), "utf8");
+      writeFileSync(grandchildPath, YAML.stringify(makeFieldSemantic("grandchild-field", "Grandchild Field")), "utf8");
+      writeFileSync(parentLayoutPath, YAML.stringify({
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "parent-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: { "child-item": { x: 180, y: 140, width: 180, height: 72 } }
+      }), "utf8");
+      writeFileSync(childLayoutPath, YAML.stringify({
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "child-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: { "grandchild-item": { x: 240, y: 180, width: 180, height: 72 } }
+      }), "utf8");
+      writeFileSync(childCliLayoutPath, YAML.stringify({
+        schema: "floe.field.layout.floeweb.v1",
+        field_id: "child-field",
+        viewport: { x: 0, y: 0, zoom: 1 },
+        items: { "grandchild-item": { x: 120, y: 90, width: 180, height: 72 } }
+      }), "utf8");
+
+      await page.getByTitle("Refresh").first().click();
+      await expect(page.locator(".field-block", { hasText: "Parent Field" })).toBeVisible();
+      await page.locator(".field-block", { hasText: "Parent Field" }).click();
+      await expect(page.locator(".react-flow__node").filter({ hasText: "child-field" })).toHaveCount(1);
+
+      const parentPut = page.waitForRequest((request) =>
+        request.method() === "PUT" &&
+        request.url().includes(`/v1/workspaces/${encodeURIComponent(workspace.workspace_id)}/fields/parent-field`) &&
+        !request.url().includes("/layout/") &&
+        JSON.parse(request.postData() ?? "{}").items?.length === 0
+      , { timeout: 3_000 });
+      const childDelete = page.waitForRequest((request) =>
+        request.method() === "DELETE" &&
+        request.url().includes(`/v1/workspaces/${encodeURIComponent(workspace.workspace_id)}/fields/child-field`)
+      , { timeout: 3_000 });
+      await page.locator(".react-flow__node").filter({ hasText: "child-field" }).click();
+      await page.keyboard.press("Delete");
+      const dialog = page.getByRole("dialog", { name: "Delete Nested Field Item" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toContainText("Child Field");
+      await dialog.getByTestId("dialog-checkbox").check();
+      await dialog.getByRole("button", { name: "Delete" }).click();
+      await parentPut;
+      await childDelete;
+
+      await expect.poll(() => YAML.parse(readFileSync(parentPath, "utf8")).items).toEqual([]);
+      await expect.poll(() => existsSync(childPath)).toBe(false);
+      expect(existsSync(childLayoutPath)).toBe(false);
+      expect(existsSync(childCliLayoutPath)).toBe(false);
+      expect(existsSync(grandchildPath)).toBe(true);
+      const childLoad = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(workspace.workspace_id)}/fields/child-field`
+      });
+      expect(childLoad.statusCode).toBe(404);
+      expect(nativeDialogs).toEqual([]);
+
+      await page.getByRole("button", { name: "Workspace Home" }).click();
+      await expect(page.getByRole("button", { name: "Child Field 1 items", exact: true })).toHaveCount(0);
+      await expect(page.locator(".field-block", { hasText: "Grandchild Field" })).toBeVisible();
     } finally {
       if (!page.isClosed()) {
         await page.close();

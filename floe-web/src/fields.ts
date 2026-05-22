@@ -162,6 +162,22 @@ export function isRootFieldSummary(summary: FieldSummary): boolean {
   return summary.parent_count === undefined || summary.parent_count === 0;
 }
 
+export function nestedFieldStillUsedElsewhere(
+  childFieldId: string,
+  currentParentSemantic: FieldSemantic,
+  removedItemId: string,
+  fieldSummaries: FieldSummary[]
+): boolean {
+  const summary = fieldSummaries.find((field) => field.id === childFieldId);
+  if (summary && summary.parent_count !== undefined && summary.parent_count > 1) {
+    return true;
+  }
+  const childRef = `field:${childFieldId}`;
+  return currentParentSemantic.items.some(
+    (item) => item.item_id !== removedItemId && item.ref === childRef
+  );
+}
+
 export function fieldToReactFlow(
   semantic: FieldSemantic,
   layout?: FieldLayoutFloeweb

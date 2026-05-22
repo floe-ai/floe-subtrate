@@ -59,6 +59,7 @@ import {
   buildSemanticUpdate,
   fieldToReactFlow,
   isRootFieldSummary,
+  nestedFieldStillUsedElsewhere,
   nextFieldConnectionId,
   parseFieldRef,
   reactFlowToLayout,
@@ -1176,36 +1177,68 @@ function App() {
       (connection) => connection.from === item.item_id || connection.to === item.item_id
     );
     const connectionLabel = touchingConnections.length === 1 ? "1 Field Connection" : `${touchingConnections.length} Field Connections`;
-    const confirmed = window.confirm(
-      `Delete Field Item "${label}"?\n\nThis removes the item from this Field and also removes ${connectionLabel}. Referenced substrate primitives are preserved.`
-    );
-    if (!confirmed) return false;
-
-    try {
+    const parsedRef = parseFieldRef(item.ref);
+    const childFieldId = parsedRef.kind === "field" ? parsedRef.id : null;
+    const childSummary = childFieldId ? fieldSummaries.find((field) => field.id === childFieldId) : null;
+    const childFieldLabel = childSummary?.title?.trim() || childFieldId || label;
+    const childStillUsedElsewhere = childFieldId
+      ? nestedFieldStillUsedElsewhere(childFieldId, current.semantic, item.item_id, fieldSummaries)
+      : false;
+    const removedConnectionIds = new Set(touchingConnections.map((connection) => connection.id));
+    const removeItem = async (deleteReferencedField: boolean) => {
       const next = buildSemanticUpdate(
         current.semantic,
         { type: "remove_item", item_id: item.item_id },
         new Date().toISOString()
       );
-      const removedConnectionIds = new Set(touchingConnections.map((connection) => connection.id));
       const saved = await saveOpenFieldSemantic(next);
-      if (saved) {
-        setSelectedFieldItemIds((selected) => {
-          const nextSelected = new Set(selected);
-          nextSelected.delete(item.item_id);
-          return nextSelected;
-        });
-        setSelectedFieldConnectionId((selected) => selected && removedConnectionIds.has(selected) ? null : selected);
-        setEditingFieldConnectionId((editing) => editing && removedConnectionIds.has(editing) ? null : editing);
-        if (removedConnectionIds.has(editingFieldConnectionId ?? "")) {
-          setFieldConnectionLabelDraft("");
-        }
+      if (!saved) throw new Error("Could not delete Field Item.");
+      setSelectedFieldItemIds((selected) => {
+        const nextSelected = new Set(selected);
+        nextSelected.delete(item.item_id);
+        return nextSelected;
+      });
+      setSelectedFieldConnectionId((selected) => selected && removedConnectionIds.has(selected) ? null : selected);
+      setEditingFieldConnectionId((editing) => editing && removedConnectionIds.has(editing) ? null : editing);
+      if (removedConnectionIds.has(editingFieldConnectionId ?? "")) {
+        setFieldConnectionLabelDraft("");
       }
-    } catch (caught) {
-      setError((caught as Error).message);
-    }
+      const workspaceId = selectedWorkspaceIdRef.current;
+      if (deleteReferencedField && childFieldId && workspaceId) {
+        await deleteFieldApi(busUrl, workspaceId, childFieldId);
+        await refreshFields(workspaceId);
+      }
+    };
+    const result = await confirmWithOptions({
+      title: childFieldId ? "Delete Nested Field Item" : "Delete Field Item",
+      body: childFieldId ? (
+        <>
+          <p>Remove nested Field Item <strong>{childFieldLabel}</strong> from this Field?</p>
+          <p>This removes the item from this Field and also removes {connectionLabel}.</p>
+          {childStillUsedElsewhere ? (
+            <p>The referenced Field is still used elsewhere, so it will stay in the workspace.</p>
+          ) : (
+            <p>The referenced Field will stay in the workspace unless you choose to delete it too.</p>
+          )}
+        </>
+      ) : (
+        <>
+          <p>Delete Field Item "{label}"?</p>
+          <p>This removes the item from this Field and also removes {connectionLabel}. Referenced substrate primitives are preserved.</p>
+        </>
+      ),
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      variant: "danger",
+      checkbox: childFieldId && !childStillUsedElsewhere ? {
+        label: <>Also delete the Field "{childFieldLabel}" from this workspace ({childFieldId}.yaml and renderer sidecars). Fields it references will be preserved.</>,
+        testId: "dialog-checkbox"
+      } : undefined,
+      onConfirm: ({ checked }) => removeItem(Boolean(childFieldId && !childStillUsedElsewhere && checked))
+    });
+    if (!result.confirmed) return false;
     return false;
-  }, [editingFieldConnectionId, saveOpenFieldSemantic]);
+  }, [busUrl, editingFieldConnectionId, fieldSummaries, refreshFields, saveOpenFieldSemantic]);
 
   const handleFieldReconnect = useCallback((oldEdge: FieldConnectionEdge, connection: Connection) => {
     const current = loadedFieldRef.current;

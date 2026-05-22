@@ -8,6 +8,7 @@ import {
   buildSemanticUpdate,
   defaultLayout,
   isRootFieldSummary,
+  nestedFieldStillUsedElsewhere,
   nextFieldConnectionId,
   FieldSemanticOpError,
   type FieldSemantic,
@@ -223,6 +224,36 @@ describe("isRootFieldSummary", () => {
       parent_count: 1,
       updated_at: T0
     })).toBe(false);
+  });
+});
+
+describe("nestedFieldStillUsedElsewhere", () => {
+  it("uses parent_count and same-parent duplicate refs to decide whether cleanup is safe to offer", () => {
+    const semantic = makeSemantic({
+      items: [
+        { item_id: "remove-me", ref: "field:child" },
+        { item_id: "same-parent-duplicate", ref: "field:child" },
+        { item_id: "other-kind", ref: "actor:child" }
+      ]
+    });
+
+    expect(nestedFieldStillUsedElsewhere("child", semantic, "remove-me", [
+      { id: "child", title: "Child", item_count: 0, connection_count: 0, parent_count: 0, updated_at: T0 }
+    ])).toBe(true);
+
+    expect(nestedFieldStillUsedElsewhere("child", makeSemantic({
+      items: [{ item_id: "remove-me", ref: "field:child" }]
+    }), "remove-me", [
+      { id: "child", title: "Child", item_count: 0, connection_count: 0, parent_count: 2, updated_at: T0 }
+    ])).toBe(true);
+
+    expect(nestedFieldStillUsedElsewhere("child", makeSemantic({
+      items: [{ item_id: "remove-me", ref: "field:child" }]
+    }), "remove-me", [
+      { id: "child", title: "Child", item_count: 0, connection_count: 0, parent_count: 1, updated_at: T0 }
+    ])).toBe(false);
+
+    expect(nestedFieldStillUsedElsewhere("missing", semantic, "remove-me", [])).toBe(false);
   });
 });
 
