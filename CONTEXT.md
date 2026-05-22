@@ -83,7 +83,9 @@ _Avoid_: "first block type", "block storage", "canvas" as synonyms for Field. A 
 A Field that is not referenced by any other Field Item in the workspace. Workspace-home Field lists show Root Fields; this is a derived navigation/display classification, not a different storage location or schema.
 
 ### Nested Field
-A Field referenced by another Field Item using `field:<field-id>`. Nested Fields remain normal sibling files under `.floe/fields/`, may be referenced by more than one parent Field, and do not imply ownership or directory hierarchy.
+A Field referenced by another Field Item using `field:<field-id>`. Nested Fields remain normal sibling files under `.floe/fields/`, may be referenced by more than one parent Field, and do not imply ownership or directory hierarchy. Removing a Nested Field Item detaches that parent reference; deleting the referenced Field itself is a separate workspace-level action that must not be implied by detaching the reference.
+
+Deleting a Field that is referenced by other Fields is permitted but leaves broken `field:<field-id>` refs behind. Clients should warn before the delete and then render broken refs visibly so the workspace can be repaired. Field deletion is not recursive; Fields referenced by the deleted Field remain normal workspace Fields and may become Root Fields if no other parent references them.
 
 ### Field Item
 A field-local entry that references exactly one existing substrate primitive (Actor via a stable actor ref, Context, Pulse, Webhook, Extension, File, Tool, Work Log, Event, or another Field). Identified by a field-local `item_id` so the same primitive can appear more than once in a field and so Field Connections and Field Layout survive substrate ref edits.

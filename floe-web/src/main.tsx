@@ -78,6 +78,7 @@ import {
   subscribeToFieldEvents,
   type LoadedField
 } from "./fields-api";
+import { DialogHost, confirm as confirmDialog } from "./dialog/dialog";
 
 type Workspace = {
   workspace_id: string;
@@ -1510,8 +1511,15 @@ function App() {
 
   async function deleteConversation(contextId: string, label: string) {
     if (!selectedWorkspace) return;
-    if (!window.confirm(`Delete conversation "${label}"?\n\nThis permanently deletes the conversation and its events from Floe.`)) return;
-    await api(busUrl, `/v1/contexts/${encodeURIComponent(contextId)}`, { method: "DELETE" });
+    const confirmed = await confirmDialog({
+      title: "Delete conversation",
+      body: <>Delete conversation <strong>{label}</strong>? This permanently deletes the conversation and its events from Floe.</>,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      variant: "danger",
+      onConfirm: () => api(busUrl, `/v1/contexts/${encodeURIComponent(contextId)}`, { method: "DELETE" }).then(() => undefined)
+    });
+    if (!confirmed) return;
     setContexts((prev) => prev.filter((ctx) => ctx.context_id !== contextId));
     setPulseLabels((prev) => {
       if (prev[contextId] === undefined) return prev;
@@ -2684,6 +2692,7 @@ function App() {
       </section>
 
       {renderChannel()}
+      <DialogHost />
     </main>
   );
 }

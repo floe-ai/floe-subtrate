@@ -57,6 +57,7 @@ type WorldState = {
   contextEventsCalls: Record<string, number>;
   contextsListCalls: number;
   deleteContextCalls: string[];
+  deleteContextFailure: { status: number; body: Record<string, unknown> } | null;
   bridgeRuntimeAdapter: string | null;
   endpointRuntimeAdapter: string | null;
 };
@@ -72,6 +73,7 @@ function makeWorld(initial?: Partial<WorldState>): WorldState {
     contextEventsCalls: {},
     contextsListCalls: 0,
     deleteContextCalls: [],
+    deleteContextFailure: null,
     bridgeRuntimeAdapter: "pi-agent-core",
     endpointRuntimeAdapter: null,
     ...initial
@@ -228,6 +230,13 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
     const url = new URL(route.request().url());
     const id = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
     world.deleteContextCalls.push(id);
+    if (world.deleteContextFailure) {
+      return route.fulfill({
+        status: world.deleteContextFailure.status,
+        contentType: "application/json",
+        body: JSON.stringify(world.deleteContextFailure.body)
+      });
+    }
     world.contexts = world.contexts.filter((ctx) => ctx.context_id !== id);
     delete world.eventsByContext[id];
     return route.fulfill({
@@ -813,22 +822,27 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     world.eventsByContext["ctx_keep"] = [
       makeMessage({ context_id: "ctx_keep", created_at: "2024-06-05T10:00:00.000Z", content: { text: "KEEP-MSG" } })
     ];
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
     await bootApp(page, world);
 
     await expect(page.locator(".channel-body")).toContainText("DELETE-MSG");
 
-    page.on("dialog", async (dialog) => {
-      expect(dialog.type()).toBe("confirm");
-      expect(dialog.message()).toContain("Delete conversation");
-      expect(dialog.message()).toContain("permanently deletes");
-      await dialog.accept();
-    });
-
     await page.getByLabel("Delete conversation delete this conversation").click();
+    const dialog = page.getByRole("dialog", { name: "Delete conversation" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAttribute("aria-modal", "true");
+    await expect(dialog).toContainText("delete this conversation");
+    await expect(dialog).toContainText("permanently deletes");
+    await dialog.getByRole("button", { name: "Delete" }).click();
     await expect(page.locator('[data-testid="context-list-item"][data-context-id="ctx_delete"]')).toHaveCount(0);
     expect(world.deleteContextCalls).toEqual(["ctx_delete"]);
     await expect(page.locator('[data-testid="context-list-item"][data-context-id="ctx_keep"]')).toBeVisible();
     await expect(page.locator(".channel-body")).not.toContainText("DELETE-MSG");
+    expect(nativeDialogs).toEqual([]);
   });
 
   test("dismissed conversation delete confirmation does not call the bus", async ({ page }) => {
@@ -842,12 +856,86 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
     }));
     await bootApp(page, world);
 
-    page.on("dialog", async (dialog) => {
-      await dialog.dismiss();
-    });
-
     await page.getByLabel("Delete conversation keep after cancel").click();
+    const dialog = page.getByRole("dialog", { name: "Delete conversation" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator('[data-testid="context-list-item"][data-context-id="ctx_cancel"]')).toBeVisible();
+    expect(world.deleteContextCalls).toEqual([]);
+  });
+
+  test("conversation delete dialog traps keyboard focus", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_focus",
+      first_message_preview: "focus stays inside",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-06T00:00:00.000Z",
+      last_event_at: "2024-06-06T10:00:00.000Z"
+    }));
+    await bootApp(page, world);
+
+    await page.getByLabel("Delete conversation focus stays inside").click();
+    const dialog = page.getByRole("dialog", { name: "Delete conversation" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+
+    await page.keyboard.press("Tab");
+    await expect(dialog.getByRole("button", { name: "Delete" })).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+
+    expect(world.deleteContextCalls).toEqual([]);
+  });
+
+  test("failed conversation delete stays open and shows an inline dialog error", async ({ page }) => {
+    const world = makeWorld({
+      deleteContextFailure: { status: 500, body: { error: "delete_failed" } }
+    });
+    world.contexts.push(makeContext({
+      context_id: "ctx_fail",
+      first_message_preview: "delete fails",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-06T00:00:00.000Z",
+      last_event_at: "2024-06-06T10:00:00.000Z"
+    }));
+    await bootApp(page, world);
+
+    await page.getByLabel("Delete conversation delete fails").click();
+    const dialog = page.getByRole("dialog", { name: "Delete conversation" });
+    await dialog.getByRole("button", { name: "Delete" }).click();
+
+    await expect(dialog.getByRole("alert")).toContainText("500");
+    await expect(dialog).toBeVisible();
+    await expect(page.locator('[data-testid="context-list-item"][data-context-id="ctx_fail"]')).toBeVisible();
+    expect(world.deleteContextCalls).toEqual(["ctx_fail"]);
+  });
+
+  test("conversation delete dialog supports Escape and backdrop cancel with focus return", async ({ page }) => {
+    const world = makeWorld();
+    world.contexts.push(makeContext({
+      context_id: "ctx_escape",
+      first_message_preview: "escape keeps this",
+      participants: [OPERATOR, FLOE],
+      created_at: "2024-06-06T00:00:00.000Z",
+      last_event_at: "2024-06-06T10:00:00.000Z"
+    }));
+    await bootApp(page, world);
+
+    const trigger = page.getByLabel("Delete conversation escape keeps this");
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Delete conversation" });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await expect(page.locator('[data-testid="context-list-item"][data-context-id="ctx_escape"]')).toBeVisible();
+
+    await trigger.click();
+    await expect(dialog).toBeVisible();
+    await page.getByTestId("dialog-backdrop").click({ position: { x: 12, y: 12 } });
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
     expect(world.deleteContextCalls).toEqual([]);
   });
 
