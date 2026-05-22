@@ -7,6 +7,7 @@ import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 import { ContextStore, applyContextSchema } from "./contexts/store.js";
 import { resolveContext, type NotContextParticipantError } from "./contexts/resolver.js";
+import { ScopeStore, applyScopeSchema, type ScopeRecord } from "./scopes/store.js";
 
 type Broadcast = (type: string, payload: Record<string, unknown>) => void;
 
@@ -150,6 +151,7 @@ export function workspaceIdForLocator(locator: string): string {
 export class BusStore {
   readonly db: DatabaseSync;
   readonly contextStore: ContextStore;
+  readonly scopeStore: ScopeStore;
 
   constructor(configPath: string, readonly config: LocalConfig) {
     const dataDir = resolveLocalPath(configPath, config.home, config.bus.data_dir);
@@ -159,6 +161,8 @@ export class BusStore {
     this.db.exec("PRAGMA foreign_keys = ON");
     this.migrate();
     this.contextStore = new ContextStore(this.db);
+    this.scopeStore = new ScopeStore(this.db);
+    this.scopeStore.ensureDefaultScopesForWorkspaces();
   }
 
   close(): void {
@@ -337,6 +341,7 @@ export class BusStore {
     this.addColumnIfMissing("runtime_telemetry", "delivery_id", "TEXT");
     this.addColumnIfMissing("runtime_bindings", "model", "TEXT");
     applyContextSchema(this.db);
+    applyScopeSchema(this.db);
     this.backfillEventDestinationJson();
     this.backfillEventResponseJson();
   }
@@ -382,6 +387,7 @@ export class BusStore {
         init_authorized = max(workspaces.init_authorized, excluded.init_authorized),
         updated_at = excluded.updated_at
     `).run(workspaceId, name, locator, input.init_authorized ? 1 : 0, timestamp, timestamp);
+    this.scopeStore.ensureDefaultScope(workspaceId);
     const workspace = this.getWorkspace(workspaceId);
     broadcast("workspace_registered", { workspace });
     broadcast("workspace_attachment_requested", { workspace });
@@ -392,6 +398,7 @@ export class BusStore {
     const timestamp = now();
     this.db.prepare("UPDATE workspaces SET selected_at = ?, updated_at = ? WHERE workspace_id = ?")
       .run(timestamp, timestamp, workspaceId);
+    this.scopeStore.ensureDefaultScope(workspaceId);
     const workspace = this.getWorkspace(workspaceId);
     broadcast("workspace_selected", { workspace });
     broadcast("workspace_attachment_requested", { workspace });
@@ -400,6 +407,33 @@ export class BusStore {
 
   getWorkspace(workspaceId: string): unknown {
     return this.db.prepare("SELECT * FROM workspaces WHERE workspace_id = ?").get(workspaceId);
+  }
+
+  listScopes(workspaceId: string): ScopeRecord[] {
+    this.scopeStore.ensureDefaultScope(workspaceId);
+    return this.scopeStore.listScopes(workspaceId);
+  }
+
+  createScope(input: {
+    workspace_id: string;
+    scope_id?: string;
+    title: string;
+    description?: string | null;
+  }, broadcast: Broadcast): ScopeRecord {
+    const scope = this.scopeStore.createScope(input);
+    broadcast("scope_created", { scope });
+    return scope;
+  }
+
+  updateScope(input: {
+    workspace_id: string;
+    scope_id: string;
+    title?: string;
+    description?: string | null;
+  }, broadcast: Broadcast): ScopeRecord | null {
+    const scope = this.scopeStore.updateScope(input);
+    if (scope) broadcast("scope_updated", { scope });
+    return scope;
   }
 
   listRuntimeBindings(workspaceId?: string): RuntimeBindingRecord[] {
@@ -512,6 +546,7 @@ export class BusStore {
         WHERE context_id IN (SELECT context_id FROM contexts WHERE workspace_id = ?)
       `).run(workspaceId);
       this.db.prepare("DELETE FROM contexts WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM scopes WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM endpoints WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM runtime_bindings WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM workspaces WHERE workspace_id = ?").run(workspaceId);

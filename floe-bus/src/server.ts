@@ -18,6 +18,7 @@ import {
   deleteField
 } from "./fields-store.js";
 import { FieldsWatcherRegistry } from "./fields-watcher.js";
+import { ScopeAlreadyExistsError } from "./scopes/store.js";
 
 const EventCommandSchema = z.object({
   type: z.string().min(1),
@@ -156,6 +157,74 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   app.get("/v1/workspaces", async () => ({
     workspaces: store.listWorkspaces()
   }));
+
+  app.get("/v1/workspaces/:workspace_id/scopes", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    return { scopes: store.listScopes(params.workspace_id) };
+  });
+
+  app.post("/v1/workspaces/:workspace_id/scopes", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const body = z.object({
+      scope_id: z.string().min(1).optional(),
+      title: z.string().min(1),
+      description: z.string().nullable().optional()
+    }).parse(request.body);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    try {
+      const scope = store.createScope({
+        workspace_id: params.workspace_id,
+        scope_id: body.scope_id,
+        title: body.title,
+        description: body.description ?? null
+      }, broadcast);
+      return reply.code(201).send({ scope });
+    } catch (err) {
+      if (err instanceof ScopeAlreadyExistsError) {
+        return reply.code(409).send({
+          error: "scope_already_exists",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id
+        });
+      }
+      throw err;
+    }
+  });
+
+  app.patch("/v1/workspaces/:workspace_id/scopes/:scope_id", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      scope_id: z.string().min(1)
+    }).parse(request.params);
+    const body = z.object({
+      title: z.string().min(1).optional(),
+      description: z.string().nullable().optional()
+    }).refine((value) => "title" in value || "description" in value, {
+      message: "At least one Scope metadata field is required"
+    }).parse(request.body);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    const scope = store.updateScope({
+      workspace_id: params.workspace_id,
+      scope_id: params.scope_id,
+      title: body.title,
+      description: body.description
+    }, broadcast);
+    if (!scope) {
+      return reply.code(404).send({
+        error: "scope_not_found",
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id
+      });
+    }
+    return { scope };
+  });
 
   function resolveWorkspaceLocator(workspaceId: string, reply: any): string | null {
     const ws = store.getWorkspace(workspaceId) as { locator?: string } | undefined;
