@@ -78,7 +78,7 @@ import {
   subscribeToFieldEvents,
   type LoadedField
 } from "./fields-api";
-import { DialogHost, confirm as confirmDialog } from "./dialog/dialog";
+import { DialogHost, confirm as confirmDialog, confirmWithOptions, prompt as promptDialog } from "./dialog/dialog";
 
 type Workspace = {
   workspace_id: string;
@@ -1353,9 +1353,13 @@ function App() {
     } catch (err) {
       if (err instanceof ApiError && (err.body as any)?.error === "directory_not_found") {
         const locator = (err.body as any)?.locator ?? workspacePath.trim();
-        if (window.confirm(`Directory does not exist:\n${locator}\n\nCreate it?`)) {
-          return registerWorkspace(true);
-        }
+        const confirmed = await confirmDialog({
+          title: "Create directory?",
+          body: <>The folder <strong>{locator}</strong> does not exist. Create it and register the workspace here?</>,
+          confirmLabel: "Create folder",
+          cancelLabel: "Cancel"
+        });
+        if (confirmed) return registerWorkspace(true);
         return;
       }
       throw err;
@@ -1375,15 +1379,28 @@ function App() {
   async function deleteWorkspace(workspaceId: string) {
     const workspace = workspaces.find((w) => w.workspace_id === workspaceId);
     const label = workspace?.name ?? workspaceId;
-    if (!window.confirm(`Delete workspace "${label}"?\n\nThis removes the workspace from Floe. You can choose whether to keep or delete the folder next.`)) return;
-    const locatorLabel = workspace?.locator ? `\n\n${workspace.locator}` : "";
-    const deleteLocator = window.confirm(
-      `Remove the workspace folder from disk too?${locatorLabel}\n\nChoose OK to delete the folder and its files. Choose Cancel to keep files and only remove it from Floe.`
-    );
-    await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, {
-      method: "POST",
-      body: { delete_locator: deleteLocator }
+    const locator = workspace?.locator ?? "";
+    const result = await confirmWithOptions({
+      title: "Delete workspace",
+      body: (
+        <>
+          Remove <strong>{label}</strong> from Floe?
+          {locator ? <> The workspace folder is <code>{locator}</code>.</> : null}
+        </>
+      ),
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      variant: "danger",
+      checkbox: {
+        label: "Also delete the workspace folder and its files from disk",
+        testId: "dialog-delete-locator-checkbox"
+      },
+      onConfirm: ({ checked }) => api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, {
+        method: "POST",
+        body: { delete_locator: checked }
+      }).then(() => undefined)
     });
+    if (!result.confirmed) return;
     if (selectedWorkspaceId === workspaceId) {
       setSelectedWorkspaceId("");
       selectedWorkspaceIdRef.current = "";
@@ -1640,12 +1657,27 @@ function App() {
 
   function promptCreateNestedFieldItem(position?: { x: number; y: number }): void {
     if (!selectedWorkspace || !loadedFieldRef.current) return;
-    const name = window.prompt("New nested field name?");
-    if (name === null) return;
-    void createNestedFieldItem(name, position);
+    void (async () => {
+      const result = await promptDialog({
+        title: "New nested Field",
+        body: "Create a new Field and add it to the open Field as a Nested Field Item.",
+        confirmLabel: "Create",
+        cancelLabel: "Cancel",
+        input: {
+          label: "Field name",
+          placeholder: "Nested Field"
+        },
+        onConfirm: ({ value }) => createNestedFieldItem(value, position, { throwOnError: true })
+      });
+      if (!result.confirmed) return;
+    })();
   }
 
-  async function createNestedFieldItem(name: string, position?: { x: number; y: number }): Promise<void> {
+  async function createNestedFieldItem(
+    name: string,
+    position?: { x: number; y: number },
+    options: { throwOnError?: boolean } = {}
+  ): Promise<void> {
     if (!selectedWorkspace) return;
     const current = loadedFieldRef.current;
     const currentView = viewRef.current;
@@ -1656,6 +1688,7 @@ function App() {
     const fieldId = slugifyFieldId(title);
     const itemRef = `field:${fieldId}`;
     if (current.semantic.items.some((item) => item.ref === itemRef)) {
+      if (options.throwOnError) throw new Error("That Field is already in this Field.");
       setError("That Field is already in this Field.");
       return;
     }
@@ -1713,28 +1746,28 @@ function App() {
       }
       await refreshFields(workspaceId);
     } catch (caught) {
+      if (options.throwOnError) throw caught;
       setError((caught as Error).message);
     }
   }
 
-  function createField(name?: string): void {
+  async function createField(name?: string, options: { throwOnError?: boolean } = {}): Promise<void> {
     if (!selectedWorkspace) return;
     const workspaceId = selectedWorkspace.workspace_id;
     const nextName = name?.trim() || `Field ${fieldSummaries.length + 1}`;
     const id = slugifyFieldId(nextName);
     const semantic = emptyFieldSemantic(id, nextName);
-    void (async () => {
-      try {
-        await putFieldSemantic(busUrl, workspaceId, id, semantic, { ifAbsent: true });
-        await refreshFields(workspaceId);
-        loadedFieldRef.current = null;
-        setLoadedField(null);
-        clearFieldEditingState();
-        setView({ kind: "field", fieldId: id });
-      } catch (caught) {
-        setError((caught as Error).message);
-      }
-    })();
+    try {
+      await putFieldSemantic(busUrl, workspaceId, id, semantic, { ifAbsent: true });
+      await refreshFields(workspaceId);
+      loadedFieldRef.current = null;
+      setLoadedField(null);
+      clearFieldEditingState();
+      setView({ kind: "field", fieldId: id });
+    } catch (caught) {
+      if (options.throwOnError) throw caught;
+      setError((caught as Error).message);
+    }
   }
 
   function openField(fieldId: string): void {
@@ -1763,9 +1796,17 @@ function App() {
   }
 
   function promptCreateField(): void {
-    const name = window.prompt("New field name?");
-    if (name === null) return;
-    createField(name);
+    void promptDialog({
+      title: "New Field",
+      body: "Create a new Root Field in this workspace.",
+      confirmLabel: "Create",
+      cancelLabel: "Cancel",
+      input: {
+        label: "Field name",
+        placeholder: "Field name"
+      },
+      onConfirm: ({ value }) => createField(value, { throwOnError: true })
+    });
   }
 
   function handleFieldPrimitiveClick(): void {

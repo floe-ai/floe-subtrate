@@ -578,6 +578,24 @@ code {
   color: var(--text);
 }
 
+.app-dialog-input {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.app-dialog-input input {
+  font-weight: 500;
+}
+
+.app-dialog-checkbox {
+  margin-top: 14px;
+  color: var(--text);
+}
+
 .app-dialog-error {
   border: 1px solid oklch(0.78 0.08 32);
   border-radius: var(--radius-sm);

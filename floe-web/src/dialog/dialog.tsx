@@ -4,32 +4,77 @@ import { createDialogController } from "./dialog-controller";
 
 type DialogVariant = "default" | "danger";
 
+type DialogResult = {
+  confirmed: boolean;
+  checked: boolean;
+  value: string;
+};
+
+type DialogConfirmPayload = {
+  checked: boolean;
+  value: string;
+};
+
 export type ConfirmDialogRequest = {
   title: string;
   body: React.ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: DialogVariant;
-  onConfirm?: () => Promise<void>;
+  checkbox?: {
+    label: React.ReactNode;
+    defaultChecked?: boolean;
+    testId?: string;
+  };
+  input?: {
+    label: React.ReactNode;
+    placeholder?: string;
+    initialValue?: string;
+    autoFocus?: boolean;
+    testId?: string;
+    validate?: (value: string) => string | null;
+  };
+  onConfirm?: (payload: DialogConfirmPayload) => Promise<void> | void;
 };
 
-const dialogController = createDialogController<ConfirmDialogRequest, HTMLElement>();
+const cancelResult: DialogResult = { confirmed: false, checked: false, value: "" };
+const dialogController = createDialogController<ConfirmDialogRequest, HTMLElement, DialogResult>();
 type ActiveConfirmDialog = NonNullable<ReturnType<typeof dialogController.current>>;
 
 export function confirm(request: ConfirmDialogRequest): Promise<boolean> {
   const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  return dialogController.open(request, restoreFocusTo);
+  return dialogController.open(request, restoreFocusTo, cancelResult).then((result) => result.confirmed);
+}
+
+export function confirmWithOptions(request: ConfirmDialogRequest): Promise<{ confirmed: boolean; checked: boolean }> {
+  const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  return dialogController.open(request, restoreFocusTo, cancelResult).then((result) => ({
+    confirmed: result.confirmed,
+    checked: result.checked
+  }));
+}
+
+export function prompt(request: ConfirmDialogRequest): Promise<{ confirmed: boolean; value: string }> {
+  const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  return dialogController.open(request, restoreFocusTo, cancelResult).then((result) => ({
+    confirmed: result.confirmed,
+    value: result.value
+  }));
 }
 
 export function DialogHost(): React.ReactElement | null {
   const [dialog, setDialog] = useState<ActiveConfirmDialog | null>(dialogController.current());
   const [loading, setLoading] = useState(false);
   const [inlineError, setInlineError] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+  const [inputValue, setInputValue] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const titleId = useId();
   const bodyId = useId();
   const errorId = useId();
+  const inputId = useId();
 
   useEffect(() => {
     return dialogController.subscribe(setDialog);
@@ -38,8 +83,15 @@ export function DialogHost(): React.ReactElement | null {
   useEffect(() => {
     setLoading(false);
     setInlineError(null);
+    setChecked(dialog?.request.checkbox?.defaultChecked ?? false);
+    setInputValue(dialog?.request.input?.initialValue ?? "");
     if (!dialog) return;
     window.setTimeout(() => {
+      if (dialog.request.input && dialog.request.input.autoFocus !== false) {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+        return;
+      }
       cancelRef.current?.focus();
     }, 0);
   }, [dialog?.id]);
@@ -56,11 +108,11 @@ export function DialogHost(): React.ReactElement | null {
     if (!dialog) return;
     if (!isCurrentDialog(dialog)) return;
     const restoreFocusTo = dialog.restoreFocusTo;
-    dialogController.close(confirmed);
+    dialogController.close({ confirmed, checked, value: inputValue });
     window.setTimeout(() => {
       if (restoreFocusTo?.isConnected) restoreFocusTo.focus();
     }, 0);
-  }, [dialog, isCurrentDialog]);
+  }, [checked, dialog, inputValue, isCurrentDialog]);
 
   const cancel = useCallback(() => {
     if (loading) return;
@@ -69,6 +121,12 @@ export function DialogHost(): React.ReactElement | null {
 
   const confirmActive = useCallback(async () => {
     if (!dialog || loading) return;
+    const validationError = dialog.request.input?.validate?.(inputValue.trim());
+    if (validationError) {
+      setInlineError(validationError);
+      inputRef.current?.focus();
+      return;
+    }
     if (!dialog.request.onConfirm) {
       close(true);
       return;
@@ -76,14 +134,15 @@ export function DialogHost(): React.ReactElement | null {
     setLoading(true);
     setInlineError(null);
     try {
-      await dialog.request.onConfirm();
+      await dialog.request.onConfirm({ checked, value: inputValue });
       close(true);
     } catch (caught) {
       if (!isCurrentDialog(dialog)) return;
       setInlineError(caught instanceof Error ? caught.message : String(caught));
       setLoading(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
     }
-  }, [close, dialog, isCurrentDialog, loading]);
+  }, [checked, close, dialog, inputValue, isCurrentDialog, loading]);
 
   const trapFocus = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Tab" || !dialogRef.current) return;
@@ -148,7 +207,44 @@ export function DialogHost(): React.ReactElement | null {
         <div className="app-dialog-header">
           <h2 id={titleId}>{dialog.request.title}</h2>
         </div>
-        <div className="app-dialog-body" id={bodyId}>{dialog.request.body}</div>
+        <div className="app-dialog-body" id={bodyId}>
+          {dialog.request.body}
+          {dialog.request.input && (
+            <label className="app-dialog-input" htmlFor={inputId}>
+              <span>{dialog.request.input.label}</span>
+              <input
+                id={inputId}
+                ref={inputRef}
+                data-testid={dialog.request.input.testId ?? "dialog-text-input"}
+                value={inputValue}
+                placeholder={dialog.request.input.placeholder}
+                disabled={loading}
+                onChange={(event) => {
+                  setInputValue(event.target.value);
+                  setInlineError(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void confirmActive();
+                  }
+                }}
+              />
+            </label>
+          )}
+          {dialog.request.checkbox && (
+            <label className="app-dialog-checkbox check-row">
+              <input
+                type="checkbox"
+                data-testid={dialog.request.checkbox.testId ?? "dialog-checkbox"}
+                checked={checked}
+                disabled={loading}
+                onChange={(event) => setChecked(event.target.checked)}
+              />
+              <span>{dialog.request.checkbox.label}</span>
+            </label>
+          )}
+        </div>
         {inlineError && (
           <div className="app-dialog-error" id={errorId} role="alert">
             {inlineError}

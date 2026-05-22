@@ -7,7 +7,7 @@ describe("dialog controller", () => {
     const seen: Array<string | null> = [];
     controller.subscribe((dialog) => seen.push(dialog?.request.title ?? null));
 
-    const result = controller.open({ title: "Delete conversation" }, "trigger");
+    const result = controller.open({ title: "Delete conversation" }, "trigger", false);
     expect(controller.current()?.request.title).toBe("Delete conversation");
     expect(controller.current()?.restoreFocusTo).toBe("trigger");
     expect(seen).toEqual([null, "Delete conversation"]);
@@ -21,8 +21,8 @@ describe("dialog controller", () => {
   it("cancels the active request when a new one replaces it", async () => {
     const controller = createDialogController<{ title: string }>();
 
-    const first = controller.open({ title: "First" });
-    const second = controller.open({ title: "Second" });
+    const first = controller.open({ title: "First" }, null, false);
+    const second = controller.open({ title: "Second" }, null, false);
 
     await expect(first).resolves.toBe(false);
     expect(controller.current()?.request.title).toBe("Second");

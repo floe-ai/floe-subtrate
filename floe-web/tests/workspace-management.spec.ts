@@ -6,11 +6,17 @@ test.describe("Workspace management", () => {
   test("shows directory-not-found confirmation when workspace path does not exist", async ({ page }) => {
     await seedApp(page);
 
-    // Intercept register call to return directory_not_found
     let registerCalls = 0;
+    const registerBodies: unknown[] = [];
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
     await page.route("**/v1/workspaces/register", (route) => {
       registerCalls++;
       const body = JSON.parse(route.request().postData() ?? "{}");
+      registerBodies.push(body);
       if (!body.create_directory) {
         return route.fulfill({
           status: 400,
@@ -38,31 +44,30 @@ test.describe("Workspace management", () => {
       });
     });
 
-    // Type a workspace path in the sidebar input
     const sidebarInput = page.locator(".rail-new input");
     await sidebarInput.fill("C:\\fake\\path");
 
-    // Set up dialog handler to accept the confirmation
-    page.on("dialog", async (dialog) => {
-      expect(dialog.type()).toBe("confirm");
-      expect(dialog.message()).toContain("does not exist");
-      await dialog.accept();
-    });
-
-    // Click create workspace button
     await page.locator(".rail-new button").click();
+    const dialog = page.getByRole("dialog", { name: "Create directory?" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("C:\\fake\\path");
+    await dialog.getByRole("button", { name: "Create folder" }).click();
 
-    // Wait for the retry to happen
-    await page.waitForTimeout(1000);
-
-    // Verify two register calls were made (first without create_directory, second with)
-    expect(registerCalls).toBe(2);
+    await expect.poll(() => registerCalls).toBe(2);
+    expect(registerBodies[0]).not.toHaveProperty("create_directory", true);
+    expect(registerBodies[1]).toHaveProperty("create_directory", true);
+    expect(nativeDialogs).toEqual([]);
   });
 
   test("cancels workspace creation when user dismisses directory confirmation", async ({ page }) => {
     await seedApp(page);
 
     let registerCalls = 0;
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
     await page.route("**/v1/workspaces/register", (route) => {
       registerCalls++;
       return route.fulfill({
@@ -84,21 +89,27 @@ test.describe("Workspace management", () => {
     });
 
     await page.locator(".rail-new button").click();
-    await page.waitForTimeout(500);
+    const dialog = page.getByRole("dialog", { name: "Create directory?" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
 
-    // Only one call made - user cancelled, no retry
-    expect(registerCalls).toBe(1);
+    await expect.poll(() => registerCalls).toBe(1);
+    expect(nativeDialogs).toEqual([]);
   });
 
   test("delete button appears on workspace hover and removes workspace while keeping files", async ({ page }) => {
     await seedApp(page);
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
 
-    // Verify workspace is visible
     const workspaceRow = page.locator(".workspace-row").first();
     await expect(workspaceRow).toBeVisible();
     await expect(workspaceRow.locator(".workspace-button span")).toHaveText(WORKSPACE_NAME);
 
-    // Intercept delete call
     let deletePayload: unknown = null;
     await page.route(`**/v1/workspaces/${WORKSPACE_ID}/delete`, (route) => {
       deletePayload = JSON.parse(route.request().postData() ?? "{}");
@@ -121,34 +132,28 @@ test.describe("Workspace management", () => {
       return route.fulfill({ status: 200, body: JSON.stringify({}) });
     });
 
-    // Hover to reveal delete button
     await workspaceRow.hover();
 
-    // Accept the confirmation dialog
-    const dialogMessages: string[] = [];
-    page.on("dialog", async (dialog) => {
-      expect(dialog.type()).toBe("confirm");
-      dialogMessages.push(dialog.message());
-      if (dialogMessages.length === 1) {
-        expect(dialog.message()).toContain("Delete workspace");
-        await dialog.accept();
-        return;
-      }
-      expect(dialog.message()).toContain("Remove the workspace folder from disk");
-      await dialog.dismiss();
-    });
-
-    // Click delete button
     const deleteButton = workspaceRow.locator(".workspace-delete-button");
     await deleteButton.click({ force: true }); // force because opacity might not be fully visible
+    const dialog = page.getByRole("dialog", { name: "Delete workspace" });
+    await expect(dialog).toBeVisible();
+    const checkbox = dialog.getByTestId("dialog-delete-locator-checkbox");
+    await expect(checkbox).not.toBeChecked();
+    await dialog.getByRole("button", { name: "Delete" }).click();
 
-    await page.waitForTimeout(500);
-    expect(deletePayload).toEqual({ delete_locator: false });
-    expect(dialogMessages).toHaveLength(2);
+    await expect.poll(() => deletePayload).toEqual({ delete_locator: false });
+    await expect(dialog).toHaveCount(0);
+    expect(nativeDialogs).toEqual([]);
   });
 
   test("delete workspace can also remove files from disk", async ({ page }) => {
     await seedApp(page);
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
 
     const workspaceRow = page.locator(".workspace-row").first();
     await expect(workspaceRow).toBeVisible();
@@ -173,19 +178,49 @@ test.describe("Workspace management", () => {
       return route.fulfill({ status: 200, body: JSON.stringify({}) });
     });
 
-    const dialogMessages: string[] = [];
+    await workspaceRow.hover();
+    await workspaceRow.locator(".workspace-delete-button").click({ force: true });
+    const dialog = page.getByRole("dialog", { name: "Delete workspace" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByTestId("dialog-delete-locator-checkbox").check();
+    await dialog.getByRole("button", { name: "Delete" }).click();
+
+    await expect.poll(() => deletePayload).toEqual({ delete_locator: true });
+    await expect(dialog).toHaveCount(0);
+    expect(nativeDialogs).toEqual([]);
+  });
+
+  test("canceling workspace deletion has no side effects", async ({ page }) => {
+    await seedApp(page);
+    const nativeDialogs: string[] = [];
     page.on("dialog", async (dialog) => {
-      dialogMessages.push(dialog.message());
-      await dialog.accept();
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+
+    const workspaceRow = page.locator(".workspace-row").first();
+    let deleteCalls = 0;
+    await page.route(`**/v1/workspaces/${WORKSPACE_ID}/delete`, (route) => {
+      deleteCalls++;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, workspace_id: WORKSPACE_ID })
+      });
     });
 
     await workspaceRow.hover();
-    await workspaceRow.locator(".workspace-delete-button").click({ force: true });
+    const deleteButton = workspaceRow.locator(".workspace-delete-button");
+    await deleteButton.click({ force: true });
+    const dialog = page.getByRole("dialog", { name: "Delete workspace" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
 
-    await page.waitForTimeout(500);
-    expect(deletePayload).toEqual({ delete_locator: true });
-    expect(dialogMessages[0]).toContain("Delete workspace");
-    expect(dialogMessages[1]).toContain("Remove the workspace folder from disk");
+    await expect(dialog).toHaveCount(0);
+    await expect(deleteButton).toBeFocused();
+    await expect(workspaceRow).toBeVisible();
+    expect(deleteCalls).toBe(0);
+    expect(nativeDialogs).toEqual([]);
   });
 });
 

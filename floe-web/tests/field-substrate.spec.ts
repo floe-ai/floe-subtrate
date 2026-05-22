@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect, type Dialog } from "@playwright/test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,9 +128,10 @@ test.describe("Field substrate (slice 1)", () => {
     const parent = makeFieldSemantic("parent-field", "Parent Field");
     await seedAppWithFields(page, [{ semantic: parent }]);
     await page.locator(".field-block", { hasText: "Parent Field" }).click();
-
-    page.once("dialog", (dialog) => {
-      void dialog.accept("Dropped Field");
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
     });
 
     const childPut = page.waitForRequest((request) =>
@@ -160,6 +161,10 @@ test.describe("Field substrate (slice 1)", () => {
       clientX: box!.x + 180,
       clientY: box!.y + 140
     });
+    const dialog = page.getByRole("dialog", { name: "New nested Field" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByTestId("dialog-text-input").fill("Dropped Field");
+    await dialog.getByRole("button", { name: "Create" }).click();
 
     const [childRequest, parentRequest] = await Promise.all([childPut, parentPut]);
     const childBody = JSON.parse(childRequest.postData() ?? "{}");
@@ -174,6 +179,46 @@ test.describe("Field substrate (slice 1)", () => {
 
     await expect(page.getByRole("heading", { name: "Parent Field" })).toBeVisible();
     await expect(page.locator(".react-flow__node").filter({ hasText: /dropped-field|Dropped Field/ })).toHaveCount(1);
+    expect(nativeDialogs).toEqual([]);
+  });
+
+  test("duplicate nested Field creation stays in the dialog and writes nothing", async ({ page }) => {
+    const parent = makeFieldSemantic(
+      "parent-field",
+      "Parent Field",
+      [{ item_id: "field-dropped-field", ref: "field:dropped-field" }]
+    );
+    const child = makeFieldSemantic("dropped-field", "Dropped Field");
+    await seedAppWithFields(page, [{ semantic: parent }, { semantic: child }]);
+    await page.locator(".field-block", { hasText: "Parent Field" }).click();
+    await expect(page.locator(".react-flow__node").filter({ hasText: /dropped-field|Dropped Field/ })).toHaveCount(1);
+
+    const semanticPuts: string[] = [];
+    const nativeDialogs: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "PUT" &&
+        request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/`) &&
+        !request.url().includes("/layout/")
+      ) {
+        semanticPuts.push(request.url());
+      }
+    });
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+
+    await page.locator(".library-primitive", { hasText: "Field" }).click();
+    const dialog = page.getByRole("dialog", { name: "New nested Field" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByTestId("dialog-text-input").fill("Dropped Field");
+    await dialog.getByRole("button", { name: "Create" }).click();
+
+    await expect(dialog.getByRole("alert")).toContainText("That Field is already in this Field.");
+    await expect(dialog).toBeVisible();
+    expect(semanticPuts).toEqual([]);
+    expect(nativeDialogs).toEqual([]);
   });
 
   test("double-clicking a nested Field node opens that Field for editing", async ({ page }) => {
@@ -578,9 +623,10 @@ test.describe("Field substrate (slice 1)", () => {
 
   test("create field — sends PUT and the new field appears in the list", async ({ page }) => {
     await seedAppWithFields(page, []);
-
-    page.once("dialog", (dialog) => {
-      void dialog.accept("My New Field");
+    const nativeDialogs: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
     });
 
     const putWait = page.waitForRequest((request) =>
@@ -589,6 +635,11 @@ test.describe("Field substrate (slice 1)", () => {
     );
 
     await page.getByRole("button", { name: /Add field/i }).click();
+    const dialog = page.getByRole("dialog", { name: "New Field" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByTestId("dialog-text-input")).toBeFocused();
+    await dialog.getByTestId("dialog-text-input").fill("My New Field");
+    await dialog.getByRole("button", { name: "Create" }).click();
 
     const request = await putWait;
     const url = new URL(request.url());
@@ -603,6 +654,32 @@ test.describe("Field substrate (slice 1)", () => {
     await expect(
       page.locator(".field-block", { hasText: "My New Field" })
     ).toBeVisible();
+    expect(nativeDialogs).toEqual([]);
+  });
+
+  test("canceling root Field creation writes nothing", async ({ page }) => {
+    await seedAppWithFields(page, []);
+    const nativeDialogs: string[] = [];
+    const puts: string[] = [];
+    page.on("dialog", async (dialog) => {
+      nativeDialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    page.on("request", (request) => {
+      if (request.method() === "PUT" && request.url().includes(`/v1/workspaces/${WORKSPACE_ID}/fields/`)) {
+        puts.push(request.url());
+      }
+    });
+
+    await page.getByRole("button", { name: /Add field/i }).click();
+    const dialog = page.getByRole("dialog", { name: "New Field" });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator(".field-block")).toHaveCount(0);
+    expect(puts).toEqual([]);
+    expect(nativeDialogs).toEqual([]);
   });
 
   test("delete field — sends DELETE and field disappears", async ({ page }) => {
@@ -668,10 +745,17 @@ test.describe("Field substrate (slice 1)", () => {
       await page.getByRole("button", { name: "Create Workspace", exact: true }).click();
       await expect(page.locator(".workspace-home")).toBeVisible();
 
-      page.once("dialog", (dialog) => {
-        void dialog.accept("Live Field");
-      });
+      const nativeDialogs: string[] = [];
+      const nativeDialogRecorder = async (dialog: Dialog) => {
+        nativeDialogs.push(dialog.message());
+        await dialog.dismiss();
+      };
+      page.on("dialog", nativeDialogRecorder);
       await page.getByRole("button", { name: /Add field/i }).click();
+      const dialog = page.getByRole("dialog", { name: "New Field" });
+      await expect(dialog).toBeVisible();
+      await dialog.getByTestId("dialog-text-input").fill("Live Field");
+      await dialog.getByRole("button", { name: "Create" }).click();
 
       await expect.poll(() => existsSync(semanticPath)).toBe(true);
       await expect.poll(() => semanticPutRequests.length).toBe(1);
@@ -684,6 +768,8 @@ test.describe("Field substrate (slice 1)", () => {
 
       await page.reload();
       await expect(page.locator(".field-block", { hasText: "Live Field" })).toBeVisible();
+      expect(nativeDialogs).toEqual([]);
+      page.off("dialog", nativeDialogRecorder);
 
       await page.locator(".field-block", { hasText: "Live Field" }).click();
       page.once("dialog", (dialog) => {

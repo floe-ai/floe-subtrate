@@ -4,23 +4,23 @@ export type ActiveDialog<TRequest, TRestoreTarget = unknown> = {
   restoreFocusTo: TRestoreTarget | null;
 };
 
-type InternalDialog<TRequest, TRestoreTarget> = ActiveDialog<TRequest, TRestoreTarget> & {
-  resolve: (confirmed: boolean) => void;
+type InternalDialog<TRequest, TRestoreTarget, TResult> = ActiveDialog<TRequest, TRestoreTarget> & {
+  resolve: (result: TResult) => void;
 };
 
-type DialogListener<TRequest, TRestoreTarget> = (dialog: InternalDialog<TRequest, TRestoreTarget> | null) => void;
+type DialogListener<TRequest, TRestoreTarget, TResult> = (dialog: InternalDialog<TRequest, TRestoreTarget, TResult> | null) => void;
 
-export function createDialogController<TRequest, TRestoreTarget = unknown>() {
+export function createDialogController<TRequest, TRestoreTarget = unknown, TResult = boolean>() {
   let nextDialogId = 1;
-  let activeDialog: InternalDialog<TRequest, TRestoreTarget> | null = null;
-  const listeners = new Set<DialogListener<TRequest, TRestoreTarget>>();
+  let activeDialog: InternalDialog<TRequest, TRestoreTarget, TResult> | null = null;
+  const listeners = new Set<DialogListener<TRequest, TRestoreTarget, TResult>>();
 
   function notify(): void {
     for (const listener of listeners) listener(activeDialog);
   }
 
-  function open(request: TRequest, restoreFocusTo: TRestoreTarget | null = null): Promise<boolean> {
-    if (activeDialog) activeDialog.resolve(false);
+  function open(request: TRequest, restoreFocusTo: TRestoreTarget | null = null, cancelResult: TResult): Promise<TResult> {
+    if (activeDialog) activeDialog.resolve(cancelResult);
     return new Promise((resolve) => {
       activeDialog = {
         id: nextDialogId,
@@ -33,16 +33,16 @@ export function createDialogController<TRequest, TRestoreTarget = unknown>() {
     });
   }
 
-  function close(confirmed: boolean): InternalDialog<TRequest, TRestoreTarget> | null {
+  function close(result: TResult): InternalDialog<TRequest, TRestoreTarget, TResult> | null {
     const current = activeDialog;
     if (!current) return null;
     activeDialog = null;
-    current.resolve(confirmed);
+    current.resolve(result);
     notify();
     return current;
   }
 
-  function subscribe(listener: DialogListener<TRequest, TRestoreTarget>): () => void {
+  function subscribe(listener: DialogListener<TRequest, TRestoreTarget, TResult>): () => void {
     listeners.add(listener);
     listener(activeDialog);
     return () => {
@@ -50,7 +50,7 @@ export function createDialogController<TRequest, TRestoreTarget = unknown>() {
     };
   }
 
-  function current(): InternalDialog<TRequest, TRestoreTarget> | null {
+  function current(): InternalDialog<TRequest, TRestoreTarget, TResult> | null {
     return activeDialog;
   }
 
