@@ -1,7 +1,9 @@
 # PRD: Field — First Substrate-Native Field Primitive
 
 ## Status
-Accepted — ready for implementation.
+Superseded by the Scope-first correction.
+
+This PRD records an implemented intermediate Field slice, but it is no longer the source of truth for future Field/Block work. Future work follows ADR-0004: Scope is the substrate organising boundary, Field is FloeWeb's rendering/projection of a Scope, and field-owned item/connection lists are superseded.
 
 Supersedes the in-FloeWeb-only `FieldBlock` (clean break; no migration).
 

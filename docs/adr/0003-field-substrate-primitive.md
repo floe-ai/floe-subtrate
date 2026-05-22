@@ -1,6 +1,8 @@
 # Field as substrate primitive
 
-**Status:** accepted (2026-05-19)
+**Status:** superseded by ADR-0004 (2026-05-22)
+
+This ADR records an implemented intermediate slice, but it no longer guides future Field/Block work. The corrected model is that Scope is the substrate organising boundary and Field is the FloeWeb rendering/projection of a Scope; field-owned item and connection lists are superseded.
 
 ## Context
 

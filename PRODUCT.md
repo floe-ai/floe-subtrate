@@ -8,7 +8,7 @@ product
 
 Floe Web is for local operators and builders who are setting up, shaping, and operating portable Floe workspaces.
 
-They are not looking for a chat app, a project tracker, or a runtime debug console. They need a clear interface for creating or opening a Workspace, adding Field Blocks, inspecting what is configured, and talking to Floe through the substrate path. They may later compose richer Blocks, extensions, agents, hooks, and surfaces, but V0 should make the first workspace loop understandable before expanding the model.
+They are not looking for a chat app, a project tracker, or a runtime debug console. They need a clear interface for creating or opening a Workspace, organising substrate work into Scopes, rendering a Scope as a Field, inspecting what is configured, and talking to Floe through the substrate path. They may later compose richer Blocks, extensions, agents, hooks, and surfaces, but V0 should make the first workspace loop understandable before expanding the model.
 
 The primary user is technical enough to understand folders, providers, runtime profiles, and portable configuration. The interface should still protect them from substrate leakage unless they deliberately inspect advanced state.
 
@@ -21,15 +21,15 @@ Its job is to let a user operate a portable Workspace without bypassing the subs
 - create or open a Workspace
 - consent to `.floe/` initialization
 - reach Workspace Home
-- create a Field Block
-- open the Field into a canvas Surface
+- create a Scope
+- open the Scope as a Field canvas Surface
 - inspect Workspace, Field, runtime, and actor access state
 - open the global Floe Channel
 - send messages to Floe through `floe-bus` and the default runtime-backed endpoint
 
 Floe Web succeeds when the user understands this mental model:
 
-> I have a portable Workspace. A Field is a substrate primitive stored in my workspace; FloeWeb is one renderer of it on a canvas. Items in a Field reference other substrate primitives (actors, contexts, files, pulses, webhooks, extensions); FloeWeb draws those items as Blocks. Actors are humans or agents with access, not objects I drag onto the canvas. Floe is the always-available system interface, not a Field item or Block.
+> I have a portable Workspace. A Scope is the substrate organising boundary for work inside that Workspace. FloeWeb renders a Scope as a Field canvas. The Field shows scoped substrate primitives and relationships that already exist in the substrate; it does not own a separate item list or graph. Actors are workspace-scoped participants, not objects I drag into a Field. Floe is the always-available system interface, not a Field item or Block.
 
 ## Source Of Truth
 
@@ -59,23 +59,24 @@ Use these terms consistently:
 
 - Workspace: the portable configuration container, usually a folder or repository containing `.floe/`.
 - Workspace Home: the top-level product surface after a Workspace is opened. It is not a Field.
-- Field: a substrate primitive that groups references to other substrate primitives and records simple connections between them. Stored as workspace YAML under `.floe/fields/`. FloeWeb renders a Field on a canvas Surface, but the Field exists independently of FloeWeb.
-- Field Item: a field-local reference to an existing substrate primitive (actor, context, pulse, webhook, extension, file, tool, work log, event, or another field). Items are what get rendered as Blocks on the canvas.
-- Block: a representational concept — how a client renders or interprets a Field Item. Blocks are not a storage category; existing substrate primitives are not "stored as blocks".
-- Surface: how a client renders state. FloeWeb's canvas Surface renders a Field's items as Blocks and its connections as links.
+- Scope: the substrate organising boundary inside a Workspace. Scoped primitives declare or derive their Scope.
+- Default Scope: the automatically available Scope for a Workspace; scoped primitives created without an explicit Scope land there.
+- Field: FloeWeb's rendering/projection of a Scope on a canvas Surface. A Field does not own membership.
+- Block: a representational concept - how a client renders or interprets a scoped substrate primitive or derived relationship. Blocks are not a storage category; existing substrate primitives are not "stored as blocks".
+- Surface: how a client renders state. FloeWeb's canvas Surface renders a Scope as a Field with Blocks and derived relationships.
 - Inspector: configuration and state for the current selection.
 - Channel: a right-side conversation pane.
 - Floe: the global system interface available from any screen.
-- Actor: a human or agent endpoint/participant with access. Actors are not Blocks.
+- Actor: a workspace-scoped endpoint/participant. Actors are not Field-owned objects.
 - Agent: a runtime-backed actor configured through substrate-aligned agent files and runtime bindings.
 
-Avoid using "Project" for the Workspace model. Avoid "Floe Assistant." Avoid treating Skills, MCPs, extensions, humans, agents, or provider profiles as default canvas Blocks.
+Avoid using "Project" for the Workspace model. Avoid "Floe Assistant." Avoid treating Skills, MCPs, extensions, humans, agents, provider profiles, Field Items, or Field Connections as default substrate concepts.
 
 ## Design Principles
 
-Composition is the primitive, but not everything belongs on the canvas. Fields are canvas-backed Blocks; actors, runtime profiles, event delivery state, hooks, and provider auth are configured or inspected through appropriate surfaces.
+Composition is the primitive, but not everything belongs on the canvas. Fields are Scope renderings; actors, runtime profiles, event delivery state, hooks, and provider auth are configured or inspected through appropriate surfaces.
 
-Start with the smallest real loop. The first useful product slice is Workspace -> Field Block -> Field Surface -> Floe Channel. Do not expose speculative Block types just because the canvas can render nodes.
+Start with the smallest real loop. The first useful product slice is Workspace -> Scope -> Field Surface -> Floe Channel. Do not expose speculative Block types just because the canvas can render nodes.
 
 Product layer respects substrate layer. UI actions should compile down to bus events, endpoint state, runtime bindings, or product-layer artifacts under `.floe/`, not create parallel runtime semantics.
 

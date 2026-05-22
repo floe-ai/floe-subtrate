@@ -1,64 +1,107 @@
-# Floe Substrate — Domain Context
+# Floe Substrate - Domain Context
 
 ## Glossary
+
+### Scope
+A substrate-level organising boundary inside a Workspace.
+_Avoid_: Field, canvas, block, thread, context, pulse scope.
+
+### Default Scope
+The automatically available Scope for a Workspace; any scoped primitive created without an explicit Scope belongs here.
+_Avoid_: invisible global field, unscoped workspace area.
+
+### Scoped Primitive
+A substrate primitive that declares a `scope_id` or derives one from its owning primitive.
+_Avoid_: Field Item, canvas item, block storage.
+
+### Field
+A FloeWeb rendering/projection of a Scope.
+_Avoid_: substrate primitive, source of truth, item list, connection list.
+
+### Field Layout
+Renderer-specific arrangement state for how a Field displays scoped primitives and derived relationships.
+_Avoid_: membership, semantic graph, source of truth.
+
+### Block
+A representational view of a scoped substrate primitive or derived substrate relationship.
+_Avoid_: storage category, substrate primitive, `.floe/blocks`.
+
+### Derived Relationship
+A relationship rendered in a Field because it already exists on the underlying substrate primitives.
+_Avoid_: Field Connection, relationship ontology, field-owned edge.
 
 ### Pulse
 Bus-owned scheduled event creation. A pulse fires at a configured time and creates the canonical `pulse.fired` event for its subscribers. Pulse is NOT heartbeat, keepalive, runtime wait-refresh, or inherently actor activation.
 
-### Pulse Scope
-Pulse supports two scopes:
-- **workspace** — portable, stored in `.floe/floe.yaml` under `pulses:`. Committed with the repository. Workspace automation should use this scope.
-- **local** — private/personal, stored in bus SQLite or `~/.floe` state. Personal reminders use this scope unless the user explicitly wants the pulse committed.
+### Pulse Persistence
+Where and how a Pulse definition is stored or carried.
+- **workspace-backed** - portable, stored with the workspace configuration and committed with the repository.
+- **local/runtime-backed** - private or runtime-local, stored in bus/local state rather than committed workspace configuration.
+_Avoid_: Pulse Scope.
 
 ### Pulse Definition
-A portable or local declaration of a scheduled pulse, including its schedule, `pulse.fired` event payload, and subscribers.
+A portable or local declaration of a scheduled Pulse, including its schedule, `pulse.fired` event payload, subscribers, persistence, and Scope where relevant.
 
 ### Pulse Runtime State
-Ephemeral scheduling state (next fire time, last fired, active/paused) stored in bus SQLite. Rebuilt from definitions on workspace attachment. Not portable — local to each bus instance.
+Ephemeral scheduling state (next fire time, last fired, active/paused) stored in bus SQLite. Rebuilt from definitions on workspace attachment. Not portable - local to each bus instance.
 
 ### Scheduled Pulse
-A pulse with a clock-based trigger: either a cron expression with timezone (recurring) or an ISO 8601 timestamp (one-off). Created by agents via `create_pulse` tool or declared in `.floe/floe.yaml`.
+A Pulse with a clock-based trigger: either a cron expression with timezone (recurring) or an ISO 8601 timestamp (one-off).
 
 ### Pulse Subscriber
-A target that receives the created `pulse.fired` event when the pulse fires. Subscriber kind determines whether the event is appended for rendering or delivered for endpoint processing.
+A target that receives the created `pulse.fired` event when the Pulse fires. Subscriber kind determines whether the event is appended for rendering or delivered for endpoint processing.
 
 ### Context Subscriber
-A pulse subscriber that appends the `pulse.fired` event to an existing context for rendering only. It does not create endpoint delivery or activate an actor.
+A Pulse Subscriber that appends the `pulse.fired` event to an existing Context for rendering only. It does not create endpoint delivery or activate an Actor.
 
 ### Endpoint Subscriber
-A pulse subscriber that delivers the `pulse.fired` event to an endpoint, optionally scoped to an existing context. Endpoint delivery may activate only if the endpoint has a processor.
+A Pulse Subscriber that delivers the `pulse.fired` event to an Endpoint, optionally associated with an existing Context. Endpoint delivery may activate only if the Endpoint has a processor.
 
 ### Endpoint
 An addressable participant/interface in the substrate. Humans, agents, webhooks, extensions, schedulers, and future actors are all endpoints. No endpoint type is privileged.
 
+### Actor
+A workspace-scoped Endpoint participant that may communicate through Events.
+_Avoid_: field-owned object, draggable actor object.
+
+### Context
+The scoped work/communication boundary in which Events occur.
+_Avoid_: channel, room, field, actor container.
+
+### Thread
+Legacy or conversational wording for Context. New domain language should use Context.
+
 ### Event
-The communication primitive. All coordination passes through canonical events routed by the bus. A pulse firing produces an event like any other.
+The communication primitive. All coordination passes through canonical Events routed by the bus. A Pulse firing produces an Event like any other.
 
 ### Emit
-The universal substrate publish operation. All endpoints use emit to create canonical events on the bus.
+The universal substrate publish operation. All Endpoints use emit to create canonical Events on the bus.
 
 ### Delivery
-An event made available to a specific endpoint for processing. Context subscribers do not create deliveries.
+An Event made available to a specific Endpoint for processing. Context subscribers do not create deliveries.
+
+### Webhook
+An event source that ingests external input and produces canonical substrate Events.
 
 ### Work Log
-A committed Markdown activity record for human audit. Located at `.floe/agents/<agent_id>/worklogs/YYYY-MM-DD.md`. Runtime output and tool activity — NOT communication.
+A committed Markdown activity record for human audit. Runtime output and tool activity - NOT communication.
 
 ### Turn
-An endpoint's processing cycle for delivered events. Turn end means "this endpoint has finished processing." It is NOT a message.
+An Endpoint's processing cycle for delivered Events. Turn end means "this endpoint has finished processing." It is NOT a message.
 
 ### Extension
-A substrate addition that provides tools, pulse declarations, and/or programmatic Extension Hooks to agents. Lives in `.floe/extensions/NAME/` with an `extension.json` manifest and a TypeScript entry point. Discovered and loaded by the bridge at workspace attach time.
-_Avoid_: Plugin, module, add-on
+A substrate addition that provides tools, Pulse declarations, and/or programmatic Extension Hooks to agents. Lives in the workspace with an extension manifest and TypeScript entry point. Discovered and loaded by the bridge at workspace attach time.
+_Avoid_: Plugin, module, add-on.
 
 ### Extension Manifest
-A JSON file (`extension.json`) declaring extension metadata, capabilities, and optional pulse schedules. Schema-versioned (`floe.extension.v1`).
+A JSON file declaring extension metadata, capabilities, and optional Pulse schedules. Schema-versioned (`floe.extension.v1`).
 
 ### Extension Entry Point
-A TypeScript file that exports a factory function receiving `ExtensionContext` and returning an array of `AgentTool` objects. Loaded via dynamic `import()` under tsx.
-_Avoid_: Pi extension factory (different lifecycle scope)
+A TypeScript file that exports a factory function receiving `ExtensionContext` and returning an array of agent tools. Loaded by the bridge.
+_Avoid_: Pi extension factory (different lifecycle scope).
 
 ### Extension Tool Prefix
-Extension tool names are auto-prefixed with the extension name to prevent collisions. Extension declares `name: "add"`, agent sees `todo_add`.
+Extension tool names are auto-prefixed with the Extension name to prevent collisions. Extension declares `name: "add"`, agent sees `todo_add`.
 
 ### Extension Hook
 A substrate lifecycle point with a real firing path that an Extension can observe or contribute to by registering a TypeScript handler through `ExtensionContext.hooks.on(...)`.
@@ -75,56 +118,45 @@ An Extension Hook whose handler can observe payloads and perform side effects wi
 ### BeforeTurn Injection
 The implemented behaviour-changing Extension Hook result where `BeforeTurn` handlers return `inject` data that is rendered into runtime prompt context.
 
-### Field
-A workspace-local substrate primitive that groups stable references to other substrate primitives and records simple connections between them. Stored as YAML at `.floe/fields/<field-id>.yaml`. The workspace file is the source of truth; bus state is a derived index; FloeWeb is one renderer of a field, not its source of truth. Removing or ignoring FloeWeb does not destroy a field's meaning.
-_Avoid_: "first block type", "block storage", "canvas" as synonyms for Field. A Field is a primitive; canvases and blocks are renderer concerns.
-
-### Root Field
-A Field that is not referenced by any other Field Item in the workspace. Workspace-home Field lists show Root Fields; this is a derived navigation/display classification, not a different storage location or schema.
-
-### Nested Field
-A Field referenced by another Field Item using `field:<field-id>`. Nested Fields remain normal sibling files under `.floe/fields/`, may be referenced by more than one parent Field, and do not imply ownership or directory hierarchy. Removing a Nested Field Item detaches that parent reference; deleting the referenced Field itself is a separate workspace-level action that must not be implied by detaching the reference.
-
-Deleting a Field that is referenced by other Fields is permitted but leaves broken `field:<field-id>` refs behind. Clients should warn before the delete and then render broken refs visibly so the workspace can be repaired. Field deletion is not recursive; Fields referenced by the deleted Field remain normal workspace Fields and may become Root Fields if no other parent references them.
-
-### Field Item
-A field-local entry that references exactly one existing substrate primitive (Actor via a stable actor ref, Context, Pulse, Webhook, Extension, File, Tool, Work Log, Event, or another Field). Identified by a field-local `item_id` so the same primitive can appear more than once in a field and so Field Connections and Field Layout survive substrate ref edits.
-
-### Field Item Ref
-A stable URI-style string identifying the substrate primitive a Field Item points to, in the form `<kind>:<id>`. Examples: `actor:floe`, `actor:<workspace>:operator`, `context:ctx_123`, `pulse:morning-standup`, `webhook:github-pr`, `extension:github`, `file:.floe/instructions/pr-review.md`, `tool:todo_add`, `work_log:.floe/agents/reviewer/worklogs/2026-05-19.md`, `field:inbound-pr-review`, `event:evt_abc`. Actor refs must use the stable actor identity exposed by the substrate and should not leak endpoint implementation details into normal Field UI. The substrate does not pre-validate resolvability; broken refs are reported by clients at read time. Existing substrate primitives keep their existing storage; Fields only reference them.
-
-### Field Connection
-A minimal `from → to` link between two Field Items inside the same Field, addressed by `item_id`. Optional free-form `label` and `metadata` are user/extension/workspace text only — core does not interpret them and there is no relationship ontology.
-
-### Field Layout
-Renderer-specific arrangement state (item positions, dimensions, collapsed state, viewport, per-renderer preferences) for a Field. Stored as a separate sidecar at `.floe/fields/<field-id>.layout.<renderer>.yaml` (e.g. `.layout.floeweb.yaml`). Multiple renderers may each have their own sidecar; the same item may sit in different positions in different Fields. Layout never lives in the semantic field file.
-
-### Block (representational)
-A way a client renders or interprets a Field Item. "Block" is a representational concept, not a storage category or substrate primitive. FloeWeb renders each Field Item as a block on a canvas; another client may render the same items as an outline or list. Existing substrate primitives (Actor, Context, Pulse, Webhook, Extension, File) are NOT stored as blocks; they are referenced by Fields and rendered as blocks by clients.
-_Avoid_: treating "block" as a storage tree or substrate category.
-
 ## Relationships
 
-- An **Extension** provides **Tools**, optional **Pulse** declarations, and optional **Extension Hooks**
-- An **Endpoint** (agent) declares which **Extensions** it uses via frontmatter `extensions: []`
-- The bridge loads **Extensions** at workspace attach alongside **Endpoints** and **Pulses**
-- Extension-declared **Pulses** are registered as normal **Pulses** — the bus is unaware of extensions
-- An **Extension** registers **Extension Hooks** programmatically when its entry point is loaded
-- **Hook Registration** and **Hook Firing** are separate: a registered hook only runs when the bridge/runtime fires that lifecycle point
-- Most active **Extension Hooks** are **Observation Hooks**; **BeforeTurn Injection** is the current implemented behaviour-changing hook result
+- A **Workspace** has one **Default Scope** and may have additional **Scopes**
+- A **Scope** organises **Scoped Primitives**; it does not execute work or own a duplicated membership list
+- A **Field** renders one **Scope** for FloeWeb
+- A **Field Layout** belongs to the Field rendering of a **Scope** and must not determine membership
+- A **Context** belongs to one **Scope**
+- **Events** inherit Scope from their **Context** or event source rather than owning separate field membership
+- A **Pulse** has **Pulse Persistence** and, when scoped, belongs to one **Scope**
 - A **Pulse** creates a canonical **Event** with type `pulse.fired`
 - A **Context Subscriber** appends `pulse.fired` to a **Context** without creating a **Delivery**
 - An **Endpoint Subscriber** creates a **Delivery** for an **Endpoint** and may activate that endpoint's processor
-- A **Field** contains zero or more **Field Items**
-- A **Field Item** holds exactly one **Field Item Ref** pointing to an existing substrate primitive
-- A **Field Connection** links two **Field Items** inside the same Field by `item_id`
-- A **Field Layout** is renderer-specific and stored in a sidecar alongside the Field's semantic file
-- **Field Items** are rendered as **Blocks** by clients; Blocks are representational, not stored
+- A **Webhook** is an event source; webhook Events inherit Scope from webhook configuration when present, otherwise from the Workspace **Default Scope**
+- A **Work Log** derives Scope from its delivery/context when available
+- **Actors** are workspace-scoped and are not contained by Fields
+- **Derived Relationships** are rendered from existing substrate state; editing one must update the primitive that owns the relationship
+- An **Extension** provides **Tools**, optional **Pulse** declarations, and optional **Extension Hooks**
+- An **Endpoint** declares which **Extensions** it uses via frontmatter `extensions: []`
+- The bridge loads **Extensions** at workspace attach alongside **Endpoints** and **Pulses**
+- Extension-declared **Pulses** are registered as normal **Pulses**; the bus is unaware of extensions
+- An **Extension** registers **Extension Hooks** programmatically when its entry point is loaded
+- **Hook Registration** and **Hook Firing** are separate: a registered hook only runs when the bridge/runtime fires that lifecycle point
+- Most active **Extension Hooks** are **Observation Hooks**; **BeforeTurn Injection** is the current implemented behaviour-changing hook result
+
+## Flagged ambiguities
+
+- "Scope" previously appeared in Pulse APIs and docs to mean workspace-backed versus local/runtime-backed storage. Resolved: use **Pulse Persistence** for storage/lifecycle location, and reserve **Scope** for the workspace organising boundary.
+- The earlier Field model made `.floe/fields/<id>.yaml` own Field Items and Field Connections. Resolved: future work treats **Scope** as the substrate primitive and **Field** as the FloeWeb rendering; field-owned item and connection lists are superseded.
 
 ## Deferred Concepts
 
+### Many-to-many Scope Membership
+A primitive belonging to more than one Scope. Deferred; first Scope work uses one primary Scope per scoped primitive.
+
+### Global Connections
+Cross-scope or global relationship management. Deferred unless an existing substrate primitive already owns that relationship.
+
 ### Idle Pulse
-An idle-time-based pulse that fires after an endpoint has been idle for a configured duration. Deferred — it is a lifecycle/keepalive concern, not scheduled event delivery. The config fields in `floe.yaml` (`pulse.after_idle`, `pulse.min_interval`) remain as declared schema but are not implemented.
+An idle-time-based Pulse that fires after an Endpoint has been idle for a configured duration. Deferred - it is a lifecycle/keepalive concern, not scheduled event delivery.
 
 ### Pending Response Timeout
-A timeout mechanism for stale `response.expected: true` states. Separate lifecycle concern from pulse. Agents wait indefinitely; timeouts are optional lifecycle management to be designed separately.
+A timeout mechanism for stale `response.expected: true` states. Separate lifecycle concern from Pulse. Agents wait indefinitely; timeouts are optional lifecycle management to be designed separately.
