@@ -7,7 +7,13 @@ import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 import { ContextStore, applyContextSchema } from "./contexts/store.js";
 import { resolveContext, type NotContextParticipantError } from "./contexts/resolver.js";
-import { ScopeStore, applyScopeSchema, type ScopeRecord } from "./scopes/store.js";
+import {
+  DEFAULT_SCOPE_ID,
+  ScopeNotFoundError,
+  ScopeStore,
+  applyScopeSchema,
+  type ScopeRecord
+} from "./scopes/store.js";
 
 type Broadcast = (type: string, payload: Record<string, unknown>) => void;
 
@@ -67,6 +73,8 @@ export type EventCommand = {
   idempotency_key?: string | null;
   /** Caller-supplied context_id (rule 1). When omitted, resolver decides. */
   context_id?: string | null;
+  /** Caller-supplied organising Scope for newly-created contexts. Existing Context Scope remains authoritative. */
+  scope_id?: string | null;
   /** Bridge passes the context_id of the delivery currently being processed (rules 2/3). */
   current_delivery_context_id?: string | null;
 };
@@ -84,6 +92,7 @@ export type TriggerEventCommand = {
   workspace_id: string;
   target_endpoint_id: string;
   context_id?: string | null;
+  scope_id?: string | null;
   content: Record<string, unknown>;
   metadata: Record<string, unknown> & { trigger_kind: "pulse" | "webhook" | string };
   correlation_id?: string | null;
@@ -101,6 +110,7 @@ export type EventEnvelope = {
   source_endpoint_id: string | null;
   thread_id: string;
   context_id: string;
+  scope_id: string;
   correlation_id: string | null;
   destination_json: DestinationSelector;
   content: Record<string, unknown>;
@@ -209,6 +219,7 @@ export class BusStore {
         workspace_id TEXT NOT NULL,
         source_endpoint_id TEXT,
         thread_id TEXT NOT NULL,
+        scope_id TEXT NOT NULL DEFAULT 'default',
         correlation_id TEXT,
         destination_json TEXT NOT NULL,
         content_json TEXT NOT NULL,
@@ -336,6 +347,7 @@ export class BusStore {
     this.addColumnIfMissing("events", "destination_json", "TEXT");
     this.addColumnIfMissing("events", "response_json", "TEXT");
     this.addColumnIfMissing("events", "context_id", "TEXT");
+    this.addColumnIfMissing("events", "scope_id", "TEXT NOT NULL DEFAULT 'default'");
     this.addColumnIfMissing("delivery_bundles", "wait_id", "TEXT");
     this.addColumnIfMissing("delivery_bundles", "resume_reason", "TEXT NOT NULL DEFAULT 'event'");
     this.addColumnIfMissing("runtime_telemetry", "delivery_id", "TEXT");
@@ -344,6 +356,7 @@ export class BusStore {
     applyScopeSchema(this.db);
     this.backfillEventDestinationJson();
     this.backfillEventResponseJson();
+    this.backfillEventScopeId();
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -367,6 +380,18 @@ export class BusStore {
       UPDATE events
       SET response_json = '{"expected":false,"mode":"open","correlation_id":null,"timeout_at":null}'
       WHERE response_json IS NULL OR response_json = ''
+    `);
+  }
+
+  private backfillEventScopeId(): void {
+    this.db.exec(`
+      UPDATE events
+      SET scope_id = COALESCE((
+        SELECT contexts.scope_id
+        FROM contexts
+        WHERE contexts.context_id = events.context_id
+      ), 'default')
+      WHERE context_id IS NOT NULL
     `);
   }
 
@@ -434,6 +459,14 @@ export class BusStore {
     const scope = this.scopeStore.updateScope(input);
     if (scope) broadcast("scope_updated", { scope });
     return scope;
+  }
+
+  private resolveScopeId(workspaceId: string, scopeId?: string | null): string {
+    if (!scopeId) return this.scopeStore.ensureDefaultScope(workspaceId).scope_id;
+    if (!this.scopeStore.getScope(workspaceId, scopeId)) {
+      throw new ScopeNotFoundError(workspaceId, scopeId);
+    }
+    return scopeId;
   }
 
   listRuntimeBindings(workspaceId?: string): RuntimeBindingRecord[] {
@@ -763,6 +796,7 @@ export class BusStore {
         const existing = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?").get(command.idempotency_key) as any;
         if (existing) return this.rowToEvent(existing);
       }
+      if (command.scope_id) this.resolveScopeId(command.workspace_id, command.scope_id);
 
       const resolution = resolveContext(
         {
@@ -778,6 +812,7 @@ export class BusStore {
       if (resolution.created) {
         this.contextStore.createContext({
           workspace_id: command.workspace_id,
+          scope_id: this.resolveScopeId(command.workspace_id, command.scope_id ?? null),
           created_by_endpoint_id: command.source_endpoint_id,
           participants: resolution.participants ?? [command.source_endpoint_id],
           context_id: resolution.context_id
@@ -825,6 +860,7 @@ export class BusStore {
         const existing = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?").get(command.idempotency_key) as any;
         if (existing) return this.rowToEvent(existing);
       }
+      if (command.scope_id) this.resolveScopeId(command.workspace_id, command.scope_id);
 
       let contextId: string;
       if (command.context_id) {
@@ -836,6 +872,7 @@ export class BusStore {
       } else {
         contextId = this.contextStore.createContext({
           workspace_id: command.workspace_id,
+          scope_id: this.resolveScopeId(command.workspace_id, command.scope_id ?? null),
           created_by_endpoint_id: command.target_endpoint_id,
           participants: [command.target_endpoint_id]
         });
@@ -1087,7 +1124,7 @@ export class BusStore {
     return rows.reverse();
   }
 
-  listEvents(filters: { workspace_id?: string; thread_id?: string; context_id?: string; limit?: number }): EventEnvelope[] {
+  listEvents(filters: { workspace_id?: string; thread_id?: string; context_id?: string; scope_id?: string; limit?: number }): EventEnvelope[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
     if (filters.context_id) {
       const params: any[] = [];
@@ -1097,22 +1134,45 @@ export class BusStore {
         sql += " AND workspace_id = ?";
         params.push(filters.workspace_id);
       }
+      if (filters.scope_id) {
+        sql += " AND scope_id = ?";
+        params.push(filters.scope_id);
+      }
       sql += " ORDER BY created_at ASC LIMIT ?";
       params.push(limit);
       return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
     }
     if (filters.workspace_id && filters.thread_id) {
-      return (this.db.prepare(`
-        SELECT * FROM events WHERE workspace_id = ? AND thread_id = ? ORDER BY created_at ASC LIMIT ?
-      `).all(filters.workspace_id, filters.thread_id, limit) as any[]).map((row) => this.rowToEvent(row));
+      const params: any[] = [filters.workspace_id, filters.thread_id];
+      let sql = "SELECT * FROM events WHERE workspace_id = ? AND thread_id = ?";
+      if (filters.scope_id) {
+        sql += " AND scope_id = ?";
+        params.push(filters.scope_id);
+      }
+      sql += " ORDER BY created_at ASC LIMIT ?";
+      params.push(limit);
+      return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
     }
     if (filters.workspace_id) {
-      return (this.db.prepare(`
-        SELECT * FROM events WHERE workspace_id = ? ORDER BY created_at ASC LIMIT ?
-      `).all(filters.workspace_id, limit) as any[]).map((row) => this.rowToEvent(row));
+      const params: any[] = [filters.workspace_id];
+      let sql = "SELECT * FROM events WHERE workspace_id = ?";
+      if (filters.scope_id) {
+        sql += " AND scope_id = ?";
+        params.push(filters.scope_id);
+      }
+      sql += " ORDER BY created_at ASC LIMIT ?";
+      params.push(limit);
+      return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
     }
-    return (this.db.prepare("SELECT * FROM events ORDER BY created_at ASC LIMIT ?").all(limit) as any[])
-      .map((row) => this.rowToEvent(row));
+    const params: any[] = [];
+    let sql = "SELECT * FROM events";
+    if (filters.scope_id) {
+      sql += " WHERE scope_id = ?";
+      params.push(filters.scope_id);
+    }
+    sql += " ORDER BY created_at ASC LIMIT ?";
+    params.push(limit);
+    return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
   }
 
   listDeliveries(filters: { workspace_id?: string; limit?: number }): unknown[] {
@@ -1394,6 +1454,10 @@ export class BusStore {
     };
   }
 
+  private contextScopeId(contextId: string): string {
+    return this.contextStore.getContext(contextId)?.scope_id ?? DEFAULT_SCOPE_ID;
+  }
+
   private insertEvent(
     input: {
       type: string;
@@ -1425,6 +1489,7 @@ export class BusStore {
       source_endpoint_id: input.source_endpoint_id,
       thread_id: threadIdForStorage,
       context_id: contextId,
+      scope_id: this.contextScopeId(contextId),
       correlation_id: input.correlation_id ?? null,
       destination_json: input.destination,
       content: input.content,
@@ -1435,9 +1500,9 @@ export class BusStore {
     this.db.prepare(`
       INSERT INTO events (
         event_id, type, workspace_id, source_endpoint_id, destination_endpoint_id, thread_id, context_id, correlation_id,
-        destination_json, content_json, response_json, metadata_json, idempotency_key, created_at
+        scope_id, destination_json, content_json, response_json, metadata_json, idempotency_key, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       envelope.event_id,
       envelope.type,
@@ -1447,6 +1512,7 @@ export class BusStore {
       envelope.thread_id,
       envelope.context_id,
       envelope.correlation_id,
+      envelope.scope_id,
       json(envelope.destination_json),
       json(envelope.content),
       json(envelope.response),
@@ -1656,6 +1722,7 @@ export class BusStore {
       source_endpoint_id: row.source_endpoint_id,
       thread_id: row.thread_id,
       context_id: row.context_id ?? row.thread_id,
+      scope_id: row.scope_id ?? DEFAULT_SCOPE_ID,
       correlation_id: row.correlation_id ?? null,
       destination_json: parseJson<DestinationSelector>(row.destination_json),
       content: parseJson<Record<string, unknown>>(row.content_json),

@@ -18,7 +18,7 @@ import {
   deleteField
 } from "./fields-store.js";
 import { FieldsWatcherRegistry } from "./fields-watcher.js";
-import { ScopeAlreadyExistsError } from "./scopes/store.js";
+import { ScopeAlreadyExistsError, ScopeNotFoundError } from "./scopes/store.js";
 
 const EventCommandSchema = z.object({
   type: z.string().min(1),
@@ -39,6 +39,7 @@ const EventCommandSchema = z.object({
   thread_id: z.string().min(1).optional(),
   context_id: z.string().min(1).nullable().optional(),
   current_delivery_context_id: z.string().min(1).nullable().optional(),
+  scope_id: z.string().min(1).nullable().optional(),
   correlation_id: z.string().nullable().optional(),
   content: z.record(z.unknown()),
   response: z.object({
@@ -630,6 +631,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       if (err instanceof ContextParticipantError) {
         return reply.code(409).send({ ok: false, error: err.payload });
       }
+      if (err instanceof ScopeNotFoundError) {
+        return reply.code(404).send({
+          ok: false,
+          error: "scope_not_found",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id
+        });
+      }
       throw err;
     }
   });
@@ -639,6 +648,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       workspace_id: z.string().optional(),
       thread_id: z.string().optional(),
       context_id: z.string().optional(),
+      scope_id: z.string().optional(),
       limit: z.coerce.number().int().positive().optional()
     }).parse(request.query);
     return { events: store.listEvents(query) };
@@ -651,16 +661,20 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   app.get("/v1/contexts", async (request) => {
     const query = z.object({
       participant: z.string().min(1),
-      workspace_id: z.string().optional()
+      workspace_id: z.string().optional(),
+      scope_id: z.string().optional()
     }).parse(request.query);
     const rows = store.contextStore.listContextsForParticipant(query.participant);
-    const filtered = query.workspace_id
-      ? rows.filter((r) => r.workspace_id === query.workspace_id)
-      : rows;
+    const filtered = rows.filter((r) => {
+      if (query.workspace_id && r.workspace_id !== query.workspace_id) return false;
+      if (query.scope_id && r.scope_id !== query.scope_id) return false;
+      return true;
+    });
     return {
       contexts: filtered.map((r) => ({
         context_id: r.context_id,
         workspace_id: r.workspace_id,
+        scope_id: r.scope_id,
         parent_context_id: r.parent_context_id,
         created_by_endpoint_id: r.created_by_endpoint_id,
         created_at: r.created_at,
@@ -680,6 +694,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return {
       context_id: ctx.context_id,
       workspace_id: ctx.workspace_id,
+      scope_id: ctx.scope_id,
       parent_context_id: ctx.parent_context_id,
       created_by_endpoint_id: ctx.created_by_endpoint_id,
       created_at: ctx.created_at,

@@ -48,6 +48,30 @@ describe("ContextStore CRUD", () => {
     expect(parts).toEqual([E1, E2].sort());
   });
 
+  it("migrates a pre-existing contexts table by adding Default Scope before scope indexes", () => {
+    const legacyDb = new DatabaseSync(":memory:");
+    legacyDb.exec("PRAGMA foreign_keys = ON");
+    legacyDb.exec(`
+      CREATE TABLE contexts (
+        context_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        parent_context_id TEXT,
+        created_by_endpoint_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO contexts (
+        context_id, workspace_id, parent_context_id, created_by_endpoint_id, created_at
+      ) VALUES (
+        'ctx_legacy', '${WS}', NULL, '${E1}', '2026-01-01T00:00:00.000Z'
+      );
+    `);
+
+    expect(() => applyContextSchema(legacyDb)).not.toThrow();
+    const migrated = new ContextStore(legacyDb).getContext("ctx_legacy");
+    expect(migrated?.scope_id).toBe("default");
+    legacyDb.close();
+  });
+
   it("isParticipant returns correct truthiness", () => {
     const id = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1, E2] });
     expect(store.isParticipant(id, E1)).toBe(true);

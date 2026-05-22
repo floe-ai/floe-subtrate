@@ -20,6 +20,13 @@ export class ScopeAlreadyExistsError extends Error {
   }
 }
 
+export class ScopeNotFoundError extends Error {
+  constructor(readonly workspace_id: string, readonly scope_id: string) {
+    super(`Scope '${scope_id}' was not found in workspace '${workspace_id}'.`);
+    this.name = "ScopeNotFoundError";
+  }
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }

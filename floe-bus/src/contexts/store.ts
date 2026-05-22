@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { DEFAULT_SCOPE_ID } from "../scopes/store.js";
 
 export type ContextRecord = {
   context_id: string;
   workspace_id: string;
+  scope_id: string;
   parent_context_id: string | null;
   created_by_endpoint_id: string;
   created_at: string;
@@ -30,11 +32,19 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as any[];
+  if (!columns.some((item) => item.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 export function applyContextSchema(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS contexts (
       context_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT 'default',
       parent_context_id TEXT,
       created_by_endpoint_id TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -53,6 +63,11 @@ export function applyContextSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_context_participants_endpoint
       ON context_participants(endpoint_id, context_id);
   `);
+  addColumnIfMissing(db, "contexts", "scope_id", "TEXT NOT NULL DEFAULT 'default'");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_contexts_workspace_scope
+      ON contexts(workspace_id, scope_id, created_at);
+  `);
 }
 
 export class ContextStore implements ContextStoreReader {
@@ -60,6 +75,7 @@ export class ContextStore implements ContextStoreReader {
 
   createContext(input: {
     workspace_id: string;
+    scope_id?: string | null;
     created_by_endpoint_id: string;
     participants: readonly string[];
     parent_context_id?: string | null;
@@ -67,15 +83,16 @@ export class ContextStore implements ContextStoreReader {
   }): string {
     const id = input.context_id ?? `ctx_${randomUUID()}`;
     const ts = nowIso();
+    const scopeId = input.scope_id ?? DEFAULT_SCOPE_ID;
     const insertContext = this.db.prepare(`
-      INSERT INTO contexts (context_id, workspace_id, parent_context_id, created_by_endpoint_id, created_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO contexts (context_id, workspace_id, scope_id, parent_context_id, created_by_endpoint_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
     const insertParticipant = this.db.prepare(`
       INSERT OR IGNORE INTO context_participants (context_id, endpoint_id, joined_at)
       VALUES (?, ?, ?)
     `);
-    insertContext.run(id, input.workspace_id, input.parent_context_id ?? null, input.created_by_endpoint_id, ts);
+    insertContext.run(id, input.workspace_id, scopeId, input.parent_context_id ?? null, input.created_by_endpoint_id, ts);
     const seen = new Set<string>();
     for (const ep of input.participants) {
       if (seen.has(ep)) continue;
@@ -91,6 +108,7 @@ export class ContextStore implements ContextStoreReader {
     return {
       context_id: row.context_id,
       workspace_id: row.workspace_id,
+      scope_id: row.scope_id ?? DEFAULT_SCOPE_ID,
       parent_context_id: row.parent_context_id ?? null,
       created_by_endpoint_id: row.created_by_endpoint_id,
       created_at: row.created_at
@@ -154,6 +172,7 @@ export class ContextStore implements ContextStoreReader {
     return rows.map((row) => ({
       context_id: row.context_id,
       workspace_id: row.workspace_id,
+      scope_id: row.scope_id ?? DEFAULT_SCOPE_ID,
       parent_context_id: row.parent_context_id ?? null,
       created_by_endpoint_id: row.created_by_endpoint_id,
       created_at: row.created_at,
