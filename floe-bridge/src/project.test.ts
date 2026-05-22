@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it, expect, afterEach } from "vitest";
 import YAML from "yaml";
-import { ensureProjectTemplate, materializeSavedConfig } from "./project.js";
+import { ensureProjectTemplate, loadProject, materializeSavedConfig } from "./project.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,6 +96,47 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
 
     const after = readFileSync(agentPath, "utf8");
     expect(after).toBe(original);
+  });
+
+  it("initializes missing template files when the field directory already exists", () => {
+    const workspace = makeTmp();
+    mkdirSync(join(workspace, ".floe", "fields"), { recursive: true });
+
+    ensureProjectTemplate(workspace, "Test Project");
+
+    expect(existsSync(join(workspace, ".floe", "fields"))).toBe(true);
+    expect(existsSync(join(workspace, ".floe", "floe.yaml"))).toBe(true);
+    expect(existsSync(join(workspace, ".floe", "agents", "floe.md"))).toBe(true);
+    expect(existsSync(join(workspace, ".floe", "extensions", "README.md"))).toBe(true);
+    expect(existsSync(join(workspace, ".floe", "skills", "substrate-build", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(workspace, ".floe", "mcp", "README.md"))).toBe(true);
+    expect(existsSync(join(workspace, ".floe", "state", "README.md"))).toBe(true);
+    expect(existsSync(join(workspace, ".floe", "state", ".gitignore"))).toBe(true);
+  });
+
+  it("fills missing canonical files without overwriting existing project config", () => {
+    const workspace = makeTmp();
+    const floeDir = join(workspace, ".floe");
+    const projectConfigPath = join(floeDir, "floe.yaml");
+    const customProjectConfig = "schema: floe.workspace.v1\nversion: 99\n";
+    mkdirSync(floeDir, { recursive: true });
+    writeFileSync(projectConfigPath, customProjectConfig, "utf8");
+
+    ensureProjectTemplate(workspace, "Test Project");
+
+    expect(readFileSync(projectConfigPath, "utf8")).toBe(customProjectConfig);
+    expect(existsSync(join(workspace, ".floe", "agents", "floe.md"))).toBe(true);
+  });
+
+  it("keeps the project config hash stable across repeated template ensures", () => {
+    const workspace = makeTmp();
+
+    ensureProjectTemplate(workspace, "Test Project");
+    const first = loadProject(workspace);
+    ensureProjectTemplate(workspace, "Test Project");
+    const second = loadProject(workspace);
+
+    expect(first.config_hash).toBe(second.config_hash);
   });
 });
 

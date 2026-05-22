@@ -42,14 +42,13 @@ export type SavedProjectConfig = {
 
 export function ensureProjectTemplate(workspacePath: string, workspaceName: string): void {
   const floeDir = join(workspacePath, ".floe");
-  if (existsSync(floeDir)) return;
   mkdirSync(join(floeDir, "agents"), { recursive: true });
   mkdirSync(join(floeDir, "extensions"), { recursive: true });
   mkdirSync(join(floeDir, "skills", "substrate-build"), { recursive: true });
   mkdirSync(join(floeDir, "mcp"), { recursive: true });
   mkdirSync(join(floeDir, "state"), { recursive: true });
 
-  writeFileSync(join(floeDir, "floe.yaml"), YAML.stringify({
+  writeIfMissing(join(floeDir, "floe.yaml"), YAML.stringify({
     schema: "floe.workspace.v1",
     version: 1,
     applied_config: {
@@ -73,7 +72,7 @@ export function ensureProjectTemplate(workspacePath: string, workspaceName: stri
     }
   }), "utf8");
 
-  writeFileSync(join(floeDir, "agents", "floe.md"), `---
+  writeIfMissing(join(floeDir, "agents", "floe.md"), `---
 schema: floe.agent.v1
 agent_id: floe
 label: Floe
@@ -122,16 +121,21 @@ Never end a turn without emitting at least one message event if you received a
 message that expects a reply.
 `, "utf8");
 
-  writeFileSync(join(floeDir, "extensions", "README.md"), "# Extensions\n\nProject-local Floe extensions can be placed here.\n", "utf8");
-  writeFileSync(join(floeDir, "skills", "substrate-build", "SKILL.md"), `# substrate-build
+  writeIfMissing(join(floeDir, "extensions", "README.md"), "# Extensions\n\nProject-local Floe extensions can be placed here.\n", "utf8");
+  writeIfMissing(join(floeDir, "skills", "substrate-build", "SKILL.md"), `# substrate-build
 
 Use this skill to inspect and extend the Floe substrate. Preserve the daemon
 boundary: bus owns durable routing state, bridge owns runtime adaptation, and
 web owns the human operator experience.
 `, "utf8");
-  writeFileSync(join(floeDir, "mcp", "README.md"), "# MCP\n\nReference or copy runtime-native MCP profiles here when needed.\n", "utf8");
-  writeFileSync(join(floeDir, "state", "README.md"), "# State\n\nEphemeral project-local Floe runtime state may be placed here.\n", "utf8");
-  writeFileSync(join(floeDir, "state", ".gitignore"), "*\n!.gitignore\n!README.md\n", "utf8");
+  writeIfMissing(join(floeDir, "mcp", "README.md"), "# MCP\n\nReference or copy runtime-native MCP profiles here when needed.\n", "utf8");
+  writeIfMissing(join(floeDir, "state", "README.md"), "# State\n\nEphemeral project-local Floe runtime state may be placed here.\n", "utf8");
+  writeIfMissing(join(floeDir, "state", ".gitignore"), "*\n!.gitignore\n!README.md\n", "utf8");
+}
+
+function writeIfMissing(path: string, data: string, encoding: BufferEncoding): void {
+  if (existsSync(path)) return;
+  writeFileSync(path, data, encoding);
 }
 
 export function loadProject(workspacePath: string): ProjectLoadResult {
