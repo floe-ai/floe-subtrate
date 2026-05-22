@@ -137,7 +137,7 @@ Declarative YAML hook config remains future/not implemented.
 
 This should move near the top of the roadmap.
 
-> **Framing correction (2026-05).** Blocks are representational, not a storage category. Existing substrate primitives (actors, contexts, pulses, webhooks, extensions, files, work logs, events, tools) are NOT moved into a `.floe/blocks/` tree — they keep their existing homes. A **Field** is a new substrate primitive that groups stable refs to those primitives. Clients render Field Items as Blocks. The first slice in this section adds the Field primitive (see `docs/adr/0003-field-substrate-primitive.md`); it does not introduce a parallel "block substrate".
+> **Framing correction (2026-05).** Blocks are representational, not a storage category. Existing substrate primitives (actors, contexts, pulses, webhooks, extensions, files, work logs, events, tools) are NOT moved into a `.floe/blocks/` tree — they keep their existing homes. A **Field** is a substrate primitive that groups stable refs to those primitives. Clients render Field Items as Blocks. The first slice in this section is complete: the Field primitive, FloeWeb renderer, watcher loop, ordinary actor file-tool proof, and live close-out evidence are documented in `docs/adr/0003-field-substrate-primitive.md`, `docs/field-substrate-slice-prd.md`, and `docs/evidence/field-block-slice/README.md`. This does not introduce a parallel "block substrate".
 
 Blocks are not domain features.
 
@@ -277,7 +277,9 @@ Domain blocks should remain extensions or workspace conventions until proven oth
 
 ## Required first slice
 
-Before implementation, produce a focused block model proposal covering:
+Status: **complete** for the Field first slice. The implemented slice proves a minimal block model by using Field identity, Field Item refs, semantic YAML, FloeWeb layout sidecars, parent/nested Field refs, Field Connections, React Flow composition, bus watcher events, ordinary actor file tools, and committed live evidence.
+
+The original first-slice checklist is retained here as the acceptance frame that the Field slice satisfied:
 
 1. block identity
 2. how a block references substrate state
@@ -292,7 +294,7 @@ Before implementation, produce a focused block model proposal covering:
 11. minimal implementation path proving block representation without domain workflows
 12. tests/live proof
 
-Do not implement domain-specific blocks in this slice.
+Next slice family: substrate↔FloeWeb parity for each remaining Field Item kind (`context`, `pulse`, `webhook`, `extension`, `file`, `tool`, `work_log`, `event`). Treat each as its own focused PRD/issue slice after the Field close-out; do not expand this into domain-specific blocks or workflows.
 
 ---
 
