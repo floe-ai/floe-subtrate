@@ -87,8 +87,10 @@ describe("trigger emission — target-only contexts (Slice 3)", () => {
 
     for (const event of [e1, e2]) {
       expect(event.source_endpoint_id).toBeNull();
+      expect(event.scope_id).toBe("default");
       expect(event.metadata.trigger_kind).toBe("webhook");
       expect(event.metadata.route_id).toBe("route_alpha");
+      expect(store.contextStore.getContext(event.context_id!)?.scope_id).toBe("default");
       const parts = store.contextStore.getContextParticipants(event.context_id!);
       expect(parts).toEqual([TARGET]); // first agent endpoint registered for the workspace
       expect(parts.some((p) => p.includes("system:") || p.includes(":webhook:"))).toBe(false);

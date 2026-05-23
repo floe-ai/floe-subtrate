@@ -24,6 +24,7 @@ describe("Work Logs", () => {
       started_at: "2025-01-15T10:00:00Z",
       ended_at: "2025-01-15T10:01:30Z",
       trigger_type: "message",
+      scope_id: "default",
       thread_id: "thread:ws1:main",
       delivery_id: "delivery-001",
       delivered_events: [
@@ -100,6 +101,12 @@ describe("Work Logs", () => {
     const content = readLog();
     expect(content).toContain("message");
     expect(content).toContain("thread:ws1:main");
+  });
+
+  it("contains the derived Scope", () => {
+    appendWorkLog(tempDir, makeEntry({ scope_id: "research" }));
+    const content = readLog();
+    expect(content).toContain("**Scope:** research");
   });
 
   it("contains delivered events", () => {

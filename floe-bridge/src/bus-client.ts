@@ -2,6 +2,7 @@ export type EventEnvelope = {
   event_id: string;
   type: string;
   workspace_id: string;
+  scope_id?: string | null;
   /** Source endpoint that emitted the event. Null for system-originated triggers (pulse, webhook). */
   source_endpoint_id: string | null;
   thread_id: string;
@@ -105,6 +106,7 @@ export class BusClient {
     workspace_id: string;
     parent_context_id: string | null;
     created_by_endpoint_id: string | null;
+    scope_id?: string | null;
     created_at: string;
     participants: string[];
   } | null> {
@@ -117,6 +119,7 @@ export class BusClient {
       workspace_id: string;
       parent_context_id: string | null;
       created_by_endpoint_id: string | null;
+      scope_id?: string | null;
       created_at: string;
       participants: string[];
     }>;

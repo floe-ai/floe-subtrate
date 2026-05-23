@@ -1263,6 +1263,7 @@ export class BusStore {
       ORDER BY created_at ASC LIMIT 1
     `).get(workspaceId) as any;
     if (!destination) throw new Error("No agent endpoint is registered for this workspace");
+    const scopeId = this.scopeStore.ensureDefaultScope(workspaceId).scope_id;
     // Per design §3.1.6: webhook ingest is a non-actor trigger. Bus creates a
     // target-only context and emits with source_endpoint_id = null.
     return this.emitTriggerEvent(
@@ -1270,6 +1271,7 @@ export class BusStore {
         type: "webhook_received",
         workspace_id: workspaceId,
         target_endpoint_id: destination.endpoint_id,
+        scope_id: scopeId,
         correlation_id: typeof body.correlation_id === "string" ? body.correlation_id : null,
         content: {
           text: typeof body.text === "string" ? body.text : `Webhook ${routeId} received`,

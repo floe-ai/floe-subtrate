@@ -133,6 +133,7 @@ describe("PiAgentCoreAdapter", () => {
     const worklogDel2 = telemetryCalls.filter((item) => item.delivery_id === "del-2" && item.kind === "visible_output_worklog");
     expect(worklogDel1).toHaveLength(1);
     expect(worklogDel1[0].payload?.text).toContain("First deterministic reply.");
+    expect(worklogDel1[0].payload?.scope_id).toBe("default");
     expect(worklogDel2).toHaveLength(1);
     expect(worklogDel2[0].payload?.text).toContain("Second deterministic reply.");
 
@@ -999,6 +1000,7 @@ describe("Substrate model — explicit emit only", () => {
             workspace_id: "workspace:test",
             parent_context_id: null,
             created_by_endpoint_id: "actor:workspace:test:operator",
+            scope_id: "research",
             created_at: new Date().toISOString(),
             participants: ["actor:workspace:test:operator", "actor:workspace:test:floe"]
           };
@@ -1008,6 +1010,7 @@ describe("Substrate model — explicit emit only", () => {
 
     const delivery = makeDelivery("del-telemetry-context", "thread-telemetry", "hello");
     (delivery.events[0] as any).context_id = "ctx_telemetry";
+    (delivery.events[0] as any).scope_id = "event-scope";
 
     await adapter.handleBundle(
       context,
@@ -1017,6 +1020,7 @@ describe("Substrate model — explicit emit only", () => {
 
     const worklog = telemetryCalls.find((item) => item.kind === "visible_output_worklog");
     expect(worklog?.payload?.context_id).toBe("ctx_telemetry");
+    expect(worklog?.payload?.scope_id).toBe("research");
   });
 
   it("delivery prompt includes current_context_id and fetched current_context_participants when trigger has context_id", async () => {
@@ -1710,6 +1714,7 @@ describe("Full actor work loop acceptance", () => {
         event_id: "evt:acceptance",
         type: "message",
         workspace_id: workspaceId,
+        scope_id: "work-scope",
         source_endpoint_id: `actor:${workspaceId}:operator`,
         thread_id: `thread:${workspaceId}:floe`,
         correlation_id: null,
@@ -1797,6 +1802,7 @@ describe("Full actor work loop acceptance", () => {
     const context = {
       bridge_id: "bridge:test",
       workspace_locator: workspaceDir,
+      agent_id: "floe",
       bus: {
         async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
         async emit(event: any) { emittedEvents.push(event); },
@@ -1851,10 +1857,13 @@ describe("Full actor work loop acceptance", () => {
 
     // 6. Work log file was written to workspace
     const worklogDir = join(workspaceDir, ".floe", "agents", "floe", "worklogs");
-    if (existsSync(worklogDir)) {
-      const files = require("fs").readdirSync(worklogDir);
-      expect(files.length).toBeGreaterThan(0);
-    }
+    const files = require("fs").readdirSync(worklogDir);
+    expect(files.length).toBeGreaterThan(0);
+    const worklogContent = readFileSync(join(worklogDir, files[0]), "utf-8");
+    expect(worklogContent).toContain("**Scope:** work-scope");
+    expect(worklogContent).toContain("- 📄 output.txt");
+    expect(existsSync(join(workspaceDir, ".floe", "blocks"))).toBe(false);
+    expect(existsSync(join(workspaceDir, ".floe", "fields"))).toBe(false);
 
     // Cleanup
     rmSync(workspaceDir, { recursive: true, force: true });

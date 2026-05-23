@@ -41,6 +41,7 @@ type RuntimeTurnContext = {
   delivery_attempt_id: string;
   endpoint_id: string;
   workspace_id: string;
+  scope_id: string;
   thread_id: string;
   source_endpoint_id: string;
   correlation_id: string | null;
@@ -168,6 +169,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         const ctx = await context.bus.getContext(turn.context_id);
         if (ctx && Array.isArray(ctx.participants)) {
           currentContextParticipants = ctx.participants.filter((p): p is string => typeof p === "string");
+          if (typeof ctx.scope_id === "string" && ctx.scope_id.trim()) {
+            turn.scope_id = ctx.scope_id;
+          }
         } else if (ctx) {
           console.warn("[bridge] getContext returned unexpected shape; rendering empty participants", {
             context_id: turn.context_id
@@ -680,6 +684,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       endpoint_id: bundle.endpoint_id,
       workspace_id: bundle.workspace_id,
       thread_id: threadId,
+      scope_id: typeof trigger?.scope_id === "string" && trigger.scope_id.trim() ? trigger.scope_id : "default",
       source_endpoint_id: sourceEndpoint,
       correlation_id: trigger?.correlation_id ?? null,
       started_at: new Date().toISOString(),
@@ -791,6 +796,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         delivery_attempt_id: turn.delivery_attempt_id,
         endpoint_id: turn.endpoint_id,
         thread_id: turn.thread_id,
+        scope_id: turn.scope_id,
         started_at: turn.started_at,
         trigger_event_id: turn.trigger_event_id,
         context_id: turn.context_id,
@@ -812,6 +818,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       started_at: turn.started_at,
       ended_at: new Date().toISOString(),
       trigger_type: bundle.events?.[0]?.type ?? "unknown",
+      scope_id: turn.scope_id,
       thread_id: turn.thread_id,
       delivery_id: turn.delivery_id,
       delivered_events: (bundle.events ?? []).map(e => ({
