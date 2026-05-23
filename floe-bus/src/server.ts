@@ -8,7 +8,7 @@ import YAML from "yaml";
 import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
-import { BROADCAST_TARGETS, BusStore, ContextParticipantError, type EventCommand, type PulseSubscriber } from "./store.js";
+import { BROADCAST_TARGETS, BusStore, ContextNotFoundError, ContextParticipantError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadAllFields,
@@ -639,6 +639,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
           scope_id: err.scope_id
         });
       }
+      if (err instanceof ContextNotFoundError) {
+        return reply.code(404).send({
+          ok: false,
+          error: "context_not_found",
+          workspace_id: err.workspace_id,
+          context_id: err.context_id
+        });
+      }
       throw err;
     }
   });
@@ -801,10 +809,12 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   app.post("/v1/pulses", async (request, reply) => {
-    const body = z.object({
+    const parsed = z.object({
       pulse_id: z.string().min(1),
       workspace_id: z.string().min(1),
-      scope: z.enum(["workspace", "local"]).optional(),
+      persistence: z.enum(["workspace", "local"]).optional(),
+      scope_id: z.string().min(1).nullable().optional(),
+      current_context_id: z.string().min(1).nullable().optional(),
       trigger: z.object({
         type: z.enum(["once", "cron"]),
         at: z.string().optional(),
@@ -818,12 +828,45 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       content: z.record(z.unknown()).optional(),
       subscribers: z.array(PulseSubscriberSchema),
       created_by: z.string().optional()
-    }).parse(request.body);
-    const pulse = store.createPulse({
-      ...body,
-      content: body.event?.content ?? body.content ?? {},
-      subscribers: body.subscribers as PulseSubscriber[]
-    }, broadcast);
+    }).strict().safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        ok: false,
+        error: {
+          code: "invalid_pulse_command",
+          message: "Invalid pulse command",
+          issues: parsed.error.issues
+        }
+      });
+    }
+    const body = parsed.data;
+    let pulse: unknown;
+    try {
+      pulse = store.createPulse({
+        ...body,
+        persistence: body.persistence as PulsePersistence | undefined,
+        content: body.event?.content ?? body.content ?? {},
+        subscribers: body.subscribers as PulseSubscriber[]
+      }, broadcast);
+    } catch (err) {
+      if (err instanceof ScopeNotFoundError) {
+        return reply.code(404).send({
+          ok: false,
+          error: "scope_not_found",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id
+        });
+      }
+      if (err instanceof ContextNotFoundError) {
+        return reply.code(404).send({
+          ok: false,
+          error: "context_not_found",
+          workspace_id: err.workspace_id,
+          context_id: err.context_id
+        });
+      }
+      throw err;
+    }
     // Schedule in the priority queue
     const record = pulse as any;
     if (record.status === "active" && record.next_fire_at) {
@@ -835,7 +878,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   app.get("/v1/pulses", async (request) => {
     const query = z.object({
       workspace_id: z.string().optional(),
-      status: z.string().optional()
+      status: z.string().optional(),
+      scope_id: z.string().optional()
     }).parse(request.query);
     return { pulses: store.listPulses(query) };
   });
@@ -964,6 +1008,7 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
             workspace_id: pulse.workspace_id,
             target_endpoint_id: endpointId,
             context_id: subscriber.context_id ?? null,
+            scope_id: subscriber.context_id ? null : ((pulse as any).scope_id ?? null),
             correlation_id: null,
             content,
             metadata

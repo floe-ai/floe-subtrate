@@ -181,7 +181,9 @@ export class BusClient {
   async createPulse(input: {
     pulse_id: string;
     workspace_id: string;
-    scope?: string;
+    persistence?: "workspace" | "local";
+    scope_id?: string | null;
+    current_context_id?: string | null;
     trigger: { type: string; at?: string; schedule?: string; timezone?: string };
     event?: { type: "pulse.fired"; content: Record<string, unknown> };
     content?: Record<string, unknown>;
@@ -194,10 +196,11 @@ export class BusClient {
     return this.post("/v1/pulses", input);
   }
 
-  async listPulses(filters: { workspace_id?: string; status?: string }): Promise<{ pulses: unknown[] }> {
+  async listPulses(filters: { workspace_id?: string; status?: string; scope_id?: string }): Promise<{ pulses: unknown[] }> {
     const params = new URLSearchParams();
     if (filters.workspace_id) params.set("workspace_id", filters.workspace_id);
     if (filters.status) params.set("status", filters.status);
+    if (filters.scope_id) params.set("scope_id", filters.scope_id);
     return this.get(`/v1/pulses?${params}`) as Promise<{ pulses: unknown[] }>;
   }
 

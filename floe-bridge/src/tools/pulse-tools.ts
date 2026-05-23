@@ -12,9 +12,14 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
 import YAML from "yaml";
 import type { BusClient } from "../bus-client.js";
+import type { ToolContext } from "./types.js";
+
+type PulsePersistence = "workspace" | "local";
 
 export type PulseDef = {
   pulse_id: string;
+  persistence: PulsePersistence;
+  scope_id?: string;
   trigger: { type: string; at?: string; schedule?: string; timezone?: string };
   event: { type: "pulse.fired"; content: Record<string, unknown> };
   content: Record<string, unknown>;
@@ -168,9 +173,11 @@ function writePulseToFloeYaml(workspaceLocator: string, pulseDef: PulseDef): voi
 
   const entry: Record<string, unknown> = {
     id: pulseDef.pulse_id,
+    persistence: pulseDef.persistence,
     trigger: pulseDef.trigger,
     event: pulseDef.event,
   };
+  if (pulseDef.scope_id) entry.scope_id = pulseDef.scope_id;
   if (pulseDef.subscribers.length > 0) {
     entry.subscribers = pulseDef.subscribers;
   }
@@ -179,10 +186,20 @@ function writePulseToFloeYaml(workspaceLocator: string, pulseDef: PulseDef): voi
   writeFileSync(yamlPath, doc.toString(), "utf8");
 }
 
+function resolvedScopeIdFromCreatePulseResult(result: unknown): string | undefined {
+  const candidate = result && typeof result === "object" && "pulse" in result
+    ? (result as { pulse?: unknown }).pulse
+    : result;
+  if (!candidate || typeof candidate !== "object") return undefined;
+  const scopeId = (candidate as { scope_id?: unknown }).scope_id;
+  return typeof scopeId === "string" && scopeId ? scopeId : undefined;
+}
+
 export function createPulseTools(
   bus: BusClient,
   workspaceId: string,
   workspaceLocator: string | undefined,
+  context: Pick<ToolContext, "getActiveTurn"> = {},
 ): AgentTool[] {
   const createPulseTool: AgentTool = {
     name: "create_pulse",
@@ -194,7 +211,8 @@ export function createPulseTools(
       "For simple reminders, use a context subscriber with the current_context_id so the pulse renders in that conversation without waking an actor. " +
       "For scheduled actor work, use an endpoint subscriber with endpoint_ref and the current_context_id. " +
       "For recurring pulses, use trigger.type exactly 'cron' with trigger.schedule. " +
-      "Set scope to 'workspace' to persist the pulse definition in floe.yaml.",
+      "Use persistence 'workspace' for workspace-backed Pulse Persistence in floe.yaml, or 'local' for local runtime-backed pulses. " +
+      "Use scope_id only for the workspace organising Scope.",
     parameters: Type.Object({
       pulse_id: Type.String({ description: "Unique pulse identifier" }),
       trigger: Type.Object({
@@ -230,14 +248,31 @@ export function createPulseTools(
           }),
         ]),
       ),
-      scope: Type.Optional(
+      persistence: Type.Optional(
         Type.Union([Type.Literal("workspace"), Type.Literal("local")], {
-          description: "Scope: 'workspace' persists to floe.yaml, 'local' is ephemeral (default: local)",
+          description: "Pulse Persistence: 'workspace' is workspace-backed in floe.yaml, 'local' is local runtime-backed (default: local)",
         }),
       ),
+      scope_id: Type.Optional(Type.String({ description: "Optional organising Scope id. If omitted, the bus inherits the active Context Scope or Default Scope." })),
     }),
     execute: async (_toolCallId, params: any) => {
-      const scope = params?.scope ?? "local";
+      if (params && typeof params === "object" && "scope" in params) {
+        const message = "Pulse storage is now Pulse Persistence. Use persistence 'workspace' or 'local', and scope_id for the organising Scope.";
+        return {
+          content: [{ type: "text", text: `Cannot create pulse: ${message}` }],
+          details: { ok: false, error: "invalid_persistence", message },
+        };
+      }
+      if (params?.persistence !== undefined && params.persistence !== "workspace" && params.persistence !== "local") {
+        const message = "Use persistence 'workspace' or 'local'.";
+        return {
+          content: [{ type: "text", text: `Cannot create pulse: ${message}` }],
+          details: { ok: false, error: "invalid_persistence", message },
+        };
+      }
+      const persistence: PulsePersistence = params?.persistence === "workspace" ? "workspace" : "local";
+      const scopeId = typeof params?.scope_id === "string" && params.scope_id.trim() ? params.scope_id : undefined;
+      const currentContextId = context.getActiveTurn?.()?.context_id ?? undefined;
       const normalizedTrigger = normalizePulseTrigger(params?.trigger);
       if ("error" in normalizedTrigger) {
         return {
@@ -260,6 +295,8 @@ export function createPulseTools(
           : {};
       const pulseDef: PulseDef = {
         pulse_id: String(params.pulse_id),
+        persistence,
+        scope_id: scopeId,
         trigger: normalizedTrigger,
         event: { type: "pulse.fired", content: eventContent },
         content: eventContent,
@@ -269,25 +306,28 @@ export function createPulseTools(
       const result = await bus.createPulse({
         pulse_id: pulseDef.pulse_id,
         workspace_id: workspaceId,
-        scope,
+        persistence,
+        scope_id: scopeId,
+        current_context_id: currentContextId,
         trigger: pulseDef.trigger,
         event: pulseDef.event,
         content: pulseDef.content,
         subscribers: pulseDef.subscribers,
         created_by: "agent",
       });
+      const resolvedScopeId = scopeId ?? resolvedScopeIdFromCreatePulseResult(result);
 
-      if (scope === "workspace" && workspaceLocator) {
+      if (persistence === "workspace" && workspaceLocator) {
         try {
-          writePulseToFloeYaml(workspaceLocator, pulseDef);
+          writePulseToFloeYaml(workspaceLocator, { ...pulseDef, scope_id: resolvedScopeId });
         } catch (err) {
           console.error("[bridge] pulse write-back to floe.yaml failed", { pulse_id: pulseDef.pulse_id, error: err });
         }
       }
 
       return {
-        content: [{ type: "text", text: `Pulse '${pulseDef.pulse_id}' created (scope: ${scope}).\n${JSON.stringify(result, null, 2)}` }],
-        details: { ok: true, pulse_id: pulseDef.pulse_id, scope },
+        content: [{ type: "text", text: `Pulse '${pulseDef.pulse_id}' created (persistence: ${persistence}${resolvedScopeId ? `, scope_id: ${resolvedScopeId}` : ""}).\n${JSON.stringify(result, null, 2)}` }],
+        details: { ok: true, pulse_id: pulseDef.pulse_id, persistence, scope_id: resolvedScopeId },
       };
     },
   };

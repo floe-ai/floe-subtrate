@@ -38,6 +38,14 @@ export class ContextParticipantError extends Error {
   }
 }
 
+export class ContextNotFoundError extends Error {
+  readonly code = "E_CONTEXT_NOT_FOUND" as const;
+  constructor(readonly workspace_id: string, readonly context_id: string) {
+    super(`Context not found: ${context_id}`);
+    this.name = "ContextNotFoundError";
+  }
+}
+
 export type DestinationSelector =
   | { kind: "endpoint"; endpoint_id: string }
   | { kind: "context"; context_id: string }
@@ -102,6 +110,8 @@ export type TriggerEventCommand = {
 export type PulseSubscriber =
   | { kind: "context"; context_id: string }
   | { kind?: "endpoint"; endpoint_ref: string; context_id?: string | null };
+
+export type PulsePersistence = "workspace" | "local";
 
 export type EventEnvelope = {
   event_id: string;
@@ -318,7 +328,8 @@ export class BusStore {
       CREATE TABLE IF NOT EXISTS pulses (
         pulse_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
-        scope TEXT NOT NULL DEFAULT 'local',
+        persistence TEXT NOT NULL DEFAULT 'local',
+        scope_id TEXT NOT NULL DEFAULT 'default',
         trigger_json TEXT NOT NULL,
         content_json TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
@@ -352,6 +363,12 @@ export class BusStore {
     this.addColumnIfMissing("delivery_bundles", "resume_reason", "TEXT NOT NULL DEFAULT 'event'");
     this.addColumnIfMissing("runtime_telemetry", "delivery_id", "TEXT");
     this.addColumnIfMissing("runtime_bindings", "model", "TEXT");
+    this.addColumnIfMissing("pulses", "persistence", "TEXT NOT NULL DEFAULT 'local'");
+    this.addColumnIfMissing("pulses", "scope_id", "TEXT NOT NULL DEFAULT 'default'");
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_pulses_workspace_scope
+        ON pulses(workspace_id, scope_id, status);
+    `);
     applyContextSchema(this.db);
     applyScopeSchema(this.db);
     this.backfillEventDestinationJson();
@@ -1271,7 +1288,9 @@ export class BusStore {
   createPulse(input: {
     pulse_id: string;
     workspace_id: string;
-    scope?: string;
+    persistence?: PulsePersistence;
+    scope_id?: string | null;
+    current_context_id?: string | null;
     trigger: { type: string; at?: string; schedule?: string; timezone?: string };
     content: Record<string, unknown>;
     subscribers: PulseSubscriber[];
@@ -1279,20 +1298,31 @@ export class BusStore {
   }, broadcast: Broadcast): unknown {
     const timestamp = now();
     const nextFireAt = this.calculateNextFireAt(input.trigger);
+    let contextScopeId: string | null = null;
+    if (!input.scope_id && input.current_context_id) {
+      const context = this.contextStore.getContext(input.current_context_id);
+      if (!context || context.workspace_id !== input.workspace_id) {
+        throw new ContextNotFoundError(input.workspace_id, input.current_context_id);
+      }
+      contextScopeId = context.scope_id;
+    }
+    const scopeId = this.resolveScopeId(input.workspace_id, input.scope_id ?? contextScopeId);
     this.db.prepare(`
-      INSERT INTO pulses (pulse_id, workspace_id, scope, trigger_json, content_json, status, created_by, created_at, updated_at, next_fire_at)
-      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+      INSERT INTO pulses (pulse_id, workspace_id, persistence, scope_id, trigger_json, content_json, status, created_by, created_at, updated_at, next_fire_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
       ON CONFLICT(pulse_id) DO UPDATE SET
         trigger_json = excluded.trigger_json,
         content_json = excluded.content_json,
-        scope = excluded.scope,
+        persistence = excluded.persistence,
+        scope_id = excluded.scope_id,
         updated_at = excluded.updated_at,
         next_fire_at = excluded.next_fire_at,
         status = CASE WHEN pulses.status = 'cancelled' THEN pulses.status ELSE excluded.status END
     `).run(
       input.pulse_id,
       input.workspace_id,
-      input.scope ?? "local",
+      input.persistence ?? "local",
+      scopeId,
       json(input.trigger),
       json(input.content),
       input.created_by ?? null,
@@ -1318,7 +1348,7 @@ export class BusStore {
     return this.rowToPulse(row);
   }
 
-  listPulses(filters: { workspace_id?: string; status?: string }): unknown[] {
+  listPulses(filters: { workspace_id?: string; status?: string; scope_id?: string }): unknown[] {
     let query = "SELECT * FROM pulses WHERE 1=1";
     const params: string[] = [];
     if (filters.workspace_id) {
@@ -1328,6 +1358,10 @@ export class BusStore {
     if (filters.status) {
       query += " AND status = ?";
       params.push(filters.status);
+    }
+    if (filters.scope_id) {
+      query += " AND scope_id = ?";
+      params.push(filters.scope_id);
     }
     query += " ORDER BY created_at DESC";
     const rows = this.db.prepare(query).all(...params) as any[];
@@ -1432,9 +1466,11 @@ export class BusStore {
     return {
       pulse_id: row.pulse_id,
       workspace_id: row.workspace_id,
-      scope: row.scope,
+      persistence: row.persistence,
+      scope_id: row.scope_id,
       trigger: parseJson<unknown>(row.trigger_json),
       content: parseJson<unknown>(row.content_json),
+      subscribers: this.getPulseSubscribers(row.pulse_id),
       status: row.status,
       created_by: row.created_by,
       created_at: row.created_at,

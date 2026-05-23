@@ -14,6 +14,8 @@ export type AgentConfig = {
 
 export type PulseConfig = {
   id: string;
+  persistence?: "workspace" | "local";
+  scope_id?: string;
   trigger: { type: string; at?: string; schedule?: string; timezone?: string };
   content: Record<string, unknown>;
   subscribers?: Array<{ endpoint_ref: string }>;
@@ -207,6 +209,8 @@ export function loadProject(workspacePath: string): ProjectLoadResult {
   const pulses: PulseConfig[] = Array.isArray(projectConfig.pulses)
     ? projectConfig.pulses.map((p: any) => ({
         id: String(p.id ?? ""),
+        persistence: p.persistence === "local" ? "local" : "workspace",
+        scope_id: typeof p.scope_id === "string" ? p.scope_id : undefined,
         trigger: p.trigger ?? { type: "once" },
         content: p.content ?? {},
         subscribers: Array.isArray(p.subscribers) ? p.subscribers : [],

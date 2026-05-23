@@ -1,7 +1,7 @@
 # PRD: Pulse — Scheduled Event Delivery
 
 ## Status
-Accepted — ready for implementation
+Superseded by ADR-0001 and the Scope substrate correction. Retained for historical context; current public language uses **Pulse Persistence** (`persistence: "workspace" | "local"`) for storage/lifecycle location and `scope_id` for workspace organisation.
 
 ## Problem Statement
 
@@ -13,9 +13,11 @@ The substrate needs a bus-owned scheduling primitive that emits events at config
 
 Introduce **Pulse** as a bus-owned scheduled event emission primitive. A pulse definition declares a schedule (cron or one-off), content, and subscriber list. When a pulse fires, the bus creates a canonical `pulse.fired` event and delivers it to each subscriber through the normal event/delivery path.
 
-Pulse definitions support two scopes:
-- **workspace** — stored in `.floe/floe.yaml`, committed and portable with the repository
-- **local** — stored in bus SQLite, private to the user/machine
+Pulse definitions support two Persistence classes:
+- **workspace** — workspace-backed, stored in `.floe/floe.yaml`, committed and portable with the repository
+- **local** — local/runtime-backed, stored in bus SQLite, private to the user/machine
+
+Pulse organising Scope is separate and uses `scope_id`.
 
 Agents get dedicated tools (`create_pulse`, `list_pulses`, `pause_pulse`, `resume_pulse`, `cancel_pulse`) to manage pulses without editing files.
 
@@ -37,7 +39,7 @@ The first live proof: user asks Floe "Schedule a reminder for me in one minute s
 12. As a human operator, I want pulse events to appear in FloeWeb as delivered events, so that I can see scheduled reminders and pulse activity through the normal event view.
 13. As a workspace collaborator, I want pulse definitions to include timezone information for recurring schedules, so that "every day at 9am" fires at 9am in the right timezone regardless of server location.
 14. As a developer, I want each pulse fire to create an independent thread, so that daily pulse activity doesn't accumulate into one unbounded conversation thread.
-15. As a developer, I want pulse events to have `source_endpoint_id: "system:pulse"`, so that pulse-generated events are clearly identifiable as system-scheduled, not sent by a specific actor.
+15. As a developer, I want pulse events to have `source_endpoint_id: null` plus pulse metadata, so that pulse-generated events are clearly identifiable as scheduled triggers without introducing a synthetic actor.
 16. As an agent, I want each subscriber to a pulse to get an independent delivery lifecycle, so that one subscriber failing doesn't block others.
 17. As a developer, I want the bus to use an event-driven scheduler (priority queue + setTimeout), so that there is zero CPU cost when no pulses are approaching and no polling loops.
 18. As a developer, I want pulse runtime state to be rebuilt from definitions on process restart, so that the scheduler recovers cleanly after bus restart.
@@ -51,7 +53,8 @@ The first live proof: user asks Floe "Schedule a reminder for me in one minute s
 ```yaml
 pulses:
   - id: daily-email-check
-    scope: workspace
+    persistence: workspace
+    scope_id: default
     trigger:
       type: cron
       schedule: "0 15 * * *"
@@ -65,7 +68,8 @@ pulses:
 ```yaml
 pulses:
   - id: one-minute-reminder
-    scope: local
+    persistence: local
+    scope_id: default
     trigger:
       type: once
       at: "2026-05-12T15:40:00+10:00"
@@ -77,7 +81,7 @@ pulses:
 
 ### Bus SQLite schema
 
-- `pulses` table: `pulse_id`, `workspace_id`, `scope` (workspace|local), `trigger_json`, `content_json`, `status` (active|paused|cancelled|completed), `created_by`, `created_at`, `updated_at`, `next_fire_at`, `last_fired_at`
+- `pulses` table: `pulse_id`, `workspace_id`, `persistence` (workspace|local), `scope_id`, `trigger_json`, `content_json`, `status` (active|paused|cancelled|completed), `created_by`, `created_at`, `updated_at`, `next_fire_at`, `last_fired_at`
 - `pulse_subscribers` table: `pulse_id`, `subscriber_json` (destination selector), `created_at`
 
 ### Bus Pulse Scheduler
@@ -94,7 +98,7 @@ Event-driven priority queue with single active `setTimeout`:
 {
   "type": "pulse.fired",
   "workspace_id": "<workspace_id>",
-  "source_endpoint_id": "system:pulse",
+  "source_endpoint_id": null,
   "destination": { "kind": "endpoint", "endpoint_id": "<subscriber>" },
   "thread_id": "pulse:<pulse_id>:<fire_timestamp>",
   "content": { "text": "Check email", "pulse_id": "daily-email-check" },
@@ -119,11 +123,11 @@ During workspace attachment, the bridge reads `pulses:` from `.floe/floe.yaml` a
 
 ### Bridge pulse tools (agent-facing)
 
-- `create_pulse` — creates a pulse via bus API; if workspace scope, also writes to `.floe/floe.yaml`
+- `create_pulse` — creates a pulse via bus API; if `persistence` is `workspace`, also writes to `.floe/floe.yaml`
 - `list_pulses` — queries bus API for workspace pulses
 - `pause_pulse` — pauses via bus API
 - `resume_pulse` — resumes via bus API
-- `cancel_pulse` — cancels via bus API; if workspace scope, removes from `.floe/floe.yaml`
+- `cancel_pulse` — cancels via bus API; if `persistence` is `workspace`, removes from `.floe/floe.yaml`
 
 ### Subscriber selectors
 
@@ -171,7 +175,7 @@ The existing `tests/src/vertical-slice.test.ts` is the contract test pattern: sp
 
 ## Further Notes
 
-- The `system:pulse` synthetic endpoint should be auto-registered in the bus on startup (no bridge dependency)
+- Pulse firing must not create a synthetic system actor or endpoint; `pulse.fired` events use `source_endpoint_id: null` with pulse metadata.
 - Cron parsing should use a well-tested library (e.g., `cron-parser` or similar) rather than hand-rolled parsing
 - The priority queue can be a simple sorted array for V0 — pulse counts per workspace will be small
 - WebSocket broadcast messages should include pulse lifecycle events (`pulse_created`, `pulse_fired`, `pulse_paused`, `pulse_resumed`, `pulse_cancelled`) for FloeWeb reactivity

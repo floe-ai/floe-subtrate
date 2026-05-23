@@ -81,7 +81,7 @@ describe("Pulse subscribers", () => {
       payload: {
         pulse_id: pulseId,
         workspace_id: WS,
-        scope: "local",
+        persistence: "local",
         trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
         event: {
           type: "pulse.fired",
@@ -129,7 +129,7 @@ describe("Pulse subscribers", () => {
       payload: {
         pulse_id: pulseId,
         workspace_id: WS,
-        scope: "local",
+        persistence: "local",
         trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
         event: {
           type: "pulse.fired",
@@ -186,7 +186,7 @@ describe("Pulse subscribers", () => {
       payload: {
         pulse_id: pulseId,
         workspace_id: WS,
-        scope: "local",
+        persistence: "local",
         trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
         event: {
           type: "pulse.fired",
@@ -257,7 +257,7 @@ describe("Pulse subscribers", () => {
         payload: {
           pulse_id: pulseId,
           workspace_id: WS,
-          scope: "local",
+          persistence: "local",
           trigger: { type: "once", at: new Date(Date.now() + 75).toISOString() },
           event: {
             type: "pulse.fired",

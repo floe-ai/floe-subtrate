@@ -18,5 +18,5 @@ export type ToolActivityEntry = {
  */
 export type ToolContext = {
   workspaceRoot: string;
-  getActiveTurn?: () => { tool_activity: ToolActivityEntry[] } | undefined;
+  getActiveTurn?: () => { tool_activity: ToolActivityEntry[]; context_id?: string | null } | undefined;
 };

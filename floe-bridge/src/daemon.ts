@@ -265,7 +265,8 @@ export class BridgeDaemon {
           await this.bus.createPulse({
             pulse_id: pulseDef.id,
             workspace_id: workspace.workspace_id,
-            scope: "workspace",
+            persistence: pulseDef.persistence ?? "workspace",
+            scope_id: pulseDef.scope_id,
             trigger: pulseDef.trigger,
             content: pulseDef.content,
             subscribers: pulseDef.subscribers ?? [],
@@ -302,7 +303,8 @@ export class BridgeDaemon {
               await this.bus.createPulse({
                 pulse_id: `${ext.name}:${pulseDef.id}`,
                 workspace_id: workspace.workspace_id,
-                scope: "workspace",
+                persistence: pulseDef.persistence ?? "workspace",
+                scope_id: pulseDef.scope_id,
                 trigger: pulseDef.trigger,
                 content: pulseDef.content ?? {},
                 subscribers: (pulseDef.subscribers ?? []).map(ref => ({ endpoint_ref: ref })),

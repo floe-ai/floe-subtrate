@@ -374,7 +374,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         } satisfies ToolContext)
       : [];
 
-    const pulseTools = createPulseTools(context.bus, bundle.workspace_id, context.workspace_locator);
+    const pulseTools = createPulseTools(context.bus, bundle.workspace_id, context.workspace_locator, {
+      getActiveTurn: () => state.activeTurn,
+    });
     const actorTools = createActorTools(context.bus, bundle.workspace_id, context.workspace_locator);
 
     // Collect extension tools

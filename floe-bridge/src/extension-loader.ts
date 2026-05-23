@@ -28,6 +28,8 @@ export interface ExtensionManifest {
 
 export interface ExtensionPulseConfig {
   id: string;
+  persistence?: "workspace" | "local";
+  scope_id?: string;
   trigger: { type: string; at?: string; schedule?: string; timezone?: string };
   content?: Record<string, unknown>;
   subscribers?: string[];
