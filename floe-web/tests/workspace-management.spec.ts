@@ -249,7 +249,7 @@ test.describe("Spinner behavior", () => {
       return route.fulfill({ status: 200, body: JSON.stringify({}) });
     });
 
-    await page.route("**/v1/endpoints**", (route) =>
+    await page.route(`**/v1/workspaces/${WORKSPACE_ID}/endpoints`, (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -265,6 +265,24 @@ test.describe("Spinner behavior", () => {
             workspace_id: WORKSPACE_ID,
             name: "Operator",
             status: "online"
+          }]
+        })
+      })
+    );
+
+    await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          scopes: [{
+            scope_id: "default",
+            workspace_id: WORKSPACE_ID,
+            title: "Default",
+            description: null,
+            is_default: true,
+            created_at: "2026-05-07T12:00:00.000Z",
+            updated_at: "2026-05-07T12:00:00.000Z"
           }]
         })
       })
@@ -286,13 +304,17 @@ test.describe("Spinner behavior", () => {
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ events: [] }) })
     );
 
+    await page.route("**/v1/contexts**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ contexts: [] }) })
+    );
+
     // Stale telemetry with visible_output that has no matching response event
     await page.route("**/v1/runtime/telemetry**", (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          telemetry: [{
+          records: [{
             telemetry_id: "stale-1",
             endpoint_id: floeEndpointId,
             kind: "visible_output",

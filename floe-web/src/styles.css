@@ -867,6 +867,23 @@ code {
   white-space: nowrap;
 }
 
+.canvas-field-node small {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.canvas-node-action {
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  padding: 3px 8px;
+}
+
 .react-flow__node-field.selected .canvas-field-node,
 .react-flow__node-field:focus-visible .canvas-field-node {
   border-color: var(--accent);

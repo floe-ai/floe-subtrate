@@ -47,6 +47,72 @@ export type FieldLayoutFloeweb = {
 
 type StoredField = { semantic: FieldSemantic; layout: FieldLayoutFloeweb | null };
 
+export type ScopeRecord = {
+  scope_id: string;
+  workspace_id: string;
+  title: string;
+  description: string | null;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScopeProjection = {
+  workspace_id: string;
+  scope_id: string;
+  generated_at: string;
+  refs: {
+    contexts: Array<{
+      context_id: string;
+      workspace_id: string;
+      scope_id: string;
+      parent_context_id: string | null;
+      created_by_endpoint_id: string;
+      created_at: string;
+      last_event_at: string | null;
+      first_message_preview: string | null;
+    }>;
+    pulses: Array<{
+      pulse_id: string;
+      workspace_id: string;
+      scope_id: string;
+      persistence: "workspace" | "local";
+      status: string;
+      trigger: unknown;
+      next_fire_at: string | null;
+      last_fired_at: string | null;
+      fire_count: number;
+      created_at: string;
+      updated_at: string;
+    }>;
+    events: Array<{
+      event_id: string;
+      type: string;
+      workspace_id: string;
+      scope_id: string;
+      context_id: string | null;
+      source_endpoint_id: string | null;
+      created_at: string;
+    }>;
+    activity: Array<{
+      telemetry_id: string;
+      workspace_id: string;
+      endpoint_id: string;
+      delivery_id: string;
+      kind: string;
+      context_id: string | null;
+      event_id: string | null;
+      created_at: string;
+    }>;
+  };
+  relationships: {
+    context_participants: Array<{ context_id: string; endpoint_id: string }>;
+    pulse_subscribers: Array<{ pulse_id: string; subscriber: { kind?: string; context_id?: string | null; endpoint_ref?: string } }>;
+    event_context_ownership: Array<{ event_id: string; context_id: string }>;
+  };
+  unsupported: Array<{ kind: string; reason: string }>;
+};
+
 async function installBaselineRoutes(page: Page): Promise<void> {
   await page.route("**/v1/workspaces", (route) => {
     if (route.request().method() === "GET") {
@@ -269,6 +335,116 @@ export async function seedAppWithFields(
   await finishBoot(page);
 }
 
+export async function seedAppWithScopes(
+  page: Page,
+  scopes: ScopeRecord[],
+  projections: Record<string, ScopeProjection>,
+  options: { legacyFieldRequests?: string[]; scopePosts?: string[]; scopePatches?: string[] } = {}
+): Promise<void> {
+  await installBaselineRoutes(page);
+
+  const scopeStore = new Map(scopes.map((scope) => [scope.scope_id, scope]));
+  const projectionStore = new Map(Object.entries(projections));
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, (route) => {
+    options.legacyFieldRequests?.push(route.request().url());
+    return route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "legacy_fields_endpoint_called" })
+    });
+  });
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes`, async (route) => {
+    const method = route.request().method();
+    if (method === "GET") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ scopes: Array.from(scopeStore.values()) })
+      });
+    }
+    if (method === "POST") {
+      options.scopePosts?.push(route.request().postData() ?? "");
+      const body = JSON.parse(route.request().postData() ?? "{}") as { scope_id?: string; title: string; description?: string | null };
+      const now = new Date().toISOString();
+      const scope: ScopeRecord = {
+        workspace_id: WORKSPACE_ID,
+        scope_id: body.scope_id ?? `scope_${scopeStore.size + 1}`,
+        title: body.title,
+        description: body.description ?? null,
+        is_default: false,
+        created_at: now,
+        updated_at: now
+      };
+      scopeStore.set(scope.scope_id, scope);
+      projectionStore.set(scope.scope_id, emptyScopeProjection(scope.scope_id, scope.created_at));
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ scope })
+      });
+    }
+    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
+  });
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/*/projection`, (route) => {
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const scopeId = decodeURIComponent(segments[segments.length - 2] ?? "");
+    const projection = projectionStore.get(scopeId);
+    if (!projection) {
+      return route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "scope_not_found", workspace_id: WORKSPACE_ID, scope_id: scopeId })
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ projection })
+    });
+  });
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/*`, async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith("/projection")) {
+      return route.fallback();
+    }
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const scopeId = decodeURIComponent(segments[segments.length - 1] ?? "");
+    if (route.request().method() !== "PATCH") {
+      return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
+    }
+    options.scopePatches?.push(route.request().postData() ?? "");
+    const current = scopeStore.get(scopeId);
+    if (!current) {
+      return route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "scope_not_found", workspace_id: WORKSPACE_ID, scope_id: scopeId })
+      });
+    }
+    const body = JSON.parse(route.request().postData() ?? "{}") as { title?: string; description?: string | null };
+    const scope: ScopeRecord = {
+      ...current,
+      title: body.title ?? current.title,
+      description: body.description === undefined ? current.description : body.description,
+      updated_at: new Date().toISOString()
+    };
+    scopeStore.set(scopeId, scope);
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ scope })
+    });
+  });
+  await page.route("**/v1/contexts/*/events**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ events: [] })
+    })
+  );
+
+  await finishBoot(page);
+}
+
 export function makeFieldSummary(
   id: string,
   title: string,
@@ -300,6 +476,34 @@ export function makeFieldSemantic(
     connections,
     created_at: now,
     updated_at: now
+  };
+}
+
+export function makeScope(scopeId: string, title: string, isDefault = false): ScopeRecord {
+  const now = new Date().toISOString();
+  return {
+    scope_id: scopeId,
+    workspace_id: WORKSPACE_ID,
+    title,
+    description: null,
+    is_default: isDefault,
+    created_at: now,
+    updated_at: now
+  };
+}
+
+export function emptyScopeProjection(scopeId: string, generatedAt = new Date().toISOString()): ScopeProjection {
+  return {
+    workspace_id: WORKSPACE_ID,
+    scope_id: scopeId,
+    generated_at: generatedAt,
+    refs: { contexts: [], pulses: [], events: [], activity: [] },
+    relationships: {
+      context_participants: [],
+      pulse_subscribers: [],
+      event_context_ownership: []
+    },
+    unsupported: []
   };
 }
 
