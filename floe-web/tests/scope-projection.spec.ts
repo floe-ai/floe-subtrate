@@ -106,7 +106,36 @@ test.describe("Scope Projection Fields", () => {
     await expect(page.getByRole("heading", { name: "Renamed Planning" })).toBeVisible();
 
     expect(scopePosts.some((body) => body.includes("Planning Scope"))).toBe(true);
+    expect(scopePosts.map((body) => JSON.parse(body))).toContainEqual({ title: "Planning Scope" });
     expect(scopePatches.some((body) => body.includes("Renamed Planning"))).toBe(true);
+    expect(legacyFieldRequests).toEqual([]);
+  });
+
+  test("allows duplicate Field titles by using bus-generated Scope ids", async ({ page }) => {
+    const legacyFieldRequests: string[] = [];
+    const scopePosts: string[] = [];
+    await seedAppWithScopes(
+      page,
+      [makeScope("default", "Default", true)],
+      { default: emptyScopeProjection("default") },
+      { legacyFieldRequests, scopePosts }
+    );
+
+    for (const _ of [0, 1]) {
+      await page.getByRole("button", { name: /Add field/i }).click();
+      await page.getByLabel("Field name").fill("Shared Planning");
+      await page.getByTestId("dialog-layer").getByRole("button", { name: "Create" }).click();
+      await expect(page.getByRole("heading", { name: "Shared Planning" })).toBeVisible();
+      await expect(page.getByText("Empty Field")).toBeVisible();
+      await expect(page.getByText(/POST .*scope_already_exists/)).toHaveCount(0);
+      await page.getByRole("button", { name: "Workspace Home" }).click();
+    }
+
+    await expect(page.locator(".field-block", { hasText: "Shared Planning" })).toHaveCount(2);
+    expect(scopePosts.map((body) => JSON.parse(body))).toEqual([
+      { title: "Shared Planning" },
+      { title: "Shared Planning" }
+    ]);
     expect(legacyFieldRequests).toEqual([]);
   });
 });

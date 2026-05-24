@@ -345,6 +345,7 @@ export async function seedAppWithScopes(
 
   const scopeStore = new Map(scopes.map((scope) => [scope.scope_id, scope]));
   const projectionStore = new Map(Object.entries(projections));
+  let generatedScopeCounter = 1;
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, (route) => {
     options.legacyFieldRequests?.push(route.request().url());
     return route.fulfill({
@@ -366,9 +367,22 @@ export async function seedAppWithScopes(
       options.scopePosts?.push(route.request().postData() ?? "");
       const body = JSON.parse(route.request().postData() ?? "{}") as { scope_id?: string; title: string; description?: string | null };
       const now = new Date().toISOString();
+      let scopeId = body.scope_id;
+      if (scopeId && scopeStore.has(scopeId)) {
+        return route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "scope_already_exists", workspace_id: WORKSPACE_ID, scope_id: scopeId })
+        });
+      }
+      if (!scopeId) {
+        do {
+          scopeId = `scope_${generatedScopeCounter++}`;
+        } while (scopeStore.has(scopeId));
+      }
       const scope: ScopeRecord = {
         workspace_id: WORKSPACE_ID,
-        scope_id: body.scope_id ?? `scope_${scopeStore.size + 1}`,
+        scope_id: scopeId,
         title: body.title,
         description: body.description ?? null,
         is_default: false,

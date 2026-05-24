@@ -1898,9 +1898,8 @@ function App() {
     if (!selectedWorkspace) return;
     const workspaceId = selectedWorkspace.workspace_id;
     const nextName = name?.trim() || `Field ${fieldSummaries.length + 1}`;
-    const scopeId = slugifyFieldId(nextName);
     try {
-      const scope = await createScope(busUrl, workspaceId, { scope_id: scopeId, title: nextName });
+      const scope = await createScope(busUrl, workspaceId, { title: nextName });
       await refreshFields(workspaceId);
       loadedProjectionRef.current = null;
       setLoadedProjection(null);
@@ -3016,11 +3015,6 @@ function endpointRuntimeAdapter(endpoint: Endpoint | null): string | null {
   } catch {
     return null;
   }
-}
-
-function slugifyFieldId(input: string): string {
-  const s = input.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return s || `field-${Date.now().toString(36)}`;
 }
 
 function emptyFieldSemantic(id: string, title: string): FieldSemantic {

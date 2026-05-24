@@ -136,6 +136,7 @@ test.describe("Field surface as Scope Projection", () => {
     await expect(page.getByRole("heading", { name: "Renamed Planning" })).toBeVisible();
 
     expect(scopePosts.some((body) => body.includes("Planning Scope"))).toBe(true);
+    expect(scopePosts.map((body) => JSON.parse(body))).toContainEqual({ title: "Planning Scope" });
     expect(scopePatches.some((body) => body.includes("Renamed Planning"))).toBe(true);
     expect(legacyFieldRequests).toEqual([]);
   });
