@@ -456,6 +456,10 @@ export class BusStore {
     return this.scopeStore.listScopes(workspaceId);
   }
 
+  getScope(workspaceId: string, scopeId: string): ScopeRecord | null {
+    return this.scopeStore.getScope(workspaceId, scopeId);
+  }
+
   createScope(input: {
     workspace_id: string;
     scope_id?: string;

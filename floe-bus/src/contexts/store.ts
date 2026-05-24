@@ -181,4 +181,30 @@ export class ContextStore implements ContextStoreReader {
       participants: this.getContextParticipants(row.context_id)
     }));
   }
+
+  listContextsForScope(workspace_id: string, scope_id: string): ContextListRow[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT c.*, MAX(e.created_at) AS last_event_at
+        FROM contexts c
+        LEFT JOIN events e ON e.context_id = c.context_id
+        WHERE c.workspace_id = ? AND c.scope_id = ?
+        GROUP BY c.context_id
+        ORDER BY (last_event_at IS NULL) ASC, last_event_at DESC, c.created_at DESC
+      `
+      )
+      .all(workspace_id, scope_id) as any[];
+    return rows.map((row) => ({
+      context_id: row.context_id,
+      workspace_id: row.workspace_id,
+      scope_id: row.scope_id ?? DEFAULT_SCOPE_ID,
+      parent_context_id: row.parent_context_id ?? null,
+      created_by_endpoint_id: row.created_by_endpoint_id,
+      created_at: row.created_at,
+      last_event_at: (row.last_event_at as string | null) ?? null,
+      topic: null,
+      participants: this.getContextParticipants(row.context_id)
+    }));
+  }
 }

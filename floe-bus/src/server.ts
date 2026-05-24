@@ -19,6 +19,7 @@ import {
 } from "./fields-store.js";
 import { FieldsWatcherRegistry } from "./fields-watcher.js";
 import { ScopeAlreadyExistsError, ScopeNotFoundError } from "./scopes/store.js";
+import { buildScopeProjection } from "./scopes/projection.js";
 
 const EventCommandSchema = z.object({
   type: z.string().min(1),
@@ -165,6 +166,24 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
     return { scopes: store.listScopes(params.workspace_id) };
+  });
+
+  app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/projection", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      scope_id: z.string().min(1)
+    }).parse(request.params);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    if (!store.getScope(params.workspace_id, params.scope_id)) {
+      return reply.code(404).send({
+        error: "scope_not_found",
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id
+      });
+    }
+    return { projection: buildScopeProjection(store, params.workspace_id, params.scope_id) };
   });
 
   app.post("/v1/workspaces/:workspace_id/scopes", async (request, reply) => {
