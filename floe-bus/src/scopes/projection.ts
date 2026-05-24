@@ -1,4 +1,4 @@
-import type { BusStore, EventEnvelope, PulseSubscriber, PulsePersistence } from "../store.js";
+import type { BusStore, PulseSubscriber, PulsePersistence } from "../store.js";
 
 export type ScopeProjectionContextRef = {
   context_id: string;
@@ -64,10 +64,6 @@ export type ScopeProjection = {
   unsupported: Array<{ kind: string; reason: string }>;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 function pulseRef(row: unknown): ScopeProjectionPulseRef {
   const pulse = row as Record<string, any>;
   return {
@@ -85,42 +81,8 @@ function pulseRef(row: unknown): ScopeProjectionPulseRef {
   };
 }
 
-function deliveryEvents(row: unknown): EventEnvelope[] {
-  if (!isRecord(row) || typeof row.events_json !== "string") return [];
-  try {
-    const parsed = JSON.parse(row.events_json);
-    return Array.isArray(parsed) ? parsed as EventEnvelope[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function owningContextId(event: EventEnvelope): string | null {
-  return typeof event.context_id === "string" && event.context_id.length > 0 ? event.context_id : null;
-}
-
 export function buildScopeProjection(store: BusStore, workspaceId: string, scopeId: string): ScopeProjection {
   const contexts = store.contextStore.listContextsForScope(workspaceId, scopeId);
-  const contextIds = new Set(contexts.map((context) => context.context_id));
-  const events = store.listEvents({ workspace_id: workspaceId, limit: 500 });
-  const scopedEvents = events.filter((event) => {
-    const contextId = owningContextId(event);
-    if (contextId && contextIds.has(contextId)) return true;
-    return !contextId && event.scope_id === scopeId;
-  });
-  const eventIds = new Set(scopedEvents.map((event) => event.event_id));
-  const deliveries = store.listDeliveries({ workspace_id: workspaceId, limit: 500 });
-  const eventContextByDeliveryId = new Map<string, { event_id: string; context_id: string | null }>();
-  for (const delivery of deliveries) {
-    if (!isRecord(delivery) || typeof delivery.delivery_id !== "string") continue;
-    const firstScopedEvent = deliveryEvents(delivery).find((event) => eventIds.has(event.event_id));
-    if (!firstScopedEvent) continue;
-    eventContextByDeliveryId.set(delivery.delivery_id, {
-      event_id: firstScopedEvent.event_id,
-      context_id: owningContextId(firstScopedEvent)
-    });
-  }
-  const telemetryRows = store.listRuntimeTelemetry({ workspace_id: workspaceId, limit: 500 });
 
   return {
     workspace_id: workspaceId,
@@ -138,37 +100,8 @@ export function buildScopeProjection(store: BusStore, workspaceId: string, scope
         first_message_preview: store.contextStore.getFirstMessagePreview(context.context_id)
       })),
       pulses: (store.listPulses({ workspace_id: workspaceId, scope_id: scopeId }) as unknown[]).map(pulseRef),
-      events: scopedEvents.map((event) => {
-        const contextId = owningContextId(event);
-        return {
-          event_id: event.event_id,
-          type: event.type,
-          workspace_id: event.workspace_id,
-          scope_id: contextId && contextIds.has(contextId) ? scopeId : event.scope_id,
-          context_id: contextId,
-          source_endpoint_id: event.source_endpoint_id,
-          created_at: event.created_at
-        };
-      }),
-      activity: telemetryRows
-        .filter((row): row is Record<string, unknown> => isRecord(row))
-        .map((row): ScopeProjectionActivityRef | null => {
-          const deliveryId = typeof row.delivery_id === "string" ? row.delivery_id : null;
-          if (!deliveryId) return null;
-          const eventContext = eventContextByDeliveryId.get(deliveryId);
-          if (!eventContext) return null;
-          return {
-            telemetry_id: String(row.telemetry_id),
-            workspace_id: String(row.workspace_id),
-            endpoint_id: String(row.endpoint_id),
-            delivery_id: deliveryId,
-            kind: String(row.kind),
-            context_id: eventContext.context_id,
-            event_id: eventContext.event_id,
-            created_at: String(row.created_at)
-          };
-        })
-        .filter((row): row is ScopeProjectionActivityRef => row !== null)
+      events: [],
+      activity: []
     },
     relationships: {
       context_participants: contexts.flatMap((context) =>
@@ -177,12 +110,7 @@ export function buildScopeProjection(store: BusStore, workspaceId: string, scope
       pulse_subscribers: (store.listPulses({ workspace_id: workspaceId, scope_id: scopeId }) as Array<{ pulse_id: string }>).flatMap((pulse) =>
         store.getPulseSubscribers(pulse.pulse_id).map((subscriber) => ({ pulse_id: pulse.pulse_id, subscriber }))
       ),
-      event_context_ownership: scopedEvents
-        .map((event) => {
-          const contextId = owningContextId(event);
-          return contextId ? { event_id: event.event_id, context_id: contextId } : null;
-        })
-        .filter((row): row is { event_id: string; context_id: string } => row !== null)
+      event_context_ownership: []
     },
     unsupported: []
   };

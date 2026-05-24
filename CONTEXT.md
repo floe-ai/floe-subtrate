@@ -131,6 +131,7 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 - A **Field Layout** belongs to the Field rendering of a **Scope** and must not determine membership
 - A **Context** belongs to one **Scope**
 - **Events** inherit Scope from their **Context** or event source rather than owning separate field membership
+- A **Field** renders a **Context** as the top-level conversation/work node; Events inside that Context are its history and are not separate Field-level blocks
 - A **Pulse** has **Pulse Persistence** and, when scoped, belongs to one **Scope**
 - A **Pulse** creates a canonical **Event** with type `pulse.fired`
 - A **Context Subscriber** appends `pulse.fired` to a **Context** without creating a **Delivery**

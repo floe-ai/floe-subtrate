@@ -66,6 +66,7 @@ async function emitMessage(handle: ServerHandle, input: {
   target: string;
   scopeId: string;
   text: string;
+  contextId?: string;
 }): Promise<any> {
   const emitted = await handle.app.inject({
     method: "POST",
@@ -75,6 +76,7 @@ async function emitMessage(handle: ServerHandle, input: {
       workspace_id: input.workspaceId,
       source_endpoint_id: input.source,
       destination: { kind: "endpoint", endpoint_id: input.target },
+      ...(input.contextId ? { context_id: input.contextId } : {}),
       scope_id: input.scopeId,
       content: { text: input.text },
       response: { expected: false }
@@ -130,7 +132,7 @@ describe("Scope Projection API", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("projects only Contexts and Events from the requested Scope with derived participant and ownership relationships", async () => {
+  it("projects a scoped Context as one Field-level ref even with multiple Events", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const operator = `actor:${workspaceId}:operator`;
     const floe = `actor:${workspaceId}:floe`;
@@ -140,6 +142,14 @@ describe("Scope Projection API", () => {
     await createScope(handle, workspaceId, "ops");
 
     const researchEvent = await emitMessage(handle, { workspaceId, source: operator, target: floe, scopeId: "research", text: "research hello" });
+    await emitMessage(handle, {
+      workspaceId,
+      source: floe,
+      target: operator,
+      scopeId: "research",
+      contextId: researchEvent.context_id,
+      text: "research follow-up"
+    });
     await emitMessage(handle, { workspaceId, source: operator, target: floe, scopeId: "ops", text: "ops hello" });
 
     const res = await handle.app.inject({
@@ -161,21 +171,14 @@ describe("Scope Projection API", () => {
         first_message_preview: "research hello"
       })
     ]);
-    expect(projection.refs.events).toEqual([
-      expect.objectContaining({
-        event_id: researchEvent.event_id,
-        context_id: researchEvent.context_id,
-        type: "message"
-      })
-    ]);
+    expect(projection.refs.events).toEqual([]);
+    expect(projection.refs.activity).toEqual([]);
     expect(projection.relationships.context_participants).toEqual(expect.arrayContaining([
       { context_id: researchEvent.context_id, endpoint_id: operator },
       { context_id: researchEvent.context_id, endpoint_id: floe }
     ]));
     expect(projection.relationships.context_participants).toHaveLength(2);
-    expect(projection.relationships.event_context_ownership).toEqual([
-      { event_id: researchEvent.event_id, context_id: researchEvent.context_id }
-    ]);
+    expect(projection.relationships.event_context_ownership).toEqual([]);
   });
 
   it("projects only Pulses from the requested Scope with their stored subscriber relationships", async () => {
@@ -228,7 +231,7 @@ describe("Scope Projection API", () => {
     ]);
   });
 
-  it("prefers the owning Context Scope over stale denormalized Event Scope", async () => {
+  it("keeps Context inclusion owned by the Context even when denormalized Event Scope is stale", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const operator = `actor:${workspaceId}:operator`;
     const floe = `actor:${workspaceId}:floe`;
@@ -246,16 +249,17 @@ describe("Scope Projection API", () => {
 
     expect(res.statusCode).toBe(200);
     const projection = res.json().projection;
-    expect(projection.refs.events).toEqual([
+    expect(projection.refs.contexts).toEqual([
       expect.objectContaining({
-        event_id: researchEvent.event_id,
         context_id: researchEvent.context_id,
         scope_id: "research"
       })
     ]);
+    expect(projection.refs.events).toEqual([]);
+    expect(projection.relationships.event_context_ownership).toEqual([]);
   });
 
-  it("projects runtime activity only when telemetry resolves through a scoped delivery", async () => {
+  it("does not project Context-owned runtime telemetry as Field Activity", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const operator = `actor:${workspaceId}:operator`;
     const floe = `actor:${workspaceId}:floe`;
@@ -303,17 +307,9 @@ describe("Scope Projection API", () => {
 
     expect(res.statusCode).toBe(200);
     const projection = res.json().projection;
-    expect(projection.refs.activity).toEqual([
-      expect.objectContaining({
-        telemetry_id: scoped.json().telemetry.telemetry_id,
-        workspace_id: workspaceId,
-        endpoint_id: floe,
-        delivery_id: delivery.delivery_id,
-        kind: "tool_use",
-        context_id: deliveredEvent.context_id,
-        event_id: deliveredEvent.event_id
-      })
-    ]);
+    expect(scoped.json().telemetry.telemetry_id).toMatch(/^tel_/);
+    expect(deliveredEvent.context_id).toBeTruthy();
+    expect(projection.refs.activity).toEqual([]);
   });
 
   it("returns existing Scope error shapes and an empty projection for a valid empty Scope", async () => {

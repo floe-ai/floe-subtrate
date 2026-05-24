@@ -112,10 +112,6 @@ function projectionNode(
   };
 }
 
-function endpointLabel(endpointId: string): string {
-  return endpointId.split(":").filter(Boolean).at(-1) ?? endpointId;
-}
-
 export function projectionToReactFlow(
   projection: ScopeProjection,
   layout?: FieldLayoutFloeweb | null
@@ -154,43 +150,21 @@ export function projectionToReactFlow(
       subscribers: relationships.map((relationship) => relationship.subscriber)
     }));
   }
-  for (const event of projection.refs.events) {
-    nodes.push(projectionNode(`event:${event.event_id}`, "event", event.type || event.event_id, nodes.length, layout ?? undefined, {
-      event_id: event.event_id,
-      context_id: event.context_id,
-      source_endpoint_label: event.source_endpoint_id ? endpointLabel(event.source_endpoint_id) : null
-    }));
-  }
-  for (const activity of projection.refs.activity) {
-    nodes.push(projectionNode(`activity:${activity.telemetry_id}`, "activity", activity.kind || activity.telemetry_id, nodes.length, layout ?? undefined, {
-      telemetry_id: activity.telemetry_id,
-      context_id: activity.context_id,
-      event_id: activity.event_id
-    }));
-  }
-
   const nodeIds = new Set(nodes.map((node) => node.id));
   const edges: Edge[] = [];
+  const edgeIds = new Set<string>();
   for (const relationship of projection.relationships.pulse_subscribers) {
     const source = `pulse:${relationship.pulse_id}`;
     const target = relationship.subscriber.context_id ? `context:${relationship.subscriber.context_id}` : null;
     if (!target || !nodeIds.has(source) || !nodeIds.has(target)) continue;
+    const id = `pulse-subscriber:${relationship.pulse_id}:context:${relationship.subscriber.context_id}`;
+    if (edgeIds.has(id)) continue;
+    edgeIds.add(id);
     edges.push({
-      id: `pulse-subscriber:${relationship.pulse_id}:context:${relationship.subscriber.context_id}`,
+      id,
       source,
       target,
       label: "subscribes"
-    });
-  }
-  for (const relationship of projection.relationships.event_context_ownership) {
-    const source = `event:${relationship.event_id}`;
-    const target = `context:${relationship.context_id}`;
-    if (!nodeIds.has(source) || !nodeIds.has(target)) continue;
-    edges.push({
-      id: `event-context:${relationship.event_id}:${relationship.context_id}`,
-      source,
-      target,
-      label: "in context"
     });
   }
 

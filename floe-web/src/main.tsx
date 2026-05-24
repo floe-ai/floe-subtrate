@@ -2299,8 +2299,6 @@ function App() {
               <Detail label="Title" value={loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? "—"} />
               <Detail label="Contexts" value={String(loadedProjection?.projection.refs.contexts.length ?? 0)} />
               <Detail label="Pulses" value={String(loadedProjection?.projection.refs.pulses.length ?? 0)} />
-              <Detail label="Events" value={String(loadedProjection?.projection.refs.events.length ?? 0)} />
-              <Detail label="Activity" value={String(loadedProjection?.projection.refs.activity.length ?? 0)} />
               <Detail label="Unsupported" value={String(loadedProjection?.projection.unsupported.length ?? 0)} />
             </InspectorSection>
             <ActorAccessSection />

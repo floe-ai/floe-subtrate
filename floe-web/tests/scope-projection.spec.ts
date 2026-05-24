@@ -46,7 +46,16 @@ test.describe("Scope Projection Fields", () => {
           source_endpoint_id: `actor:${WORKSPACE_ID}:operator`,
           created_at: "2026-05-24T00:01:00.000Z"
         }],
-        activity: []
+        activity: [{
+          telemetry_id: "tel_one",
+          workspace_id: WORKSPACE_ID,
+          endpoint_id: `actor:${WORKSPACE_ID}:floe`,
+          delivery_id: "delivery_one",
+          kind: "BeforeToolUse",
+          context_id: "ctx_research",
+          event_id: "evt_one",
+          created_at: "2026-05-24T00:01:30.000Z"
+        }]
       },
       relationships: {
         context_participants: [
@@ -79,7 +88,9 @@ test.describe("Scope Projection Fields", () => {
     await expect(page.locator(".react-flow__node", { hasText: "Research kickoff" })).toBeVisible();
     await expect(page.locator(".react-flow__node", { hasText: "2 participants" })).toBeVisible();
     await expect(page.locator(".react-flow__node", { hasText: "pulse_daily" })).toBeVisible();
-    await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+    await expect(page.locator(".react-flow__node", { hasText: "message" })).toHaveCount(0);
+    await expect(page.locator(".react-flow__node", { hasText: "BeforeToolUse" })).toHaveCount(0);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
     await expect(page.getByText("not rendered yet")).toHaveCount(0);
     expect(legacyFieldRequests).toEqual([]);
   });

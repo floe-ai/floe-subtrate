@@ -38,7 +38,16 @@ const projection: ScopeProjection = {
       source_endpoint_id: "actor:workspace:test:operator",
       created_at: "2026-05-24T00:01:00.000Z"
     }],
-    activity: []
+    activity: [{
+      telemetry_id: "tel_one",
+      workspace_id: "workspace:test",
+      endpoint_id: "actor:workspace:test:floe",
+      delivery_id: "del_one",
+      kind: "BeforeToolUse",
+      context_id: "ctx_research",
+      event_id: "evt_one",
+      created_at: "2026-05-24T00:01:30.000Z"
+    }]
   },
   relationships: {
     context_participants: [
@@ -46,7 +55,8 @@ const projection: ScopeProjection = {
       { context_id: "ctx_research", endpoint_id: "actor:workspace:test:floe" }
     ],
     pulse_subscribers: [
-      { pulse_id: "pulse_daily", subscriber: { kind: "context", context_id: "ctx_research" } }
+      { pulse_id: "pulse_daily", subscriber: { kind: "context", context_id: "ctx_research" } },
+      { pulse_id: "pulse_daily", subscriber: { kind: "endpoint", endpoint_ref: "actor:workspace:test:floe", context_id: "ctx_research" } }
     ],
     event_context_ownership: [
       { event_id: "evt_one", context_id: "ctx_research" }
@@ -56,20 +66,20 @@ const projection: ScopeProjection = {
 };
 
 describe("projectionToReactFlow", () => {
-  it("renders substrate refs as stable nodes and relationships without actor containment nodes", () => {
+  it("renders top-level substrate refs without Event, Activity, or actor containment nodes", () => {
     const flow = projectionToReactFlow(projection);
 
     expect(flow.nodes.map((node) => node.id)).toEqual([
       "context:ctx_research",
-      "pulse:pulse_daily",
-      "event:evt_one"
+      "pulse:pulse_daily"
     ]);
     expect(flow.nodes.map((node) => (node.data as { kind: string }).kind)).toEqual([
       "context",
-      "pulse",
-      "event"
+      "pulse"
     ]);
     expect(flow.nodes.some((node) => node.id.startsWith("actor:"))).toBe(false);
+    expect(flow.nodes.some((node) => node.id.startsWith("event:"))).toBe(false);
+    expect(flow.nodes.some((node) => node.id.startsWith("activity:"))).toBe(false);
     expect(flow.nodes[0].data).toMatchObject({
       kind: "context",
       label: "Research kickoff",
@@ -85,13 +95,9 @@ describe("projectionToReactFlow", () => {
         id: "pulse-subscriber:pulse_daily:context:ctx_research",
         source: "pulse:pulse_daily",
         target: "context:ctx_research"
-      }),
-      expect.objectContaining({
-        id: "event-context:evt_one:ctx_research",
-        source: "event:evt_one",
-        target: "context:ctx_research"
       })
     ]));
+    expect(flow.edges).toHaveLength(1);
   });
 
   it("merges renderer layout by stable substrate ref and keeps unsupported entries out of nodes", () => {

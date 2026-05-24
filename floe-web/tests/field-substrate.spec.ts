@@ -72,7 +72,7 @@ function populatedDefaultProjection(): ScopeProjection {
 }
 
 test.describe("Field surface as Scope Projection", () => {
-  test("lists Scopes as Fields and renders projected substrate refs", async ({ page }) => {
+  test("lists Scopes as Fields and renders only top-level projected substrate refs", async ({ page }) => {
     const legacyFieldRequests: string[] = [];
     await seedAppWithScopes(
       page,
@@ -89,9 +89,12 @@ test.describe("Field surface as Scope Projection", () => {
     await expect(page.locator(".react-flow__node", { hasText: "Research kickoff" })).toBeVisible();
     await expect(page.locator(".react-flow__node", { hasText: "2 participants" })).toBeVisible();
     await expect(page.locator(".react-flow__node", { hasText: "pulse_daily" })).toBeVisible();
-    await expect(page.locator(".react-flow__node", { hasText: "message" })).toBeVisible();
-    await expect(page.locator(".react-flow__node", { hasText: "BeforeToolUse" })).toBeVisible();
-    await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+    await expect(page.locator(".react-flow__node", { hasText: "message" })).toHaveCount(0);
+    await expect(page.locator(".react-flow__node", { hasText: "BeforeToolUse" })).toHaveCount(0);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    const openedFieldInspector = page.locator(".inspector-section", { has: page.getByRole("heading", { name: "Opened Field" }) });
+    await expect(openedFieldInspector.getByText("Events", { exact: true })).toHaveCount(0);
+    await expect(openedFieldInspector.getByText("Activity", { exact: true })).toHaveCount(0);
     await expect(page.getByText("webhook refs are not rendered yet")).toHaveCount(0);
     await expect(page.getByText("Delete field")).toHaveCount(0);
     expect(legacyFieldRequests).toEqual([]);
