@@ -18,8 +18,12 @@ _Avoid_: Field Item, canvas item, block storage.
 A FloeWeb rendering/projection of a Scope.
 _Avoid_: substrate primitive, source of truth, item list, connection list.
 
+### Scope Projection
+A read-only substrate-derived view of the primitives and relationships visible in a Scope. It returns substrate refs and derived relationships, not React Flow state. Future clients may consume the same projection without knowing FloeWeb internals.
+_Avoid_: storage source, Field-owned item list, Field-owned connection graph, client-side membership derivation.
+
 ### Field Layout
-Renderer-specific arrangement state for how a Field displays scoped primitives and derived relationships.
+Renderer-specific arrangement state for how a Field displays scoped primitives and derived relationships. It is keyed by stable projected refs, not old Field Item ids.
 _Avoid_: membership, semantic graph, source of truth.
 
 ### Block
@@ -122,6 +126,7 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 
 - A **Workspace** has one **Default Scope** and may have additional **Scopes**
 - A **Scope** organises **Scoped Primitives**; it does not execute work or own a duplicated membership list
+- A **Scope Projection** derives visible primitives and relationships from substrate state; it is not a storage source
 - A **Field** renders one **Scope** for FloeWeb
 - A **Field Layout** belongs to the Field rendering of a **Scope** and must not determine membership
 - A **Context** belongs to one **Scope**
