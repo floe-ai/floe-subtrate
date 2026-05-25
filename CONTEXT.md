@@ -59,7 +59,7 @@ A target that receives the created `pulse.fired` event when the Pulse fires. Sub
 A Pulse Subscriber that appends the `pulse.fired` event to an existing Context for rendering only. It does not create endpoint delivery or activate an Actor.
 
 ### Endpoint Subscriber
-A Pulse Subscriber that delivers the `pulse.fired` event to an Endpoint, optionally associated with an existing Context. Endpoint delivery may activate only if the Endpoint has a processor.
+A Pulse Subscriber that delivers the `pulse.fired` event to an Endpoint. If it declares an explicit `context_id`, delivery uses that Context. If it omits `context_id`, the Pulse uses one stable generated delivery Context for that Pulse + Endpoint Subscriber configuration, reused across fires and recreated on a later fire if deleted. Endpoint delivery may activate only if the Endpoint has a processor.
 
 ### Endpoint
 An addressable participant/interface in the substrate. Humans, agents, webhooks, extensions, schedulers, and future actors are all endpoints. No endpoint type is privileged.
@@ -135,7 +135,7 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 - A **Pulse** has **Pulse Persistence** and, when scoped, belongs to one **Scope**
 - A **Pulse** creates a canonical **Event** with type `pulse.fired`
 - A **Context Subscriber** appends `pulse.fired` to a **Context** without creating a **Delivery**
-- An **Endpoint Subscriber** creates a **Delivery** for an **Endpoint** and may activate that endpoint's processor
+- An **Endpoint Subscriber** creates a **Delivery** for an **Endpoint** and may activate that endpoint's processor; without explicit `context_id`, it uses a stable generated Context for that Pulse + Endpoint Subscriber rather than creating a new Context per fire
 - A **Webhook** is an event source; webhook Events inherit Scope from webhook configuration when present, otherwise from the Workspace **Default Scope**
 - A **Work Log** derives Scope from its delivery/context when available
 - **Actors** are workspace-scoped and are not contained by Fields

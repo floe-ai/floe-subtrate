@@ -1019,6 +1019,13 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
           continue;
         }
         const endpointId = store.resolveSubscriberEndpointId(pulse.workspace_id, subscriber.endpoint_ref);
+        const contextId = subscriber.context_id ?? store.getOrCreatePulseDeliveryContext({
+          pulse_id: pulseId,
+          workspace_id: pulse.workspace_id,
+          scope_id: (pulse as any).scope_id ?? "default",
+          subscriber,
+          endpoint_id: endpointId
+        });
         // Per design §3.1.6: pulse.fired is a non-actor trigger. Bus emits with
         // source_endpoint_id = null. No synthetic `system:*` source is created.
         store.emitTriggerEvent(
@@ -1026,8 +1033,8 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
             type: "pulse.fired",
             workspace_id: pulse.workspace_id,
             target_endpoint_id: endpointId,
-            context_id: subscriber.context_id ?? null,
-            scope_id: subscriber.context_id ? null : ((pulse as any).scope_id ?? null),
+            context_id: contextId,
+            scope_id: null,
             correlation_id: null,
             content,
             metadata

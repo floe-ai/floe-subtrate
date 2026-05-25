@@ -163,8 +163,23 @@ function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
 }
 
+function stableHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 export function workspaceIdForLocator(locator: string): string {
-  const hash = createHash("sha256").update(locator.toLowerCase()).digest("hex").slice(0, 16);
+  const hash = stableHash(locator.toLowerCase()).slice(0, 16);
   return `workspace:${hash}`;
 }
 
@@ -353,6 +368,21 @@ export class BusStore {
         created_at TEXT NOT NULL,
         PRIMARY KEY (pulse_id, subscriber_json)
       );
+
+      CREATE TABLE IF NOT EXISTS pulse_delivery_contexts (
+        pulse_id TEXT NOT NULL,
+        subscriber_key TEXT NOT NULL,
+        context_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        endpoint_ref TEXT NOT NULL,
+        endpoint_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (pulse_id, subscriber_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pulse_delivery_contexts_context
+        ON pulse_delivery_contexts(context_id);
     `);
     this.addColumnIfMissing("events", "destination_endpoint_id", "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing("events", "destination_json", "TEXT");
@@ -595,6 +625,7 @@ export class BusStore {
       this.db.prepare("DELETE FROM pending_responses WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM runtime_telemetry WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM events WHERE workspace_id = ?").run(workspaceId);
+      this.db.prepare("DELETE FROM pulse_delivery_contexts WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare(`
         DELETE FROM context_participants
         WHERE context_id IN (SELECT context_id FROM contexts WHERE workspace_id = ?)
@@ -1380,6 +1411,59 @@ export class BusStore {
     return rows.map((row) => parseJson<PulseSubscriber>(row.subscriber_json));
   }
 
+  getOrCreatePulseDeliveryContext(input: {
+    pulse_id: string;
+    workspace_id: string;
+    scope_id: string;
+    subscriber: Extract<PulseSubscriber, { endpoint_ref: string }>;
+    endpoint_id: string;
+  }): string {
+    const subscriberKey = this.pulseDeliverySubscriberKey(input.subscriber);
+    const contextId = `ctx_pulse_${stableHash(`${input.workspace_id}\0${input.pulse_id}\0${subscriberKey}`).slice(0, 32)}`;
+    const timestamp = now();
+    return this.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT context_id
+        FROM pulse_delivery_contexts
+        WHERE pulse_id = ? AND subscriber_key = ?
+      `).get(input.pulse_id, subscriberKey) as { context_id: string } | undefined;
+      const mappedContextId = existing?.context_id ?? contextId;
+      const existingContext = this.contextStore.getContext(mappedContextId);
+      if (!existing) {
+        this.db.prepare(`
+          INSERT INTO pulse_delivery_contexts (
+            pulse_id, subscriber_key, context_id, workspace_id, endpoint_ref, endpoint_id, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          input.pulse_id,
+          subscriberKey,
+          mappedContextId,
+          input.workspace_id,
+          input.subscriber.endpoint_ref,
+          input.endpoint_id,
+          timestamp,
+          timestamp
+        );
+      } else {
+        this.db.prepare(`
+          UPDATE pulse_delivery_contexts
+          SET endpoint_ref = ?, endpoint_id = ?, workspace_id = ?, updated_at = ?
+          WHERE pulse_id = ? AND subscriber_key = ?
+        `).run(input.subscriber.endpoint_ref, input.endpoint_id, input.workspace_id, timestamp, input.pulse_id, subscriberKey);
+      }
+      if (existingContext && existingContext.workspace_id === input.workspace_id) return mappedContextId;
+      this.contextStore.createContext({
+        workspace_id: input.workspace_id,
+        scope_id: input.scope_id,
+        created_by_endpoint_id: input.endpoint_id,
+        participants: [input.endpoint_id],
+        context_id: mappedContextId
+      });
+      return mappedContextId;
+    });
+  }
+
   updatePulseStatus(pulseId: string, status: string, broadcast: Broadcast): unknown {
     const timestamp = now();
     this.db.prepare("UPDATE pulses SET status = ?, updated_at = ? WHERE pulse_id = ?")
@@ -1498,6 +1582,14 @@ export class BusStore {
 
   private contextScopeId(contextId: string): string {
     return this.contextStore.getContext(contextId)?.scope_id ?? DEFAULT_SCOPE_ID;
+  }
+
+  private pulseDeliverySubscriberKey(subscriber: Extract<PulseSubscriber, { endpoint_ref: string }>): string {
+    return stableHash(canonicalJson({
+      kind: "endpoint",
+      endpoint_ref: subscriber.endpoint_ref,
+      context_id: null
+    }));
   }
 
   private insertEvent(

@@ -117,6 +117,17 @@ function tableCounts(handle: ServerHandle): Record<string, number> {
   }));
 }
 
+async function waitFor<T>(probe: () => Promise<T | null>, timeoutMs = 4_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let last: T | null = null;
+  while (Date.now() < deadline) {
+    last = await probe();
+    if (last) return last;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for condition; last=${JSON.stringify(last)}`);
+}
+
 describe("Scope Projection API", () => {
   let handle: ServerHandle;
   let tmp: string;
@@ -229,6 +240,63 @@ describe("Scope Projection API", () => {
       { pulse_id: "research-reminder", subscriber: { kind: "context", context_id: researchEvent.context_id } },
       { pulse_id: "research-reminder", subscriber: { kind: "endpoint", endpoint_ref: floe, context_id: researchEvent.context_id } }
     ]);
+  });
+
+  it("projects one generated delivery Context for repeated endpoint Pulse fires", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const floe = `actor:${workspaceId}:floe`;
+    registerEndpoint(handle, workspaceId, floe);
+    await createScope(handle, workspaceId, "research");
+    const pulseId = "research-generated-delivery";
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: workspaceId,
+        persistence: "local",
+        scope_id: "research",
+        trigger: { type: "cron", schedule: "*/1 * * * * *" },
+        event: { type: "pulse.fired", content: { text: "scheduled research work" } },
+        subscribers: [{ kind: "endpoint", endpoint_ref: floe }]
+      }
+    });
+    expect(created.statusCode).toBe(201);
+
+    const firedEvents = await waitFor(async () => {
+      const events = await handle.app.inject({
+        method: "GET",
+        url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=research`
+      });
+      const matches = (events.json().events as any[]).filter((event) => event.metadata?.pulse_id === pulseId);
+      return matches.length >= 2 ? matches : null;
+    }, 4_000);
+    const generatedContextIds = new Set(firedEvents.map((event: any) => event.context_id));
+    expect(generatedContextIds.size).toBe(1);
+
+    const res = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/research/projection`
+    });
+
+    expect(res.statusCode).toBe(200);
+    const projection = res.json().projection;
+    expect(projection.refs.pulses).toEqual([
+      expect.objectContaining({
+        pulse_id: pulseId,
+        scope_id: "research"
+      })
+    ]);
+    expect(projection.refs.contexts).toEqual([
+      expect.objectContaining({
+        context_id: [...generatedContextIds][0],
+        scope_id: "research",
+        created_by_endpoint_id: floe
+      })
+    ]);
+    expect(projection.refs.events).toEqual([]);
+    expect(projection.refs.activity).toEqual([]);
   });
 
   it("keeps Context inclusion owned by the Context even when denormalized Event Scope is stale", async () => {

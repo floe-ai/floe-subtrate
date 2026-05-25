@@ -9,6 +9,7 @@ import { defaultConfig, type LocalConfig } from "./config.js";
 const WS = "workspace:pulse-subscribers";
 const OPERATOR = `actor:${WS}:operator`;
 const FLOE = `actor:${WS}:floe`;
+const REVIEWER = `actor:${WS}:reviewer`;
 const BRIDGE = "bridge:pulse-test";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
@@ -160,6 +161,187 @@ describe("Pulse subscribers", () => {
 
     const contextEventsRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}/events` });
     expect((contextEventsRes.json().events as any[]).some((event) => event.metadata?.pulse_id === pulseId)).toBe(true);
+  });
+
+  it("endpoint subscriber without context_id reuses one generated delivery Context across fires", async () => {
+    const pulseId = `pulse-stable-${Date.now()}`;
+
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "cron", schedule: "*/1 * * * * *" },
+        event: {
+          type: "pulse.fired",
+          content: { instructions: "Check status and report back." }
+        },
+        subscribers: [{ kind: "endpoint", endpoint_ref: "floe" }]
+      }
+    });
+    expect(createRes.statusCode).toBe(201);
+
+    const pulseEvents = await waitFor(async () => {
+      const res = await handle.app.inject({ method: "GET", url: `/v1/events?workspace_id=${encodeURIComponent(WS)}` });
+      const events = (res.json().events as any[])
+        .filter((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
+      return events.length >= 2 ? events : null;
+    }, 3_500);
+
+    const contexts = new Set(pulseEvents.map((event) => event.context_id));
+    expect(contexts.size).toBe(1);
+    const [contextId] = contexts;
+    expect(contextId).toMatch(/^ctx_/);
+    expect(pulseEvents.every((event) => event.source_endpoint_id === null)).toBe(true);
+    expect(pulseEvents.every((event) =>
+      event.destination_json.kind === "endpoint" &&
+      event.destination_json.endpoint_id === FLOE
+    )).toBe(true);
+
+    const contextRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}` });
+    expect(contextRes.statusCode).toBe(200);
+    expect(contextRes.json().participants).toEqual([FLOE]);
+  });
+
+  it("endpoint subscribers without context_id each get an independent generated delivery Context", async () => {
+    handle.store.registerEndpoint({
+      endpoint_id: REVIEWER,
+      workspace_id: WS,
+      name: REVIEWER,
+      bridge_id: BRIDGE,
+      status: "idle"
+    }, () => {});
+    const pulseId = `pulse-multi-stable-${Date.now()}`;
+
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "cron", schedule: "*/1 * * * * *" },
+        event: {
+          type: "pulse.fired",
+          content: { instructions: "Run scheduled work." }
+        },
+        subscribers: [
+          { kind: "endpoint", endpoint_ref: "floe" },
+          { kind: "endpoint", endpoint_ref: "reviewer" }
+        ]
+      }
+    });
+    expect(createRes.statusCode).toBe(201);
+
+    const pulseEvents = await waitFor(async () => {
+      const res = await handle.app.inject({ method: "GET", url: `/v1/events?workspace_id=${encodeURIComponent(WS)}` });
+      const events = (res.json().events as any[])
+        .filter((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
+      const floeEvents = events.filter((event) => event.destination_json.endpoint_id === FLOE);
+      const reviewerEvents = events.filter((event) => event.destination_json.endpoint_id === REVIEWER);
+      return floeEvents.length >= 2 && reviewerEvents.length >= 2 ? events : null;
+    }, 3_500);
+
+    const contextsByEndpoint = new Map<string, Set<string>>();
+    for (const event of pulseEvents) {
+      const endpointId = event.destination_json.endpoint_id as string;
+      const contexts = contextsByEndpoint.get(endpointId) ?? new Set<string>();
+      contexts.add(event.context_id);
+      contextsByEndpoint.set(endpointId, contexts);
+    }
+    expect(contextsByEndpoint.get(FLOE)?.size).toBe(1);
+    expect(contextsByEndpoint.get(REVIEWER)?.size).toBe(1);
+    const floeContext = [...contextsByEndpoint.get(FLOE)!][0];
+    const reviewerContext = [...contextsByEndpoint.get(REVIEWER)!][0];
+    expect(floeContext).not.toBe(reviewerContext);
+
+    const floeContextRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(floeContext)}` });
+    const reviewerContextRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(reviewerContext)}` });
+    expect(floeContextRes.json().participants).toEqual([FLOE]);
+    expect(reviewerContextRes.json().participants).toEqual([REVIEWER]);
+  });
+
+  it("recreates a generated endpoint delivery Context after deletion without cancelling the Pulse", async () => {
+    const pulseId = `pulse-recreate-${Date.now()}`;
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "cron", schedule: "*/1 * * * * *" },
+        event: {
+          type: "pulse.fired",
+          content: { instructions: "Continue scheduled work." }
+        },
+        subscribers: [{ kind: "endpoint", endpoint_ref: "floe" }]
+      }
+    });
+    expect(createRes.statusCode).toBe(201);
+
+    const firstDelivery = await waitFor(async () => {
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
+      });
+      const deliveries = res.json().deliveries as any[];
+      return deliveries.find((delivery) =>
+        delivery.events.some((event: any) => event.metadata?.pulse_id === pulseId)
+      ) ?? null;
+    }, 3_500);
+    const firstEvent = firstDelivery.events.find((event: any) => event.metadata?.pulse_id === pulseId);
+    const generatedContextId = firstEvent.context_id;
+
+    const deleteRes = await handle.app.inject({
+      method: "DELETE",
+      url: `/v1/contexts/${encodeURIComponent(generatedContextId)}`
+    });
+    expect(deleteRes.statusCode).toBe(200);
+    expect(deleteRes.json()).toMatchObject({
+      context_id: generatedContextId,
+      pulse_subscribers_deleted: 0
+    });
+
+    const pulseAfterDelete = await handle.app.inject({
+      method: "GET",
+      url: `/v1/pulses?workspace_id=${encodeURIComponent(WS)}`
+    });
+    const pulse = (pulseAfterDelete.json().pulses as any[]).find((item) => item.pulse_id === pulseId);
+    expect(pulse).toMatchObject({
+      pulse_id: pulseId,
+      status: "active",
+      subscribers: [{ kind: "endpoint", endpoint_ref: "floe" }]
+    });
+
+    await handle.app.inject({
+      method: "POST",
+      url: `/v1/endpoints/${encodeURIComponent(FLOE)}/status`,
+      payload: { status: "idle" }
+    });
+
+    const secondDelivery = await waitFor(async () => {
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
+      });
+      const deliveries = res.json().deliveries as any[];
+      return deliveries.find((delivery) =>
+        delivery.events.some((event: any) => event.metadata?.pulse_id === pulseId)
+      ) ?? null;
+    }, 3_500);
+    const secondEvent = secondDelivery.events.find((event: any) => event.metadata?.pulse_id === pulseId);
+    expect(secondEvent.context_id).toBe(generatedContextId);
+    expect(secondEvent.destination_json).toEqual({ kind: "endpoint", endpoint_id: FLOE });
+
+    const recreatedContext = await handle.app.inject({
+      method: "GET",
+      url: `/v1/contexts/${encodeURIComponent(generatedContextId)}`
+    });
+    expect(recreatedContext.statusCode).toBe(200);
+    expect(recreatedContext.json().participants).toEqual([FLOE]);
   });
 
   it("mixed subscribers keep pulse.fired canonical and do not add synthetic participants or pollute other contexts", async () => {
