@@ -339,20 +339,106 @@ export async function seedAppWithScopes(
   page: Page,
   scopes: ScopeRecord[],
   projections: Record<string, ScopeProjection>,
-  options: { legacyFieldRequests?: string[]; scopePosts?: string[]; scopePatches?: string[] } = {}
+  options: {
+    legacyFieldRequests?: string[];
+    scopePosts?: string[];
+    scopePatches?: string[];
+    layoutGets?: string[];
+    layoutPuts?: string[];
+    pulseSubscribes?: string[];
+    pulseUnsubscribes?: string[];
+  } = {}
 ): Promise<void> {
   await installBaselineRoutes(page);
 
   const scopeStore = new Map(scopes.map((scope) => [scope.scope_id, scope]));
   const projectionStore = new Map(Object.entries(projections));
+  const layoutStore = new Map<string, FieldLayoutFloeweb>();
   let generatedScopeCounter = 1;
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, (route) => {
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, async (route) => {
+    const url = new URL(route.request().url());
+    const segments = url.pathname.split("/");
+    if (url.pathname.endsWith("/layout/floeweb")) {
+      const fieldId = decodeURIComponent(segments[segments.length - 3] ?? "");
+      const method = route.request().method();
+      if (method === "GET") {
+        options.layoutGets?.push(route.request().url());
+        const layout = layoutStore.get(fieldId);
+        if (!layout) {
+          return route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: JSON.stringify({ error: "field_layout_not_found" })
+          });
+        }
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ layout })
+        });
+      }
+      if (method === "PUT") {
+        options.layoutPuts?.push(route.request().postData() ?? "");
+        const layout = JSON.parse(route.request().postData() ?? "{}") as FieldLayoutFloeweb;
+        layoutStore.set(fieldId, layout);
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ layout })
+        });
+      }
+    }
     options.legacyFieldRequests?.push(route.request().url());
     return route.fulfill({
       status: 500,
       contentType: "application/json",
       body: JSON.stringify({ error: "legacy_fields_endpoint_called" })
     });
+  });
+  await page.route("**/v1/pulses/*/subscribe", async (route) => {
+    options.pulseSubscribes?.push(route.request().postData() ?? "");
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const pulseId = decodeURIComponent(segments[segments.length - 2] ?? "");
+    const subscriber = JSON.parse(route.request().postData() ?? "{}") as ScopeProjection["relationships"]["pulse_subscribers"][number]["subscriber"];
+    for (const [scopeId, projection] of projectionStore.entries()) {
+      if (!projection.refs.pulses.some((pulse) => pulse.pulse_id === pulseId)) continue;
+      const exists = projection.relationships.pulse_subscribers.some((relationship) =>
+        relationship.pulse_id === pulseId &&
+        relationship.subscriber.kind === subscriber.kind &&
+        relationship.subscriber.context_id === subscriber.context_id
+      );
+      if (exists) continue;
+      projectionStore.set(scopeId, {
+        ...projection,
+        relationships: {
+          ...projection.relationships,
+          pulse_subscribers: [...projection.relationships.pulse_subscribers, { pulse_id: pulseId, subscriber }]
+        }
+      });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.route("**/v1/pulses/*/unsubscribe", async (route) => {
+    options.pulseUnsubscribes?.push(route.request().postData() ?? "");
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const pulseId = decodeURIComponent(segments[segments.length - 2] ?? "");
+    const subscriber = JSON.parse(route.request().postData() ?? "{}") as ScopeProjection["relationships"]["pulse_subscribers"][number]["subscriber"];
+    for (const [scopeId, projection] of projectionStore.entries()) {
+      projectionStore.set(scopeId, {
+        ...projection,
+        relationships: {
+          ...projection.relationships,
+          pulse_subscribers: projection.relationships.pulse_subscribers.filter((relationship) =>
+            !(
+              relationship.pulse_id === pulseId &&
+              relationship.subscriber.kind === subscriber.kind &&
+              relationship.subscriber.context_id === subscriber.context_id
+            )
+          )
+        }
+      });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
   });
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes`, async (route) => {
     const method = route.request().method();

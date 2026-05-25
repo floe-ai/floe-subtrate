@@ -89,6 +89,11 @@ export type ScopeProjectionFlow = {
   unsupported: ScopeProjection["unsupported"];
 };
 
+export type PulseContextSubscriberMutation = {
+  pulse_id: string;
+  subscriber: { kind: "context"; context_id: string };
+};
+
 function defaultProjectionLayout(index: number): { x: number; y: number } {
   return {
     x: 80,
@@ -116,6 +121,80 @@ function projectionNode(
       label,
       ...data
     } satisfies ScopeProjectionNodeData
+  };
+}
+
+function pulseContextMutationFromRefs(leftRef: string | null | undefined, rightRef: string | null | undefined): PulseContextSubscriberMutation | null {
+  if (!leftRef || !rightRef) return null;
+  const left = parseFieldRef(leftRef);
+  const right = parseFieldRef(rightRef);
+  if (left.kind === "pulse" && right.kind === "context") {
+    return { pulse_id: left.id, subscriber: { kind: "context", context_id: right.id } };
+  }
+  if (left.kind === "context" && right.kind === "pulse") {
+    return { pulse_id: right.id, subscriber: { kind: "context", context_id: left.id } };
+  }
+  return null;
+}
+
+export function projectionSubscriberFromConnection(source: string | null | undefined, target: string | null | undefined): PulseContextSubscriberMutation | null {
+  return pulseContextMutationFromRefs(source, target);
+}
+
+export function projectionSubscriberFromEdgeId(edgeId: string): PulseContextSubscriberMutation | null {
+  const prefix = "pulse-subscriber:";
+  const marker = ":context:";
+  if (!edgeId.startsWith(prefix)) return null;
+  const markerIndex = edgeId.indexOf(marker, prefix.length);
+  if (markerIndex === -1) return null;
+  const pulseId = edgeId.slice(prefix.length, markerIndex);
+  const contextId = edgeId.slice(markerIndex + marker.length);
+  if (!pulseId || !contextId) return null;
+  return { pulse_id: pulseId, subscriber: { kind: "context", context_id: contextId } };
+}
+
+export function addPulseContextSubscriber(
+  projection: ScopeProjection,
+  pulseId: string,
+  contextId: string
+): ScopeProjection {
+  const exists = projection.relationships.pulse_subscribers.some((relationship) =>
+    relationship.pulse_id === pulseId &&
+    relationship.subscriber.kind === "context" &&
+    relationship.subscriber.context_id === contextId
+  );
+  if (exists) return projection;
+  return {
+    ...projection,
+    relationships: {
+      ...projection.relationships,
+      pulse_subscribers: [
+        ...projection.relationships.pulse_subscribers,
+        { pulse_id: pulseId, subscriber: { kind: "context", context_id: contextId } }
+      ]
+    }
+  };
+}
+
+export function removePulseContextSubscriber(
+  projection: ScopeProjection,
+  pulseId: string,
+  contextId: string
+): ScopeProjection {
+  const nextSubscribers = projection.relationships.pulse_subscribers.filter((relationship) =>
+    !(
+      relationship.pulse_id === pulseId &&
+      relationship.subscriber.kind === "context" &&
+      relationship.subscriber.context_id === contextId
+    )
+  );
+  if (nextSubscribers.length === projection.relationships.pulse_subscribers.length) return projection;
+  return {
+    ...projection,
+    relationships: {
+      ...projection.relationships,
+      pulse_subscribers: nextSubscribers
+    }
   };
 }
 

@@ -13,6 +13,7 @@ import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadAllFields,
   loadField,
+  loadFieldLayout,
   upsertFieldSemantic,
   upsertFieldLayout,
   deleteField
@@ -325,6 +326,32 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       });
       reply.code(existed ? 200 : 201);
       return { semantic };
+    } catch (err) {
+      const mapped = mapFieldError(err, reply);
+      if (mapped) return mapped;
+      throw err;
+    }
+  });
+
+  app.get("/v1/workspaces/:workspace_id/fields/:field_id/layout/:renderer", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      field_id: z.string(),
+      renderer: z.string()
+    }).parse(request.params);
+    if (params.renderer !== "floeweb") {
+      reply.code(400);
+      return { error: "field_renderer_invalid", message: `renderer '${params.renderer}' not supported in slice 1 (only 'floeweb')` };
+    }
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      const layout = loadFieldLayout(locator, params.field_id, params.renderer);
+      if (!layout) {
+        reply.code(404);
+        return { error: "field_layout_not_found" };
+      }
+      return { layout };
     } catch (err) {
       const mapped = mapFieldError(err, reply);
       if (mapped) return mapped;
@@ -936,20 +963,20 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.post("/v1/pulses/:pulse_id/subscribe", async (request) => {
     const params = z.object({ pulse_id: z.string() }).parse(request.params);
-    const body = z.object({
-      endpoint_ref: z.string().min(1)
-    }).parse(request.body);
+    const body = PulseSubscriberSchema.parse(request.body) as PulseSubscriber;
     store.addPulseSubscriber(params.pulse_id, body);
-    return { ok: true };
+    const pulse = store.getPulse(params.pulse_id);
+    broadcast("pulse_subscriber_changed", { pulse_id: params.pulse_id, subscriber: body, pulse });
+    return { ok: true, pulse };
   });
 
   app.post("/v1/pulses/:pulse_id/unsubscribe", async (request) => {
     const params = z.object({ pulse_id: z.string() }).parse(request.params);
-    const body = z.object({
-      endpoint_ref: z.string().min(1)
-    }).parse(request.body);
+    const body = PulseSubscriberSchema.parse(request.body) as PulseSubscriber;
     store.removePulseSubscriber(params.pulse_id, body);
-    return { ok: true };
+    const pulse = store.getPulse(params.pulse_id);
+    broadcast("pulse_subscriber_changed", { pulse_id: params.pulse_id, subscriber: body, pulse });
+    return { ok: true, pulse };
   });
 
   // Hydrate scheduler from persisted pulse state on startup

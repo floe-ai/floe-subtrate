@@ -68,10 +68,19 @@ import {
   type FieldSummary,
   type FieldSemantic
 } from "./fields";
-import { parseFieldStreamMessage, type LoadedField } from "./fields-api";
+import { getFieldLayoutOnly, parseFieldStreamMessage, putFieldLayout, type LoadedField } from "./fields-api";
 import { createScope, getScopeProjection, listScopes, renameScope } from "./scope-projection-api";
-import { projectionToReactFlow, type ScopeProjection, type ScopeRecord } from "./scope-projection";
+import {
+  addPulseContextSubscriber,
+  projectionSubscriberFromConnection,
+  projectionSubscriberFromEdgeId,
+  projectionToReactFlow,
+  removePulseContextSubscriber,
+  type ScopeProjection,
+  type ScopeRecord
+} from "./scope-projection";
 import { DialogHost, confirm as confirmDialog, confirmWithOptions, prompt as promptDialog } from "./dialog/dialog";
+import { subscribePulse, unsubscribePulse } from "./pulse-api";
 
 type Workspace = {
   workspace_id: string;
@@ -903,7 +912,40 @@ function App() {
     };
     socket.onopen = () => setStatus("Connected");
     socket.onmessage = (event) => {
-      if (parseFieldStreamMessage(String(event.data))) return;
+      const fieldEvent = parseFieldStreamMessage(String(event.data));
+      if (fieldEvent) {
+        if (
+          fieldEvent.type === "field.upserted" &&
+          fieldEvent.payload.changed === "layout" &&
+          fieldEvent.payload.renderer === "floeweb"
+        ) {
+          const workspaceId = selectedWorkspaceIdRef.current;
+          const currentView = viewRef.current;
+          const fieldId = fieldEvent.payload.field_id;
+          const key = fieldLayoutKey(workspaceId, fieldId);
+          const localWriteUntil = localLayoutWriteUntilRef.current.get(key);
+          if (
+            workspaceId &&
+            workspaceId === fieldEvent.payload.workspace_id &&
+            currentView.kind === "field" &&
+            currentView.fieldId === fieldId &&
+            (!localWriteUntil || localWriteUntil < Date.now())
+          ) {
+            void getFieldLayoutOnly(busUrl, workspaceId, fieldId)
+              .then((layout) => {
+                if (!layout) return;
+                const current = loadedProjectionRef.current;
+                const latestView = viewRef.current;
+                if (!current || latestView.kind !== "field" || latestView.fieldId !== fieldId) return;
+                const next = { ...current, layout };
+                loadedProjectionRef.current = next;
+                setLoadedProjection(next);
+              })
+              .catch((caught) => setError((caught as Error).message));
+          }
+        }
+        return;
+      }
       queueRefresh();
     };
     socket.onerror = () => setStatus((current) => current === "Offline" ? current : "Reconnecting");
@@ -1008,47 +1050,6 @@ function App() {
     }
   }, [busUrl]);
 
-  const refreshOpenField = useCallback(async (workspaceId: string, fieldId: string) => {
-    try {
-      let scope = scopeRecords.find((candidate) => candidate.scope_id === fieldId) ?? null;
-      if (!scope) {
-        const scopes = await listScopes(busUrl, workspaceId);
-        setScopeRecords(scopes);
-        setFieldSummaries(scopes.map(scopeToFieldSummary));
-        scope = scopes.find((candidate) => candidate.scope_id === fieldId) ?? null;
-      }
-      const projection = await getScopeProjection(busUrl, workspaceId, fieldId);
-      const currentView = viewRef.current;
-      if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
-        const current = loadedProjectionRef.current;
-        setLoadedProjection({
-          scope: scope ?? projectionScopeFallback(projection),
-          projection,
-          layout: current?.scope.scope_id === fieldId ? current.layout : null
-        });
-        setLoadedField(null);
-      }
-    } catch (caught) {
-      const currentView = viewRef.current;
-      if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
-        setLoadedProjection(null);
-        setLoadedField(null);
-        clearFieldEditingState();
-      }
-      setError((caught as Error).message);
-    }
-  }, [busUrl, scopeRecords]);
-
-  useEffect(() => {
-    if (!selectedWorkspaceId || view.kind !== "field") return;
-    void refreshOpenField(selectedWorkspaceId, view.fieldId);
-  }, [events.length, telemetry.length, selectedWorkspaceId, view, refreshOpenField]);
-
-  const saveOpenFieldSemantic = useCallback(async (nextSemantic: FieldSemantic): Promise<boolean> => {
-    setError(`Field semantic edits are disabled for Scope projections (${nextSemantic.id}).`);
-    return false;
-  }, []);
-
   const markLocalLayoutWrite = useCallback((workspaceId: string, fieldId: string) => {
     localLayoutWriteUntilRef.current.set(fieldLayoutKey(workspaceId, fieldId), Date.now() + 2_000);
   }, []);
@@ -1062,9 +1063,55 @@ function App() {
     return false;
   }, []);
 
+  const refreshOpenField = useCallback(async (workspaceId: string, fieldId: string) => {
+    try {
+      let scope = scopeRecords.find((candidate) => candidate.scope_id === fieldId) ?? null;
+      if (!scope) {
+        const scopes = await listScopes(busUrl, workspaceId);
+        setScopeRecords(scopes);
+        setFieldSummaries(scopes.map(scopeToFieldSummary));
+        scope = scopes.find((candidate) => candidate.scope_id === fieldId) ?? null;
+      }
+      const projection = await getScopeProjection(busUrl, workspaceId, fieldId);
+      const current = loadedProjectionRef.current;
+      const layout = current?.scope.scope_id === fieldId && hasRecentLocalLayoutWrite(workspaceId, fieldId)
+        ? current.layout
+        : await getFieldLayoutOnly(busUrl, workspaceId, fieldId);
+      const currentView = viewRef.current;
+      if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
+        setLoadedProjection({
+          scope: scope ?? projectionScopeFallback(projection),
+          projection,
+          layout
+        });
+        setLoadedField(null);
+      }
+    } catch (caught) {
+      const currentView = viewRef.current;
+      if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
+        setLoadedProjection(null);
+        setLoadedField(null);
+        clearFieldEditingState();
+      }
+      setError((caught as Error).message);
+    }
+  }, [busUrl, hasRecentLocalLayoutWrite, scopeRecords]);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId || view.kind !== "field") return;
+    void refreshOpenField(selectedWorkspaceId, view.fieldId);
+  }, [events.length, telemetry.length, selectedWorkspaceId, view, refreshOpenField]);
+
+  const saveOpenFieldSemantic = useCallback(async (nextSemantic: FieldSemantic): Promise<boolean> => {
+    setError(`Field semantic edits are disabled for Scope projections (${nextSemantic.id}).`);
+    return false;
+  }, []);
+
   const sendFieldLayoutSave = useCallback((pending: PendingLayoutSave) => {
     markLocalLayoutWrite(pending.workspaceId, pending.fieldId);
-  }, [markLocalLayoutWrite]);
+    void putFieldLayout(busUrl, pending.workspaceId, pending.fieldId, pending.layout)
+      .catch((caught) => setError((caught as Error).message));
+  }, [busUrl, markLocalLayoutWrite]);
 
   const scheduleFieldLayoutSave = useCallback((
     workspaceId: string,
@@ -1129,6 +1176,7 @@ function App() {
       if (nextLayout === baseLayout) return;
       if (projection.layout && layoutsEqual(projection.layout, nextLayout)) return;
       updateLoadedProjectionLayout(nextLayout);
+      scheduleFieldLayoutSave(workspaceId, projection.scope.scope_id, nextLayout);
       return;
     }
     const current = loadedFieldRef.current;
@@ -1167,6 +1215,7 @@ function App() {
       const nextLayout = reactFlowToLayout(projection.scope.scope_id, nodes, viewport);
       if (projection.layout && layoutsEqual(projection.layout, nextLayout)) return;
       updateLoadedProjectionLayout(nextLayout);
+      scheduleFieldLayoutSave(workspaceId, projection.scope.scope_id, nextLayout);
       return;
     }
     const current = loadedFieldRef.current;
@@ -1202,6 +1251,7 @@ function App() {
       };
       if (projection.layout && layoutsEqual(projection.layout, nextLayout)) return;
       updateLoadedProjectionLayout(nextLayout);
+      scheduleFieldLayoutSave(workspaceId, projection.scope.scope_id, nextLayout);
       return;
     }
     const current = loadedFieldRef.current;
@@ -1229,9 +1279,37 @@ function App() {
   }, [reactFlow, scheduleFieldLayoutSave, updateLoadedFieldLayout, updateLoadedProjectionLayout]);
 
   const handleFieldConnect = useCallback((connection: Connection) => {
-    if (loadedProjectionRef.current) return;
-    const current = loadedFieldRef.current;
+    const projection = loadedProjectionRef.current;
+    const workspaceId = selectedWorkspaceIdRef.current;
     const currentView = viewRef.current;
+    if (projection && workspaceId && currentView.kind === "field" && currentView.fieldId === projection.scope.scope_id) {
+      const mutation = projectionSubscriberFromConnection(connection.source, connection.target);
+      if (!mutation) {
+        setError("Scope Projection connections currently support Pulse to Context only.");
+        return;
+      }
+      void (async () => {
+        try {
+          await subscribePulse(busUrl, mutation.pulse_id, mutation.subscriber);
+          const current = loadedProjectionRef.current;
+          const latestView = viewRef.current;
+          if (!current || latestView.kind !== "field" || latestView.fieldId !== projection.scope.scope_id) return;
+          const nextProjection = addPulseContextSubscriber(
+            current.projection,
+            mutation.pulse_id,
+            mutation.subscriber.context_id
+          );
+          const next = { ...current, projection: nextProjection };
+          loadedProjectionRef.current = next;
+          setLoadedProjection(next);
+          await refreshOpenField(workspaceId, projection.scope.scope_id);
+        } catch (caught) {
+          setError((caught as Error).message);
+        }
+      })();
+      return;
+    }
+    const current = loadedFieldRef.current;
     if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
     if (!connection.source || !connection.target) return;
     try {
@@ -1256,7 +1334,7 @@ function App() {
     } catch (caught) {
       setError((caught as Error).message);
     }
-  }, [saveOpenFieldSemantic]);
+  }, [busUrl, refreshOpenField, saveOpenFieldSemantic]);
 
   const handleFieldEdgesChange = useCallback((changes: EdgeChange<FieldConnectionEdge>[]) => {
     const selection = [...changes].reverse().find((change) => change.type === "select");
@@ -1275,9 +1353,44 @@ function App() {
   }, []);
 
   const handleFieldEdgesDelete = useCallback((edges: FieldConnectionEdge[]) => {
-    if (loadedProjectionRef.current) return;
-    const current = loadedFieldRef.current;
+    const projection = loadedProjectionRef.current;
+    const workspaceId = selectedWorkspaceIdRef.current;
     const currentView = viewRef.current;
+    if (projection && workspaceId && currentView.kind === "field" && currentView.fieldId === projection.scope.scope_id) {
+      const mutations = edges
+        .map((edge) => projectionSubscriberFromEdgeId(edge.id))
+        .filter((mutation): mutation is NonNullable<typeof mutation> => mutation !== null);
+      if (mutations.length === 0) return;
+      void (async () => {
+        try {
+          for (const mutation of mutations) {
+            await unsubscribePulse(busUrl, mutation.pulse_id, mutation.subscriber);
+          }
+          const current = loadedProjectionRef.current;
+          const latestView = viewRef.current;
+          if (!current || latestView.kind !== "field" || latestView.fieldId !== projection.scope.scope_id) return;
+          let nextProjection = current.projection;
+          for (const mutation of mutations) {
+            nextProjection = removePulseContextSubscriber(
+              nextProjection,
+              mutation.pulse_id,
+              mutation.subscriber.context_id
+            );
+          }
+          const next = { ...current, projection: nextProjection };
+          loadedProjectionRef.current = next;
+          setLoadedProjection(next);
+          setSelectedFieldConnectionId((selected) =>
+            selected && edges.some((edge) => edge.id === selected) ? null : selected
+          );
+          await refreshOpenField(workspaceId, projection.scope.scope_id);
+        } catch (caught) {
+          setError((caught as Error).message);
+        }
+      })();
+      return;
+    }
+    const current = loadedFieldRef.current;
     if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
     const ids = new Set(edges.map((edge) => edge.id));
     if (ids.size === 0) return;
@@ -1293,7 +1406,7 @@ function App() {
     } catch (caught) {
       setError((caught as Error).message);
     }
-  }, [editingFieldConnectionId, saveOpenFieldSemantic]);
+  }, [busUrl, editingFieldConnectionId, refreshOpenField, saveOpenFieldSemantic]);
 
   const handleFieldBeforeDelete = useCallback(async ({
     nodes
@@ -1301,7 +1414,7 @@ function App() {
     nodes: ReactFlowNode[];
     edges: FieldConnectionEdge[];
   }) => {
-    if (loadedProjectionRef.current) return false;
+    if (loadedProjectionRef.current) return nodes.length === 0;
     if (nodes.length === 0) return true;
     if (nodes.length !== 1) {
       setError("Delete one Field Item at a time.");
@@ -1386,6 +1499,7 @@ function App() {
   }, [busUrl, editingFieldConnectionId, fieldSummaries, refreshFields, saveOpenFieldSemantic]);
 
   const handleFieldReconnect = useCallback((oldEdge: FieldConnectionEdge, connection: Connection) => {
+    // Projection edge reconnect would require unsubscribe+subscribe atomicity; use delete+connect for this slice.
     if (loadedProjectionRef.current) return;
     const current = loadedFieldRef.current;
     const currentView = viewRef.current;

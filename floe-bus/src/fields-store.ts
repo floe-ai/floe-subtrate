@@ -380,6 +380,33 @@ export function upsertFieldLayout(
   return layout;
 }
 
+export function loadFieldLayout(
+  workspacePath: string,
+  fieldId: string,
+  renderer: string
+): FieldLayout | null {
+  validateFieldId(fieldId);
+
+  if (!RENDERER_PATTERN.test(renderer)) {
+    throw new FieldRendererInvalidError(
+      `invalid renderer name '${renderer}': must match ^[a-z][a-z0-9_-]*$`
+    );
+  }
+
+  const path = layoutPath(workspacePath, fieldId, renderer);
+  if (!existsSync(path)) return null;
+
+  const parsed = parseYamlFile<unknown>(path);
+  const result = FieldLayoutSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new FieldValidationError(
+      `invalid layout file '${path}': ${result.error.issues.map((i) => i.message).join("; ")}`,
+      result.error.issues
+    );
+  }
+  return result.data;
+}
+
 export function deleteField(
   workspacePath: string,
   fieldId: string

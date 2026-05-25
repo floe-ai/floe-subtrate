@@ -203,6 +203,44 @@ describe("Fields HTTP routes", () => {
     expect(existsSync(join(wsLocator, ".floe", "fields", "eps.layout.floeweb.yaml"))).toBe(true);
   });
 
+  it("GET layout returns a Scope-backed layout sidecar without requiring a Field semantic file", async () => {
+    const layout = {
+      ...makeLayout("default"),
+      viewport: { x: 12, y: 34, zoom: 1.25 },
+      items: {
+        "context:ctx_research": { x: 120, y: 220 },
+        "pulse:pulse_daily": { x: 360, y: 220 }
+      }
+    };
+    const put = await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/fields/default/layout/floeweb`,
+      payload: layout
+    });
+    expect(put.statusCode).toBe(200);
+    expect(existsSync(join(wsLocator, ".floe", "fields", "default.yaml"))).toBe(false);
+
+    const get = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${wsId}/fields/default/layout/floeweb`
+    });
+
+    expect(get.statusCode).toBe(200);
+    expect(get.json()).toEqual({ layout });
+    const listed = await handle.app.inject({ method: "GET", url: `/v1/workspaces/${wsId}/fields` });
+    expect(listed.json()).toEqual({ fields: [] });
+  });
+
+  it("GET layout returns 404 when the layout sidecar is absent", async () => {
+    const res = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${wsId}/fields/default/layout/floeweb`
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: "field_layout_not_found" });
+  });
+
   it("GET one returns layout after it is written", async () => {
     await handle.app.inject({
       method: "PUT",

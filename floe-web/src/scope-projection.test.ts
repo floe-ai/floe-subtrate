@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { projectionToReactFlow, type ScopeProjection } from "./scope-projection";
+import {
+  addPulseContextSubscriber,
+  projectionSubscriberFromConnection,
+  projectionSubscriberFromEdgeId,
+  projectionToReactFlow,
+  removePulseContextSubscriber,
+  type ScopeProjection
+} from "./scope-projection";
 
 const projection: ScopeProjection = {
   workspace_id: "workspace:test",
@@ -154,5 +161,41 @@ describe("projectionToReactFlow", () => {
       ["context:ctx_overlap_regression", { x: 80, y: 80 }],
       ["pulse:issue36_context_projection_default_layout_click_regression", { x: 80, y: 300 }]
     ]);
+  });
+
+  it("derives Pulse Context subscriber mutations from projected React Flow connections", () => {
+    expect(projectionSubscriberFromConnection("pulse:pulse_daily", "context:ctx_research")).toEqual({
+      pulse_id: "pulse_daily",
+      subscriber: { kind: "context", context_id: "ctx_research" }
+    });
+    expect(projectionSubscriberFromConnection("context:ctx_research", "pulse:pulse_daily")).toEqual({
+      pulse_id: "pulse_daily",
+      subscriber: { kind: "context", context_id: "ctx_research" }
+    });
+    expect(projectionSubscriberFromConnection("context:a", "context:b")).toBeNull();
+    expect(projectionSubscriberFromEdgeId("pulse-subscriber:pulse_daily:context:ctx_research")).toEqual({
+      pulse_id: "pulse_daily",
+      subscriber: { kind: "context", context_id: "ctx_research" }
+    });
+  });
+
+  it("optimistically adds and removes derived Pulse Context subscriber relationships without changing refs", () => {
+    const withoutSubscriber: ScopeProjection = {
+      ...projection,
+      relationships: {
+        ...projection.relationships,
+        pulse_subscribers: []
+      }
+    };
+    const added = addPulseContextSubscriber(withoutSubscriber, "pulse_daily", "ctx_research");
+    expect(added.refs).toBe(withoutSubscriber.refs);
+    expect(added.relationships.pulse_subscribers).toEqual([
+      { pulse_id: "pulse_daily", subscriber: { kind: "context", context_id: "ctx_research" } }
+    ]);
+    expect(addPulseContextSubscriber(added, "pulse_daily", "ctx_research")).toBe(added);
+
+    const removed = removePulseContextSubscriber(added, "pulse_daily", "ctx_research");
+    expect(removed.refs).toBe(withoutSubscriber.refs);
+    expect(removed.relationships.pulse_subscribers).toEqual([]);
   });
 });

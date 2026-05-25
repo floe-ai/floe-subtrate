@@ -218,6 +218,22 @@ export async function putFieldLayout(
   return result.layout;
 }
 
+export async function getFieldLayoutOnly(
+  busUrl: string,
+  workspaceId: string,
+  fieldId: string
+): Promise<FieldLayoutFloeweb | null> {
+  try {
+    const result = await request<{ layout: FieldLayoutFloeweb }>(
+      `${fieldPath(busUrl, workspaceId, fieldId)}/layout/floeweb`
+    );
+    return result.layout;
+  } catch (caught) {
+    if (caught instanceof FieldsApiError && caught.status === 404) return null;
+    throw caught;
+  }
+}
+
 export async function deleteField(
   busUrl: string,
   workspaceId: string,

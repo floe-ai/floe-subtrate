@@ -242,6 +242,57 @@ describe("Scope Projection API", () => {
     ]);
   });
 
+  it("adds and removes a Pulse to Context subscriber relationship without changing Scope membership", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const operator = `actor:${workspaceId}:operator`;
+    const floe = `actor:${workspaceId}:floe`;
+    registerEndpoint(handle, workspaceId, operator);
+    registerEndpoint(handle, workspaceId, floe);
+    await createScope(handle, workspaceId, "research");
+    const researchEvent = await emitMessage(handle, { workspaceId, source: operator, target: floe, scopeId: "research", text: "research hello" });
+    await createPulse(handle, {
+      workspaceId,
+      pulseId: "research-reminder",
+      scopeId: "research",
+      subscribers: []
+    });
+    const beforeCounts = tableCounts(handle);
+
+    const subscribed = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses/research-reminder/subscribe",
+      payload: { kind: "context", context_id: researchEvent.context_id }
+    });
+    expect(subscribed.statusCode).toBe(200);
+
+    const withEdge = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/research/projection`
+    });
+    expect(withEdge.statusCode).toBe(200);
+    expect(withEdge.json().projection.relationships.pulse_subscribers).toEqual([
+      { pulse_id: "research-reminder", subscriber: { kind: "context", context_id: researchEvent.context_id } }
+    ]);
+    expect(tableCounts(handle)).toMatchObject({
+      ...beforeCounts,
+      pulse_subscribers: beforeCounts.pulse_subscribers + 1
+    });
+
+    const unsubscribed = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses/research-reminder/unsubscribe",
+      payload: { kind: "context", context_id: researchEvent.context_id }
+    });
+    expect(unsubscribed.statusCode).toBe(200);
+
+    const withoutEdge = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/research/projection`
+    });
+    expect(withoutEdge.json().projection.relationships.pulse_subscribers).toEqual([]);
+    expect(tableCounts(handle)).toEqual(beforeCounts);
+  });
+
   it("projects one generated delivery Context for repeated endpoint Pulse fires", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const floe = `actor:${workspaceId}:floe`;

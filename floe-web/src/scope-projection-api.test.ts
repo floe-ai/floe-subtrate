@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getFieldLayoutOnly } from "./fields-api";
 import { createScope, getScopeProjection, listScopes, renameScope, ScopeProjectionApiError } from "./scope-projection-api";
 
 describe("Scope Projection API client", () => {
@@ -100,5 +101,40 @@ describe("Scope Projection API client", () => {
         status: 404,
         body: { error: "scope_not_found" }
       } satisfies Partial<ScopeProjectionApiError>);
+  });
+
+  it("loads Scope-backed renderer layout sidecars and treats missing layout as null", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/v1/workspaces/workspace%3Atest/fields/default/layout/floeweb")) {
+        return new Response(JSON.stringify({
+          layout: {
+            schema: "floe.field.layout.floeweb.v1",
+            field_id: "default",
+            viewport: { x: 10, y: 20, zoom: 1.1 },
+            items: {
+              "context:ctx_research": { x: 100, y: 200 },
+              "pulse:pulse_daily": { x: 400, y: 200 }
+            }
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/v1/workspaces/workspace%3Atest/fields/missing/layout/floeweb")) {
+        return new Response(JSON.stringify({ error: "field_layout_not_found" }), { status: 404, headers: { "content-type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    }));
+
+    const layout = await getFieldLayoutOnly("http://bus.local", "workspace:test", "default");
+    const missing = await getFieldLayoutOnly("http://bus.local", "workspace:test", "missing");
+
+    expect(layout?.items["context:ctx_research"]).toEqual({ x: 100, y: 200 });
+    expect(missing).toBeNull();
+    expect(calls).toEqual([
+      "http://bus.local/v1/workspaces/workspace%3Atest/fields/default/layout/floeweb",
+      "http://bus.local/v1/workspaces/workspace%3Atest/fields/missing/layout/floeweb"
+    ]);
   });
 });
