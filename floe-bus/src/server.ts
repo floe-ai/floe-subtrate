@@ -11,14 +11,9 @@ import { parseListen, resolveLocalPath } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextNotFoundError, ContextParticipantError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
-  loadAllFields,
-  loadField,
-  loadFieldLayout,
-  upsertFieldSemantic,
-  upsertFieldLayout,
-  deleteField
-} from "./fields-store.js";
-import { FieldsWatcherRegistry } from "./fields-watcher.js";
+  loadScopeProjectionLayout,
+  upsertScopeProjectionLayout
+} from "./scope-projection-layout-store.js";
 import { ScopeAlreadyExistsError, ScopeNotFoundError } from "./scopes/store.js";
 import { buildScopeProjection } from "./scopes/projection.js";
 
@@ -112,19 +107,12 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
   }
 
-  const fieldWatchers = new FieldsWatcherRegistry(
-    broadcast,
-    (error) => app.log.error({ err: error }, "field watcher error")
-  );
-  fieldWatchers.watchWorkspaces(store.listWorkspaces() as { workspace_id?: unknown; locator?: unknown }[]);
-
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
   app.addHook("onClose", async () => {
     clearInterval(timer);
     for (const socket of sockets) socket.close();
-    await fieldWatchers.close();
     store.close();
   });
 
@@ -257,151 +245,92 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return ws.locator;
   }
 
-  function mapFieldError(err: unknown, reply: any): { error: string; message: string } | null {
+  function mapScopeProjectionLayoutError(err: unknown, reply: any): { error: string; message: string } | null {
     if (!(err instanceof Error)) return null;
     switch (err.name) {
-      case "FieldValidationError":
+      case "ScopeProjectionLayoutValidationError":
         reply.code(400);
-        return { error: "field_validation_error", message: err.message };
-      case "FieldIdMismatchError":
+        return { error: "scope_projection_layout_validation_error", message: err.message };
+      case "ScopeProjectionLayoutIdMismatchError":
         reply.code(400);
-        return { error: "field_id_mismatch", message: err.message };
-      case "FieldAlreadyExistsError":
-        reply.code(409);
-        return { error: "field_already_exists", message: err.message };
-      case "FieldRendererInvalidError":
+        return { error: "scope_projection_layout_id_mismatch", message: err.message };
+      case "ScopeProjectionLayoutRendererInvalidError":
         reply.code(400);
-        return { error: "field_renderer_invalid", message: err.message };
+        return { error: "scope_projection_layout_renderer_invalid", message: err.message };
       default:
         return null;
     }
   }
 
-  app.get("/v1/workspaces/:workspace_id/fields", async (request, reply) => {
-    const params = z.object({ workspace_id: z.string() }).parse(request.params);
-    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
-    if (locator === null) return reply;
-    try {
-      return { fields: loadAllFields(locator) };
-    } catch (err) {
-      const mapped = mapFieldError(err, reply);
-      if (mapped) return mapped;
-      throw err;
-    }
-  });
-
-  app.get("/v1/workspaces/:workspace_id/fields/:field_id", async (request, reply) => {
-    const params = z.object({ workspace_id: z.string(), field_id: z.string() }).parse(request.params);
-    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
-    if (locator === null) return reply;
-    try {
-      const loaded = loadField(locator, params.field_id);
-      if (!loaded) {
-        reply.code(404);
-        return { error: "field_not_found" };
-      }
-      return { semantic: loaded.semantic, layout: loaded.layout ?? null };
-    } catch (err) {
-      const mapped = mapFieldError(err, reply);
-      if (mapped) return mapped;
-      throw err;
-    }
-  });
-
-  app.put("/v1/workspaces/:workspace_id/fields/:field_id", async (request, reply) => {
-    const params = z.object({ workspace_id: z.string(), field_id: z.string() }).parse(request.params);
-    const query = z.object({ if_absent: z.enum(["true", "false"]).optional() }).parse(request.query);
-    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
-    if (locator === null) return reply;
-    try {
-      const existed = loadField(locator, params.field_id) !== null;
-      const semantic = upsertFieldSemantic(locator, params.field_id, request.body, {
-        ifAbsent: query.if_absent === "true"
-      });
-      broadcast("field.upserted", {
-        workspace_id: params.workspace_id,
-        field_id: params.field_id,
-        source: "api",
-        changed: "semantic"
-      });
-      reply.code(existed ? 200 : 201);
-      return { semantic };
-    } catch (err) {
-      const mapped = mapFieldError(err, reply);
-      if (mapped) return mapped;
-      throw err;
-    }
-  });
-
-  app.get("/v1/workspaces/:workspace_id/fields/:field_id/layout/:renderer", async (request, reply) => {
+  app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer", async (request, reply) => {
     const params = z.object({
       workspace_id: z.string(),
-      field_id: z.string(),
+      scope_id: z.string(),
       renderer: z.string()
     }).parse(request.params);
     if (params.renderer !== "floeweb") {
       reply.code(400);
-      return { error: "field_renderer_invalid", message: `renderer '${params.renderer}' not supported in slice 1 (only 'floeweb')` };
+      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' not supported (only 'floeweb')` };
+    }
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    if (!store.getScope(params.workspace_id, params.scope_id)) {
+      return reply.code(404).send({
+        error: "scope_not_found",
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id
+      });
     }
     const locator = resolveWorkspaceLocator(params.workspace_id, reply);
     if (locator === null) return reply;
     try {
-      const layout = loadFieldLayout(locator, params.field_id, params.renderer);
+      const layout = loadScopeProjectionLayout(locator, params.scope_id, params.renderer);
       if (!layout) {
         reply.code(404);
-        return { error: "field_layout_not_found" };
+        return { error: "scope_projection_layout_not_found" };
       }
       return { layout };
     } catch (err) {
-      const mapped = mapFieldError(err, reply);
+      const mapped = mapScopeProjectionLayoutError(err, reply);
       if (mapped) return mapped;
       throw err;
     }
   });
 
-  app.put("/v1/workspaces/:workspace_id/fields/:field_id/layout/:renderer", async (request, reply) => {
+  app.put("/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer", async (request, reply) => {
     const params = z.object({
       workspace_id: z.string(),
-      field_id: z.string(),
+      scope_id: z.string(),
       renderer: z.string()
     }).parse(request.params);
     if (params.renderer !== "floeweb") {
       reply.code(400);
-      return { error: "field_renderer_invalid", message: `renderer '${params.renderer}' not supported in slice 1 (only 'floeweb')` };
+      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' not supported (only 'floeweb')` };
+    }
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    if (!store.getScope(params.workspace_id, params.scope_id)) {
+      return reply.code(404).send({
+        error: "scope_not_found",
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id
+      });
     }
     const locator = resolveWorkspaceLocator(params.workspace_id, reply);
     if (locator === null) return reply;
     try {
-      const layout = upsertFieldLayout(locator, params.field_id, params.renderer, request.body);
-      broadcast("field.upserted", {
+      const layout = upsertScopeProjectionLayout(locator, params.scope_id, params.renderer, request.body);
+      broadcast("scope_projection.layout.upserted", {
         workspace_id: params.workspace_id,
-        field_id: params.field_id,
+        scope_id: params.scope_id,
         source: "api",
-        changed: "layout",
-        renderer: params.renderer,
+        renderer: params.renderer
       });
       return { layout };
     } catch (err) {
-      const mapped = mapFieldError(err, reply);
-      if (mapped) return mapped;
-      throw err;
-    }
-  });
-
-  app.delete("/v1/workspaces/:workspace_id/fields/:field_id", async (request, reply) => {
-    const params = z.object({ workspace_id: z.string(), field_id: z.string() }).parse(request.params);
-    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
-    if (locator === null) return reply;
-    try {
-      const result = deleteField(locator, params.field_id);
-      if (!result.semanticDeleted && result.layoutsDeleted.length === 0) {
-        reply.code(404);
-        return { error: "field_not_found" };
-      }
-      broadcast("field.deleted", { workspace_id: params.workspace_id, field_id: params.field_id });
-      return result;
-    } catch (err) {
-      const mapped = mapFieldError(err, reply);
+      const mapped = mapScopeProjectionLayoutError(err, reply);
       if (mapped) return mapped;
       throw err;
     }
@@ -426,14 +355,12 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       mkdirSync(resolved, { recursive: true });
     }
     const workspace = store.registerWorkspace(input, broadcast);
-    await fieldWatchers.watchWorkspace(workspace as { workspace_id?: unknown; locator?: unknown });
     return reply.code(201).send({ workspace });
   });
 
   app.post("/v1/workspaces/:workspace_id/select", async (request) => {
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const workspace = store.selectWorkspace(params.workspace_id, broadcast);
-    await fieldWatchers.watchWorkspace(workspace as { workspace_id?: unknown; locator?: unknown });
     return { workspace };
   });
 
@@ -442,7 +369,6 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const body = z.object({
       delete_locator: z.boolean().optional()
     }).parse(request.body ?? {});
-    await fieldWatchers.unwatchWorkspace(params.workspace_id);
     return store.deleteWorkspace(params.workspace_id, { delete_locator: body.delete_locator ?? false }, broadcast);
   });
 

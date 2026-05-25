@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getFieldLayoutOnly } from "./fields-api";
-import { createScope, getScopeProjection, listScopes, renameScope, ScopeProjectionApiError } from "./scope-projection-api";
+import {
+  createScope,
+  getScopeProjection,
+  getScopeProjectionLayout,
+  listScopes,
+  parseScopeProjectionStreamMessage,
+  putScopeProjectionLayout,
+  renameScope,
+  ScopeProjectionApiError
+} from "./scope-projection-api";
 
 describe("Scope Projection API client", () => {
   afterEach(() => {
@@ -103,12 +111,17 @@ describe("Scope Projection API client", () => {
       } satisfies Partial<ScopeProjectionApiError>);
   });
 
-  it("loads Scope-backed renderer layout sidecars and treats missing layout as null", async () => {
+  it("loads and saves Scope Projection renderer layout sidecars without legacy Field endpoints", async () => {
     const calls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       calls.push(url);
-      if (url.endsWith("/v1/workspaces/workspace%3Atest/fields/default/layout/floeweb")) {
+      if (url.endsWith("/v1/workspaces/workspace%3Atest/scopes/default/projection/layout/floeweb")) {
+        if (init?.method === "PUT") {
+          return new Response(JSON.stringify({
+            layout: JSON.parse(String(init.body))
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
         return new Response(JSON.stringify({
           layout: {
             schema: "floe.field.layout.floeweb.v1",
@@ -121,20 +134,50 @@ describe("Scope Projection API client", () => {
           }
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
-      if (url.endsWith("/v1/workspaces/workspace%3Atest/fields/missing/layout/floeweb")) {
-        return new Response(JSON.stringify({ error: "field_layout_not_found" }), { status: 404, headers: { "content-type": "application/json" } });
+      if (url.endsWith("/v1/workspaces/workspace%3Atest/scopes/missing/projection/layout/floeweb")) {
+        return new Response(JSON.stringify({ error: "scope_projection_layout_not_found" }), { status: 404, headers: { "content-type": "application/json" } });
       }
       return new Response("not found", { status: 404 });
     }));
 
-    const layout = await getFieldLayoutOnly("http://bus.local", "workspace:test", "default");
-    const missing = await getFieldLayoutOnly("http://bus.local", "workspace:test", "missing");
+    const layout = await getScopeProjectionLayout("http://bus.local", "workspace:test", "default");
+    const saved = await putScopeProjectionLayout("http://bus.local", "workspace:test", "default", layout!);
+    const missing = await getScopeProjectionLayout("http://bus.local", "workspace:test", "missing");
 
     expect(layout?.items["context:ctx_research"]).toEqual({ x: 100, y: 200 });
+    expect(saved).toEqual(layout);
     expect(missing).toBeNull();
     expect(calls).toEqual([
-      "http://bus.local/v1/workspaces/workspace%3Atest/fields/default/layout/floeweb",
-      "http://bus.local/v1/workspaces/workspace%3Atest/fields/missing/layout/floeweb"
+      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/default/projection/layout/floeweb",
+      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/default/projection/layout/floeweb",
+      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/missing/projection/layout/floeweb"
     ]);
+    expect(calls.some((url) => url.includes("/fields"))).toBe(false);
+  });
+
+  it("parses only Scope Projection layout stream messages", () => {
+    expect(parseScopeProjectionStreamMessage(JSON.stringify({
+      type: "scope_projection.layout.upserted",
+      payload: {
+        workspace_id: "workspace:test",
+        scope_id: "default",
+        source: "api",
+        renderer: "floeweb"
+      },
+      at: "2026-05-24T00:00:00.000Z"
+    }))).toEqual({
+      type: "scope_projection.layout.upserted",
+      payload: {
+        workspace_id: "workspace:test",
+        scope_id: "default",
+        source: "api",
+        renderer: "floeweb"
+      },
+      at: "2026-05-24T00:00:00.000Z"
+    });
+    expect(parseScopeProjectionStreamMessage(JSON.stringify({
+      type: "field.upserted",
+      payload: { workspace_id: "workspace:test", field_id: "default", changed: "semantic" }
+    }))).toBeNull();
   });
 });

@@ -1,0 +1,190 @@
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import YAML from "yaml";
+import { createBusServer } from "./server.js";
+import { defaultConfig, type LocalConfig } from "./config.js";
+
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+
+async function makeServer(): Promise<{
+  handle: ServerHandle;
+  cleanup: () => Promise<void>;
+  tmp: string;
+  wsId: string;
+  wsLocator: string;
+}> {
+  const tmp = mkdtempSync(join(tmpdir(), "floe-bus-projection-layout-"));
+  const cfgPath = join(tmp, "config.yaml");
+  const cfg: LocalConfig = defaultConfig(tmp);
+  writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
+  const handle = await createBusServer(cfgPath, cfg);
+  await handle.app.ready();
+
+  const wsLocator = join(tmp, "ws");
+  mkdirSync(wsLocator, { recursive: true });
+  const workspace = handle.store.registerWorkspace(
+    { locator: wsLocator, name: "projection-layout-test" },
+    () => {}
+  ) as { workspace_id: string };
+  return {
+    handle,
+    tmp,
+    wsId: workspace.workspace_id,
+    wsLocator,
+    cleanup: async () => {
+      try { await handle.app.close(); } catch {}
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  };
+}
+
+function makeSemantic(id: string): Record<string, unknown> {
+  return {
+    schema: "floe.field.v1",
+    id,
+    title: "Field " + id,
+    items: [],
+    connections: [],
+    created_at: "2025-01-01T00:00:00.000Z",
+    updated_at: "2025-01-01T00:00:00.000Z"
+  };
+}
+
+function makeLayout(scopeId: string): Record<string, unknown> {
+  return {
+    schema: "floe.field.layout.floeweb.v1",
+    field_id: scopeId,
+    viewport: { x: 0, y: 0, zoom: 1 },
+    items: {
+      "context:ctx_research": { x: 120, y: 220 },
+      "pulse:pulse_daily": { x: 360, y: 220 }
+    }
+  };
+}
+
+describe("Scope Projection layout HTTP routes", () => {
+  let handle: ServerHandle;
+  let cleanup: () => Promise<void>;
+  let wsId: string;
+  let wsLocator: string;
+
+  beforeEach(async () => {
+    const made = await makeServer();
+    handle = made.handle;
+    cleanup = made.cleanup;
+    wsId = made.wsId;
+    wsLocator = made.wsLocator;
+  });
+  afterEach(async () => { await cleanup(); });
+
+  it("does not expose legacy Field semantic list/get/put/delete routes", async () => {
+    for (const request of [
+      { method: "GET", url: `/v1/workspaces/${wsId}/fields` },
+      { method: "GET", url: `/v1/workspaces/${wsId}/fields/alpha` },
+      { method: "PUT", url: `/v1/workspaces/${wsId}/fields/alpha`, payload: makeSemantic("alpha") },
+      { method: "DELETE", url: `/v1/workspaces/${wsId}/fields/alpha` },
+      { method: "PUT", url: `/v1/workspaces/${wsId}/fields/default/layout/floeweb`, payload: makeLayout("default") }
+    ] as const) {
+      const res = await handle.app.inject(request);
+      expect(res.statusCode).toBe(404);
+    }
+    expect(existsSync(join(wsLocator, ".floe", "fields", "alpha.yaml"))).toBe(false);
+    expect(existsSync(join(wsLocator, ".floe", "fields", "default.layout.floeweb.yaml"))).toBe(false);
+  });
+
+  it("persists Scope Projection layout without creating Field-owned semantic state", async () => {
+    const layout = makeLayout("default");
+    const put = await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`,
+      payload: layout
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.json()).toEqual({ layout });
+    expect(existsSync(join(wsLocator, ".floe", "fields", "default.yaml"))).toBe(false);
+    expect(existsSync(join(wsLocator, ".floe", "blocks"))).toBe(false);
+
+    const get = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`
+    });
+    expect(get.statusCode).toBe(200);
+    expect(get.json()).toEqual({ layout });
+
+    const projection = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${wsId}/scopes/default/projection`
+    });
+    expect(projection.statusCode).toBe(200);
+    expect(projection.json().projection.refs.contexts).toEqual([]);
+    expect(projection.json().projection.refs.pulses).toEqual([]);
+  });
+
+  it("returns explicit layout errors for missing sidecars, missing Scopes, invalid renderers, and mismatched ids", async () => {
+    const missing = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: "scope_projection_layout_not_found" });
+
+    const missingScope = await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/scopes/unknown/projection/layout/floeweb`,
+      payload: makeLayout("unknown")
+    });
+    expect(missingScope.statusCode).toBe(404);
+    expect(missingScope.json().error).toBe("scope_not_found");
+
+    const badRenderer = await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/react-flow`,
+      payload: makeLayout("default")
+    });
+    expect(badRenderer.statusCode).toBe(400);
+    expect(badRenderer.json().error).toBe("scope_projection_layout_renderer_invalid");
+
+    const mismatch = await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`,
+      payload: makeLayout("other")
+    });
+    expect(mismatch.statusCode).toBe(400);
+    expect(mismatch.json().error).toBe("scope_projection_layout_id_mismatch");
+  });
+
+  it("broadcasts Scope Projection layout updates to event stream subscribers", async () => {
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const url = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WS = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WS(url);
+    const messages: any[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", (error: any) => reject(error));
+    });
+    ws.on("message", (data: any) => {
+      messages.push(JSON.parse(data.toString()));
+    });
+
+    await handle.app.inject({
+      method: "PUT",
+      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`,
+      payload: makeLayout("default")
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    ws.close();
+    const updated = messages.find((message) => message.type === "scope_projection.layout.upserted");
+    expect(updated).toBeDefined();
+    expect(updated.payload).toEqual({
+      workspace_id: wsId,
+      scope_id: "default",
+      source: "api",
+      renderer: "floeweb"
+    });
+  });
+});

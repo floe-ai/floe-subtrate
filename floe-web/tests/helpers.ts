@@ -3,49 +3,12 @@ import { test as base, Page } from "@playwright/test";
 const WORKSPACE_ID = "ws_test_qa";
 const WORKSPACE_NAME = "QA Workspace";
 
-export type FieldSummary = {
-  id: string;
-  title: string;
-  item_count: number;
-  connection_count: number;
-  parent_count: number;
-  updated_at: string;
-};
-
-export type FieldItem = {
-  item_id: string;
-  ref: string;
-  metadata?: Record<string, unknown>;
-};
-
-export type FieldConnection = {
-  id: string;
-  from: string;
-  to: string;
-  label?: string;
-  metadata?: Record<string, unknown>;
-};
-
-export type FieldSemantic = {
-  schema: "floe.field.v1";
-  id: string;
-  title: string;
-  description?: string;
-  items: FieldItem[];
-  connections: FieldConnection[];
-  metadata?: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-};
-
 export type FieldLayoutFloeweb = {
   schema: "floe.field.layout.floeweb.v1";
   field_id: string;
   viewport: { x: number; y: number; zoom: number };
   items: Record<string, { x: number; y: number; width?: number; height?: number }>;
 };
-
-type StoredField = { semantic: FieldSemantic; layout: FieldLayoutFloeweb | null };
 
 export type ScopeRecord = {
   scope_id: string;
@@ -172,165 +135,30 @@ async function finishBoot(page: Page): Promise<void> {
 }
 
 /**
- * Boots the app with mocked bus routes and an empty Field substrate. Specs
- * that don't care about Fields can call this and they get an empty field
- * list without leaking real network calls.
+ * Boots the app with mocked bus routes and an empty Scope Projection substrate.
+ * Specs that don't care about Fields can call this without leaking real network calls.
  */
 export async function seedApp(page: Page): Promise<void> {
   await installBaselineRoutes(page);
 
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields`, (route) => {
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes`, (route) => {
     if (route.request().method() === "GET") {
+      const scope = makeScope("default", "Default", true);
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ fields: [] })
+        body: JSON.stringify({ scopes: [scope] })
       });
     }
     return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
   });
 
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields/*`, (route) =>
-    route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not_found" }) })
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/default/projection`, (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ projection: emptyScopeProjection("default") }) })
   );
-
-  await finishBoot(page);
-}
-
-/**
- * Boots the app with mocked bus routes and a substrate Field store seeded
- * with `fields`. Keeps an in-memory Map<string, StoredField> so PUTs,
- * DELETEs and subsequent GETs stay consistent inside a single test.
- */
-export async function seedAppWithFields(
-  page: Page,
-  fields: Array<{ semantic: FieldSemantic; layout?: FieldLayoutFloeweb | null }>
-): Promise<void> {
-  await installBaselineRoutes(page);
-
-  const store = new Map<string, StoredField>();
-  for (const f of fields) {
-    store.set(f.semantic.id, { semantic: f.semantic, layout: f.layout ?? null });
-  }
-
-  function summariesPayload(): string {
-    const fieldIds = new Set(store.keys());
-    const parentCounts = new Map<string, Set<string>>();
-    for (const [parentId, { semantic }] of store.entries()) {
-      const children = new Set<string>();
-      for (const item of semantic.items) {
-        if (!item.ref.startsWith("field:")) continue;
-        const childId = item.ref.slice("field:".length);
-        if (fieldIds.has(childId)) children.add(childId);
-      }
-      for (const childId of children) {
-        const parents = parentCounts.get(childId) ?? new Set<string>();
-        parents.add(parentId);
-        parentCounts.set(childId, parents);
-      }
-    }
-    const summaries: FieldSummary[] = Array.from(store.values()).map(({ semantic }) => ({
-      id: semantic.id,
-      title: semantic.title,
-      item_count: semantic.items.length,
-      connection_count: semantic.connections.length,
-      parent_count: parentCounts.get(semantic.id)?.size ?? 0,
-      updated_at: semantic.updated_at
-    }));
-    return JSON.stringify({ fields: summaries });
-  }
-
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields`, (route) => {
-    if (route.request().method() === "GET") {
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: summariesPayload()
-      });
-    }
-    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
-  });
-
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields/*/layout/floeweb`, async (route) => {
-    const url = new URL(route.request().url());
-    const segments = url.pathname.split("/");
-    const fieldId = decodeURIComponent(segments[segments.length - 3] ?? "");
-    const method = route.request().method();
-
-    if (method === "PUT") {
-      let layout: FieldLayoutFloeweb;
-      try {
-        layout = JSON.parse(route.request().postData() ?? "{}") as FieldLayoutFloeweb;
-      } catch {
-        return route.fulfill({ status: 400, body: JSON.stringify({ error: "bad_json" }) });
-      }
-      const prev = store.get(fieldId);
-      if (!prev) {
-        return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not_found" }) });
-      }
-      store.set(fieldId, { semantic: prev.semantic, layout });
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ layout })
-      });
-    }
-
-    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
-  });
-
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields/*`, async (route) => {
-    const url = new URL(route.request().url());
-    if (url.pathname.endsWith("/layout/floeweb")) {
-      return route.fallback();
-    }
-    const segments = url.pathname.split("/");
-    const fieldId = decodeURIComponent(segments[segments.length - 1] ?? "");
-    const method = route.request().method();
-
-    if (method === "GET") {
-      const existing = store.get(fieldId);
-      if (!existing) {
-        return route.fulfill({
-          status: 404,
-          contentType: "application/json",
-          body: JSON.stringify({ error: "not_found" })
-        });
-      }
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ semantic: existing.semantic, layout: existing.layout })
-      });
-    }
-
-    if (method === "PUT") {
-      let semantic: FieldSemantic;
-      try {
-        semantic = JSON.parse(route.request().postData() ?? "{}") as FieldSemantic;
-      } catch {
-        return route.fulfill({ status: 400, body: JSON.stringify({ error: "bad_json" }) });
-      }
-      const prev = store.get(fieldId);
-      store.set(fieldId, { semantic, layout: prev?.layout ?? null });
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ semantic })
-      });
-    }
-
-    if (method === "DELETE") {
-      const had = store.delete(fieldId);
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ semanticDeleted: had, layoutsDeleted: [] })
-      });
-    }
-
-    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
-  });
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "legacy_fields_endpoint_called" }) })
+  );
 
   await finishBoot(page);
 }
@@ -356,38 +184,6 @@ export async function seedAppWithScopes(
   const layoutStore = new Map<string, FieldLayoutFloeweb>();
   let generatedScopeCounter = 1;
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, async (route) => {
-    const url = new URL(route.request().url());
-    const segments = url.pathname.split("/");
-    if (url.pathname.endsWith("/layout/floeweb")) {
-      const fieldId = decodeURIComponent(segments[segments.length - 3] ?? "");
-      const method = route.request().method();
-      if (method === "GET") {
-        options.layoutGets?.push(route.request().url());
-        const layout = layoutStore.get(fieldId);
-        if (!layout) {
-          return route.fulfill({
-            status: 404,
-            contentType: "application/json",
-            body: JSON.stringify({ error: "field_layout_not_found" })
-          });
-        }
-        return route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ layout })
-        });
-      }
-      if (method === "PUT") {
-        options.layoutPuts?.push(route.request().postData() ?? "");
-        const layout = JSON.parse(route.request().postData() ?? "{}") as FieldLayoutFloeweb;
-        layoutStore.set(fieldId, layout);
-        return route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ layout })
-        });
-      }
-    }
     options.legacyFieldRequests?.push(route.request().url());
     return route.fulfill({
       status: 500,
@@ -485,7 +281,42 @@ export async function seedAppWithScopes(
     }
     return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
   });
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/*/projection/layout/floeweb`, async (route) => {
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const scopeId = decodeURIComponent(segments[segments.length - 4] ?? "");
+    const method = route.request().method();
+    if (method === "GET") {
+      options.layoutGets?.push(route.request().url());
+      const layout = layoutStore.get(scopeId);
+      if (!layout) {
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "scope_projection_layout_not_found" })
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ layout })
+      });
+    }
+    if (method === "PUT") {
+      options.layoutPuts?.push(route.request().postData() ?? "");
+      const layout = JSON.parse(route.request().postData() ?? "{}") as FieldLayoutFloeweb;
+      layoutStore.set(scopeId, layout);
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ layout })
+      });
+    }
+    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
+  });
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/*/projection`, (route) => {
+    if (new URL(route.request().url()).pathname.endsWith("/projection/layout/floeweb")) {
+      return route.fallback();
+    }
     const segments = new URL(route.request().url()).pathname.split("/");
     const scopeId = decodeURIComponent(segments[segments.length - 2] ?? "");
     const projection = projectionStore.get(scopeId);
@@ -503,7 +334,8 @@ export async function seedAppWithScopes(
     });
   });
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/*`, async (route) => {
-    if (new URL(route.request().url()).pathname.endsWith("/projection")) {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/projection") || path.endsWith("/projection/layout/floeweb")) {
       return route.fallback();
     }
     const segments = new URL(route.request().url()).pathname.split("/");
@@ -543,40 +375,6 @@ export async function seedAppWithScopes(
   );
 
   await finishBoot(page);
-}
-
-export function makeFieldSummary(
-  id: string,
-  title: string,
-  items = 0,
-  connections = 0
-): FieldSummary {
-  return {
-    id,
-    title,
-    item_count: items,
-    connection_count: connections,
-    parent_count: 0,
-    updated_at: new Date().toISOString()
-  };
-}
-
-export function makeFieldSemantic(
-  id: string,
-  title: string,
-  items: Array<{ item_id: string; ref: string; metadata?: Record<string, unknown> }> = [],
-  connections: Array<{ id: string; from: string; to: string; label?: string; metadata?: Record<string, unknown> }> = []
-): FieldSemantic {
-  const now = new Date().toISOString();
-  return {
-    id,
-    schema: "floe.field.v1",
-    title,
-    items,
-    connections,
-    created_at: now,
-    updated_at: now
-  };
 }
 
 export function makeScope(scopeId: string, title: string, isDefault = false): ScopeRecord {

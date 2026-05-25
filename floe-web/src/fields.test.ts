@@ -1,39 +1,15 @@
+import type { NodeChange } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
 import {
-  parseFieldRef,
-  itemKindFromRef,
-  fieldToReactFlow,
-  reactFlowToLayout,
   applyNodeChangesToLayout,
-  buildSemanticUpdate,
-  defaultLayout,
-  isRootFieldSummary,
-  nestedFieldStillUsedElsewhere,
-  nextFieldConnectionId,
-  FieldSemanticOpError,
-  type FieldSemantic,
+  itemKindFromRef,
+  parseFieldRef,
+  reactFlowToLayout,
   type FieldLayoutFloeweb
 } from "./fields";
-import type { NodeChange } from "@xyflow/react";
-
-const T0 = "2024-06-01T10:00:00.000Z";
-const T1 = "2024-06-01T11:00:00.000Z";
-
-function makeSemantic(overrides: Partial<FieldSemantic> = {}): FieldSemantic {
-  return {
-    schema: "floe.field.v1",
-    id: "field_1",
-    title: "Test field",
-    items: [],
-    connections: [],
-    created_at: T0,
-    updated_at: T0,
-    ...overrides
-  };
-}
 
 describe("parseFieldRef", () => {
-  it("parses each well-known kind", () => {
+  it("parses substrate refs that Scope Projection can render", () => {
     const cases: Array<[string, string, string]> = [
       ["actor:floe", "actor", "floe"],
       ["context:ctx_1", "context", "ctx_1"],
@@ -46,426 +22,86 @@ describe("parseFieldRef", () => {
       ["event:evt_1", "event", "evt_1"],
       ["field:field_2", "field", "field_2"]
     ];
+
     for (const [raw, kind, id] of cases) {
       expect(parseFieldRef(raw)).toEqual({ kind, id, raw });
     }
   });
 
-  it("returns kind 'unknown' for unknown kind prefix", () => {
-    const parsed = parseFieldRef("widget:thing");
-    expect(parsed.kind).toBe("unknown");
-    expect(parsed.raw).toBe("widget:thing");
-  });
-
-  it("returns kind 'unknown' for malformed refs without throwing", () => {
-    expect(parseFieldRef("nocolon").kind).toBe("unknown");
-    expect(parseFieldRef("nocolon").id).toBe("nocolon");
+  it("returns unknown for malformed or unsupported refs without creating membership semantics", () => {
+    expect(parseFieldRef("widget:thing")).toEqual({ kind: "unknown", id: "widget:thing", raw: "widget:thing" });
+    expect(parseFieldRef("nocolon")).toEqual({ kind: "unknown", id: "nocolon", raw: "nocolon" });
     expect(parseFieldRef(":noKind").kind).toBe("unknown");
     expect(parseFieldRef("noId:").kind).toBe("unknown");
-    expect(parseFieldRef("").kind).toBe("unknown");
-  });
-
-  it("itemKindFromRef returns the kind only", () => {
-    expect(itemKindFromRef("actor:floe")).toBe("actor");
-    expect(itemKindFromRef("garbage")).toBe("unknown");
+    expect(itemKindFromRef("pulse:daily")).toBe("pulse");
   });
 });
 
-describe("fieldToReactFlow", () => {
-  it("produces a node per item with id = item_id and parsed ref in data", () => {
-    const semantic = makeSemantic({
-      items: [
-        { item_id: "n1", ref: "actor:floe" },
-        { item_id: "n2", ref: "context:ctx_a" }
-      ]
-    });
-    const { nodes } = fieldToReactFlow(semantic);
-    expect(nodes).toHaveLength(2);
-    expect(nodes[0].id).toBe("n1");
-    expect(nodes[0].type).toBe("fieldItem");
-    expect(nodes[0].deletable).toBe(true);
-    const data0 = nodes[0].data as { ref: { kind: string; id: string }; kind: string; label: string };
-    expect(data0.ref).toEqual({ kind: "actor", id: "floe", raw: "actor:floe" });
-    expect(data0.kind).toBe("actor");
-    expect(data0.label).toBe("floe");
-  });
-
-  it("labels workspace-scoped actor refs by actor name without exposing the full ref", () => {
-    const semantic = makeSemantic({
-      items: [{ item_id: "n1", ref: "actor:workspace:test:floe" }]
-    });
-
-    const { nodes } = fieldToReactFlow(semantic);
-
-    const data = nodes[0].data as { label: string };
-    expect(data.label).toBe("floe");
-  });
-
-  it("uses layout positions when present; falls back to deterministic grid", () => {
-    const semantic = makeSemantic({
-      items: [
-        { item_id: "n1", ref: "actor:a" },
-        { item_id: "n2", ref: "actor:b" }
-      ]
-    });
-    const layout: FieldLayoutFloeweb = {
-      schema: "floe.field.layout.floeweb.v1",
-      field_id: "field_1",
-      viewport: { x: 0, y: 0, zoom: 1 },
-      items: { n1: { x: 500, y: 300, width: 200, height: 100 } }
-    };
-    const { nodes } = fieldToReactFlow(semantic, layout);
-    expect(nodes[0].position).toEqual({ x: 500, y: 300 });
-    expect(nodes[0].width).toBe(200);
-    expect(nodes[0].height).toBe(100);
-    expect(nodes[1].position).toEqual(defaultLayout(1));
-    expect(nodes[1].width).toBeUndefined();
-  });
-
-  it("produces an edge per connection referencing item_ids", () => {
-    const semantic = makeSemantic({
-      items: [
-        { item_id: "n1", ref: "actor:a" },
-        { item_id: "n2", ref: "actor:b" }
-      ],
-      connections: [
-        { id: "e1", from: "n1", to: "n2", label: "talks to", metadata: { weight: 1 } }
-      ]
-    });
-    const { edges } = fieldToReactFlow(semantic);
-    expect(edges).toHaveLength(1);
-    expect(edges[0].id).toBe("e1");
-    expect(edges[0].source).toBe("n1");
-    expect(edges[0].target).toBe("n2");
-    expect(edges[0].label).toBe("talks to");
-    const data = edges[0].data as { metadata: { weight: number } };
-    expect(data.metadata).toEqual({ weight: 1 });
-  });
-
-  it("handles a field with zero items", () => {
-    const { nodes, edges } = fieldToReactFlow(makeSemantic());
-    expect(nodes).toEqual([]);
-    expect(edges).toEqual([]);
-  });
-
-  it("handles unknown ref kinds without crashing", () => {
-    const semantic = makeSemantic({
-      items: [{ item_id: "n1", ref: "wat:nope" }]
-    });
-    const { nodes } = fieldToReactFlow(semantic);
-    const data = nodes[0].data as { kind: string; label: string };
-    expect(data.kind).toBe("unknown");
-    expect(data.label).toBe("wat:nope");
-  });
-
-  it("renders every documented Field Item ref kind without crashing", () => {
-    const refs = [
-      "actor:floe",
-      "context:ctx_1",
-      "pulse:morning",
-      "webhook:github-pr",
-      "extension:github",
-      "file:.floe/instructions/pr-review.md",
-      "tool:todo_add",
-      "work_log:.floe/agents/reviewer/worklogs/2026-05-19.md",
-      "event:evt_1",
-      "field:inbound-pr-review",
-      "future_kind:still-renders"
-    ];
-    const semantic = makeSemantic({
-      items: refs.map((ref, index) => ({ item_id: `item_${index}`, ref }))
-    });
-
-    const { nodes } = fieldToReactFlow(semantic);
-
-    expect(nodes).toHaveLength(refs.length);
-    expect(nodes.map((node) => (node.data as { kind: string }).kind)).toEqual([
-      "actor",
-      "context",
-      "pulse",
-      "webhook",
-      "extension",
-      "file",
-      "tool",
-      "work_log",
-      "event",
-      "field",
-      "unknown"
-    ]);
-    expect(nodes.map((node) => (node.data as { label: string }).label)).toContain("future_kind:still-renders");
-  });
-});
-
-describe("isRootFieldSummary", () => {
-  it("treats missing or zero parent_count as a root Field", () => {
-    expect(isRootFieldSummary({
-      id: "legacy-root",
-      title: "Legacy Root",
-      item_count: 0,
-      connection_count: 0,
-      updated_at: T0
-    })).toBe(true);
-    expect(isRootFieldSummary({
-      id: "root",
-      title: "Root",
-      item_count: 0,
-      connection_count: 0,
-      parent_count: 0,
-      updated_at: T0
-    })).toBe(true);
-  });
-
-  it("treats Fields with at least one parent as nested", () => {
-    expect(isRootFieldSummary({
-      id: "child",
-      title: "Child",
-      item_count: 0,
-      connection_count: 0,
-      parent_count: 1,
-      updated_at: T0
-    })).toBe(false);
-  });
-});
-
-describe("nestedFieldStillUsedElsewhere", () => {
-  it("uses parent_count and same-parent duplicate refs to decide whether cleanup is safe to offer", () => {
-    const semantic = makeSemantic({
-      items: [
-        { item_id: "remove-me", ref: "field:child" },
-        { item_id: "same-parent-duplicate", ref: "field:child" },
-        { item_id: "other-kind", ref: "actor:child" }
-      ]
-    });
-
-    expect(nestedFieldStillUsedElsewhere("child", semantic, "remove-me", [
-      { id: "child", title: "Child", item_count: 0, connection_count: 0, parent_count: 0, updated_at: T0 }
-    ])).toBe(true);
-
-    expect(nestedFieldStillUsedElsewhere("child", makeSemantic({
-      items: [{ item_id: "remove-me", ref: "field:child" }]
-    }), "remove-me", [
-      { id: "child", title: "Child", item_count: 0, connection_count: 0, parent_count: 2, updated_at: T0 }
-    ])).toBe(true);
-
-    expect(nestedFieldStillUsedElsewhere("child", makeSemantic({
-      items: [{ item_id: "remove-me", ref: "field:child" }]
-    }), "remove-me", [
-      { id: "child", title: "Child", item_count: 0, connection_count: 0, parent_count: 1, updated_at: T0 }
-    ])).toBe(false);
-
-    expect(nestedFieldStillUsedElsewhere("missing", semantic, "remove-me", [])).toBe(false);
-  });
-});
-
-describe("reactFlowToLayout", () => {
-  it("produces a layout with positions and viewport, omitting missing width/height", () => {
+describe("renderer layout helpers", () => {
+  it("serializes React Flow node positions into renderer-only layout", () => {
     const layout = reactFlowToLayout(
-      "field_1",
+      "default",
       [
-        { id: "n1", position: { x: 10, y: 20 }, data: {}, width: 100, height: 60 },
-        { id: "n2", position: { x: 30, y: 40 }, data: {} }
+        {
+          id: "context:ctx_1",
+          position: { x: 100, y: 200 },
+          data: {},
+          width: 180,
+          height: 90
+        },
+        {
+          id: "pulse:pulse_1",
+          position: { x: 320, y: 200 },
+          data: {}
+        }
       ],
-      { x: 5, y: 6, zoom: 1.5 }
+      { x: -25, y: 10, zoom: 0.75 }
     );
-    expect(layout.schema).toBe("floe.field.layout.floeweb.v1");
-    expect(layout.field_id).toBe("field_1");
-    expect(layout.viewport).toEqual({ x: 5, y: 6, zoom: 1.5 });
-    expect(layout.items.n1).toEqual({ x: 10, y: 20, width: 100, height: 60 });
-    expect(layout.items.n2).toEqual({ x: 30, y: 40 });
-    expect("width" in layout.items.n2).toBe(false);
-    expect("height" in layout.items.n2).toBe(false);
+
+    expect(layout).toEqual({
+      schema: "floe.field.layout.floeweb.v1",
+      field_id: "default",
+      viewport: { x: -25, y: 10, zoom: 0.75 },
+      items: {
+        "context:ctx_1": { x: 100, y: 200, width: 180, height: 90 },
+        "pulse:pulse_1": { x: 320, y: 200 }
+      }
+    });
   });
-});
 
-describe("applyNodeChangesToLayout", () => {
-  const base: FieldLayoutFloeweb = {
-    schema: "floe.field.layout.floeweb.v1",
-    field_id: "field_1",
-    viewport: { x: 0, y: 0, zoom: 1 },
-    items: { n1: { x: 10, y: 20 } }
-  };
-
-  it("updates positions on position-change events", () => {
+  it("applies only position and dimension changes to layout", () => {
+    const prev: FieldLayoutFloeweb = {
+      schema: "floe.field.layout.floeweb.v1",
+      field_id: "default",
+      viewport: { x: 0, y: 0, zoom: 1 },
+      items: {
+        "context:ctx_1": { x: 1, y: 2 },
+        "pulse:pulse_1": { x: 3, y: 4 }
+      }
+    };
     const changes: NodeChange[] = [
-      { id: "n1", type: "position", position: { x: 100, y: 200 } }
+      { type: "select", id: "context:ctx_1", selected: true },
+      { type: "position", id: "context:ctx_1", position: { x: 10, y: 20 }, dragging: false },
+      { type: "dimensions", id: "pulse:pulse_1", dimensions: { width: 240, height: 120 }, resizing: false }
     ];
-    const next = applyNodeChangesToLayout(base, changes);
-    expect(next.items.n1).toEqual({ x: 100, y: 200 });
-  });
 
-  it("updates dimensions on dimension-change events", () => {
-    const changes: NodeChange[] = [
-      { id: "n1", type: "dimensions", dimensions: { width: 250, height: 80 } }
-    ];
-    const next = applyNodeChangesToLayout(base, changes);
-    expect(next.items.n1).toEqual({ x: 10, y: 20, width: 250, height: 80 });
-  });
-
-  it("leaves layout untouched on select/remove events", () => {
-    const changes: NodeChange[] = [
-      { id: "n1", type: "select", selected: true },
-      { id: "n1", type: "remove" }
-    ];
-    const next = applyNodeChangesToLayout(base, changes);
-    expect(next).toBe(base);
-  });
-});
-
-describe("buildSemanticUpdate", () => {
-  it("rename updates title and bumps updated_at, preserves created_at", () => {
-    const prev = makeSemantic({ title: "Old" });
-    const next = buildSemanticUpdate(prev, { type: "rename", title: "New" }, T1);
-    expect(next.title).toBe("New");
-    expect(next.updated_at).toBe(T1);
-    expect(next.created_at).toBe(T0);
-  });
-
-  it("add_item appends; rejects duplicate item_id", () => {
-    const prev = makeSemantic({ items: [{ item_id: "n1", ref: "actor:a" }] });
-    const next = buildSemanticUpdate(
-      prev,
-      { type: "add_item", item: { item_id: "n2", ref: "actor:b" } },
-      T1
-    );
-    expect(next.items.map((i) => i.item_id)).toEqual(["n1", "n2"]);
-    expect(next.updated_at).toBe(T1);
-    expect(() =>
-      buildSemanticUpdate(
-        prev,
-        { type: "add_item", item: { item_id: "n1", ref: "actor:dup" } },
-        T1
-      )
-    ).toThrow(FieldSemanticOpError);
-  });
-
-  it("remove_item cascades: removes item AND all connections touching it", () => {
-    const prev = makeSemantic({
-      items: [
-        { item_id: "n1", ref: "actor:a" },
-        { item_id: "n2", ref: "actor:b" },
-        { item_id: "n3", ref: "actor:c" }
-      ],
-      connections: [
-        { id: "e1", from: "n1", to: "n2" },
-        { id: "e2", from: "n2", to: "n3" },
-        { id: "e3", from: "n1", to: "n3" }
-      ]
+    expect(applyNodeChangesToLayout(prev, changes)).toEqual({
+      ...prev,
+      items: {
+        "context:ctx_1": { x: 10, y: 20 },
+        "pulse:pulse_1": { x: 3, y: 4, width: 240, height: 120 }
+      }
     });
-    const next = buildSemanticUpdate(prev, { type: "remove_item", item_id: "n2" }, T1);
-    expect(next.items.map((i) => i.item_id)).toEqual(["n1", "n3"]);
-    expect(next.connections.map((c) => c.id)).toEqual(["e3"]);
-    expect(next.connections.every((c) => c.from !== "n2" && c.to !== "n2")).toBe(true);
-    expect(next.updated_at).toBe(T1);
   });
 
-  it("add_connection appends; rejects unknown from/to; rejects duplicate id", () => {
-    const prev = makeSemantic({
-      items: [
-        { item_id: "n1", ref: "actor:a" },
-        { item_id: "n2", ref: "actor:b" }
-      ],
-      connections: [{ id: "e1", from: "n1", to: "n2" }]
-    });
-    const next = buildSemanticUpdate(
-      prev,
-      { type: "add_connection", connection: { id: "e2", from: "n2", to: "n1" } },
-      T1
-    );
-    expect(next.connections.map((c) => c.id)).toEqual(["e1", "e2"]);
-    expect(() =>
-      buildSemanticUpdate(
-        prev,
-        { type: "add_connection", connection: { id: "e3", from: "nX", to: "n1" } },
-        T1
-      )
-    ).toThrow(FieldSemanticOpError);
-    expect(() =>
-      buildSemanticUpdate(
-        prev,
-        { type: "add_connection", connection: { id: "e4", from: "n1", to: "nY" } },
-        T1
-      )
-    ).toThrow(FieldSemanticOpError);
-    expect(() =>
-      buildSemanticUpdate(
-        prev,
-        { type: "add_connection", connection: { id: "e1", from: "n1", to: "n2" } },
-        T1
-      )
-    ).toThrow(FieldSemanticOpError);
-  });
+  it("returns the original layout object when no renderer layout change occurred", () => {
+    const prev: FieldLayoutFloeweb = {
+      schema: "floe.field.layout.floeweb.v1",
+      field_id: "default",
+      viewport: { x: 0, y: 0, zoom: 1 },
+      items: {}
+    };
 
-  it("update_connection replaces an existing connection while preserving its id and order", () => {
-    const prev = makeSemantic({
-      items: [
-        { item_id: "n1", ref: "actor:a" },
-        { item_id: "n2", ref: "actor:b" },
-        { item_id: "n3", ref: "actor:c" }
-      ],
-      connections: [
-        { id: "e1", from: "n1", to: "n2", label: "old" },
-        { id: "e2", from: "n2", to: "n3" }
-      ]
-    });
-
-    const next = buildSemanticUpdate(
-      prev,
-      { type: "update_connection", connection: { id: "e1", from: "n3", to: "n2", label: "new" } },
-      T1
-    );
-
-    expect(next.connections).toEqual([
-      { id: "e1", from: "n3", to: "n2", label: "new" },
-      { id: "e2", from: "n2", to: "n3" }
-    ]);
-    expect(next.updated_at).toBe(T1);
-    expect(() =>
-      buildSemanticUpdate(
-        prev,
-        { type: "update_connection", connection: { id: "missing", from: "n1", to: "n2" } },
-        T1
-      )
-    ).toThrow(FieldSemanticOpError);
-    expect(() =>
-      buildSemanticUpdate(
-        prev,
-        { type: "update_connection", connection: { id: "e1", from: "unknown", to: "n2" } },
-        T1
-      )
-    ).toThrow(FieldSemanticOpError);
-  });
-
-  it("remove_connection removes by id and is idempotent on missing", () => {
-    const prev = makeSemantic({
-      items: [
-        { item_id: "n1", ref: "actor:a" },
-        { item_id: "n2", ref: "actor:b" }
-      ],
-      connections: [
-        { id: "e1", from: "n1", to: "n2" },
-        { id: "e2", from: "n2", to: "n1" }
-      ]
-    });
-    const next = buildSemanticUpdate(prev, { type: "remove_connection", id: "e1" }, T1);
-    expect(next.connections.map((c) => c.id)).toEqual(["e2"]);
-    expect(next.updated_at).toBe(T1);
-
-    const noop = buildSemanticUpdate(prev, { type: "remove_connection", id: "missing" }, T1);
-    expect(noop).toBe(prev);
-  });
-});
-
-describe("nextFieldConnectionId", () => {
-  it("generates stable collision-safe connection ids from item ids", () => {
-    const semantic = makeSemantic({
-      connections: [
-        { id: "connection-actor-a-to-field-b", from: "actor-a", to: "field-b" },
-        { id: "connection-actor-a-to-field-b-2", from: "actor-a", to: "field-b" }
-      ]
-    });
-
-    expect(nextFieldConnectionId(makeSemantic(), "actor-a", "field-b")).toBe("connection-actor-a-to-field-b");
-    expect(nextFieldConnectionId(semantic, "actor-a", "field-b")).toBe("connection-actor-a-to-field-b-3");
-    expect(nextFieldConnectionId(makeSemantic(), "source item", "target:item")).toBe("connection-source-item-to-target-item");
+    expect(applyNodeChangesToLayout(prev, [{ type: "select", id: "context:ctx_1", selected: true }])).toBe(prev);
   });
 });

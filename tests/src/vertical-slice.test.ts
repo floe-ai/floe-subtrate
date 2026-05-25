@@ -227,7 +227,7 @@ describe("Floe local vertical slice", () => {
     const created = await post<{ pulse: any }>("/v1/pulses", {
       pulse_id: pulseId,
       workspace_id: workspaceId,
-      scope: "local",
+      persistence: "local",
       trigger: { type: "once", at: fireAt },
       content: { text: "Pulse test message" },
       subscribers: [{ endpoint_ref: `floe` }],
@@ -304,7 +304,7 @@ describe("Floe local vertical slice", () => {
     const created = await post<{ pulse: any }>("/v1/pulses", {
       pulse_id: pulseId,
       workspace_id: workspaceId,
-      scope: "local",
+      persistence: "local",
       trigger: { type: "cron", schedule: "*/2 * * * * *", timezone: "UTC" },
       content: { text: "Cron pulse test" },
       subscribers: [{ endpoint_ref: "floe" }],
@@ -615,4 +615,3 @@ async function freePort(): Promise<number> {
     });
   });
 }
-

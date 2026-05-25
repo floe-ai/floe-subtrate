@@ -1,4 +1,16 @@
+import type { FieldLayoutFloeweb } from "./fields";
 import type { ScopeProjection, ScopeRecord } from "./scope-projection";
+
+export type ScopeProjectionStreamEvent = {
+  type: "scope_projection.layout.upserted";
+  payload: {
+    workspace_id: string;
+    scope_id: string;
+    source: "api";
+    renderer: string;
+  };
+  at?: string;
+};
 
 export class ScopeProjectionApiError extends Error {
   status: number;
@@ -17,6 +29,50 @@ function workspaceBase(busUrl: string, workspaceId: string): string {
 
 function scopesBase(busUrl: string, workspaceId: string): string {
   return `${workspaceBase(busUrl, workspaceId)}/scopes`;
+}
+
+function scopeProjectionPath(busUrl: string, workspaceId: string, scopeId: string): string {
+  return `${scopesBase(busUrl, workspaceId)}/${encodeURIComponent(scopeId)}/projection`;
+}
+
+function scopeProjectionLayoutPath(busUrl: string, workspaceId: string, scopeId: string): string {
+  return `${scopeProjectionPath(busUrl, workspaceId, scopeId)}/layout/floeweb`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export function parseScopeProjectionStreamMessage(data: string): ScopeProjectionStreamEvent | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || parsed.type !== "scope_projection.layout.upserted" || !isRecord(parsed.payload)) {
+    return null;
+  }
+  const payload = parsed.payload;
+  if (
+    typeof payload.workspace_id !== "string" ||
+    typeof payload.scope_id !== "string" ||
+    payload.source !== "api" ||
+    typeof payload.renderer !== "string"
+  ) {
+    return null;
+  }
+  const at = typeof parsed.at === "string" ? parsed.at : undefined;
+  return {
+    type: "scope_projection.layout.upserted",
+    payload: {
+      workspace_id: payload.workspace_id,
+      scope_id: payload.scope_id,
+      source: payload.source,
+      renderer: payload.renderer
+    },
+    ...(at ? { at } : {})
+  };
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -45,9 +101,42 @@ export async function getScopeProjection(
   scopeId: string
 ): Promise<ScopeProjection> {
   const result = await request<{ projection: ScopeProjection }>(
-    `${scopesBase(busUrl, workspaceId)}/${encodeURIComponent(scopeId)}/projection`
+    scopeProjectionPath(busUrl, workspaceId, scopeId)
   );
   return result.projection;
+}
+
+export async function getScopeProjectionLayout(
+  busUrl: string,
+  workspaceId: string,
+  scopeId: string
+): Promise<FieldLayoutFloeweb | null> {
+  try {
+    const result = await request<{ layout: FieldLayoutFloeweb }>(
+      scopeProjectionLayoutPath(busUrl, workspaceId, scopeId)
+    );
+    return result.layout;
+  } catch (caught) {
+    if (caught instanceof ScopeProjectionApiError && caught.status === 404) return null;
+    throw caught;
+  }
+}
+
+export async function putScopeProjectionLayout(
+  busUrl: string,
+  workspaceId: string,
+  scopeId: string,
+  layout: FieldLayoutFloeweb
+): Promise<FieldLayoutFloeweb> {
+  const result = await request<{ layout: FieldLayoutFloeweb }>(
+    scopeProjectionLayoutPath(busUrl, workspaceId, scopeId),
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(layout)
+    }
+  );
+  return result.layout;
 }
 
 export async function createScope(
