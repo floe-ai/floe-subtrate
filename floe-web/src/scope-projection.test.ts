@@ -109,12 +109,50 @@ describe("projectionToReactFlow", () => {
       field_id: "research",
       viewport: { x: 10, y: 20, zoom: 1.2 },
       items: {
-        "context:ctx_research": { x: 345, y: 456 }
+        "context:ctx_research": { x: 345, y: 456 },
+        "pulse:pulse_daily": { x: 567, y: 678 }
       }
     });
 
     expect(flow.nodes.find((node) => node.id === "context:ctx_research")?.position).toEqual({ x: 345, y: 456 });
+    expect(flow.nodes.find((node) => node.id === "pulse:pulse_daily")?.position).toEqual({ x: 567, y: 678 });
     expect(flow.nodes.some((node) => node.id.includes("webhook"))).toBe(false);
     expect(flow.unsupported).toEqual([{ kind: "webhook", reason: "webhook projection not rendered yet" }]);
+  });
+
+  it("uses deterministic non-overlapping fallback positions for projected Context and Pulse refs", () => {
+    const flow = projectionToReactFlow({
+      ...projection,
+      refs: {
+        ...projection.refs,
+        contexts: [{
+          ...projection.refs.contexts[0],
+          context_id: "ctx_overlap_regression",
+          first_message_preview: "Research kickoff overlap regression"
+        }],
+        pulses: [{
+          ...projection.refs.pulses[0],
+          pulse_id: "issue36_context_projection_default_layout_click_regression"
+        }]
+      },
+      relationships: {
+        ...projection.relationships,
+        context_participants: [
+          { context_id: "ctx_overlap_regression", endpoint_id: "actor:workspace:test:operator" },
+          { context_id: "ctx_overlap_regression", endpoint_id: "actor:workspace:test:floe" }
+        ],
+        pulse_subscribers: [
+          {
+            pulse_id: "issue36_context_projection_default_layout_click_regression",
+            subscriber: { kind: "context", context_id: "ctx_overlap_regression" }
+          }
+        ]
+      }
+    });
+
+    expect(flow.nodes.map((node) => [node.id, node.position])).toEqual([
+      ["context:ctx_overlap_regression", { x: 80, y: 80 }],
+      ["pulse:issue36_context_projection_default_layout_click_regression", { x: 80, y: 300 }]
+    ]);
   });
 });

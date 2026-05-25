@@ -1,5 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
-import { defaultLayout, parseFieldRef, type FieldLayoutFloeweb, type ParsedFieldRef } from "./fields";
+import { parseFieldRef, type FieldLayoutFloeweb, type ParsedFieldRef } from "./fields";
 
 export type ScopeRecord = {
   scope_id: string;
@@ -89,6 +89,13 @@ export type ScopeProjectionFlow = {
   unsupported: ScopeProjection["unsupported"];
 };
 
+function defaultProjectionLayout(index: number): { x: number; y: number } {
+  return {
+    x: 80,
+    y: 80 + index * 220
+  };
+}
+
 function projectionNode(
   ref: string,
   kind: ScopeProjectionNodeKind,
@@ -101,7 +108,7 @@ function projectionNode(
   return {
     id: ref,
     type: "fieldItem",
-    position: positioned ? { x: positioned.x, y: positioned.y } : defaultLayout(index),
+    position: positioned ? { x: positioned.x, y: positioned.y } : defaultProjectionLayout(index),
     deletable: false,
     data: {
       ref: parseFieldRef(ref),

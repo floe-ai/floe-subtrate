@@ -71,6 +71,62 @@ function populatedDefaultProjection(): ScopeProjection {
   };
 }
 
+function overlapRegressionProjection(): ScopeProjection {
+  const contextId = "ctx_overlap_regression";
+  const pulseId = "issue36_context_projection_default_layout_click_regression";
+  return {
+    ...emptyScopeProjection("default"),
+    refs: {
+      contexts: [{
+        context_id: contextId,
+        workspace_id: WORKSPACE_ID,
+        scope_id: "default",
+        parent_context_id: null,
+        created_by_endpoint_id: `actor:${WORKSPACE_ID}:operator`,
+        created_at: "2026-05-24T00:00:00.000Z",
+        last_event_at: "2026-05-24T00:02:00.000Z",
+        first_message_preview: "Research kickoff overlap regression"
+      }],
+      pulses: [{
+        pulse_id: pulseId,
+        workspace_id: WORKSPACE_ID,
+        scope_id: "default",
+        persistence: "workspace",
+        status: "active",
+        trigger: { type: "cron", schedule: "0 9 * * *" },
+        next_fire_at: "2026-05-25T09:00:00.000Z",
+        last_fired_at: null,
+        fire_count: 0,
+        created_at: "2026-05-24T00:00:00.000Z",
+        updated_at: "2026-05-24T00:00:00.000Z"
+      }],
+      events: [],
+      activity: []
+    },
+    relationships: {
+      context_participants: [
+        { context_id: contextId, endpoint_id: `actor:${WORKSPACE_ID}:operator` },
+        { context_id: contextId, endpoint_id: `actor:${WORKSPACE_ID}:floe` }
+      ],
+      pulse_subscribers: [
+        { pulse_id: pulseId, subscriber: { kind: "context", context_id: contextId } }
+      ],
+      event_context_ownership: []
+    },
+    unsupported: []
+  };
+}
+
+function boxesOverlap(
+  left: { x: number; y: number; width: number; height: number },
+  right: { x: number; y: number; width: number; height: number }
+): boolean {
+  return left.x < right.x + right.width &&
+    left.x + left.width > right.x &&
+    left.y < right.y + right.height &&
+    left.y + left.height > right.y;
+}
+
 test.describe("Field surface as Scope Projection", () => {
   test("lists Scopes as Fields and renders only top-level projected substrate refs", async ({ page }) => {
     const legacyFieldRequests: string[] = [];
@@ -114,6 +170,32 @@ test.describe("Field surface as Scope Projection", () => {
 
     await expect(page.getByText("Actor Conversations")).toBeVisible();
     await expect(page.getByText("Research kickoff")).toBeVisible();
+    expect(legacyFieldRequests).toEqual([]);
+  });
+
+  test("keeps a long Pulse label from overlapping the Context Open affordance", async ({ page }) => {
+    const legacyFieldRequests: string[] = [];
+    await seedAppWithScopes(
+      page,
+      [makeScope("default", "Default", true)],
+      { default: overlapRegressionProjection() },
+      { legacyFieldRequests }
+    );
+
+    await page.locator(".field-block", { hasText: "Default" }).click();
+    const contextNode = page.locator('[data-id="context:ctx_overlap_regression"]');
+    const pulseNode = page.locator('[data-id="pulse:issue36_context_projection_default_layout_click_regression"]');
+    await expect(contextNode).toBeVisible();
+    await expect(pulseNode).toBeVisible();
+    const contextBox = await contextNode.boundingBox();
+    const pulseBox = await pulseNode.boundingBox();
+    expect(contextBox).not.toBeNull();
+    expect(pulseBox).not.toBeNull();
+    expect(boxesOverlap(contextBox!, pulseBox!)).toBe(false);
+
+    await contextNode.getByRole("button", { name: "Open" }).click();
+    await expect(page.getByText("Actor Conversations")).toBeVisible();
+    await expect(page.getByText("Research kickoff overlap regression")).toBeVisible();
     expect(legacyFieldRequests).toEqual([]);
   });
 
