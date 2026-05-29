@@ -24,7 +24,7 @@ describe("Work Logs", () => {
       started_at: "2025-01-15T10:00:00Z",
       ended_at: "2025-01-15T10:01:30Z",
       trigger_type: "message",
-      scope_id: "default",
+      scope_id: "research",
       thread_id: "thread:ws1:main",
       delivery_id: "delivery-001",
       delivered_events: [
@@ -81,6 +81,14 @@ describe("Work Logs", () => {
       "2025-01-15.md",
     );
     expect(existsSync(filePath)).toBe(true);
+  });
+
+  it("renders unscoped work logs without inventing Default Scope", () => {
+    appendWorkLog(tempDir, makeEntry({ scope_id: null }));
+
+    const logPath = join(tempDir, ".floe", "agents", "floe", "worklogs", "2025-01-15.md");
+    const content = readFileSync(logPath, "utf-8");
+    expect(content).toContain("**Scope:** (unscoped)");
   });
 
   it("contains turn header", () => {

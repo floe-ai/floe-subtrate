@@ -65,6 +65,259 @@ describe("Pulse subscribers", () => {
     await cleanup();
   });
 
+  it("context subscriber can anchor a Pulse to an unscoped actor Context", async () => {
+    const contextId = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR, FLOE]
+    });
+    const pulseId = `pulse-unscoped-context-${Date.now()}`;
+
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
+        event: {
+          type: "pulse.fired",
+          content: { text: "Append without Scope." }
+        },
+        subscribers: [{ kind: "context", context_id: contextId }]
+      }
+    });
+    expect(createRes.statusCode).toBe(201);
+    expect(createRes.json().pulse.scope_id).toBeNull();
+
+    const pulseEvent = await waitFor(async () => {
+      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}/events` });
+      const events = res.json().events as any[];
+      return events.find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId) ?? null;
+    });
+
+    expect(pulseEvent.scope_id).toBeNull();
+    expect(pulseEvent.context_id).toBe(contextId);
+    expect(pulseEvent.source_endpoint_id).toBeNull();
+    expect(pulseEvent.destination_json).toEqual({ kind: "context", context_id: contextId });
+
+    const deliveriesRes = await handle.app.inject({
+      method: "GET",
+      url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
+    });
+    expect(deliveriesRes.json().deliveries).toEqual([]);
+  });
+
+  it("endpoint subscriber can deliver into an unscoped actor Context when the target participates", async () => {
+    const contextId = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR, FLOE]
+    });
+    const pulseId = `pulse-unscoped-endpoint-${Date.now()}`;
+
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
+        event: {
+          type: "pulse.fired",
+          content: { instructions: "Deliver without Scope." }
+        },
+        subscribers: [{ kind: "endpoint", endpoint_ref: "floe", context_id: contextId }]
+      }
+    });
+    expect(createRes.statusCode).toBe(201);
+    expect(createRes.json().pulse.scope_id).toBeNull();
+
+    const delivery = await waitFor(async () => {
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
+      });
+      const deliveries = res.json().deliveries as any[];
+      return deliveries.find((candidate) =>
+        candidate.endpoint_id === FLOE &&
+        candidate.events.some((event: any) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId)
+      ) ?? null;
+    });
+
+    const pulseEvent = delivery.events.find((event: any) => event.metadata?.pulse_id === pulseId);
+    expect(pulseEvent.scope_id).toBeNull();
+    expect(pulseEvent.context_id).toBe(contextId);
+    expect(pulseEvent.destination_json).toEqual({ kind: "endpoint", endpoint_id: FLOE });
+  });
+
+  it("rejects endpoint delivery into an unscoped actor Context when the target does not participate", async () => {
+    const contextId = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR]
+    });
+    const pulseId = `pulse-invalid-unscoped-endpoint-${Date.now()}`;
+
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
+        event: {
+          type: "pulse.fired",
+          content: { instructions: "Do not deliver." }
+        },
+        subscribers: [{ kind: "endpoint", endpoint_ref: "floe", context_id: contextId }]
+      }
+    });
+
+    expect(createRes.statusCode).toBe(400);
+    expect(createRes.json()).toMatchObject({
+      ok: false,
+      error: "context_anchor_invalid",
+      workspace_id: WS,
+      context_id: contextId
+    });
+    const pulses = await handle.app.inject({ method: "GET", url: `/v1/pulses?workspace_id=${encodeURIComponent(WS)}` });
+    expect((pulses.json().pulses as any[]).some((pulse) => pulse.pulse_id === pulseId)).toBe(false);
+  });
+
+  it("rejects subscribe mutations that would add generated delivery to an unscoped Pulse", async () => {
+    const contextId = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR, FLOE]
+    });
+    const pulseId = `pulse-subscribe-generated-${Date.now()}`;
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "once", at: new Date(Date.now() + 60_000).toISOString() },
+        event: { type: "pulse.fired", content: { text: "Append only." } },
+        subscribers: [{ kind: "context", context_id: contextId }]
+      }
+    });
+    expect(createRes.statusCode).toBe(201);
+    expect(createRes.json().pulse.scope_id).toBeNull();
+
+    const subscribed = await handle.app.inject({
+      method: "POST",
+      url: `/v1/pulses/${encodeURIComponent(pulseId)}/subscribe`,
+      payload: { kind: "endpoint", endpoint_ref: "floe" }
+    });
+
+    expect(subscribed.statusCode).toBe(400);
+    expect(subscribed.json()).toMatchObject({
+      ok: false,
+      error: "scope_required",
+      workspace_id: WS
+    });
+    const pulse = await handle.app.inject({ method: "GET", url: `/v1/pulses?workspace_id=${encodeURIComponent(WS)}` });
+    const stored = (pulse.json().pulses as any[]).find((item) => item.pulse_id === pulseId);
+    expect(stored.subscribers).toEqual([{ kind: "context", context_id: contextId }]);
+  });
+
+  it("rejects subscribe mutations that add endpoint delivery to an unrelated unscoped Context", async () => {
+    const contextId = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR, FLOE]
+    });
+    const unrelatedContextId = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR]
+    });
+    const pulseId = `pulse-subscribe-invalid-anchor-${Date.now()}`;
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "once", at: new Date(Date.now() + 60_000).toISOString() },
+        event: { type: "pulse.fired", content: { text: "Append only." } },
+        subscribers: [{ kind: "context", context_id: contextId }]
+      }
+    });
+    expect(createRes.statusCode).toBe(201);
+
+    const subscribed = await handle.app.inject({
+      method: "POST",
+      url: `/v1/pulses/${encodeURIComponent(pulseId)}/subscribe`,
+      payload: { kind: "endpoint", endpoint_ref: "floe", context_id: unrelatedContextId }
+    });
+
+    expect(subscribed.statusCode).toBe(400);
+    expect(subscribed.json()).toMatchObject({
+      ok: false,
+      error: "context_anchor_invalid",
+      workspace_id: WS,
+      context_id: unrelatedContextId
+    });
+    const pulse = await handle.app.inject({ method: "GET", url: `/v1/pulses?workspace_id=${encodeURIComponent(WS)}` });
+    const stored = (pulse.json().pulses as any[]).find((item) => item.pulse_id === pulseId);
+    expect(stored.subscribers).toEqual([{ kind: "context", context_id: contextId }]);
+  });
+
+  it("rejects Pulse upserts that would retain generated delivery after nulling scope", async () => {
+    const contextId = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR, FLOE]
+    });
+    const pulseId = `pulse-upsert-retained-generated-${Date.now()}`;
+    const createRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        scope_id: OPS_SCOPE,
+        trigger: { type: "once", at: new Date(Date.now() + 60_000).toISOString() },
+        event: { type: "pulse.fired", content: { text: "Deliver in scoped generated context." } },
+        subscribers: [{ kind: "endpoint", endpoint_ref: "floe" }]
+      }
+    });
+    expect(createRes.statusCode).toBe(201);
+
+    const upsertRes = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: pulseId,
+        workspace_id: WS,
+        persistence: "local",
+        trigger: { type: "once", at: new Date(Date.now() + 120_000).toISOString() },
+        event: { type: "pulse.fired", content: { text: "Append only." } },
+        subscribers: [{ kind: "context", context_id: contextId }]
+      }
+    });
+
+    expect(upsertRes.statusCode).toBe(400);
+    expect(upsertRes.json()).toMatchObject({
+      ok: false,
+      error: "scope_required",
+      workspace_id: WS
+    });
+    const storedRes = await handle.app.inject({ method: "GET", url: `/v1/pulses?workspace_id=${encodeURIComponent(WS)}` });
+    const stored = (storedRes.json().pulses as any[]).find((item) => item.pulse_id === pulseId);
+    expect(stored.scope_id).toBe(OPS_SCOPE);
+    expect(stored.subscribers).toEqual([{ kind: "endpoint", endpoint_ref: "floe" }]);
+  });
+
   it("context subscriber appends pulse.fired to the supplied context without endpoint delivery", async () => {
     const contextId = handle.store.contextStore.createContext({
       workspace_id: WS,

@@ -133,7 +133,7 @@ describe("PiAgentCoreAdapter", () => {
     const worklogDel2 = telemetryCalls.filter((item) => item.delivery_id === "del-2" && item.kind === "visible_output_worklog");
     expect(worklogDel1).toHaveLength(1);
     expect(worklogDel1[0].payload?.text).toContain("First deterministic reply.");
-    expect(worklogDel1[0].payload?.scope_id).toBe("default");
+    expect(worklogDel1[0].payload?.scope_id).toBeNull();
     expect(worklogDel2).toHaveLength(1);
     expect(worklogDel2[0].payload?.text).toContain("Second deterministic reply.");
 

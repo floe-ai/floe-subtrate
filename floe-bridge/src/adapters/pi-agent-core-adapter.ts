@@ -41,7 +41,7 @@ type RuntimeTurnContext = {
   delivery_attempt_id: string;
   endpoint_id: string;
   workspace_id: string;
-  scope_id: string;
+  scope_id: string | null;
   thread_id: string;
   source_endpoint_id: string;
   correlation_id: string | null;
@@ -684,7 +684,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       endpoint_id: bundle.endpoint_id,
       workspace_id: bundle.workspace_id,
       thread_id: threadId,
-      scope_id: typeof trigger?.scope_id === "string" && trigger.scope_id.trim() ? trigger.scope_id : "default",
+      scope_id: typeof trigger?.scope_id === "string" && trigger.scope_id.trim() ? trigger.scope_id : null,
       source_endpoint_id: sourceEndpoint,
       correlation_id: trigger?.correlation_id ?? null,
       started_at: new Date().toISOString(),

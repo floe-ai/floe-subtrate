@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { CronExpressionParser } from "cron-parser";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
-import { ContextStore, applyContextSchema } from "./contexts/store.js";
+import { ContextStore, applyContextSchema, type ContextRecord } from "./contexts/store.js";
 import { resolveContext, type NotContextParticipantError } from "./contexts/resolver.js";
 import {
   ScopeNotFoundError,
@@ -45,11 +45,31 @@ export class ContextNotFoundError extends Error {
   }
 }
 
+export class ContextAnchorError extends Error {
+  readonly code = "E_CONTEXT_ANCHOR_INVALID" as const;
+  constructor(
+    readonly workspace_id: string,
+    readonly context_id: string,
+    readonly reason: string
+  ) {
+    super(`Invalid Context anchor: ${reason}`);
+    this.name = "ContextAnchorError";
+  }
+}
+
 export class ScopeRequiredError extends Error {
   readonly code = "E_SCOPE_REQUIRED" as const;
   constructor(readonly workspace_id: string, readonly reason: string) {
     super(`Scope is required: ${reason}`);
     this.name = "ScopeRequiredError";
+  }
+}
+
+export class PulseNotFoundError extends Error {
+  readonly code = "E_PULSE_NOT_FOUND" as const;
+  constructor(readonly pulse_id: string) {
+    super(`Pulse not found: ${pulse_id}`);
+    this.name = "PulseNotFoundError";
   }
 }
 
@@ -350,7 +370,7 @@ export class BusStore {
         pulse_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         persistence TEXT NOT NULL DEFAULT 'local',
-        scope_id TEXT NOT NULL,
+        scope_id TEXT,
         trigger_json TEXT NOT NULL,
         content_json TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
@@ -401,7 +421,8 @@ export class BusStore {
     this.addColumnIfMissing("runtime_telemetry", "delivery_id", "TEXT");
     this.addColumnIfMissing("runtime_bindings", "model", "TEXT");
     this.addColumnIfMissing("pulses", "persistence", "TEXT NOT NULL DEFAULT 'local'");
-    this.addColumnIfMissing("pulses", "scope_id", "TEXT NOT NULL");
+    this.addColumnIfMissing("pulses", "scope_id", "TEXT");
+    this.relaxPulseScopeColumn();
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_pulses_workspace_scope
         ON pulses(workspace_id, scope_id, status);
@@ -476,6 +497,66 @@ export class BusStore {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency
         ON events(idempotency_key)
         WHERE idempotency_key IS NOT NULL;
+    `);
+  }
+
+  private relaxPulseScopeColumn(): void {
+    const columns = this.db.prepare("PRAGMA table_info(pulses)").all() as Array<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    const scope = columns.find((item) => item.name === "scope_id");
+    if (scope?.notnull !== 1 && scope?.dflt_value == null) return;
+
+    this.db.exec(`
+      CREATE TABLE pulses_next (
+        pulse_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        persistence TEXT NOT NULL DEFAULT 'local',
+        scope_id TEXT,
+        trigger_json TEXT NOT NULL,
+        content_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        next_fire_at TEXT,
+        last_fired_at TEXT,
+        fire_count INTEGER NOT NULL DEFAULT 0
+      );
+
+      INSERT INTO pulses_next (
+        pulse_id, workspace_id, persistence, scope_id, trigger_json, content_json, status,
+        created_by, created_at, updated_at, next_fire_at, last_fired_at, fire_count
+      )
+      SELECT
+        pulse_id,
+        workspace_id,
+        persistence,
+        NULLIF(scope_id, 'default'),
+        trigger_json,
+        content_json,
+        status,
+        created_by,
+        created_at,
+        updated_at,
+        next_fire_at,
+        last_fired_at,
+        fire_count
+      FROM pulses;
+
+      DROP TABLE pulses;
+      ALTER TABLE pulses_next RENAME TO pulses;
+
+      CREATE INDEX IF NOT EXISTS idx_pulses_workspace
+        ON pulses(workspace_id, status);
+
+      CREATE INDEX IF NOT EXISTS idx_pulses_next_fire
+        ON pulses(status, next_fire_at);
+
+      CREATE INDEX IF NOT EXISTS idx_pulses_workspace_scope
+        ON pulses(workspace_id, scope_id, status);
     `);
   }
 
@@ -585,6 +666,58 @@ export class BusStore {
   private requireScopeId(workspaceId: string, scopeId: string | null | undefined, reason: string): string {
     if (!scopeId) throw new ScopeRequiredError(workspaceId, reason);
     return this.validateScopeId(workspaceId, scopeId);
+  }
+
+  private getContextAnchor(workspaceId: string, contextId: string): ContextRecord {
+    const context = this.contextStore.getContext(contextId);
+    if (!context || context.workspace_id !== workspaceId) {
+      throw new ContextNotFoundError(workspaceId, contextId);
+    }
+    return context;
+  }
+
+  private requireEndpointContextAnchor(workspaceId: string, contextId: string, endpointId: string): ContextRecord {
+    const context = this.getContextAnchor(workspaceId, contextId);
+    if (!context.scope_id && !this.contextStore.isParticipant(contextId, endpointId)) {
+      throw new ContextAnchorError(
+        workspaceId,
+        contextId,
+        "unscoped endpoint delivery Context must include the target endpoint as a participant"
+      );
+    }
+    return context;
+  }
+
+  private validatePulseSubscriberAnchor(input: {
+    workspace_id: string;
+    pulse_scope_id: string | null;
+    subscriber: PulseSubscriber;
+    allow_missing_generated_scope?: boolean;
+  }): { creates_generated_delivery_context: boolean; anchor_scope_id: string | null } {
+    const { workspace_id: workspaceId, pulse_scope_id: pulseScopeId, subscriber } = input;
+    if (subscriber.kind === "context") {
+      return {
+        creates_generated_delivery_context: false,
+        anchor_scope_id: this.getContextAnchor(workspaceId, subscriber.context_id).scope_id
+      };
+    }
+
+    if (subscriber.context_id) {
+      const endpointId = this.resolveSubscriberEndpointId(workspaceId, subscriber.endpoint_ref);
+      return {
+        creates_generated_delivery_context: false,
+        anchor_scope_id: this.requireEndpointContextAnchor(workspaceId, subscriber.context_id, endpointId).scope_id
+      };
+    }
+
+    if (!pulseScopeId && !input.allow_missing_generated_scope) {
+      throw new ScopeRequiredError(
+        workspaceId,
+        "pulse must be configured with a Scope before adding generated endpoint delivery"
+      );
+    }
+
+    return { creates_generated_delivery_context: true, anchor_scope_id: null };
   }
 
   listRuntimeBindings(workspaceId?: string): RuntimeBindingRecord[] {
@@ -983,10 +1116,7 @@ export class BusStore {
 
       let contextId: string;
       if (command.context_id) {
-        const context = this.contextStore.getContext(command.context_id);
-        if (!context || context.workspace_id !== command.workspace_id) {
-          throw new Error(`Context not found for trigger event: ${command.context_id}`);
-        }
+        this.requireEndpointContextAnchor(command.workspace_id, command.context_id, command.target_endpoint_id);
         contextId = command.context_id;
       } else {
         const scopeId = this.requireScopeId(command.workspace_id, command.scope_id, "trigger event creates an operational Context");
@@ -1409,19 +1539,50 @@ export class BusStore {
   }, broadcast: Broadcast): unknown {
     const timestamp = now();
     const nextFireAt = this.calculateNextFireAt(input.trigger);
-    let contextScopeId: string | null = null;
-    if (!input.scope_id && input.current_context_id) {
-      const context = this.contextStore.getContext(input.current_context_id);
-      if (!context || context.workspace_id !== input.workspace_id) {
-        throw new ContextNotFoundError(input.workspace_id, input.current_context_id);
-      }
-      contextScopeId = context.scope_id;
+    const currentContext = input.current_context_id
+      ? this.getContextAnchor(input.workspace_id, input.current_context_id)
+      : null;
+    let scopeId: string | null = input.scope_id
+      ? this.validateScopeId(input.workspace_id, input.scope_id)
+      : currentContext?.scope_id ?? null;
+    let createsGeneratedDeliveryContext = false;
+    const explicitAnchorScopes = new Set<string>();
+    const subscribersToValidate = new Map<string, PulseSubscriber>();
+    for (const subscriber of this.getPulseSubscribers(input.pulse_id)) {
+      subscribersToValidate.set(json(subscriber), subscriber);
     }
-    const scopeId = this.requireScopeId(
-      input.workspace_id,
-      input.scope_id ?? contextScopeId,
-      "pulse must be configured with a Scope or scoped current Context"
-    );
+    for (const subscriber of input.subscribers) {
+      subscribersToValidate.set(json(subscriber), subscriber);
+    }
+
+    for (const subscriber of subscribersToValidate.values()) {
+      const anchor = this.validatePulseSubscriberAnchor({
+        workspace_id: input.workspace_id,
+        pulse_scope_id: scopeId,
+        subscriber,
+        allow_missing_generated_scope: true
+      });
+      if (anchor.creates_generated_delivery_context) createsGeneratedDeliveryContext = true;
+      if (anchor.anchor_scope_id) explicitAnchorScopes.add(anchor.anchor_scope_id);
+    }
+
+    if (!scopeId && !createsGeneratedDeliveryContext && explicitAnchorScopes.size === 1) {
+      scopeId = [...explicitAnchorScopes][0];
+    }
+
+    if (createsGeneratedDeliveryContext && !scopeId) {
+      throw new ScopeRequiredError(
+        input.workspace_id,
+        "pulse must be configured with a Scope or scoped current Context"
+      );
+    }
+
+    if (!scopeId && subscribersToValidate.size === 0) {
+      throw new ScopeRequiredError(
+        input.workspace_id,
+        "pulse must be configured with a Scope or explicit Context anchor"
+      );
+    }
     this.db.prepare(`
       INSERT INTO pulses (pulse_id, workspace_id, persistence, scope_id, trigger_json, content_json, status, created_by, created_at, updated_at, next_fire_at)
       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
@@ -1496,6 +1657,9 @@ export class BusStore {
     subscriber: Extract<PulseSubscriber, { endpoint_ref: string }>;
     endpoint_id: string;
   }): string {
+    if (!input.scope_id) {
+      throw new ScopeRequiredError(input.workspace_id, "generated pulse delivery Context requires Scope");
+    }
     const subscriberKey = this.pulseDeliverySubscriberKey(input.subscriber);
     const contextId = `ctx_pulse_${stableHash(`${input.workspace_id}\0${input.pulse_id}\0${subscriberKey}`).slice(0, 32)}`;
     const timestamp = now();
@@ -1552,6 +1716,14 @@ export class BusStore {
   }
 
   addPulseSubscriber(pulseId: string, subscriber: PulseSubscriber): void {
+    const pulse = this.db.prepare("SELECT workspace_id, scope_id FROM pulses WHERE pulse_id = ?")
+      .get(pulseId) as { workspace_id: string; scope_id: string | null } | undefined;
+    if (!pulse) throw new PulseNotFoundError(pulseId);
+    this.validatePulseSubscriberAnchor({
+      workspace_id: pulse.workspace_id,
+      pulse_scope_id: pulse.scope_id,
+      subscriber
+    });
     this.db.prepare(`
       INSERT OR IGNORE INTO pulse_subscribers (pulse_id, subscriber_json, created_at)
       VALUES (?, ?, ?)
