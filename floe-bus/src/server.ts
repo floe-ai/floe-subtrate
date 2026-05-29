@@ -8,13 +8,13 @@ import YAML from "yaml";
 import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
-import { BROADCAST_TARGETS, BusStore, ContextNotFoundError, ContextParticipantError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
+import { BROADCAST_TARGETS, BusStore, ContextNotFoundError, ContextParticipantError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadScopeProjectionLayout,
   upsertScopeProjectionLayout
 } from "./scope-projection-layout-store.js";
-import { ScopeAlreadyExistsError, ScopeNotFoundError } from "./scopes/store.js";
+import { ScopeAlreadyExistsError, ScopeNotFoundError, ScopeReservedIdError } from "./scopes/store.js";
 import { buildScopeProjection } from "./scopes/projection.js";
 
 const EventCommandSchema = z.object({
@@ -197,6 +197,13 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       if (err instanceof ScopeAlreadyExistsError) {
         return reply.code(409).send({
           error: "scope_already_exists",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id
+        });
+      }
+      if (err instanceof ScopeReservedIdError) {
+        return reply.code(400).send({
+          error: "scope_id_reserved",
           workspace_id: err.workspace_id,
           scope_id: err.scope_id
         });
@@ -768,8 +775,20 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.post("/v1/webhooks/:workspace_id/:route_id", async (request, reply) => {
     const params = z.object({ workspace_id: z.string(), route_id: z.string() }).parse(request.params);
-    const event = store.ingestWebhook(params.workspace_id, params.route_id, request.body as Record<string, unknown>, broadcast);
-    return reply.code(202).send({ ok: true, event });
+    try {
+      const event = store.ingestWebhook(params.workspace_id, params.route_id, request.body as Record<string, unknown>, broadcast);
+      return reply.code(202).send({ ok: true, event });
+    } catch (err) {
+      if (err instanceof ScopeRequiredError) {
+        return reply.code(400).send({
+          ok: false,
+          error: "scope_required",
+          workspace_id: err.workspace_id,
+          reason: err.reason
+        });
+      }
+      throw err;
+    }
   });
 
   // ---------------------------------------------------------------------------
@@ -835,6 +854,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
           error: "context_not_found",
           workspace_id: err.workspace_id,
           context_id: err.context_id
+        });
+      }
+      if (err instanceof ScopeRequiredError) {
+        return reply.code(400).send({
+          ok: false,
+          error: "scope_required",
+          workspace_id: err.workspace_id,
+          reason: err.reason
         });
       }
       throw err;
@@ -975,7 +1002,7 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
         const contextId = subscriber.context_id ?? store.getOrCreatePulseDeliveryContext({
           pulse_id: pulseId,
           workspace_id: pulse.workspace_id,
-          scope_id: (pulse as any).scope_id ?? "default",
+          scope_id: (pulse as any).scope_id,
           subscriber,
           endpoint_id: endpointId
         });

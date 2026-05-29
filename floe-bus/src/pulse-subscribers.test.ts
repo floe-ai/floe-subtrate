@@ -11,6 +11,7 @@ const OPERATOR = `actor:${WS}:operator`;
 const FLOE = `actor:${WS}:floe`;
 const REVIEWER = `actor:${WS}:reviewer`;
 const BRIDGE = "bridge:pulse-test";
+const OPS_SCOPE = "ops";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
@@ -30,6 +31,7 @@ async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Prom
       status: "idle"
     }, () => {});
   }
+  handle.store.createScope({ workspace_id: WS, scope_id: OPS_SCOPE, title: "Ops" }, () => {});
   return {
     handle,
     cleanup: async () => {
@@ -66,11 +68,13 @@ describe("Pulse subscribers", () => {
   it("context subscriber appends pulse.fired to the supplied context without endpoint delivery", async () => {
     const contextId = handle.store.contextStore.createContext({
       workspace_id: WS,
+      scope_id: OPS_SCOPE,
       created_by_endpoint_id: OPERATOR,
       participants: [OPERATOR, FLOE]
     });
     const unrelatedContextId = handle.store.contextStore.createContext({
       workspace_id: WS,
+      scope_id: OPS_SCOPE,
       created_by_endpoint_id: OPERATOR,
       participants: [OPERATOR, FLOE]
     });
@@ -83,6 +87,7 @@ describe("Pulse subscribers", () => {
         pulse_id: pulseId,
         workspace_id: WS,
         persistence: "local",
+        scope_id: OPS_SCOPE,
         trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
         event: {
           type: "pulse.fired",
@@ -119,6 +124,7 @@ describe("Pulse subscribers", () => {
   it("endpoint subscriber delivers pulse.fired to the endpoint in the supplied context", async () => {
     const contextId = handle.store.contextStore.createContext({
       workspace_id: WS,
+      scope_id: OPS_SCOPE,
       created_by_endpoint_id: OPERATOR,
       participants: [OPERATOR, FLOE]
     });
@@ -131,6 +137,7 @@ describe("Pulse subscribers", () => {
         pulse_id: pulseId,
         workspace_id: WS,
         persistence: "local",
+        scope_id: OPS_SCOPE,
         trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
         event: {
           type: "pulse.fired",
@@ -173,6 +180,7 @@ describe("Pulse subscribers", () => {
         pulse_id: pulseId,
         workspace_id: WS,
         persistence: "local",
+        scope_id: OPS_SCOPE,
         trigger: { type: "cron", schedule: "*/1 * * * * *" },
         event: {
           type: "pulse.fired",
@@ -222,6 +230,7 @@ describe("Pulse subscribers", () => {
         pulse_id: pulseId,
         workspace_id: WS,
         persistence: "local",
+        scope_id: OPS_SCOPE,
         trigger: { type: "cron", schedule: "*/1 * * * * *" },
         event: {
           type: "pulse.fired",
@@ -272,6 +281,7 @@ describe("Pulse subscribers", () => {
         pulse_id: pulseId,
         workspace_id: WS,
         persistence: "local",
+        scope_id: OPS_SCOPE,
         trigger: { type: "cron", schedule: "*/1 * * * * *" },
         event: {
           type: "pulse.fired",
@@ -347,16 +357,19 @@ describe("Pulse subscribers", () => {
   it("mixed subscribers keep pulse.fired canonical and do not add synthetic participants or pollute other contexts", async () => {
     const renderContextId = handle.store.contextStore.createContext({
       workspace_id: WS,
+      scope_id: OPS_SCOPE,
       created_by_endpoint_id: OPERATOR,
       participants: [OPERATOR, FLOE]
     });
     const endpointContextId = handle.store.contextStore.createContext({
       workspace_id: WS,
+      scope_id: OPS_SCOPE,
       created_by_endpoint_id: OPERATOR,
       participants: [OPERATOR, FLOE]
     });
     const unrelatedContextId = handle.store.contextStore.createContext({
       workspace_id: WS,
+      scope_id: OPS_SCOPE,
       created_by_endpoint_id: OPERATOR,
       participants: [OPERATOR, FLOE]
     });
@@ -369,6 +382,7 @@ describe("Pulse subscribers", () => {
         pulse_id: pulseId,
         workspace_id: WS,
         persistence: "local",
+        scope_id: OPS_SCOPE,
         trigger: { type: "once", at: new Date(Date.now() + 30).toISOString() },
         event: {
           type: "pulse.fired",
@@ -428,6 +442,7 @@ describe("Pulse subscribers", () => {
     try {
       const contextId = handle.store.contextStore.createContext({
         workspace_id: WS,
+        scope_id: OPS_SCOPE,
         created_by_endpoint_id: OPERATOR,
         participants: [OPERATOR, FLOE]
       });
@@ -440,6 +455,7 @@ describe("Pulse subscribers", () => {
           pulse_id: pulseId,
           workspace_id: WS,
           persistence: "local",
+          scope_id: OPS_SCOPE,
           trigger: { type: "once", at: new Date(Date.now() + 75).toISOString() },
           event: {
             type: "pulse.fired",

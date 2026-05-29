@@ -47,7 +47,7 @@ describe("Scope HTTP routes", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("registering a workspace exposes exactly one Default Scope", async () => {
+  it("registering a workspace does not create a Default Scope", async () => {
     const wsLocator = join(tmp, "ws");
     mkdirSync(wsLocator, { recursive: true });
     const registered = await handle.app.inject({
@@ -64,22 +64,10 @@ describe("Scope HTTP routes", () => {
     });
 
     expect(scopes.statusCode).toBe(200);
-    expect(scopes.json()).toEqual({
-      scopes: [
-        {
-          scope_id: "default",
-          workspace_id: workspaceId,
-          title: "Default",
-          description: "Default workspace scope",
-          is_default: true,
-          created_at: expect.any(String),
-          updated_at: expect.any(String)
-        }
-      ]
-    });
+    expect(scopes.json()).toEqual({ scopes: [] });
   });
 
-  it("creates a named Scope without replacing the Default Scope", async () => {
+  it("creates a named Scope without inventing a Default Scope", async () => {
     const wsLocator = join(tmp, "ws");
     mkdirSync(wsLocator, { recursive: true });
     const registered = await handle.app.inject({
@@ -115,9 +103,35 @@ describe("Scope HTTP routes", () => {
     });
     expect(scopes.statusCode).toBe(200);
     expect(scopes.json().scopes.map((scope: { scope_id: string }) => scope.scope_id)).toEqual([
-      "default",
       "research"
     ]);
+  });
+
+  it("rejects user-created Scope id 'default' because it is reserved for stale cleanup", async () => {
+    const wsLocator = join(tmp, "ws");
+    mkdirSync(wsLocator, { recursive: true });
+    const registered = await handle.app.inject({
+      method: "POST",
+      url: "/v1/workspaces/register",
+      payload: { locator: wsLocator, name: "scope-test" }
+    });
+    const workspaceId = registered.json().workspace.workspace_id;
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`,
+      payload: {
+        scope_id: "default",
+        title: "Default"
+      }
+    });
+
+    expect(created.statusCode).toBe(400);
+    expect(created.json()).toMatchObject({
+      error: "scope_id_reserved",
+      workspace_id: workspaceId,
+      scope_id: "default"
+    });
   });
 
   it("updates Scope metadata through the workspace API", async () => {
@@ -191,7 +205,7 @@ describe("Scope HTTP routes", () => {
     });
   });
 
-  it("keeps the Default Scope singular across register, select, and server restart", async () => {
+  it("does not create a Default Scope across register, select, and server restart", async () => {
     const wsLocator = join(tmp, "ws");
     mkdirSync(wsLocator, { recursive: true });
     const firstRegistration = await handle.app.inject({
@@ -219,7 +233,7 @@ describe("Scope HTTP routes", () => {
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`
     });
     expect(scopes.statusCode).toBe(200);
-    expect(scopes.json().scopes.filter((scope: { scope_id: string }) => scope.scope_id === "default")).toHaveLength(1);
+    expect(scopes.json().scopes.filter((scope: { scope_id: string }) => scope.scope_id === "default")).toHaveLength(0);
   });
 
   it("does not expose Scope deletion in the first Scope slice", async () => {

@@ -278,7 +278,7 @@ describe("Trigger ingress Scope API routes", () => {
   });
   afterEach(async () => { await cleanup(); });
 
-  it("webhook ingress creates a source-null Default Scope event and context", async () => {
+  it("webhook ingress rejects routes without configured Scope instead of using Default Scope", async () => {
     handle.store.registerEndpoint({
       endpoint_id: "actor:server-test:webhook-target",
       workspace_id: WS,
@@ -293,20 +293,12 @@ describe("Trigger ingress Scope API routes", () => {
       payload: { text: "webhook hello" }
     });
 
-    expect(res.statusCode).toBe(202);
-    const event = res.json().event;
-    expect(event.type).toBe("webhook_received");
-    expect(event.source_endpoint_id).toBeNull();
-    expect(event.scope_id).toBe("default");
-    expect(event.metadata).toMatchObject({ trigger_kind: "webhook", route_id: "route_alpha" });
-
-    const contextRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(event.context_id)}` });
-    expect(contextRes.statusCode).toBe(200);
-    expect(contextRes.json()).toMatchObject({
-      context_id: event.context_id,
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({
+      ok: false,
+      error: "scope_required",
       workspace_id: WS,
-      scope_id: "default",
-      participants: ["actor:server-test:webhook-target"]
+      reason: "webhook route must be configured with a Scope"
     });
   });
 });

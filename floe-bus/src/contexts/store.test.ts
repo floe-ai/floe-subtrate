@@ -48,7 +48,32 @@ describe("ContextStore CRUD", () => {
     expect(parts).toEqual([E1, E2].sort());
   });
 
-  it("migrates a pre-existing contexts table by adding Default Scope before scope indexes", () => {
+  it("rejects an orphan Context with neither participants nor Scope", () => {
+    expect(() => store.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: E1,
+      participants: []
+    })).toThrow(/Context requires at least one actor participant or Scope/);
+  });
+
+  it("creates a scoped operational Context without actor participants", () => {
+    const id = store.createContext({
+      workspace_id: WS,
+      scope_id: "ops",
+      created_by_endpoint_id: null,
+      participants: []
+    });
+
+    expect(store.getContext(id)).toMatchObject({
+      context_id: id,
+      workspace_id: WS,
+      scope_id: "ops",
+      created_by_endpoint_id: null
+    });
+    expect(store.getContextParticipants(id)).toEqual([]);
+  });
+
+  it("migrates a pre-existing contexts table by adding nullable Scope before scope indexes", () => {
     const legacyDb = new DatabaseSync(":memory:");
     legacyDb.exec("PRAGMA foreign_keys = ON");
     legacyDb.exec(`
@@ -68,7 +93,37 @@ describe("ContextStore CRUD", () => {
 
     expect(() => applyContextSchema(legacyDb)).not.toThrow();
     const migrated = new ContextStore(legacyDb).getContext("ctx_legacy");
-    expect(migrated?.scope_id).toBe("default");
+    expect(migrated?.scope_id).toBeNull();
+    legacyDb.close();
+  });
+
+  it("relaxes legacy non-null anchor columns so scoped operational Contexts can be created", () => {
+    const legacyDb = new DatabaseSync(":memory:");
+    legacyDb.exec("PRAGMA foreign_keys = ON");
+    legacyDb.exec(`
+      CREATE TABLE contexts (
+        context_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        scope_id TEXT NOT NULL DEFAULT 'default',
+        parent_context_id TEXT,
+        created_by_endpoint_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+
+    expect(() => applyContextSchema(legacyDb)).not.toThrow();
+    const legacyStore = new ContextStore(legacyDb);
+    const id = legacyStore.createContext({
+      workspace_id: WS,
+      scope_id: "ops",
+      created_by_endpoint_id: null,
+      participants: []
+    });
+
+    expect(legacyStore.getContext(id)).toMatchObject({
+      scope_id: "ops",
+      created_by_endpoint_id: null
+    });
     legacyDb.close();
   });
 

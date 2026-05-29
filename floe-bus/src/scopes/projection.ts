@@ -5,7 +5,7 @@ export type ScopeProjectionContextRef = {
   workspace_id: string;
   scope_id: string;
   parent_context_id: string | null;
-  created_by_endpoint_id: string;
+  created_by_endpoint_id: string | null;
   created_at: string;
   last_event_at: string | null;
   first_message_preview: string | null;
@@ -92,7 +92,7 @@ export function buildScopeProjection(store: BusStore, workspaceId: string, scope
       contexts: contexts.map((context) => ({
         context_id: context.context_id,
         workspace_id: context.workspace_id,
-        scope_id: context.scope_id,
+        scope_id: scopeId,
         parent_context_id: context.parent_context_id,
         created_by_endpoint_id: context.created_by_endpoint_id,
         created_at: context.created_at,
