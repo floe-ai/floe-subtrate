@@ -253,7 +253,7 @@ export function createPulseTools(
           description: "Pulse Persistence: 'workspace' is workspace-backed in floe.yaml, 'local' is local runtime-backed (default: local)",
         }),
       ),
-      scope_id: Type.Optional(Type.String({ description: "Optional organising Scope id. If omitted, the bus inherits the active Context Scope or Default Scope." })),
+      scope_id: Type.Optional(Type.String({ description: "Optional organising Scope id. If omitted, the pulse must still have an explicit valid Context/subscriber anchor; no Default Scope is invented." })),
     }),
     execute: async (_toolCallId, params: any) => {
       if (params && typeof params === "object" && "scope" in params) {
