@@ -28,7 +28,7 @@ export type WorkLogEntry = {
   started_at: string;
   ended_at: string;
   trigger_type: string;
-  scope_id: string;
+  scope_id: string | null;
   thread_id: string;
   delivery_id: string;
   delivered_events: WorkLogEvent[];
@@ -86,7 +86,7 @@ function renderWorkLogEntry(entry: WorkLogEntry): string {
   lines.push(`**Started:** ${entry.started_at}`);
   lines.push(`**Ended:** ${entry.ended_at}`);
   lines.push(`**Trigger:** ${entry.trigger_type}`);
-  lines.push(`**Scope:** ${entry.scope_id}`);
+  lines.push(`**Scope:** ${entry.scope_id ?? "(unscoped)"}`);
   lines.push(`**Thread:** ${entry.thread_id}`);
   lines.push(`**Delivery:** ${entry.delivery_id}`);
   lines.push("");

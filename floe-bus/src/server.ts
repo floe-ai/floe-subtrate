@@ -8,7 +8,7 @@ import YAML from "yaml";
 import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
-import { BROADCAST_TARGETS, BusStore, ContextNotFoundError, ContextParticipantError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
+import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadScopeProjectionLayout,
@@ -856,6 +856,15 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
           context_id: err.context_id
         });
       }
+      if (err instanceof ContextAnchorError) {
+        return reply.code(400).send({
+          ok: false,
+          error: "context_anchor_invalid",
+          workspace_id: err.workspace_id,
+          context_id: err.context_id,
+          reason: err.reason
+        });
+      }
       if (err instanceof ScopeRequiredError) {
         return reply.code(400).send({
           ok: false,
@@ -914,10 +923,42 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { pulse: store.updatePulseStatus(params.pulse_id, "cancelled", broadcast) };
   });
 
-  app.post("/v1/pulses/:pulse_id/subscribe", async (request) => {
+  app.post("/v1/pulses/:pulse_id/subscribe", async (request, reply) => {
     const params = z.object({ pulse_id: z.string() }).parse(request.params);
     const body = PulseSubscriberSchema.parse(request.body) as PulseSubscriber;
-    store.addPulseSubscriber(params.pulse_id, body);
+    try {
+      store.addPulseSubscriber(params.pulse_id, body);
+    } catch (err) {
+      if (err instanceof PulseNotFoundError) {
+        return reply.code(404).send({ ok: false, error: "pulse_not_found", pulse_id: err.pulse_id });
+      }
+      if (err instanceof ContextNotFoundError) {
+        return reply.code(404).send({
+          ok: false,
+          error: "context_not_found",
+          workspace_id: err.workspace_id,
+          context_id: err.context_id
+        });
+      }
+      if (err instanceof ContextAnchorError) {
+        return reply.code(400).send({
+          ok: false,
+          error: "context_anchor_invalid",
+          workspace_id: err.workspace_id,
+          context_id: err.context_id,
+          reason: err.reason
+        });
+      }
+      if (err instanceof ScopeRequiredError) {
+        return reply.code(400).send({
+          ok: false,
+          error: "scope_required",
+          workspace_id: err.workspace_id,
+          reason: err.reason
+        });
+      }
+      throw err;
+    }
     const pulse = store.getPulse(params.pulse_id);
     broadcast("pulse_subscriber_changed", { pulse_id: params.pulse_id, subscriber: body, pulse });
     return { ok: true, pulse };

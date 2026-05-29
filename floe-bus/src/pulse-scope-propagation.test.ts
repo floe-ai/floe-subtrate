@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import YAML from "yaml";
 import { createBusServer } from "./server.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
@@ -14,6 +15,37 @@ async function makeServer(): Promise<{ handle: ServerHandle; tmp: string }> {
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
+  const handle = await createBusServer(cfgPath, cfg);
+  await handle.app.ready();
+  return { handle, tmp };
+}
+
+async function makeServerWithLegacyPulseScopeSchema(): Promise<{ handle: ServerHandle; tmp: string }> {
+  const tmp = mkdtempSync(join(tmpdir(), "floe-bus-pulse-scope-legacy-"));
+  const cfgPath = join(tmp, "config.yaml");
+  const cfg: LocalConfig = defaultConfig(tmp);
+  writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
+  const dataDir = join(tmp, "bus");
+  mkdirSync(dataDir, { recursive: true });
+  const db = new DatabaseSync(join(dataDir, "floe-bus.sqlite"));
+  db.exec(`
+    CREATE TABLE pulses (
+      pulse_id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      persistence TEXT NOT NULL DEFAULT 'local',
+      scope_id TEXT NOT NULL DEFAULT 'default',
+      trigger_json TEXT NOT NULL,
+      content_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      next_fire_at TEXT,
+      last_fired_at TEXT,
+      fire_count INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  db.close();
   const handle = await createBusServer(cfgPath, cfg);
   await handle.app.ready();
   return { handle, tmp };
@@ -120,6 +152,37 @@ describe("Pulse Persistence and Scope propagation", () => {
     });
     expect(defaults.statusCode).toBe(200);
     expect(defaults.json().pulses).toEqual([]);
+  });
+
+  it("relaxes legacy Pulse scope columns so explicit unscoped Context anchors can persist", async () => {
+    await handle.app.close();
+    rmSync(tmp, { recursive: true, force: true });
+    const made = await makeServerWithLegacyPulseScopeSchema();
+    handle = made.handle;
+    tmp = made.tmp;
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const operator = registerEndpoint(handle, workspaceId, "operator");
+    const contextId = handle.store.contextStore.createContext({
+      workspace_id: workspaceId,
+      created_by_endpoint_id: operator,
+      participants: [operator]
+    });
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: "unscoped-context-anchor",
+        workspace_id: workspaceId,
+        persistence: "local",
+        trigger: { type: "once", at: new Date(Date.now() + 60_000).toISOString() },
+        event: { type: "pulse.fired", content: { text: "Append only." } },
+        subscribers: [{ kind: "context", context_id: contextId }]
+      }
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json().pulse.scope_id).toBeNull();
   });
 
   it("rejects stale public scope payloads without creating a pulse", async () => {
