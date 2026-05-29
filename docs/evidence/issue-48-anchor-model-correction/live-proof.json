@@ -1,0 +1,250 @@
+{
+  "base": "http://127.0.0.1:5387",
+  "workspaceId": "workspace:2d716378792fe892",
+  "endpoints": {
+    "justin": "actor:workspace:2d716378792fe892:justin",
+    "floe": "actor:workspace:2d716378792fe892:floe"
+  },
+  "scope": {
+    "scope_id": "research",
+    "workspace_id": "workspace:2d716378792fe892",
+    "title": "Research Field",
+    "description": "Issue 48 scoped operational proof",
+    "is_default": false,
+    "created_at": "2026-05-29T13:04:16.749Z",
+    "updated_at": "2026-05-29T13:04:16.749Z"
+  },
+  "initialWorkspacesCount": 0,
+  "directActorContext": {
+    "event": {
+      "event_id": "evt_d9e31551-de9d-4f56-ae38-041130e56457",
+      "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+      "scope_id": null,
+      "source_endpoint_id": "actor:workspace:2d716378792fe892:justin",
+      "destination_json": {
+        "kind": "endpoint",
+        "endpoint_id": "actor:workspace:2d716378792fe892:floe"
+      }
+    },
+    "contextBefore": {
+      "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+      "workspace_id": "workspace:2d716378792fe892",
+      "scope_id": null,
+      "parent_context_id": null,
+      "created_by_endpoint_id": "actor:workspace:2d716378792fe892:justin",
+      "created_at": "2026-05-29T13:04:16.758Z",
+      "participants": [
+        "actor:workspace:2d716378792fe892:floe",
+        "actor:workspace:2d716378792fe892:justin"
+      ]
+    },
+    "listedUnscopedBeforeAssignment": [
+      {
+        "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+        "scope_id": null,
+        "participants": [
+          "actor:workspace:2d716378792fe892:floe",
+          "actor:workspace:2d716378792fe892:justin"
+        ],
+        "first_message_preview": "Workspace-level actor Context before assignment"
+      }
+    ]
+  },
+  "actorlessScopelessRejections": {
+    "webhookRejected": {
+      "status": 400,
+      "json": {
+        "ok": false,
+        "error": "scope_required",
+        "workspace_id": "workspace:2d716378792fe892",
+        "reason": "webhook route must be configured with a Scope"
+      }
+    },
+    "pulseRejected": {
+      "status": 400,
+      "json": {
+        "ok": false,
+        "error": "scope_required",
+        "workspace_id": "workspace:2d716378792fe892",
+        "reason": "pulse must be configured with a Scope or scoped current Context"
+      }
+    }
+  },
+  "scopedOperationalPulse": {
+    "pulse_id": "pulse-issue48-1780059856793",
+    "firstFire": {
+      "event_id": "evt_e4a5ce05-5907-48c8-8897-e620e18cbfc9",
+      "context_id": "ctx_pulse_7154aaf60c6285ae54aa974ca5a6fc0d",
+      "scope_id": "research",
+      "source_endpoint_id": null,
+      "destination_json": {
+        "kind": "endpoint",
+        "endpoint_id": "actor:workspace:2d716378792fe892:floe"
+      },
+      "metadata": {
+        "trigger_kind": "pulse",
+        "pulse_id": "pulse-issue48-1780059856793",
+        "pulse_name": "pulse-issue48-1780059856793",
+        "trigger_type": "once",
+        "schedule": "2026-05-29T13:04:17.043Z",
+        "fire_number": 1
+      }
+    },
+    "secondFire": {
+      "event_id": "evt_0b94a241-c222-4e6b-bbb8-98829b927d3f",
+      "context_id": "ctx_pulse_7154aaf60c6285ae54aa974ca5a6fc0d",
+      "scope_id": "research",
+      "source_endpoint_id": null,
+      "destination_json": {
+        "kind": "endpoint",
+        "endpoint_id": "actor:workspace:2d716378792fe892:floe"
+      },
+      "metadata": {
+        "trigger_kind": "pulse",
+        "pulse_id": "pulse-issue48-1780059856793",
+        "pulse_name": "pulse-issue48-1780059856793",
+        "trigger_type": "once",
+        "schedule": "2026-05-29T13:04:17.389Z",
+        "fire_number": 2
+      }
+    },
+    "stableDeliveryContextReused": true,
+    "contextAfterFirstFire": {
+      "context_id": "ctx_pulse_7154aaf60c6285ae54aa974ca5a6fc0d",
+      "workspace_id": "workspace:2d716378792fe892",
+      "scope_id": "research",
+      "parent_context_id": null,
+      "created_by_endpoint_id": "actor:workspace:2d716378792fe892:floe",
+      "created_at": "2026-05-29T13:04:17.067Z",
+      "participants": [
+        "actor:workspace:2d716378792fe892:floe"
+      ]
+    },
+    "contextAfterSecondFire": {
+      "context_id": "ctx_pulse_7154aaf60c6285ae54aa974ca5a6fc0d",
+      "workspace_id": "workspace:2d716378792fe892",
+      "scope_id": "research",
+      "parent_context_id": null,
+      "created_by_endpoint_id": "actor:workspace:2d716378792fe892:floe",
+      "created_at": "2026-05-29T13:04:17.067Z",
+      "participants": [
+        "actor:workspace:2d716378792fe892:floe"
+      ]
+    }
+  },
+  "explicitScopeAssignment": {
+    "assigned": {
+      "ok": true,
+      "context": {
+        "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+        "workspace_id": "workspace:2d716378792fe892",
+        "scope_id": "research",
+        "parent_context_id": null,
+        "created_by_endpoint_id": "actor:workspace:2d716378792fe892:justin",
+        "created_at": "2026-05-29T13:04:16.758Z",
+        "participants": [
+          "actor:workspace:2d716378792fe892:floe",
+          "actor:workspace:2d716378792fe892:justin"
+        ]
+      },
+      "audit_event": {
+        "event_id": "evt_d23c315b-f30e-42c9-a8fe-2ac5511c4947",
+        "type": "context.scope_assigned",
+        "workspace_id": "workspace:2d716378792fe892",
+        "source_endpoint_id": null,
+        "thread_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+        "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+        "scope_id": "research",
+        "correlation_id": null,
+        "destination_json": {
+          "kind": "context",
+          "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c"
+        },
+        "content": {},
+        "response": {
+          "expected": false,
+          "mode": "open",
+          "correlation_id": null,
+          "timeout_at": null
+        },
+        "metadata": {
+          "previous_scope_id": null,
+          "scope_id": "research",
+          "assigned_by": "actor:workspace:2d716378792fe892:justin",
+          "reason": "Issue 48 proof: promote unscoped actor Context into scoped operational work"
+        },
+        "created_at": "2026-05-29T13:04:17.419Z"
+      }
+    },
+    "contextAfter": {
+      "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+      "workspace_id": "workspace:2d716378792fe892",
+      "scope_id": "research",
+      "parent_context_id": null,
+      "created_by_endpoint_id": "actor:workspace:2d716378792fe892:justin",
+      "created_at": "2026-05-29T13:04:16.758Z",
+      "participants": [
+        "actor:workspace:2d716378792fe892:floe",
+        "actor:workspace:2d716378792fe892:justin"
+      ]
+    },
+    "eventsAfter": [
+      {
+        "event_id": "evt_d9e31551-de9d-4f56-ae38-041130e56457",
+        "type": "message",
+        "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+        "scope_id": null,
+        "metadata": {}
+      },
+      {
+        "event_id": "evt_d23c315b-f30e-42c9-a8fe-2ac5511c4947",
+        "type": "context.scope_assigned",
+        "context_id": "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+        "scope_id": "research",
+        "metadata": {
+          "previous_scope_id": null,
+          "scope_id": "research",
+          "assigned_by": "actor:workspace:2d716378792fe892:justin",
+          "reason": "Issue 48 proof: promote unscoped actor Context into scoped operational work"
+        }
+      }
+    ]
+  },
+  "scopeProjection": {
+    "beforeAssignmentContextIds": [],
+    "afterAssignmentContextIds": [
+      "ctx_eaffda7a-9663-46b1-84f0-9e97f1fe7e9c",
+      "ctx_pulse_7154aaf60c6285ae54aa974ca5a6fc0d"
+    ],
+    "assignedContextVisibleAfter": true
+  },
+  "workspaceHomeSurface": {
+    "retainedUnscopedContextForUi": "ctx_fced1b7d-2bed-4fe2-b939-6e3918281ab8",
+    "unscopedContextsAfterAssignment": [],
+    "workspaceHomeContexts": [
+      {
+        "context_id": "ctx_fced1b7d-2bed-4fe2-b939-6e3918281ab8",
+        "scope_id": null,
+        "participants": [
+          "actor:workspace:2d716378792fe892:floe",
+          "actor:workspace:2d716378792fe892:justin"
+        ],
+        "first_message_preview": "Workspace Home visible unscoped Context"
+      }
+    ],
+    "scopes": [
+      {
+        "scope_id": "research",
+        "title": "Research Field",
+        "is_default": false
+      }
+    ]
+  },
+  "defaultScopeLeakageCheck": {
+    "scopesNamedDefault": [],
+    "eventScopes": [
+      null,
+      "research"
+    ]
+  }
+}
