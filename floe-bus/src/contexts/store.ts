@@ -170,6 +170,11 @@ export class ContextStore implements ContextStoreReader {
     return !!row;
   }
 
+  setContextScope(context_id: string, scope_id: string): ContextRecord | null {
+    this.db.prepare("UPDATE contexts SET scope_id = ? WHERE context_id = ?").run(scope_id, context_id);
+    return this.getContext(context_id);
+  }
+
   getLastEventAt(context_id: string): string | null {
     const row = this.db
       .prepare("SELECT MAX(created_at) AS last FROM events WHERE context_id = ?")

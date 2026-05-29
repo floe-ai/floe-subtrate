@@ -65,6 +65,18 @@ export class ScopeRequiredError extends Error {
   }
 }
 
+export class ContextScopeAssignmentError extends Error {
+  readonly code = "E_CONTEXT_SCOPE_ASSIGNMENT_INVALID" as const;
+  constructor(
+    readonly workspace_id: string,
+    readonly context_id: string,
+    readonly reason: string
+  ) {
+    super(`Context Scope assignment invalid: ${reason}`);
+    this.name = "ContextScopeAssignmentError";
+  }
+}
+
 export class PulseNotFoundError extends Error {
   readonly code = "E_PULSE_NOT_FOUND" as const;
   constructor(readonly pulse_id: string) {
@@ -932,6 +944,67 @@ export class BusStore {
       pulse_subscribers_deleted: pulseSubscribersDeleted
     };
     broadcast("context_deleted", result);
+    return result;
+  }
+
+  assignContextScope(input: {
+    workspace_id: string;
+    context_id: string;
+    scope_id: string;
+    assigned_by?: string | null;
+    reason?: string | null;
+  }, broadcast: Broadcast): {
+    ok: true;
+    context: ContextRecord & { participants: string[] };
+    audit_event: EventEnvelope;
+  } {
+    const result = this.transaction(() => {
+      const context = this.getContextAnchor(input.workspace_id, input.context_id);
+      const scopeId = this.validateScopeId(input.workspace_id, input.scope_id);
+      const participants = this.contextStore.getContextParticipants(input.context_id);
+      if (context.scope_id) {
+        throw new ContextScopeAssignmentError(input.workspace_id, input.context_id, "context_already_scoped");
+      }
+      if (participants.length === 0) {
+        throw new ContextScopeAssignmentError(input.workspace_id, input.context_id, "orphan_context");
+      }
+
+      const updated = this.contextStore.setContextScope(input.context_id, scopeId);
+      if (!updated) throw new ContextNotFoundError(input.workspace_id, input.context_id);
+
+      const auditEvent = this.insertEvent(
+        {
+          type: "context.scope_assigned",
+          workspace_id: input.workspace_id,
+          source_endpoint_id: null,
+          destination: { kind: "context", context_id: input.context_id },
+          thread_id: undefined,
+          correlation_id: null,
+          content: {},
+          metadata: {
+            previous_scope_id: context.scope_id,
+            scope_id: scopeId,
+            ...(input.assigned_by ? { assigned_by: input.assigned_by } : {}),
+            ...(input.reason ? { reason: input.reason } : {})
+          },
+          idempotency_key: null
+        },
+        this.normalizeResponse({ expected: false }),
+        input.context_id
+      );
+
+      return {
+        ok: true as const,
+        context: { ...updated, participants },
+        audit_event: auditEvent
+      };
+    });
+
+    broadcast("context_scope_assigned", {
+      context: result.context,
+      audit_event: result.audit_event
+    });
+    this.broadcastEventSubmission(result.audit_event, broadcast);
     return result;
   }
 
