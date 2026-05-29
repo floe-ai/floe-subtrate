@@ -7,6 +7,7 @@ import { createBusServer } from "./server.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+const SCOPE_ID = "research";
 
 async function makeServer(): Promise<{
   handle: ServerHandle;
@@ -28,6 +29,7 @@ async function makeServer(): Promise<{
     { locator: wsLocator, name: "projection-layout-test" },
     () => {}
   ) as { workspace_id: string };
+  handle.store.createScope({ workspace_id: workspace.workspace_id, scope_id: SCOPE_ID, title: "Research" }, () => {});
   return {
     handle,
     tmp,
@@ -95,27 +97,27 @@ describe("Scope Projection layout HTTP routes", () => {
   });
 
   it("persists Scope Projection layout without creating Field-owned semantic state", async () => {
-    const layout = makeLayout("default");
+    const layout = makeLayout(SCOPE_ID);
     const put = await handle.app.inject({
       method: "PUT",
-      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`,
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`,
       payload: layout
     });
     expect(put.statusCode).toBe(200);
     expect(put.json()).toEqual({ layout });
-    expect(existsSync(join(wsLocator, ".floe", "fields", "default.yaml"))).toBe(false);
+    expect(existsSync(join(wsLocator, ".floe", "fields", `${SCOPE_ID}.yaml`))).toBe(false);
     expect(existsSync(join(wsLocator, ".floe", "blocks"))).toBe(false);
 
     const get = await handle.app.inject({
       method: "GET",
-      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`
     });
     expect(get.statusCode).toBe(200);
     expect(get.json()).toEqual({ layout });
 
     const projection = await handle.app.inject({
       method: "GET",
-      url: `/v1/workspaces/${wsId}/scopes/default/projection`
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection`
     });
     expect(projection.statusCode).toBe(200);
     expect(projection.json().projection.refs.contexts).toEqual([]);
@@ -125,7 +127,7 @@ describe("Scope Projection layout HTTP routes", () => {
   it("returns explicit layout errors for missing sidecars, missing Scopes, invalid renderers, and mismatched ids", async () => {
     const missing = await handle.app.inject({
       method: "GET",
-      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`
     });
     expect(missing.statusCode).toBe(404);
     expect(missing.json()).toEqual({ error: "scope_projection_layout_not_found" });
@@ -140,15 +142,15 @@ describe("Scope Projection layout HTTP routes", () => {
 
     const badRenderer = await handle.app.inject({
       method: "PUT",
-      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/react-flow`,
-      payload: makeLayout("default")
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/react-flow`,
+      payload: makeLayout(SCOPE_ID)
     });
     expect(badRenderer.statusCode).toBe(400);
     expect(badRenderer.json().error).toBe("scope_projection_layout_renderer_invalid");
 
     const mismatch = await handle.app.inject({
       method: "PUT",
-      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`,
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`,
       payload: makeLayout("other")
     });
     expect(mismatch.statusCode).toBe(400);
@@ -172,8 +174,8 @@ describe("Scope Projection layout HTTP routes", () => {
 
     await handle.app.inject({
       method: "PUT",
-      url: `/v1/workspaces/${wsId}/scopes/default/projection/layout/floeweb`,
-      payload: makeLayout("default")
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`,
+      payload: makeLayout(SCOPE_ID)
     });
 
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -182,7 +184,7 @@ describe("Scope Projection layout HTTP routes", () => {
     expect(updated).toBeDefined();
     expect(updated.payload).toEqual({
       workspace_id: wsId,
-      scope_id: "default",
+      scope_id: SCOPE_ID,
       source: "api",
       renderer: "floeweb"
     });

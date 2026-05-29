@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
-export const DEFAULT_SCOPE_ID = "default";
+export const RESERVED_DEFAULT_SCOPE_ID = "default";
 
 export type ScopeRecord = {
   scope_id: string;
@@ -24,6 +24,13 @@ export class ScopeNotFoundError extends Error {
   constructor(readonly workspace_id: string, readonly scope_id: string) {
     super(`Scope '${scope_id}' was not found in workspace '${workspace_id}'.`);
     this.name = "ScopeNotFoundError";
+  }
+}
+
+export class ScopeReservedIdError extends Error {
+  constructor(readonly workspace_id: string, readonly scope_id: string) {
+    super(`Scope id '${scope_id}' is reserved.`);
+    this.name = "ScopeReservedIdError";
   }
 }
 
@@ -56,24 +63,6 @@ export function applyScopeSchema(db: DatabaseSync): void {
 export class ScopeStore {
   constructor(readonly db: DatabaseSync) {}
 
-  ensureDefaultScope(workspaceId: string): ScopeRecord {
-    const timestamp = nowIso();
-    this.db.prepare(`
-      INSERT INTO scopes (
-        workspace_id, scope_id, title, description, is_default, created_at, updated_at
-      )
-      VALUES (?, ?, 'Default', 'Default workspace scope', 1, ?, ?)
-      ON CONFLICT(workspace_id, scope_id) DO UPDATE SET
-        is_default = 1
-    `).run(workspaceId, DEFAULT_SCOPE_ID, timestamp, timestamp);
-    return this.getScope(workspaceId, DEFAULT_SCOPE_ID) as ScopeRecord;
-  }
-
-  ensureDefaultScopesForWorkspaces(): void {
-    const rows = this.db.prepare("SELECT workspace_id FROM workspaces").all() as Array<{ workspace_id: string }>;
-    for (const row of rows) this.ensureDefaultScope(row.workspace_id);
-  }
-
   listScopes(workspaceId: string): ScopeRecord[] {
     const rows = this.db.prepare(`
       SELECT * FROM scopes
@@ -97,6 +86,9 @@ export class ScopeStore {
     description?: string | null;
   }): ScopeRecord {
     const scopeId = input.scope_id ?? `scope_${randomUUID()}`;
+    if (scopeId === RESERVED_DEFAULT_SCOPE_ID) {
+      throw new ScopeReservedIdError(input.workspace_id, scopeId);
+    }
     if (this.getScope(input.workspace_id, scopeId)) {
       throw new ScopeAlreadyExistsError(input.workspace_id, scopeId);
     }

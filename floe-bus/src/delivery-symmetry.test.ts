@@ -320,7 +320,8 @@ describe("Delivery symmetry", () => {
       status: "idle"
     }, noop);
 
-    const envelope = store.ingestWebhook(WS, "route-1", { data: "payload" }, noop);
+    store.createScope({ workspace_id: WS, scope_id: "ops", title: "Ops" }, noop);
+    const envelope = store.ingestWebhook(WS, "route-1", { data: "payload" }, noop, "ops");
     expect(envelope).toBeTruthy();
 
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);

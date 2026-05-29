@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -20,6 +21,49 @@ function makeStore(): { store: BusStore; cleanup: () => void } {
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
   const store = new BusStore(cfgPath, cfg);
   // Register endpoints so destination resolution / delivery works
+  for (const id of [E1, E2, E3]) {
+    store.registerEndpoint({
+      endpoint_id: id,
+      workspace_id: WS,
+      name: id,
+      bridge_id: null,
+      status: "idle"
+    }, noop);
+  }
+  return {
+    store,
+    cleanup: () => {
+      try { store.close(); } catch {}
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  };
+}
+
+function makeStoreWithLegacyEventScopeSchema(): { store: BusStore; cleanup: () => void } {
+  const tmp = mkdtempSync(join(tmpdir(), "floe-bus-ctx-legacy-"));
+  const cfgPath = join(tmp, "config.yaml");
+  const cfg = defaultConfig(tmp);
+  writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
+  const dataDir = join(tmp, "bus");
+  mkdirSync(dataDir, { recursive: true });
+  const db = new DatabaseSync(join(dataDir, "floe-bus.sqlite"));
+  db.exec(`
+    CREATE TABLE events (
+      event_id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      source_endpoint_id TEXT,
+      thread_id TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT 'default',
+      correlation_id TEXT,
+      content_json TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+  db.close();
+  const store = new BusStore(cfgPath, cfg);
   for (const id of [E1, E2, E3]) {
     store.registerEndpoint({
       endpoint_id: id,
@@ -74,6 +118,35 @@ describe("submitEvent context wiring", () => {
     expect(result.event.context_id).toMatch(/^ctx_/);
     const parts = store.contextStore.getContextParticipants(result.event.context_id!).sort();
     expect(parts).toEqual([E1, E2].sort());
+  });
+
+  it("actor emit without scope creates a Workspace-level unscoped Context and Event", () => {
+    const result = store.submitEvent(
+      emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
+      noop
+    );
+
+    const context = store.contextStore.getContext(result.event.context_id!);
+    const [event] = store.listEvents({ workspace_id: WS, context_id: result.event.context_id! });
+
+    expect(context?.scope_id).toBeNull();
+    expect(result.event.scope_id).toBeNull();
+    expect(event.scope_id).toBeNull();
+  });
+
+  it("upgrades legacy Event scope columns before persisting unscoped actor Events", () => {
+    cleanup();
+    const made = makeStoreWithLegacyEventScopeSchema();
+    store = made.store;
+    cleanup = made.cleanup;
+
+    const result = store.submitEvent(
+      emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
+      noop
+    );
+
+    expect(result.event.scope_id).toBeNull();
+    expect(store.listEvents({ workspace_id: WS })[0].scope_id).toBeNull();
   });
 
   it("T3: emit where destination ∈ current delivery context's participants → continues current context", () => {

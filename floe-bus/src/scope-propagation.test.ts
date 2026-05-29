@@ -110,7 +110,7 @@ describe("Context/Event Scope propagation", () => {
     expect(defaultEvents.json().events).toEqual([]);
   });
 
-  it("falls back to the Default Scope when no Scope is supplied", async () => {
+  it("creates an unscoped Workspace-level actor Context when no Scope is supplied", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const source = `actor:${workspaceId}:operator`;
     const target = `actor:${workspaceId}:floe`;
@@ -125,21 +125,28 @@ describe("Context/Event Scope propagation", () => {
         workspace_id: workspaceId,
         source_endpoint_id: source,
         destination: { kind: "endpoint", endpoint_id: target },
-        content: { text: "default hello" },
+        content: { text: "workspace-level hello" },
         response: { expected: false }
       }
     });
 
     expect(emitted.statusCode).toBe(202);
     const event = emitted.json().event;
-    expect(event.scope_id).toBe("default");
+    expect(event.scope_id).toBeNull();
 
     const context = await handle.app.inject({
       method: "GET",
       url: `/v1/contexts/${encodeURIComponent(event.context_id)}`
     });
     expect(context.statusCode).toBe(200);
-    expect(context.json().scope_id).toBe("default");
+    expect(context.json().scope_id).toBeNull();
+
+    const defaultEvents = await handle.app.inject({
+      method: "GET",
+      url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=default`
+    });
+    expect(defaultEvents.statusCode).toBe(200);
+    expect(defaultEvents.json().events).toEqual([]);
   });
 
   it("keeps Context Scope authoritative for later Events in the same Context", async () => {
@@ -196,6 +203,59 @@ describe("Context/Event Scope propagation", () => {
       url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=research`
     });
     expect((researchEvents.json().events as any[]).map((event) => event.content.text)).toEqual(["first", "second"]);
+
+    const opsEvents = await handle.app.inject({
+      method: "GET",
+      url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=ops`
+    });
+    expect(opsEvents.json().events).toEqual([]);
+  });
+
+  it("keeps an unscoped Context authoritative when a later emit supplies Scope", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const source = `actor:${workspaceId}:operator`;
+    const target = `actor:${workspaceId}:floe`;
+    registerEndpoint(handle, workspaceId, source);
+    registerEndpoint(handle, workspaceId, target);
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`,
+      payload: { scope_id: "ops", title: "Ops" }
+    });
+    expect(created.statusCode).toBe(201);
+
+    const first = await handle.app.inject({
+      method: "POST",
+      url: "/v1/events/emit",
+      payload: {
+        type: "message",
+        workspace_id: workspaceId,
+        source_endpoint_id: source,
+        destination: { kind: "endpoint", endpoint_id: target },
+        content: { text: "first" },
+        response: { expected: false }
+      }
+    });
+    expect(first.statusCode).toBe(202);
+    const contextId = first.json().event.context_id;
+
+    const second = await handle.app.inject({
+      method: "POST",
+      url: "/v1/events/emit",
+      payload: {
+        type: "message",
+        workspace_id: workspaceId,
+        source_endpoint_id: source,
+        destination: { kind: "endpoint", endpoint_id: target },
+        context_id: contextId,
+        scope_id: "ops",
+        content: { text: "second" },
+        response: { expected: false }
+      }
+    });
+
+    expect(second.statusCode).toBe(202);
+    expect(second.json().event.scope_id).toBeNull();
 
     const opsEvents = await handle.app.inject({
       method: "GET",

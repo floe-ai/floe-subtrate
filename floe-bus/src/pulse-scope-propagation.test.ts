@@ -152,7 +152,7 @@ describe("Pulse Persistence and Scope propagation", () => {
     expect(pulses.json().pulses).toEqual([]);
   });
 
-  it("derives Pulse scope_id from explicit Scope, active Context, or Default Scope", async () => {
+  it("derives Pulse scope_id from explicit Scope or scoped active Context and rejects missing Scope", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     await createScope(handle, workspaceId, "research");
     await createScope(handle, workspaceId, "ops");
@@ -194,19 +194,44 @@ describe("Pulse Persistence and Scope propagation", () => {
     expect(explicit.statusCode).toBe(201);
     expect(explicit.json().pulse.scope_id).toBe("ops");
 
-    const defaulted = await handle.app.inject({
+    const missingScope = await handle.app.inject({
       method: "POST",
       url: "/v1/pulses",
       payload: {
-        pulse_id: "default-scope",
+        pulse_id: "missing-scope",
         workspace_id: workspaceId,
         persistence: "local",
         trigger: { type: "once", at: new Date(Date.now() + 60_000).toISOString() },
         subscribers: [{ kind: "endpoint", endpoint_ref: "floe" }]
       }
     });
-    expect(defaulted.statusCode).toBe(201);
-    expect(defaulted.json().pulse.scope_id).toBe("default");
+    expect(missingScope.statusCode).toBe(400);
+    expect(missingScope.json()).toMatchObject({
+      ok: false,
+      error: "scope_required",
+      workspace_id: workspaceId,
+      reason: "pulse must be configured with a Scope or scoped current Context"
+    });
+
+    const unscopedContextId = handle.store.contextStore.createContext({
+      workspace_id: workspaceId,
+      created_by_endpoint_id: `actor:${workspaceId}:operator`,
+      participants: [`actor:${workspaceId}:operator`]
+    });
+    const unscopedContext = await handle.app.inject({
+      method: "POST",
+      url: "/v1/pulses",
+      payload: {
+        pulse_id: "unscoped-context",
+        workspace_id: workspaceId,
+        persistence: "local",
+        current_context_id: unscopedContextId,
+        trigger: { type: "once", at: new Date(Date.now() + 60_000).toISOString() },
+        subscribers: [{ kind: "endpoint", endpoint_ref: "floe" }]
+      }
+    });
+    expect(unscopedContext.statusCode).toBe(400);
+    expect(unscopedContext.json().error).toBe("scope_required");
 
     const unknown = await handle.app.inject({
       method: "POST",
@@ -233,6 +258,8 @@ describe("Pulse Persistence and Scope propagation", () => {
       url: `/v1/pulses?workspace_id=${encodeURIComponent(workspaceId)}`
     });
     expect((pulses.json().pulses as any[]).some((pulse) => pulse.pulse_id === "unknown-scope")).toBe(false);
+    expect((pulses.json().pulses as any[]).some((pulse) => pulse.pulse_id === "missing-scope")).toBe(false);
+    expect((pulses.json().pulses as any[]).some((pulse) => pulse.pulse_id === "unscoped-context")).toBe(false);
   });
 
   it("rejects an unknown active Context instead of silently defaulting Pulse scope_id", async () => {
