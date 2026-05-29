@@ -1,11 +1,72 @@
-# ADR-0004: Scope as the substrate organising boundary
+# ADR-0004: Scope as an intentional substrate organising boundary
 
-**Status:** accepted (2026-05-22)
+**Status:** superseded and corrected (2026-05-29)
 
-Floe's earlier Field slice made `.floe/fields/<id>.yaml` own item membership and connections. That proved a useful canvas loop, but it also risked making Field files a second substrate beside actors, contexts, events, pulses, webhooks, extensions, files, tools, and work logs.
+Floe's earlier Field slice made `.floe/fields/<id>.yaml` own item
+membership and connections. That proved a useful canvas loop, but it also
+risked making Field files a second substrate beside actors, contexts, events,
+pulses, webhooks, extensions, files, tools, and work logs.
 
-We now reserve **Scope** for the substrate-level organising boundary inside a Workspace. Scoped primitives declare or derive a `scope_id`; every Workspace has a Default Scope; and FloeWeb renders a Scope as a **Field**. A Field may have renderer-specific layout metadata, but layout and Field files must not determine membership. Relationships shown in a Field are derived from existing substrate relationships, and edits to those relationships must update the primitive that owns them.
+The original version of this ADR correctly moved membership ownership from
+Field files into substrate primitives, but it over-corrected by saying every
+Workspace has a Default Scope and every scoped primitive should fall into that
+Default Scope. That rule is no longer accepted.
 
-The previous Pulse "scope" language is renamed to **Pulse Persistence**: workspace-backed versus local/runtime-backed storage for a Pulse definition. This avoids overloading Scope, which now means only the workspace organising boundary.
+## Corrected decision
 
-Consequences: ADR-0003 is superseded for future implementation direction; `.floe/blocks` remains rejected; Field Item and Field Connection are superseded terms for new work; the next slice must implement Scope/default-scope metadata and propagation in the substrate before more Field/Block parity work continues.
+**Workspace** is the top-level boundary. Actors belong to the Workspace.
+
+**Contexts** are bounded streams. A Context may be anchored by actor
+participants, by Scope, or by both. A Context with neither actor participants
+nor Scope is invalid.
+
+**Scope** is an intentional organising boundary for connected,
+event-driven, or operational work. Scope is not a universal fallback bucket.
+
+**Field** is the FloeWeb representation of a Scope. Field layout may be
+renderer-specific metadata, but Field files, renderer state, and canvas layout
+must not determine substrate membership.
+
+## Required Context anchors
+
+- Actor-participant Contexts may have `scope_id: null`.
+- Actorless Contexts must have a real non-null Scope.
+- Pulse, Webhook, and event-source flows that create or reuse generated
+  operational Contexts must have a real Scope.
+- Events derive Scope from the owning Context or source primitive. Event Scope
+  must not become an independent source of truth that can disagree with Context
+  Scope.
+
+## Default Scope correction
+
+Default Scope is not a product concept and should not be preserved as product
+behaviour.
+
+New code must not create, require, or route through a hidden Default Scope.
+Workspace Home is an index/dashboard over the Workspace, not a Scope and not a
+Field. Unscoped actor Contexts remain discoverable through Workspace, Actor, and
+Context views rather than through a fake Default Field.
+
+The id `default` is reserved for stale compatibility cleanup only. It must not
+be available as a user-created Scope id. Existing records that relied on the old
+Default Scope assumption should be migrated, rejected, or explicitly assigned to
+a real Scope according to the corrected anchor rules; the system does not need
+to preserve legacy Default Scope behaviour.
+
+## Webhook and event-source ownership
+
+Webhook and event-source Scope comes from source or route configuration. A
+request payload must not arbitrarily override Scope ownership. If a future
+feature allows request-selected Scope, it must select from validated configured
+ownership and still preserve the rule that generated actorless operational
+streams are scoped.
+
+## Consequences
+
+ADR-0003 remains superseded for Field ownership direction, and this corrected
+ADR supersedes the Default Scope requirement from the original ADR-0004.
+
+The next substrate work must implement nullable Context Scope for actor-anchored
+Workspace-level Contexts, reject actorless scopeless Contexts, enforce scoped
+Pulse/Webhook/event-source operational flows, and keep Scope Projection limited
+to real scoped substrate records.

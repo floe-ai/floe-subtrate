@@ -3,15 +3,19 @@
 ## Glossary
 
 ### Scope
-A substrate-level organising boundary inside a Workspace.
-_Avoid_: Field, canvas, block, thread, context, pulse scope.
+An intentional substrate organising boundary inside a Workspace for connected, event-driven, or operational work.
+_Avoid_: Field, canvas, block, thread, context, pulse scope, universal fallback bucket.
 
-### Default Scope
-The automatically available Scope for a Workspace; any scoped primitive created without an explicit Scope belongs here.
-_Avoid_: invisible global field, unscoped workspace area.
+### Workspace-level Context
+A Context with actor participants and no Scope. It is valid for direct actor communication, actor side conversations, actor self-notes, and unsorted/general conversation before it is intentionally attached to scoped work.
+_Avoid_: Default Scope, Default Field, orphan stream.
+
+### Scoped Context
+A Context with a non-null `scope_id`. Scope is required for actorless Contexts and for work that creates or joins scoped operational flow unless the operation targets an already-valid explicit unscoped actor Context.
+_Avoid_: fake default scope, field-owned membership.
 
 ### Scoped Primitive
-A substrate primitive that declares a `scope_id` or derives one from its owning primitive.
+A substrate primitive that declares a non-null `scope_id` or derives one from its owning primitive.
 _Avoid_: Field Item, canvas item, block storage.
 
 ### Field
@@ -44,7 +48,7 @@ Where and how a Pulse definition is stored or carried.
 _Avoid_: Pulse Scope.
 
 ### Pulse Definition
-A portable or local declaration of a scheduled Pulse, including its schedule, `pulse.fired` event payload, subscribers, persistence, and Scope where relevant.
+A portable or local declaration of a scheduled Pulse, including its schedule, `pulse.fired` event payload, subscribers, persistence, and Scope or explicit Context anchor where relevant.
 
 ### Pulse Runtime State
 Ephemeral scheduling state (next fire time, last fired, active/paused) stored in bus SQLite. Rebuilt from definitions on workspace attachment. Not portable - local to each bus instance.
@@ -59,7 +63,7 @@ A target that receives the created `pulse.fired` event when the Pulse fires. Sub
 A Pulse Subscriber that appends the `pulse.fired` event to an existing Context for rendering only. It does not create endpoint delivery or activate an Actor.
 
 ### Endpoint Subscriber
-A Pulse Subscriber that delivers the `pulse.fired` event to an Endpoint. If it declares an explicit `context_id`, delivery uses that Context. If it omits `context_id`, the Pulse uses one stable generated delivery Context for that Pulse + Endpoint Subscriber configuration, reused across fires and recreated on a later fire if deleted. Endpoint delivery may activate only if the Endpoint has a processor.
+A Pulse Subscriber that delivers the `pulse.fired` event to an Endpoint. If it declares an explicit `context_id`, delivery uses that Context. If it omits `context_id`, the Pulse requires Scope and uses one stable generated scoped delivery Context for that Pulse + Endpoint Subscriber configuration, reused across fires and recreated on a later fire if deleted. Endpoint delivery may activate only if the Endpoint has a processor.
 
 ### Endpoint
 An addressable participant/interface in the substrate. Humans, agents, webhooks, extensions, schedulers, and future actors are all endpoints. No endpoint type is privileged.
@@ -69,8 +73,8 @@ A workspace-scoped Endpoint participant that may communicate through Events.
 _Avoid_: field-owned object, draggable actor object.
 
 ### Context
-The scoped work/communication boundary in which Events occur.
-_Avoid_: channel, room, field, actor container.
+A bounded stream in which stream entries occur. A Context is anchored by actor participants, a Scope, or both; it is not always a chat conversation.
+_Avoid_: channel, room, field, actor container, orphan stream.
 
 ### Thread
 Legacy or conversational wording for Context. New domain language should use Context.
@@ -85,10 +89,10 @@ The universal substrate publish operation. All Endpoints use emit to create cano
 An Event made available to a specific Endpoint for processing. Context subscribers do not create deliveries.
 
 ### Webhook
-An event source that ingests external input and produces canonical substrate Events.
+An event source that ingests external input and produces canonical substrate Events. Actorless webhook streams must create or use a scoped Context; they must not fall back to a hidden Default Scope.
 
 ### Work Log
-A committed Markdown activity record for human audit. Runtime output and tool activity - NOT communication.
+A committed Markdown activity record for human audit. Runtime output and tool activity - NOT communication. Work logs derive Scope from their delivery/Context when scoped, and carry `scope_id: null` for direct unscoped actor Contexts.
 
 ### Turn
 An Endpoint's processing cycle for delivered Events. Turn end means "this endpoint has finished processing." It is NOT a message.
@@ -124,20 +128,24 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 
 ## Relationships
 
-- A **Workspace** has one **Default Scope** and may have additional **Scopes**
-- A **Scope** organises **Scoped Primitives**; it does not execute work or own a duplicated membership list
+- A **Workspace** is the top-level boundary; it has **Actors**, **Contexts**, and zero or more named **Scopes**
+- **Workspace Home** is an index/dashboard over Workspace state; it is not a **Scope**
+- A **Scope** organises **Scoped Primitives**; it does not execute work, contain Actors, or own a duplicated membership list
 - A **Scope Projection** derives visible primitives and relationships from substrate state; it is not a storage source
 - A **Field** renders one **Scope** for FloeWeb
 - A **Field Layout** belongs to the Field rendering of a **Scope** and must not determine membership
-- A **Context** belongs to one **Scope**
-- **Events** inherit Scope from their **Context** or event source rather than owning separate field membership
+- A **Context** is valid when anchored by actor participants, a **Scope**, or both
+- A **Context** with actor participants may have `scope_id: null`
+- A **Context** without actor participants must have a non-null `scope_id`
+- A **Context** with neither actor participants nor Scope is invalid
+- **Events** derive Scope from their **Context** or source ownership; Event Scope may be null for unscoped actor Contexts and must not become an independent source of truth
 - A **Field** renders a **Context** as the top-level conversation/work node; Events inside that Context are its history and are not separate Field-level blocks
-- A **Pulse** has **Pulse Persistence** and, when scoped, belongs to one **Scope**
+- A **Pulse** has **Pulse Persistence** and must have either a Scope or an explicit valid Context/subscriber anchor
 - A **Pulse** creates a canonical **Event** with type `pulse.fired`
-- A **Context Subscriber** appends `pulse.fired` to a **Context** without creating a **Delivery**
-- An **Endpoint Subscriber** creates a **Delivery** for an **Endpoint** and may activate that endpoint's processor; without explicit `context_id`, it uses a stable generated Context for that Pulse + Endpoint Subscriber rather than creating a new Context per fire
-- A **Webhook** is an event source; webhook Events inherit Scope from webhook configuration when present, otherwise from the Workspace **Default Scope**
-- A **Work Log** derives Scope from its delivery/context when available
+- A **Context Subscriber** appends `pulse.fired` to an explicit **Context** without creating a **Delivery**; the Context may be an unscoped actor Context
+- An **Endpoint Subscriber** creates a **Delivery** for an **Endpoint** and may activate that endpoint's processor; without explicit `context_id`, it requires Pulse Scope and uses one stable generated scoped delivery Context for that Pulse + Endpoint Subscriber rather than creating a new Context per fire
+- A **Webhook** is an event source; actorless webhook Events must create or use a scoped Context, not a hidden Default Scope
+- A **Work Log** derives Scope from its delivery/context when available, and may carry `scope_id: null` for direct unscoped actor Contexts
 - **Actors** are workspace-scoped and are not contained by Fields
 - **Derived Relationships** are rendered from existing substrate state; editing one must update the primitive that owns the relationship
 - An **Extension** provides **Tools**, optional **Pulse** declarations, and optional **Extension Hooks**
@@ -152,6 +160,7 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 
 - "Scope" previously appeared in Pulse APIs and docs to mean workspace-backed versus local/runtime-backed storage. Resolved: use **Pulse Persistence** for storage/lifecycle location, and reserve **Scope** for the workspace organising boundary.
 - The earlier Field model made `.floe/fields/<id>.yaml` own Field Items and Field Connections. Resolved: future work treats **Scope** as the substrate primitive and **Field** as the FloeWeb rendering; field-owned item and connection lists are superseded.
+- Earlier Scope work introduced **Default Scope** as an automatic bucket for every Context. Superseded: Scope is nullable for actor-anchored Contexts, required for actorless/scoped operational Contexts, and must not be used as a product fallback.
 
 ## Deferred Concepts
 
