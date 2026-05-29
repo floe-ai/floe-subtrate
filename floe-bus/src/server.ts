@@ -8,7 +8,7 @@ import YAML from "yaml";
 import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
 import { parseListen, resolveLocalPath } from "./config.js";
-import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
+import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadScopeProjectionLayout,
@@ -727,6 +727,57 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       return reply.code(404).send({ error: "context_not_found", context_id: params.id });
     }
     return { events: store.listEvents({ context_id: params.id, limit: query.limit }) };
+  });
+
+  app.post("/v1/workspaces/:workspace_id/contexts/:context_id/assign-scope", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string().min(1),
+      context_id: z.string().min(1)
+    }).parse(request.params);
+    const body = z.object({
+      scope_id: z.string().min(1),
+      assigned_by: z.string().min(1).nullable().optional(),
+      reason: z.string().min(1).nullable().optional()
+    }).parse(request.body);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ ok: false, error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    try {
+      return store.assignContextScope({
+        workspace_id: params.workspace_id,
+        context_id: params.context_id,
+        scope_id: body.scope_id,
+        assigned_by: body.assigned_by ?? null,
+        reason: body.reason ?? null
+      }, broadcast);
+    } catch (err) {
+      if (err instanceof ScopeNotFoundError) {
+        return reply.code(404).send({
+          ok: false,
+          error: "scope_not_found",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id
+        });
+      }
+      if (err instanceof ContextNotFoundError) {
+        return reply.code(404).send({
+          ok: false,
+          error: "context_not_found",
+          workspace_id: err.workspace_id,
+          context_id: err.context_id
+        });
+      }
+      if (err instanceof ContextScopeAssignmentError) {
+        return reply.code(409).send({
+          ok: false,
+          error: "context_scope_assignment_invalid",
+          workspace_id: err.workspace_id,
+          context_id: err.context_id,
+          reason: err.reason
+        });
+      }
+      throw err;
+    }
   });
 
   app.delete("/v1/contexts/:id", async (request, reply) => {
