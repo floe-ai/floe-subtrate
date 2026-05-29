@@ -64,7 +64,7 @@ async function emitMessage(handle: ServerHandle, input: {
   workspaceId: string;
   source: string;
   target: string;
-  scopeId: string;
+  scopeId?: string | null;
   text: string;
   contextId?: string;
 }): Promise<any> {
@@ -77,7 +77,7 @@ async function emitMessage(handle: ServerHandle, input: {
       source_endpoint_id: input.source,
       destination: { kind: "endpoint", endpoint_id: input.target },
       ...(input.contextId ? { context_id: input.contextId } : {}),
-      scope_id: input.scopeId,
+      ...(input.scopeId !== undefined ? { scope_id: input.scopeId } : {}),
       content: { text: input.text },
       response: { expected: false }
     }
@@ -376,6 +376,58 @@ describe("Scope Projection API", () => {
     ]);
     expect(projection.refs.events).toEqual([]);
     expect(projection.relationships.event_context_ownership).toEqual([]);
+  });
+
+  it("keeps Workspace-level actor Contexts discoverable without projecting them into a Scope", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const operator = `actor:${workspaceId}:operator`;
+    const floe = `actor:${workspaceId}:floe`;
+    registerEndpoint(handle, workspaceId, operator);
+    registerEndpoint(handle, workspaceId, floe);
+    await createScope(handle, workspaceId, "research");
+
+    const unscopedEvent = await emitMessage(handle, {
+      workspaceId,
+      source: operator,
+      target: floe,
+      text: "workspace-level conversation"
+    });
+    const scopedEvent = await emitMessage(handle, {
+      workspaceId,
+      source: operator,
+      target: floe,
+      scopeId: "research",
+      text: "scoped work"
+    });
+
+    const contextsRes = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/contexts?scope=unscoped`
+    });
+    const projectionRes = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/research/projection`
+    });
+
+    expect(contextsRes.statusCode).toBe(200);
+    expect(contextsRes.json().contexts).toEqual([
+      expect.objectContaining({
+        context_id: unscopedEvent.context_id,
+        scope_id: null,
+        first_message_preview: "workspace-level conversation"
+      })
+    ]);
+    expect(projectionRes.statusCode).toBe(200);
+    expect(projectionRes.json().projection.refs.contexts).toEqual([
+      expect.objectContaining({
+        context_id: scopedEvent.context_id,
+        scope_id: "research",
+        first_message_preview: "scoped work"
+      })
+    ]);
+    expect(projectionRes.body).not.toContain(unscopedEvent.context_id);
+    expect(projectionRes.body).not.toContain("Default Scope");
+    expect(projectionRes.body).not.toContain("Default Field");
   });
 
   it("does not project Context-owned runtime telemetry as Field Activity", async () => {

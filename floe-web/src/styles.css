@@ -710,13 +710,15 @@ code {
   line-height: 1.45;
 }
 
-.field-list {
+.field-list,
+.workspace-context-list {
   display: grid;
   gap: 8px;
   padding: 12px;
 }
 
-.field-block {
+.field-block,
+.workspace-context-block {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) 18px;
   align-items: center;
@@ -725,7 +727,8 @@ code {
   text-align: left;
 }
 
-.field-block.selected {
+.field-block.selected,
+.workspace-context-block.selected {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
@@ -742,6 +745,7 @@ code {
 }
 
 .field-block strong,
+.workspace-context-block strong,
 .library-card strong {
   display: block;
   color: var(--text);
@@ -749,6 +753,7 @@ code {
 }
 
 .field-block small,
+.workspace-context-block small,
 .library-card span {
   display: block;
   margin-top: 3px;

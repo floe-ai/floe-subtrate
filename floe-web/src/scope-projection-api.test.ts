@@ -24,19 +24,19 @@ describe("Scope Projection API client", () => {
         return new Response(JSON.stringify({
           scopes: [{
             workspace_id: "workspace:test",
-            scope_id: "default",
-            title: "Default Scope",
+            scope_id: "research",
+            title: "Research",
             description: null,
             created_at: "2026-05-24T00:00:00.000Z",
             updated_at: "2026-05-24T00:00:00.000Z"
           }]
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
-      if (url.endsWith("/v1/workspaces/workspace%3Atest/scopes/default/projection")) {
+      if (url.endsWith("/v1/workspaces/workspace%3Atest/scopes/research/projection")) {
         return new Response(JSON.stringify({
           projection: {
             workspace_id: "workspace:test",
-            scope_id: "default",
+            scope_id: "research",
             generated_at: "2026-05-24T00:00:00.000Z",
             refs: { contexts: [], pulses: [], events: [], activity: [] },
             relationships: {
@@ -52,14 +52,14 @@ describe("Scope Projection API client", () => {
     }));
 
     const scopes = await listScopes("http://bus.local/", "workspace:test");
-    const projection = await getScopeProjection("http://bus.local/", "workspace:test", "default");
+    const projection = await getScopeProjection("http://bus.local/", "workspace:test", "research");
 
     expect(scopes).toHaveLength(1);
-    expect(scopes[0].title).toBe("Default Scope");
-    expect(projection.scope_id).toBe("default");
+    expect(scopes[0].title).toBe("Research");
+    expect(projection.scope_id).toBe("research");
     expect(requested).toEqual([
       "http://bus.local/v1/workspaces/workspace%3Atest/scopes",
-      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/default/projection"
+      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/research/projection"
     ]);
     expect(requested.some((url) => url.includes("/fields"))).toBe(false);
   });
@@ -116,7 +116,7 @@ describe("Scope Projection API client", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       calls.push(url);
-      if (url.endsWith("/v1/workspaces/workspace%3Atest/scopes/default/projection/layout/floeweb")) {
+      if (url.endsWith("/v1/workspaces/workspace%3Atest/scopes/research/projection/layout/floeweb")) {
         if (init?.method === "PUT") {
           return new Response(JSON.stringify({
             layout: JSON.parse(String(init.body))
@@ -125,7 +125,7 @@ describe("Scope Projection API client", () => {
         return new Response(JSON.stringify({
           layout: {
             schema: "floe.field.layout.floeweb.v1",
-            field_id: "default",
+            field_id: "research",
             viewport: { x: 10, y: 20, zoom: 1.1 },
             items: {
               "context:ctx_research": { x: 100, y: 200 },
@@ -140,16 +140,16 @@ describe("Scope Projection API client", () => {
       return new Response("not found", { status: 404 });
     }));
 
-    const layout = await getScopeProjectionLayout("http://bus.local", "workspace:test", "default");
-    const saved = await putScopeProjectionLayout("http://bus.local", "workspace:test", "default", layout!);
+    const layout = await getScopeProjectionLayout("http://bus.local", "workspace:test", "research");
+    const saved = await putScopeProjectionLayout("http://bus.local", "workspace:test", "research", layout!);
     const missing = await getScopeProjectionLayout("http://bus.local", "workspace:test", "missing");
 
     expect(layout?.items["context:ctx_research"]).toEqual({ x: 100, y: 200 });
     expect(saved).toEqual(layout);
     expect(missing).toBeNull();
     expect(calls).toEqual([
-      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/default/projection/layout/floeweb",
-      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/default/projection/layout/floeweb",
+      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/research/projection/layout/floeweb",
+      "http://bus.local/v1/workspaces/workspace%3Atest/scopes/research/projection/layout/floeweb",
       "http://bus.local/v1/workspaces/workspace%3Atest/scopes/missing/projection/layout/floeweb"
     ]);
     expect(calls.some((url) => url.includes("/fields"))).toBe(false);
@@ -160,7 +160,7 @@ describe("Scope Projection API client", () => {
       type: "scope_projection.layout.upserted",
       payload: {
         workspace_id: "workspace:test",
-        scope_id: "default",
+        scope_id: "research",
         source: "api",
         renderer: "floeweb"
       },
@@ -169,7 +169,7 @@ describe("Scope Projection API client", () => {
       type: "scope_projection.layout.upserted",
       payload: {
         workspace_id: "workspace:test",
-        scope_id: "default",
+        scope_id: "research",
         source: "api",
         renderer: "floeweb"
       },
@@ -177,7 +177,7 @@ describe("Scope Projection API client", () => {
     });
     expect(parseScopeProjectionStreamMessage(JSON.stringify({
       type: "field.upserted",
-      payload: { workspace_id: "workspace:test", field_id: "default", changed: "semantic" }
+      payload: { workspace_id: "workspace:test", field_id: "legacy-field", changed: "semantic" }
     }))).toBeNull();
   });
 });

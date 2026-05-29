@@ -40,7 +40,7 @@ describe("parseFieldRef", () => {
 describe("renderer layout helpers", () => {
   it("serializes React Flow node positions into renderer-only layout", () => {
     const layout = reactFlowToLayout(
-      "default",
+      "research",
       [
         {
           id: "context:ctx_1",
@@ -60,7 +60,7 @@ describe("renderer layout helpers", () => {
 
     expect(layout).toEqual({
       schema: "floe.field.layout.floeweb.v1",
-      field_id: "default",
+      field_id: "research",
       viewport: { x: -25, y: 10, zoom: 0.75 },
       items: {
         "context:ctx_1": { x: 100, y: 200, width: 180, height: 90 },
@@ -72,7 +72,7 @@ describe("renderer layout helpers", () => {
   it("applies only position and dimension changes to layout", () => {
     const prev: FieldLayoutFloeweb = {
       schema: "floe.field.layout.floeweb.v1",
-      field_id: "default",
+      field_id: "research",
       viewport: { x: 0, y: 0, zoom: 1 },
       items: {
         "context:ctx_1": { x: 1, y: 2 },
@@ -97,7 +97,7 @@ describe("renderer layout helpers", () => {
   it("returns the original layout object when no renderer layout change occurred", () => {
     const prev: FieldLayoutFloeweb = {
       schema: "floe.field.layout.floeweb.v1",
-      field_id: "default",
+      field_id: "research",
       viewport: { x: 0, y: 0, zoom: 1 },
       items: {}
     };

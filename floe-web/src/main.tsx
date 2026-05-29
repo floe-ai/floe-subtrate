@@ -51,6 +51,8 @@ import {
   buildEmitBody,
   contextLabel,
   sortContextsForAgent,
+  sortWorkspaceContexts,
+  workspaceContextLabel,
   type ContextEvent,
   type ContextSummary
 } from "./contexts";
@@ -371,6 +373,7 @@ function App() {
   const [channelMessage, setChannelMessage] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [contexts, setContexts] = useState<ContextSummary[]>([]);
+  const [workspaceContexts, setWorkspaceContexts] = useState<ContextSummary[]>([]);
   const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
   const [contextEventsState, setContextEventsState] = useState<{ contextId: string | null; events: ContextEvent[] }>({
     contextId: null,
@@ -411,9 +414,15 @@ function App() {
     }
     return sortContextsForAgent(contexts, humanEndpoint, selectedAgent.endpoint_id);
   }, [contexts, selectedAgent, humanEndpoint]);
+  const recentWorkspaceContexts = useMemo(
+    () => sortWorkspaceContexts(workspaceContexts).slice(0, 6),
+    [workspaceContexts]
+  );
 
   const selectedContext = selectedContextId
-    ? contexts.find((c) => c.context_id === selectedContextId) ?? null
+    ? contexts.find((c) => c.context_id === selectedContextId) ??
+      workspaceContexts.find((c) => c.context_id === selectedContextId) ??
+      null
     : null;
   const contextEvents = contextEventsState.contextId === selectedContextId ? contextEventsState.events : [];
   const selectedFieldSummary = view.kind === "field"
@@ -670,6 +679,18 @@ function App() {
     }
   }, [busUrl]);
 
+  const refreshWorkspaceContexts = useCallback(async (workspaceId: string) => {
+    try {
+      const result = await api<{ contexts: ContextSummary[] }>(
+        busUrl,
+        `/v1/workspaces/${encodeURIComponent(workspaceId)}/contexts?scope=unscoped&limit=6`
+      );
+      setWorkspaceContexts(result.contexts);
+    } catch {
+      setWorkspaceContexts([]);
+    }
+  }, [busUrl]);
+
   const refreshContextEvents = useCallback(async (contextId: string) => {
     const requestId = ++contextEventsRequestRef.current;
     try {
@@ -696,6 +717,22 @@ function App() {
     setChannelOpen(true);
     void refreshContextEvents(contextId);
   }, [refreshContextEvents]);
+
+  const openWorkspaceContext = useCallback((context: ContextSummary) => {
+    const selectedParticipates = selectedAgent
+      ? context.participants.includes(selectedAgent.endpoint_id)
+      : false;
+    const fallbackActor = context.participants.find((participant) =>
+      participant !== selfActorId && endpoints.some((endpoint) => endpoint.endpoint_id === participant)
+    );
+    if (!selectedParticipates && fallbackActor) {
+      setSelectedAgentId(fallbackActor);
+    }
+    setSelectedContextId(context.context_id);
+    setDraftMode(false);
+    setChannelOpen(true);
+    void refreshContextEvents(context.context_id);
+  }, [endpoints, refreshContextEvents, selectedAgent, selfActorId]);
 
   const { nodes: fieldNodes, edges: fieldEdges } = useMemo(() => {
     if (loadedProjection) {
@@ -909,6 +946,14 @@ function App() {
     void refreshContexts(selectedWorkspace.workspace_id);
   }, [selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, refreshContexts]);
 
+  useEffect(() => {
+    if (!selectedWorkspace) {
+      setWorkspaceContexts([]);
+      return;
+    }
+    void refreshWorkspaceContexts(selectedWorkspace.workspace_id);
+  }, [selectedWorkspace?.workspace_id, refreshWorkspaceContexts]);
+
   // Auto-select default-or-most-recent context once contexts load (unless drafting).
   useEffect(() => {
     if (draftMode) return;
@@ -920,11 +965,14 @@ function App() {
   // Drop selection if it disappears (workspace switch, etc.)
   useEffect(() => {
     if (!selectedContextId) return;
-    if (!contexts.some((c) => c.context_id === selectedContextId)) {
+    if (
+      !contexts.some((c) => c.context_id === selectedContextId) &&
+      !workspaceContexts.some((c) => c.context_id === selectedContextId)
+    ) {
       setSelectedContextId(null);
       clearContextEvents();
     }
-  }, [contexts, selectedContextId]);
+  }, [contexts, workspaceContexts, selectedContextId]);
 
   useEffect(() => {
     if (!selectedContextId) {
@@ -939,8 +987,9 @@ function App() {
   useEffect(() => {
     if (!selectedWorkspace || !floeAgent) return;
     void refreshContexts(selectedWorkspace.workspace_id);
+    void refreshWorkspaceContexts(selectedWorkspace.workspace_id);
     if (selectedContextId) void refreshContextEvents(selectedContextId);
-  }, [events.length, selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, selectedContextId, refreshContexts, refreshContextEvents]);
+  }, [events.length, selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, selectedContextId, refreshContexts, refreshWorkspaceContexts, refreshContextEvents]);
 
   // Pulse-only label fallback: peek the first event of contexts that have no
   // first_message_preview so we can render "Pulse: <name>" labels.
@@ -1801,6 +1850,44 @@ function App() {
               </div>
             )}
           </section>
+          <section className="field-list-pane workspace-context-pane">
+            <div className="section-title-row">
+              <div>
+                <h3>Workspace-level Contexts</h3>
+                <p>Actor-anchored streams that are not assigned to a Scope.</p>
+              </div>
+              <span>{recentWorkspaceContexts.length}</span>
+            </div>
+            {recentWorkspaceContexts.length === 0 ? (
+              <div className="quiet-empty">
+                <MessageSquare size={22} />
+                <strong>No Workspace-level Contexts yet</strong>
+                <span>Direct actor conversations will appear here without assigning them to a Scope.</span>
+              </div>
+            ) : (
+              <div className="workspace-context-list">
+                {recentWorkspaceContexts.map((context) => {
+                  const label = workspaceContextLabel(context);
+                  const activityTime = context.last_event_at ?? context.created_at;
+                  return (
+                    <button
+                      key={context.context_id}
+                      type="button"
+                      className="workspace-context-block"
+                      onClick={() => openWorkspaceContext(context)}
+                    >
+                      <span className="field-icon"><MessageSquare size={16} /></span>
+                      <span>
+                        <strong>{label}</strong>
+                        <small>{formatContextTimestamp(activityTime)} · Workspace-level Context</small>
+                      </span>
+                      <ChevronRight size={16} />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         </div>
       </section>
     );
@@ -2570,7 +2657,7 @@ function projectionScopeFallback(projection: ScopeProjection): ScopeRecord {
     scope_id: projection.scope_id,
     title: projection.scope_id,
     description: null,
-    is_default: projection.scope_id === "default",
+    is_default: false,
     created_at: projection.generated_at,
     updated_at: projection.generated_at
   };

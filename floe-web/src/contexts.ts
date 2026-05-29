@@ -7,6 +7,7 @@
 export type ContextSummary = {
   context_id: string;
   workspace_id: string;
+  scope_id: string | null;
   parent_context_id: string | null;
   created_by_endpoint_id: string | null;
   created_at: string;
@@ -82,6 +83,20 @@ export function sortContextsForAgent(
     return bt.localeCompare(at);
   });
   return { sorted: byActivity, defaultContextId };
+}
+
+export function sortWorkspaceContexts(contexts: ContextSummary[]): ContextSummary[] {
+  return [...contexts].sort((a, b) => {
+    const at = a.last_event_at ?? a.created_at;
+    const bt = b.last_event_at ?? b.created_at;
+    return bt.localeCompare(at);
+  });
+}
+
+export function workspaceContextLabel(ctx: ContextSummary): string {
+  const preview = ctx.first_message_preview?.trim();
+  if (preview) return preview;
+  return ctx.scope_id ? "Scoped Context" : "Workspace-level Context";
 }
 
 export type EmitBody = {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   contextLabel,
   sortContextsForAgent,
+  sortWorkspaceContexts,
+  workspaceContextLabel,
   findDefaultContextId,
   buildEmitBody,
   type ContextSummary,
@@ -19,6 +21,7 @@ function makeCtx(overrides: Partial<ContextSummary>): ContextSummary {
     workspace_id: WS,
     parent_context_id: null,
     created_by_endpoint_id: OP,
+    scope_id: null,
     created_at: "2024-06-01T10:00:00.000Z",
     last_event_at: "2024-06-01T10:00:00.000Z",
     participants: [OP, FLOE],
@@ -155,6 +158,33 @@ describe("sortContextsForAgent", () => {
     ];
     const result = sortContextsForAgent(ctxs, OP, FLOE);
     expect(result.sorted.map((c) => c.context_id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("Workspace Context helpers", () => {
+  it("orders Workspace Contexts by recent activity", () => {
+    const contexts = [
+      makeCtx({ context_id: "older", last_event_at: "2024-06-01T00:00:00.000Z" }),
+      makeCtx({ context_id: "created", last_event_at: null, created_at: "2024-06-03T00:00:00.000Z" }),
+      makeCtx({ context_id: "newer", last_event_at: "2024-06-04T00:00:00.000Z" })
+    ];
+
+    expect(sortWorkspaceContexts(contexts).map((ctx) => ctx.context_id)).toEqual(["newer", "created", "older"]);
+  });
+
+  it("labels unscoped actor Contexts without inventing Default Scope terminology", () => {
+    expect(workspaceContextLabel(makeCtx({
+      first_message_preview: "operator side note",
+      scope_id: null
+    }))).toBe("operator side note");
+    expect(workspaceContextLabel(makeCtx({
+      first_message_preview: " ",
+      scope_id: null
+    }))).toBe("Workspace-level Context");
+    expect(workspaceContextLabel(makeCtx({
+      first_message_preview: "",
+      scope_id: "research"
+    }))).toBe("Scoped Context");
   });
 });
 
