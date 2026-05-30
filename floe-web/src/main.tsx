@@ -49,13 +49,16 @@ import {
 import "./styles.css";
 import {
   buildEmitBody,
+  canAssignContextToScope,
   contextLabel,
+  contextScopeAssignmentStatus,
   sortContextsForAgent,
   sortWorkspaceContexts,
   workspaceContextLabel,
   type ContextEvent,
   type ContextSummary
 } from "./contexts";
+import { assignContextToScope } from "./context-assignment-api";
 import {
   applyNodeChangesToLayout,
   reactFlowToLayout,
@@ -375,6 +378,7 @@ function App() {
   const [contexts, setContexts] = useState<ContextSummary[]>([]);
   const [workspaceContexts, setWorkspaceContexts] = useState<ContextSummary[]>([]);
   const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
+  const [contextAssignmentTargets, setContextAssignmentTargets] = useState<Record<string, string>>({});
   const [contextEventsState, setContextEventsState] = useState<{ contextId: string | null; events: ContextEvent[] }>({
     contextId: null,
     events: []
@@ -733,6 +737,33 @@ function App() {
     setChannelOpen(true);
     void refreshContextEvents(context.context_id);
   }, [endpoints, refreshContextEvents, selectedAgent, selfActorId]);
+
+  async function assignWorkspaceContextToScope(context: ContextSummary, scopeId: string): Promise<void> {
+    if (!canAssignContextToScope(context)) {
+      setError(contextScopeAssignmentStatus(context));
+      return;
+    }
+    if (!scopeId) {
+      setError("Choose a named Scope before assigning this Workspace-level Context.");
+      return;
+    }
+    try {
+      setError(null);
+      await assignContextToScope(busUrl, context.workspace_id, context.context_id, {
+        scopeId,
+        actorId: selfActorId || null
+      });
+      await Promise.all([
+        refreshContexts(context.workspace_id),
+        refreshWorkspaceContexts(context.workspace_id),
+        refreshOpenField(context.workspace_id, scopeId)
+      ]);
+      setSelectedContextId(context.context_id);
+      openField(scopeId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to assign Context to Scope");
+    }
+  }
 
   const { nodes: fieldNodes, edges: fieldEdges } = useMemo(() => {
     if (loadedProjection) {
@@ -1869,20 +1900,54 @@ function App() {
                 {recentWorkspaceContexts.map((context) => {
                   const label = workspaceContextLabel(context);
                   const activityTime = context.last_event_at ?? context.created_at;
+                  const canAssign = canAssignContextToScope(context);
+                  const selectedTargetScope = contextAssignmentTargets[context.context_id] ?? "";
                   return (
-                    <button
+                    <article
                       key={context.context_id}
-                      type="button"
                       className="workspace-context-block"
-                      onClick={() => openWorkspaceContext(context)}
                     >
                       <span className="field-icon"><MessageSquare size={16} /></span>
                       <span>
                         <strong>{label}</strong>
-                        <small>{formatContextTimestamp(activityTime)} · Workspace-level Context</small>
+                        <small>{formatContextTimestamp(activityTime)} · {contextScopeAssignmentStatus(context)}</small>
                       </span>
-                      <ChevronRight size={16} />
-                    </button>
+                      <span className="workspace-context-actions">
+                        <button
+                          type="button"
+                          className="ghost-action compact"
+                          onClick={() => openWorkspaceContext(context)}
+                        >
+                          Open
+                        </button>
+                        {canAssign && (
+                          <>
+                            <select
+                              aria-label={`Scope for ${label}`}
+                              value={selectedTargetScope}
+                              onChange={(event) => setContextAssignmentTargets((current) => ({
+                                ...current,
+                                [context.context_id]: event.target.value
+                              }))}
+                              disabled={scopeRecords.length === 0}
+                            >
+                              <option value="">{scopeRecords.length === 0 ? "No named Scopes" : "Choose Scope"}</option>
+                              {scopeRecords.map((scope) => (
+                                <option key={scope.scope_id} value={scope.scope_id}>{scope.title}</option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="primary-action compact"
+                              onClick={() => void assignWorkspaceContextToScope(context, selectedTargetScope)}
+                              disabled={!selectedTargetScope}
+                            >
+                              Assign to Scope
+                            </button>
+                          </>
+                        )}
+                      </span>
+                    </article>
                   );
                 })}
               </div>

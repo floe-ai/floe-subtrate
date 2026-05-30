@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  canAssignContextToScope,
   contextLabel,
+  contextScopeAssignmentStatus,
   sortContextsForAgent,
   sortWorkspaceContexts,
   workspaceContextLabel,
@@ -185,6 +187,26 @@ describe("Workspace Context helpers", () => {
       first_message_preview: "",
       scope_id: "research"
     }))).toBe("Scoped Context");
+  });
+
+  it("only offers Scope assignment for unscoped actor Contexts", () => {
+    expect(canAssignContextToScope(makeCtx({
+      scope_id: null,
+      participants: [OP, FLOE]
+    }))).toBe(true);
+    expect(contextScopeAssignmentStatus(makeCtx({
+      scope_id: null,
+      participants: [OP, FLOE]
+    }))).toBe("Not assigned to a Scope");
+
+    expect(canAssignContextToScope(makeCtx({
+      scope_id: "research",
+      participants: [OP, FLOE]
+    }))).toBe(false);
+    expect(canAssignContextToScope(makeCtx({
+      scope_id: null,
+      participants: []
+    }))).toBe(false);
   });
 });
 

@@ -99,6 +99,16 @@ export function workspaceContextLabel(ctx: ContextSummary): string {
   return ctx.scope_id ? "Scoped Context" : "Workspace-level Context";
 }
 
+export function canAssignContextToScope(ctx: ContextSummary): boolean {
+  return !ctx.scope_id && ctx.participants.length > 0;
+}
+
+export function contextScopeAssignmentStatus(ctx: ContextSummary): string {
+  if (ctx.scope_id) return "Already assigned to a Scope";
+  if (ctx.participants.length === 0) return "Operational Context requires a Scope";
+  return "Not assigned to a Scope";
+}
+
 export type EmitBody = {
   type: "message";
   workspace_id: string;

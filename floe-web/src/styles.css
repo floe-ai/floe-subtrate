@@ -719,12 +719,34 @@ code {
 
 .field-block,
 .workspace-context-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  color: var(--text);
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 18px;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: 10px;
   text-align: left;
+}
+
+.workspace-context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.workspace-context-actions select {
+  max-width: 12rem;
+}
+
+.primary-action.compact,
+.ghost-action.compact {
+  min-height: 30px;
+  padding: 6px 9px;
+  font-size: 12px;
 }
 
 .field-block.selected,

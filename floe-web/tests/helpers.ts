@@ -8,7 +8,7 @@ export type FieldLayoutFloeweb = {
   field_id: string;
   viewport: { x: number; y: number; zoom: number };
   items: Record<string, { x: number; y: number; width?: number; height?: number }>;
-};
+  };
 
 export type ScopeRecord = {
   scope_id: string;
@@ -67,13 +67,25 @@ export type ScopeProjection = {
       event_id: string | null;
       created_at: string;
     }>;
-  };
+    };
   relationships: {
     context_participants: Array<{ context_id: string; endpoint_id: string }>;
     pulse_subscribers: Array<{ pulse_id: string; subscriber: { kind?: string; context_id?: string | null; endpoint_ref?: string } }>;
     event_context_ownership: Array<{ event_id: string; context_id: string }>;
   };
   unsupported: Array<{ kind: string; reason: string }>;
+};
+
+export type WorkspaceContextRecord = {
+  context_id: string;
+  workspace_id: string;
+  scope_id: string | null;
+  parent_context_id: string | null;
+  created_by_endpoint_id: string | null;
+  created_at: string;
+  last_event_at: string | null;
+  participants: string[];
+  first_message_preview: string | null;
 };
 
 async function installBaselineRoutes(page: Page): Promise<void> {
@@ -175,12 +187,15 @@ export async function seedAppWithScopes(
     layoutPuts?: string[];
     pulseSubscribes?: string[];
     pulseUnsubscribes?: string[];
+    workspaceContexts?: WorkspaceContextRecord[];
+    contextAssignments?: string[];
   } = {}
 ): Promise<void> {
   await installBaselineRoutes(page);
 
   const scopeStore = new Map(scopes.map((scope) => [scope.scope_id, scope]));
   const projectionStore = new Map(Object.entries(projections));
+  const workspaceContextStore = new Map((options.workspaceContexts ?? []).map((context) => [context.context_id, context]));
   const layoutStore = new Map<string, FieldLayoutFloeweb>();
   let generatedScopeCounter = 1;
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, async (route) => {
@@ -365,6 +380,69 @@ export async function seedAppWithScopes(
       contentType: "application/json",
       body: JSON.stringify({ scope })
     });
+  });
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/contexts**`, async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path.endsWith("/assign-scope") && route.request().method() === "POST") {
+      options.contextAssignments?.push(route.request().postData() ?? "");
+      const contextId = decodeURIComponent(path.split("/").at(-2) ?? "");
+      const body = JSON.parse(route.request().postData() ?? "{}") as { scope_id?: string; assigned_by?: string | null };
+      const context = workspaceContextStore.get(contextId);
+      const scopeId = body.scope_id ?? "";
+      const scope = scopeStore.get(scopeId);
+      if (!context) {
+        return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "context_not_found" }) });
+      }
+      if (!scope) {
+        return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "scope_not_found" }) });
+      }
+      const assigned = { ...context, scope_id: scopeId };
+      workspaceContextStore.set(contextId, assigned);
+      const currentProjection = projectionStore.get(scopeId) ?? emptyScopeProjection(scopeId);
+      projectionStore.set(scopeId, {
+        ...currentProjection,
+        refs: {
+          ...currentProjection.refs,
+          contexts: [...currentProjection.refs.contexts, {
+            context_id: assigned.context_id,
+            workspace_id: assigned.workspace_id,
+            scope_id: scopeId,
+            parent_context_id: assigned.parent_context_id,
+            created_by_endpoint_id: assigned.created_by_endpoint_id ?? "",
+            created_at: assigned.created_at,
+            last_event_at: assigned.last_event_at,
+            first_message_preview: assigned.first_message_preview
+          }]
+        },
+        relationships: {
+          ...currentProjection.relationships,
+          context_participants: [
+            ...currentProjection.relationships.context_participants,
+            ...assigned.participants.map((endpoint_id) => ({ context_id: assigned.context_id, endpoint_id }))
+          ]
+        }
+      });
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, context: assigned, audit_event: { event_id: "evt_assignment" } })
+      });
+    }
+    if (route.request().method() === "GET") {
+      const scopeFilter = url.searchParams.get("scope") ?? "all";
+      const contexts = Array.from(workspaceContextStore.values()).filter((context) => {
+        if (scopeFilter === "unscoped") return context.scope_id === null;
+        if (scopeFilter === "scoped") return context.scope_id !== null;
+        return true;
+      });
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ contexts })
+      });
+    }
+    return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
   });
   await page.route("**/v1/contexts/*/events**", (route) =>
     route.fulfill({
