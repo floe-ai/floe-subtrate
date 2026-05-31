@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "issue": 53,
+  "workspace_id": "workspace:28b8cadb9ac263ba",
+  "workspace_home_is_index": true,
+  "workspace_home_visible": true,
+  "context_id": "ctx_2de8c1e0-8745-4ab9-b45d-5fd6b7f7e414",
+  "context_was_initially_unscoped": true,
+  "scope_id": "scope_8d45474c-28fe-4322-9d61-ec2facad5df0",
+  "scope_title": "Issue 53 Acceptance Scope",
+  "unscoped_context_remaining": false,
+  "projection_contains_context": true,
+  "assignment_audit_event_seen": true,
+  "default_language_visible_before_assignment": 0,
+  "default_language_visible_after_assignment": 0,
+  "default_language_in_bus_data": false,
+  "relevant_http_errors": [],
+  "ignored_optional_layout_404_count": 6,
+  "ignored_console_404_count": 6,
+  "console_errors": [],
+  "screenshot": "C:\\Development\\ai-powered\\floe\\docs\\evidence\\issue-53-workspace-home-assignment-acceptance\\workspace-home-assignment-acceptance.png"
+}
