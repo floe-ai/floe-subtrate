@@ -459,6 +459,7 @@ function App() {
   const selectedScopeRecord = view.kind === "field"
     ? scopeRecords.find((scope) => scope.scope_id === view.fieldId) ?? null
     : null;
+  const inspectorActor = view.kind === "home" && selectedAgentId ? selectedAgent : null;
   const rootFieldSummaries = useMemo(() => fieldSummaries, [fieldSummaries]);
   const homeFieldSummaries = showAllFields ? fieldSummaries : rootFieldSummaries;
   const nestedFieldCount = fieldSummaries.length - rootFieldSummaries.length;
@@ -775,6 +776,13 @@ function App() {
     void refreshContextEvents(context.context_id);
   }, [endpoints, refreshContextEvents, selectedAgent, selfActorId]);
 
+  function selectActorForInspector(endpointId: string) {
+    setSelectedAgentId(endpointId);
+    setSelectedContextId(null);
+    setDraftMode(false);
+    clearContextEvents();
+  }
+
   async function completeWorkspaceContextScopeAssignment(context: ContextSummary, scopeId: string): Promise<void> {
     await assignContextToScope(busUrl, context.workspace_id, context.context_id, {
       scopeId,
@@ -1063,6 +1071,7 @@ function App() {
 
   // Auto-select default-or-most-recent context once contexts load (unless drafting).
   useEffect(() => {
+    if (!channelOpen) return;
     if (draftMode) return;
     if (selectedContextId) return;
     if (sortedContexts.sorted.length === 0) return;
@@ -1070,7 +1079,7 @@ function App() {
       context.participants.includes(humanEndpoint)
     );
     setSelectedContextId((firstWritableContext ?? sortedContexts.sorted[0]).context_id);
-  }, [sortedContexts, selectedContextId, draftMode, humanEndpoint]);
+  }, [sortedContexts, selectedContextId, draftMode, humanEndpoint, channelOpen]);
 
   // Drop selection if it disappears (workspace switch, etc.)
   useEffect(() => {
@@ -1894,11 +1903,12 @@ function App() {
 
   function renderHome() {
     return (
-      <section className="workspace-home">
+      <section className="workspace-home" data-testid="v6-workspace-home">
         <div className="home-band">
           <div>
             <p className="eyebrow">Workspace Home</p>
             <h2>{selectedWorkspace?.name ?? "Workspace"}</h2>
+            <p className="home-summary">Workspace index</p>
           </div>
           <button className="ghost-action" onClick={() => setChannelOpen(true)}>
             <MessageSquare size={16} />
@@ -1906,8 +1916,65 @@ function App() {
           </button>
         </div>
 
+        <div className="home-overview-grid">
+          <article className="home-stat-card">
+            <span>Named Scopes</span>
+            <strong>{fieldSummaries.length}</strong>
+            <small>Rendered as Scope-backed Fields</small>
+          </article>
+          <article className="home-stat-card">
+            <span>Workspace actors</span>
+            <strong>{agents.length}</strong>
+            <small>Workspace-scoped identities</small>
+          </article>
+          <article className="home-stat-card">
+            <span>Workspace-level Contexts</span>
+            <strong>{recentWorkspaceContexts.length}</strong>
+            <small>Actor-anchored streams outside Scopes</small>
+          </article>
+        </div>
+
+        <section className="home-actor-pane" data-testid="v6-home-actors">
+          <div className="section-title-row">
+            <div>
+              <h3>Actors</h3>
+              <p>Workspace-level identities. Selecting one updates the inspector without changing Field membership.</p>
+            </div>
+            <span>{agents.length}</span>
+          </div>
+          {agents.length === 0 ? (
+            <div className="quiet-empty compact">
+              <CircleDot size={22} />
+              <strong>No actors available</strong>
+              <span>Registered Workspace actors will appear here.</span>
+            </div>
+          ) : (
+            <div className="home-actor-strip">
+              {agents.map((agent) => {
+                const name = endpointDisplayName(agent) ?? agent.agent_id ?? "Actor";
+                const selected = inspectorActor?.endpoint_id === agent.endpoint_id;
+                return (
+                  <button
+                    key={agent.endpoint_id}
+                    type="button"
+                    className={`home-actor-card${selected ? " selected" : ""}`}
+                    aria-pressed={selected}
+                    onClick={() => selectActorForInspector(agent.endpoint_id)}
+                  >
+                    <span className="home-actor-avatar">{actorInitial(name)}</span>
+                    <span>
+                      <strong>{name}</strong>
+                      <small>{agent.status || "unknown"}</small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
         <div className="home-grid">
-          <section className="field-list-pane">
+          <section className="field-list-pane" data-testid="v6-home-scopes">
             <div className="section-title-row">
               <div>
                 <h3>Fields</h3>
@@ -1949,7 +2016,7 @@ function App() {
                     <span className="field-icon"><LayoutPanelLeft size={16} /></span>
                     <span>
                       <strong>{summary.title}</strong>
-                      <small>Scope projection</small>
+                      <small>Scope-backed Field</small>
                     </span>
                     <ChevronRight size={16} />
                   </button>
@@ -1957,7 +2024,7 @@ function App() {
               </div>
             )}
           </section>
-          <section className="field-list-pane workspace-context-pane">
+          <section className="field-list-pane workspace-context-pane" data-testid="v6-home-contexts">
             <div className="section-title-row">
               <div>
                 <h3>Workspace-level Contexts</h3>
@@ -1986,7 +2053,9 @@ function App() {
                       <span className="field-icon"><MessageSquare size={16} /></span>
                       <span>
                         <strong>{label}</strong>
-                        <small>{formatContextTimestamp(activityTime)} · {contextScopeAssignmentStatus(context)}</small>
+                        <small>
+                          {contextParticipationLabel(context, scopeTitlesById)} · {formatContextTimestamp(activityTime)} · {contextScopeAssignmentStatus(context)}
+                        </small>
                       </span>
                       <span className="workspace-context-actions">
                         <button
@@ -2152,6 +2221,36 @@ function App() {
         </div>
         {!selectedWorkspace ? (
           <div className="inspector-section muted">No workspace selected.</div>
+        ) : inspectorActor ? (
+          <>
+            <InspectorSection title="Actor">
+              <Detail label="Name" value={endpointDisplayName(inspectorActor) ?? inspectorActor.agent_id ?? "Actor"} />
+              <Detail label="Endpoint" value={inspectorActor.endpoint_id} />
+              <Detail label="Status" value={inspectorActor.status || "unknown"} />
+              {inspectorActor.agent_id && <Detail label="Agent id" value={inspectorActor.agent_id} />}
+            </InspectorSection>
+            <InspectorSection title="Context participation">
+              {sortedContexts.sorted.length === 0 ? (
+                <div className="inspector-note">No Contexts found for this actor.</div>
+              ) : (
+                <div className="inspector-context-list">
+                  {sortedContexts.sorted.map((context) => {
+                    const label = contextLabel(context, null);
+                    const participationLabel = contextParticipationLabel(context, scopeTitlesById);
+                    const activityTime = context.last_event_at ?? context.created_at;
+                    return (
+                      <article key={context.context_id} className="inspector-context-card">
+                        <strong>{label}</strong>
+                        <span>{participationLabel}</span>
+                        <small>{formatContextTimestamp(activityTime)}</small>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </InspectorSection>
+            <ActorAccessSection />
+          </>
         ) : view.kind === "home" ? (
           <>
             <InspectorSection title="Workspace">
@@ -2694,10 +2793,7 @@ function App() {
                   className={`nav-row actor-nav-row${selected ? " active" : ""}`}
                   onClick={() => {
                     contextsRequestRef.current += 1;
-                    setSelectedAgentId(agent.endpoint_id);
-                    setSelectedContextId(null);
-                    setDraftMode(false);
-                    clearContextEvents();
+                    selectActorForInspector(agent.endpoint_id);
                     setChannelOpen(true);
                   }}
                 >

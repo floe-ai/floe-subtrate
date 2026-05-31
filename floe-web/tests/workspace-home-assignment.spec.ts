@@ -198,7 +198,7 @@ test.describe("Workspace Home Scope assignment", () => {
 
     await expect(page.getByRole("alert")).toHaveText("That Scope no longer exists. Refresh Workspace Home and choose another Scope.");
     await expect(contextRow).toBeVisible();
-    await expect(page.getByRole("button", { name: "Retry Sprint Scope projection" })).toBeVisible();
+    await expect(page.getByTestId("v6-home-scopes").getByRole("button", { name: /Retry Sprint/ })).toBeVisible();
     expect(scopePosts).toEqual([JSON.stringify({ title: "Retry Sprint" })]);
     expect(contextAssignments).toEqual([
       JSON.stringify({

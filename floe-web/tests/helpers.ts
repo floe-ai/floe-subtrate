@@ -88,7 +88,19 @@ export type WorkspaceContextRecord = {
   first_message_preview: string | null;
 };
 
-async function installBaselineRoutes(page: Page): Promise<void> {
+export type EndpointRecord = {
+  endpoint_id: string;
+  workspace_id: string;
+  name: string;
+  status: string;
+  agent_id?: string | null;
+  metadata_json?: string;
+};
+
+async function installBaselineRoutes(
+  page: Page,
+  options: { endpoints?: EndpointRecord[] } = {}
+): Promise<void> {
   await page.route("**/v1/workspaces", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({
@@ -110,7 +122,11 @@ async function installBaselineRoutes(page: Page): Promise<void> {
   });
 
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/endpoints`, (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ endpoints: [] }) })
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ endpoints: options.endpoints ?? [] })
+    })
   );
 
   await page.route("**/v1/auth/profiles", (route) =>
@@ -189,11 +205,14 @@ export async function seedAppWithScopes(
     pulseUnsubscribes?: string[];
     workspaceContexts?: WorkspaceContextRecord[];
     contextAssignments?: string[];
+    endpoints?: EndpointRecord[];
+    contextEventGets?: string[];
+    projectionGets?: string[];
     scopePostFailure?: { status: number; body: unknown };
     contextAssignmentFailure?: { status: number; body: unknown };
   } = {}
 ): Promise<void> {
-  await installBaselineRoutes(page);
+  await installBaselineRoutes(page, { endpoints: options.endpoints });
 
   const scopeStore = new Map(scopes.map((scope) => [scope.scope_id, scope]));
   const projectionStore = new Map(Object.entries(projections));
@@ -343,6 +362,7 @@ export async function seedAppWithScopes(
     }
     const segments = new URL(route.request().url()).pathname.split("/");
     const scopeId = decodeURIComponent(segments[segments.length - 2] ?? "");
+    options.projectionGets?.push(route.request().url());
     const projection = projectionStore.get(scopeId);
     if (!projection) {
       return route.fulfill({
@@ -460,13 +480,32 @@ export async function seedAppWithScopes(
     }
     return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
   });
-  await page.route("**/v1/contexts/*/events**", (route) =>
-    route.fulfill({
+  await page.route(/\/v1\/contexts(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() !== "GET") {
+      return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
+    }
+    const participant = url.searchParams.get("participant");
+    const workspaceId = url.searchParams.get("workspace_id");
+    const contexts = Array.from(workspaceContextStore.values()).filter((context) => {
+      if (workspaceId && context.workspace_id !== workspaceId) return false;
+      if (participant && !context.participants.includes(participant)) return false;
+      return true;
+    });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ contexts })
+    });
+  });
+  await page.route("**/v1/contexts/*/events**", (route) => {
+    options.contextEventGets?.push(route.request().url());
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ events: [] })
-    })
-  );
+    });
+  });
 
   await finishBoot(page);
 }

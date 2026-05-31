@@ -292,8 +292,10 @@ test.describe("Scope Projection Fields", () => {
       const rect = handle.getBoundingClientRect();
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     });
-    await page.mouse.click(pulseCenter.x, pulseCenter.y);
-    await page.mouse.click(contextCenter.x, contextCenter.y);
+    await page.mouse.move(pulseCenter.x, pulseCenter.y);
+    await page.mouse.down();
+    await page.mouse.move(contextCenter.x, contextCenter.y, { steps: 12 });
+    await page.mouse.up();
 
     await expect.poll(() => pulseSubscribes.length).toBe(1);
     expect(JSON.parse(pulseSubscribes[0])).toEqual({ kind: "context", context_id: "ctx_research" });
