@@ -189,6 +189,8 @@ export async function seedAppWithScopes(
     pulseUnsubscribes?: string[];
     workspaceContexts?: WorkspaceContextRecord[];
     contextAssignments?: string[];
+    scopePostFailure?: { status: number; body: unknown };
+    contextAssignmentFailure?: { status: number; body: unknown };
   } = {}
 ): Promise<void> {
   await installBaselineRoutes(page);
@@ -262,6 +264,13 @@ export async function seedAppWithScopes(
     }
     if (method === "POST") {
       options.scopePosts?.push(route.request().postData() ?? "");
+      if (options.scopePostFailure) {
+        return route.fulfill({
+          status: options.scopePostFailure.status,
+          contentType: "application/json",
+          body: JSON.stringify(options.scopePostFailure.body)
+        });
+      }
       const body = JSON.parse(route.request().postData() ?? "{}") as { scope_id?: string; title: string; description?: string | null };
       const now = new Date().toISOString();
       let scopeId = body.scope_id;
@@ -386,6 +395,13 @@ export async function seedAppWithScopes(
     const path = url.pathname;
     if (path.endsWith("/assign-scope") && route.request().method() === "POST") {
       options.contextAssignments?.push(route.request().postData() ?? "");
+      if (options.contextAssignmentFailure) {
+        return route.fulfill({
+          status: options.contextAssignmentFailure.status,
+          contentType: "application/json",
+          body: JSON.stringify(options.contextAssignmentFailure.body)
+        });
+      }
       const contextId = decodeURIComponent(path.split("/").at(-2) ?? "");
       const body = JSON.parse(route.request().postData() ?? "{}") as { scope_id?: string; assigned_by?: string | null };
       const context = workspaceContextStore.get(contextId);

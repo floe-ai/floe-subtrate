@@ -738,6 +738,21 @@ function App() {
     void refreshContextEvents(context.context_id);
   }, [endpoints, refreshContextEvents, selectedAgent, selfActorId]);
 
+  async function completeWorkspaceContextScopeAssignment(context: ContextSummary, scopeId: string): Promise<void> {
+    await assignContextToScope(busUrl, context.workspace_id, context.context_id, {
+      scopeId,
+      actorId: selfActorId || null
+    });
+    await Promise.all([
+      refreshFields(context.workspace_id),
+      refreshContexts(context.workspace_id),
+      refreshWorkspaceContexts(context.workspace_id),
+      refreshOpenField(context.workspace_id, scopeId)
+    ]);
+    setSelectedContextId(context.context_id);
+    openField(scopeId);
+  }
+
   async function assignWorkspaceContextToScope(context: ContextSummary, scopeId: string): Promise<void> {
     if (!canAssignContextToScope(context)) {
       setError(contextScopeAssignmentStatus(context));
@@ -749,20 +764,43 @@ function App() {
     }
     try {
       setError(null);
-      await assignContextToScope(busUrl, context.workspace_id, context.context_id, {
-        scopeId,
-        actorId: selfActorId || null
-      });
-      await Promise.all([
-        refreshContexts(context.workspace_id),
-        refreshWorkspaceContexts(context.workspace_id),
-        refreshOpenField(context.workspace_id, scopeId)
-      ]);
-      setSelectedContextId(context.context_id);
-      openField(scopeId);
+      await completeWorkspaceContextScopeAssignment(context, scopeId);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to assign Context to Scope");
     }
+  }
+
+  function validateInlineScopeName(value: string): string | null {
+    const title = value.trim();
+    if (!title) return "Enter a Scope name.";
+    if (/^default(?:\s+(scope|field))?$/i.test(title)) {
+      return "Choose a named Scope that is not Default.";
+    }
+    return null;
+  }
+
+  function promptCreateScopeAndAssign(context: ContextSummary): void {
+    if (!canAssignContextToScope(context)) {
+      setError(contextScopeAssignmentStatus(context));
+      return;
+    }
+    void promptDialog({
+      title: "Create Scope for Context",
+      body: "Create a named Scope and assign this Workspace-level Context through the audited substrate path.",
+      confirmLabel: "Create Scope and assign",
+      cancelLabel: "Cancel",
+      input: {
+        label: "Scope name",
+        placeholder: "Scope name",
+        validate: validateInlineScopeName
+      },
+      onConfirm: async ({ value }) => {
+        setError(null);
+        const scope = await createScope(busUrl, context.workspace_id, { title: value.trim() });
+        await refreshFields(context.workspace_id);
+        await completeWorkspaceContextScopeAssignment(context, scope.scope_id);
+      }
+    });
   }
 
   const { nodes: fieldNodes, edges: fieldEdges } = useMemo(() => {
@@ -1943,6 +1981,13 @@ function App() {
                               disabled={!selectedTargetScope}
                             >
                               Assign to Scope
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-action compact"
+                              onClick={() => promptCreateScopeAndAssign(context)}
+                            >
+                              Create Scope and assign
                             </button>
                           </>
                         )}
