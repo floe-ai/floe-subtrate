@@ -247,7 +247,6 @@ test.describe("Workspace Home Scope assignment", () => {
       })
     ]);
 
-    await page.getByRole("button", { name: "Launch Scope Scope projection" }).click();
     await expect(page.getByRole("heading", { name: "Launch Scope" })).toBeVisible();
     await expect(page.locator(".react-flow__node", { hasText: "Direct planning thread" })).toBeVisible();
   });

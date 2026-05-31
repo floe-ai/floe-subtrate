@@ -2143,7 +2143,7 @@ function App() {
 
   function renderInspector() {
     return (
-      <aside className="inspector">
+      <aside className="inspector" data-testid="v6-inspector" aria-label="Inspector">
         <div className="inspector-header">
           <span>Inspector</span>
           <button className="icon-button" onClick={() => void refresh()} title="Refresh">
@@ -2358,7 +2358,7 @@ function App() {
           ? "No conversations yet"
           : "No conversation selected";
     return (
-      <aside className="channel">
+      <aside className="channel" data-testid="v6-channel" aria-label="Actor conversations">
         <div className="channel-header">
           <div className="channel-title">
             <div className="channel-avatar"><CircleDot size={16} /></div>
@@ -2632,8 +2632,8 @@ function App() {
   }
 
   return (
-    <main className={`floe-shell ${channelOpen ? "with-channel" : ""}`}>
-      <aside className="workspace-rail">
+    <main className={`floe-shell v6-shell ${channelOpen ? "with-channel" : ""}`} data-testid="v6-shell">
+      <aside className="workspace-rail v6-left-nav" data-testid="v6-left-nav" aria-label="Workspace navigation">
         <div className="rail-brand">
           <div className="brand-mark"><Workflow size={18} /></div>
           <div>
@@ -2642,6 +2642,71 @@ function App() {
           </div>
         </div>
         <div className="rail-section">
+          <button
+            type="button"
+            className={`nav-row ${view.kind === "home" ? "active" : ""}`}
+            onClick={goToWorkspaceHome}
+          >
+            <Home size={15} />
+            <span>Home</span>
+          </button>
+          <button type="button" className="nav-row" disabled title="Activity surface follows in a later v6 slice">
+            <Activity size={15} />
+            <span>Activity</span>
+          </button>
+          <span className="rail-label nav-group-label">
+            <span>Scopes</span>
+            <span>{fieldSummaries.length}</span>
+          </span>
+          {fieldSummaries.length === 0 ? (
+            <div className="nav-empty">No named Scopes yet</div>
+          ) : (
+            fieldSummaries.map((summary) => (
+              <button
+                key={summary.id}
+                type="button"
+                className={`nav-row scope-nav-row${view.kind === "field" && view.fieldId === summary.id ? " active" : ""}`}
+                onClick={() => openField(summary.id)}
+              >
+                <LayoutPanelLeft size={15} />
+                <span>{summary.title}</span>
+              </button>
+            ))
+          )}
+          <button type="button" className="nav-row nav-add" onClick={promptCreateField}>
+            <FolderPlus size={15} />
+            <span>New Scope</span>
+          </button>
+          <span className="rail-label nav-group-label">
+            <span>Actors</span>
+            <span>{agents.length}</span>
+          </span>
+          {agents.length === 0 ? (
+            <div className="nav-empty">No actors available</div>
+          ) : (
+            agents.map((agent) => {
+              const name = agent.name?.trim() || agent.agent_id || "Actor";
+              const selected = selectedAgent?.endpoint_id === agent.endpoint_id;
+              return (
+                <button
+                  key={agent.endpoint_id}
+                  type="button"
+                  className={`nav-row actor-nav-row${selected ? " active" : ""}`}
+                  onClick={() => {
+                    contextsRequestRef.current += 1;
+                    setSelectedAgentId(agent.endpoint_id);
+                    setSelectedContextId(null);
+                    setDraftMode(false);
+                    clearContextEvents();
+                    setChannelOpen(true);
+                  }}
+                >
+                  <span className="nav-avatar">{actorInitial(name)}</span>
+                  <span>{name}</span>
+                </button>
+              );
+            })
+          )}
           <span className="rail-label">Workspaces</span>
           {workspaces.map((workspace) => (
             <div key={workspace.workspace_id} className="workspace-row">
@@ -2694,7 +2759,7 @@ function App() {
 
       <section className="main-stage">
         {error && <div className="error-bar">{error}</div>}
-        <header className="topbar">
+        <header className="topbar v6-topbar" data-testid="v6-topbar">
           <nav className="breadcrumb">
             <button onClick={goToWorkspaceHome}><Home size={14} /> Workspace</button>
             {view.kind === "field" && (
@@ -2724,6 +2789,7 @@ function App() {
           {renderBlockLibrary()}
           <div
             className="surface-area"
+            data-testid="v6-main-surface"
             onDrop={handleLibraryDropSurface}
             onDragOver={handleLibraryDragOver}
           >

@@ -1,27 +1,39 @@
 @import "@xyflow/react/dist/style.css";
 
 :root {
-  --surface-0: oklch(0.982 0.006 235);
-  --surface-1: oklch(0.958 0.007 235);
-  --surface-2: oklch(0.925 0.008 235);
-  --surface-panel: oklch(0.992 0.004 235);
-  --surface-inset: oklch(0.972 0.006 235);
-  --border: oklch(0.87 0.012 235);
-  --border-strong: oklch(0.75 0.018 235);
-  --text: oklch(0.24 0.018 235);
-  --text-soft: oklch(0.42 0.018 235);
-  --text-muted: oklch(0.58 0.014 235);
-  --accent: oklch(0.51 0.12 210);
-  --accent-soft: oklch(0.92 0.04 210);
-  --accent-strong: oklch(0.41 0.13 210);
-  --ok: oklch(0.52 0.12 155);
-  --ok-soft: oklch(0.93 0.04 155);
-  --warn: oklch(0.62 0.13 75);
-  --warn-soft: oklch(0.94 0.055 75);
+  --canvas: oklch(0.155 0.009 168);
+  --surface: oklch(0.19 0.011 168);
+  --surface-hov: oklch(0.235 0.012 168);
+  --surface-sunk: oklch(0.128 0.008 168);
+  --ink: oklch(0.89 0.012 168);
+  --ink-2: oklch(0.77 0.014 168);
+  --ink-3: oklch(0.62 0.012 168);
+  --ink-4: oklch(0.47 0.011 168);
+  --accent: oklch(0.72 0.055 166);
+  --accent-soft: oklch(0.25 0.035 166);
+  --accent-soft-2: oklch(0.22 0.026 166);
+  --accent-strong: oklch(0.79 0.06 166);
+  --accent-hov: oklch(0.78 0.062 166);
+  --accent-ring: oklch(0.72 0.055 166 / 0.42);
+  --surface-0: var(--canvas);
+  --surface-1: var(--surface);
+  --surface-2: var(--surface-hov);
+  --surface-panel: var(--surface);
+  --surface-inset: var(--surface-sunk);
+  --border: oklch(1 0 0 / 0.1);
+  --border-2: oklch(1 0 0 / 0.075);
+  --border-strong: oklch(1 0 0 / 0.18);
+  --text: var(--ink);
+  --text-soft: var(--ink-2);
+  --text-muted: var(--ink-3);
+  --ok: oklch(0.69 0.11 155);
+  --ok-soft: oklch(0.26 0.046 155);
+  --warn: oklch(0.73 0.115 75);
+  --warn-soft: oklch(0.27 0.055 75);
   --system-warning: var(--warn);
-  --danger: oklch(0.55 0.16 32);
-  --danger-soft: oklch(0.94 0.045 32);
-  --shadow: 0 18px 55px oklch(0.28 0.02 235 / 0.12);
+  --danger: oklch(0.68 0.145 32);
+  --danger-soft: oklch(0.27 0.055 32);
+  --shadow: 0 18px 55px oklch(0.08 0.01 168 / 0.46);
   --radius: 8px;
   --radius-sm: 6px;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -71,7 +83,7 @@ select {
 button {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--surface-panel);
+  background: var(--surface-sunk);
   color: var(--text);
   cursor: pointer;
   transition: background 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out;
@@ -102,7 +114,7 @@ select {
 input:focus,
 select:focus,
 button:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
 }
 
@@ -121,12 +133,12 @@ code {
 .floe-shell {
   height: 100%;
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr);
   background: var(--surface-0);
 }
 
 .floe-shell.with-channel {
-  grid-template-columns: 236px minmax(0, 1fr) 360px;
+  grid-template-columns: 260px minmax(0, 1fr) 380px;
 }
 
 .workspace-rail {
@@ -188,6 +200,80 @@ code {
   min-height: 0;
   overflow: auto;
   padding: 14px 10px;
+}
+
+.nav-row {
+  display: grid;
+  width: 100%;
+  min-height: 32px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0;
+  padding: 7px 9px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-2);
+  text-align: left;
+}
+
+.nav-row:hover:not(:disabled) {
+  background: var(--surface-hov);
+  border-color: transparent;
+  color: var(--ink);
+}
+
+.nav-row.active {
+  background: var(--accent-soft-2);
+  border-color: var(--border);
+  color: var(--accent-strong);
+}
+
+.nav-row:disabled {
+  opacity: 0.62;
+}
+
+.nav-row span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-nav-row,
+.actor-nav-row {
+  margin-left: 8px;
+  width: calc(100% - 8px);
+}
+
+.nav-add {
+  color: var(--ink-3);
+}
+
+.nav-avatar {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--surface-sunk);
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.nav-group-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px 7px 6px;
+}
+
+.nav-empty {
+  margin: 4px 9px 8px 26px;
+  color: var(--ink-4);
+  font-size: 12px;
 }
 
 .rail-label,
@@ -260,7 +346,7 @@ code {
 
 .workspace-button.active {
   border-color: var(--border);
-  background: var(--surface-panel);
+  background: var(--surface-hov);
   color: var(--accent-strong);
 }
 
@@ -865,6 +951,18 @@ code {
 
 .react-flow {
   background: var(--surface-panel);
+}
+
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--surface);
+  background: var(--accent);
+  z-index: 5;
+}
+
+.react-flow__handle.connectionindicator {
+  pointer-events: all;
 }
 
 .react-flow__node-field {
