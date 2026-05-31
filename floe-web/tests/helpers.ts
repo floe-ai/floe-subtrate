@@ -3,6 +3,16 @@ import { test as base, Page } from "@playwright/test";
 const WORKSPACE_ID = "ws_test_qa";
 const WORKSPACE_NAME = "QA Workspace";
 
+export type WorkspaceRecord = {
+  workspace_id: string;
+  name: string;
+  locator?: string;
+  path?: string;
+  status: string;
+  init_authorized?: boolean | number;
+  created_at?: string;
+};
+
 export type FieldLayoutFloeweb = {
   schema: "floe.field.layout.floeweb.v1";
   field_id: string;
@@ -97,6 +107,29 @@ export type EndpointRecord = {
   metadata_json?: string;
 };
 
+export type EventRecord = {
+  event_id: string;
+  type: string;
+  workspace_id: string;
+  source_endpoint_id: string | null;
+  destination_json: { kind: "endpoint" | "broadcast"; endpoint_id?: string };
+  thread_id?: string | null;
+  context_id?: string | null;
+  content: { text?: string; data?: Record<string, unknown> };
+  metadata?: Record<string, unknown>;
+  created_at: string;
+};
+
+export type TelemetryRecord = {
+  telemetry_id: string;
+  workspace_id: string;
+  endpoint_id: string;
+  delivery_id: string | null;
+  kind: string;
+  payload_json: string;
+  created_at: string;
+};
+
 type AuthProfileRecord = { id: string; provider: string; model?: string | null; label?: string | null };
 
 type RuntimeBindingRecord = {
@@ -123,40 +156,69 @@ type ContextEventRecord = {
 async function installBaselineRoutes(
   page: Page,
   options: {
+    workspaces?: WorkspaceRecord[];
     endpoints?: EndpointRecord[];
     authProfiles?: AuthProfileRecord[];
     runtimeBindings?: RuntimeBindingRecord[];
     runtimeAdapter?: string | null;
     contextEventsById?: Record<string, ContextEventRecord[]>;
     emitCalls?: unknown[];
+    workspaceRegisterCalls?: unknown[];
+    events?: EventRecord[];
+    telemetry?: TelemetryRecord[];
   } = {}
 ): Promise<void> {
   const authProfiles = options.authProfiles ?? [];
   const runtimeBindings = options.runtimeBindings ?? [];
   const contextEventsById = options.contextEventsById ?? {};
   const emitCalls = options.emitCalls ?? [];
+  const workspaces = [...(options.workspaces ?? [{
+    workspace_id: WORKSPACE_ID,
+    name: WORKSPACE_NAME,
+    locator: "/tmp/qa-ws",
+    path: "/tmp/qa-ws",
+    status: "attached",
+    init_authorized: true,
+    created_at: new Date().toISOString()
+  }])];
 
   await page.route("**/v1/workspaces", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
-          workspaces: [{
-            workspace_id: WORKSPACE_ID,
-            name: WORKSPACE_NAME,
-            path: "/tmp/qa-ws",
-            status: "attached",
-            init_authorized: true,
-            created_at: new Date().toISOString()
-          }]
-        })
+        body: JSON.stringify({ workspaces })
       });
     }
     return route.fulfill({ status: 200, body: JSON.stringify({}) });
   });
 
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/endpoints`, (route) =>
+  await page.route(/\/v1\/workspaces\/[^/]+\/select$/, (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
+  );
+
+  await page.route("**/v1/workspaces/register", async (route) => {
+    const body = route.request().postDataJSON() as { locator?: string; name?: string; init_authorized?: boolean; create_directory?: boolean };
+    options.workspaceRegisterCalls?.push(body);
+    const createdAt = new Date().toISOString();
+    const workspace: WorkspaceRecord = {
+      workspace_id: `ws_registered_${workspaces.length + 1}`,
+      name: body.name?.trim() || body.locator?.split(/[\\/]/).filter(Boolean).at(-1) || "Workspace",
+      locator: body.locator,
+      path: body.locator,
+      status: "attached",
+      init_authorized: body.init_authorized ?? true,
+      created_at: createdAt
+    };
+    workspaces.push(workspace);
+    return route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ workspace })
+    });
+  });
+
+  await page.route(/\/v1\/workspaces\/[^/]+\/endpoints$/, (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -185,11 +247,11 @@ async function installBaselineRoutes(
     if (path.endsWith("/emit") || path.endsWith("/stream")) {
       return route.fallback();
     }
-    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ events: [] }) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ events: options.events ?? [] }) });
   });
 
   await page.route("**/v1/runtime/telemetry**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ records: [] }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ records: options.telemetry ?? [] }) })
   );
 
   await page.route("**/v1/auth/models**", (route) =>
@@ -239,7 +301,7 @@ async function finishBoot(page: Page): Promise<void> {
 export async function seedApp(page: Page): Promise<void> {
   await installBaselineRoutes(page);
 
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes`, (route) => {
+  await page.route(/\/v1\/workspaces\/[^/]+\/scopes$/, (route) => {
     if (route.request().method() === "GET") {
       const scope = makeScope("default", "Default", true);
       return route.fulfill({
@@ -254,7 +316,7 @@ export async function seedApp(page: Page): Promise<void> {
   await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/default/projection`, (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ projection: emptyScopeProjection("default") }) })
   );
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, (route) =>
+  await page.route(/\/v1\/workspaces\/[^/]+\/fields(?:\?.*)?$/, (route) =>
     route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "legacy_fields_endpoint_called" }) })
   );
 
@@ -267,6 +329,7 @@ export async function seedAppWithScopes(
   projections: Record<string, ScopeProjection>,
   options: {
     legacyFieldRequests?: string[];
+    workspaces?: WorkspaceRecord[];
     scopePosts?: string[];
     scopePatches?: string[];
     layoutGets?: string[];
@@ -283,17 +346,24 @@ export async function seedAppWithScopes(
     emitCalls?: unknown[];
     contextEventGets?: string[];
     projectionGets?: string[];
+    workspaceRegisterCalls?: unknown[];
+    events?: EventRecord[];
+    telemetry?: TelemetryRecord[];
     scopePostFailure?: { status: number; body: unknown };
     contextAssignmentFailure?: { status: number; body: unknown };
   } = {}
 ): Promise<void> {
   await installBaselineRoutes(page, {
+    workspaces: options.workspaces,
     endpoints: options.endpoints,
     authProfiles: options.authProfiles,
     runtimeBindings: options.runtimeBindings,
     runtimeAdapter: options.runtimeAdapter,
     contextEventsById: options.contextEventsById,
-    emitCalls: options.emitCalls
+    emitCalls: options.emitCalls,
+    workspaceRegisterCalls: options.workspaceRegisterCalls,
+    events: options.events,
+    telemetry: options.telemetry
   });
 
   const scopeStore = new Map(scopes.map((scope) => [scope.scope_id, scope]));
@@ -301,7 +371,7 @@ export async function seedAppWithScopes(
   const workspaceContextStore = new Map((options.workspaceContexts ?? []).map((context) => [context.context_id, context]));
   const layoutStore = new Map<string, FieldLayoutFloeweb>();
   let generatedScopeCounter = 1;
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/fields**`, async (route) => {
+  await page.route(/\/v1\/workspaces\/[^/]+\/fields(?:\?.*)?$/, async (route) => {
     options.legacyFieldRequests?.push(route.request().url());
     return route.fulfill({
       status: 500,
@@ -354,7 +424,7 @@ export async function seedAppWithScopes(
     }
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
   });
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes`, async (route) => {
+  await page.route(/\/v1\/workspaces\/[^/]+\/scopes$/, async (route) => {
     const method = route.request().method();
     if (method === "GET") {
       return route.fulfill({
@@ -406,7 +476,7 @@ export async function seedAppWithScopes(
     }
     return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
   });
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/*/projection/layout/floeweb`, async (route) => {
+  await page.route(/\/v1\/workspaces\/[^/]+\/scopes\/[^/]+\/projection\/layout\/floeweb$/, async (route) => {
     const segments = new URL(route.request().url()).pathname.split("/");
     const scopeId = decodeURIComponent(segments[segments.length - 4] ?? "");
     const method = route.request().method();
@@ -438,7 +508,7 @@ export async function seedAppWithScopes(
     }
     return route.fulfill({ status: 405, body: JSON.stringify({ error: "method not allowed" }) });
   });
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/*/projection`, (route) => {
+  await page.route(/\/v1\/workspaces\/[^/]+\/scopes\/[^/]+\/projection$/, (route) => {
     if (new URL(route.request().url()).pathname.endsWith("/projection/layout/floeweb")) {
       return route.fallback();
     }
@@ -459,7 +529,7 @@ export async function seedAppWithScopes(
       body: JSON.stringify({ projection })
     });
   });
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes/*`, async (route) => {
+  await page.route(/\/v1\/workspaces\/[^/]+\/scopes\/[^/]+$/, async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/projection") || path.endsWith("/projection/layout/floeweb")) {
       return route.fallback();
@@ -492,7 +562,7 @@ export async function seedAppWithScopes(
       body: JSON.stringify({ scope })
     });
   });
-  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/contexts**`, async (route) => {
+  await page.route(/\/v1\/workspaces\/[^/]+\/contexts(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
     if (path.endsWith("/assign-scope") && route.request().method() === "POST") {

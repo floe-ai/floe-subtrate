@@ -357,6 +357,8 @@ function App() {
   const [authorizeInit, setAuthorizeInit] = useState(true);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [workspaceCreateOpen, setWorkspaceCreateOpen] = useState(false);
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [events, setEvents] = useState<EventEnvelope[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryRecord[]>([]);
@@ -463,6 +465,23 @@ function App() {
   const rootFieldSummaries = useMemo(() => fieldSummaries, [fieldSummaries]);
   const homeFieldSummaries = showAllFields ? fieldSummaries : rootFieldSummaries;
   const nestedFieldCount = fieldSummaries.length - rootFieldSummaries.length;
+  const recentHomeActivity = useMemo(() => {
+    const eventItems = events.map((event) => ({
+      id: event.event_id,
+      title: event.type,
+      detail: event.content?.text?.trim() || event.context_id || event.thread_id || "Workspace event",
+      createdAt: event.created_at
+    }));
+    const telemetryItems = telemetry.map((record) => ({
+      id: record.telemetry_id,
+      title: runtimeActivityLabel(record.kind),
+      detail: summarizeTelemetry(record),
+      createdAt: record.created_at
+    }));
+    return [...eventItems, ...telemetryItems]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, 5);
+  }, [events, telemetry]);
 
   const workspaceBinding = selectedWorkspace
     ? runtimeBindings.find((binding) => binding.scope === "workspace_default" && binding.workspace_id === selectedWorkspace.workspace_id)
@@ -1502,6 +1521,8 @@ function App() {
       await refresh(result.workspace.workspace_id);
       setWorkspacePath("");
       setWorkspaceName("");
+      setWorkspaceMenuOpen(false);
+      setWorkspaceCreateOpen(false);
       clearFieldEditingState();
       loadedProjectionRef.current = null;
       setLoadedProjection(null);
@@ -1525,6 +1546,8 @@ function App() {
   async function selectWorkspace(workspaceId: string) {
     selectedWorkspaceIdRef.current = workspaceId;
     setSelectedWorkspaceId(workspaceId);
+    setWorkspaceMenuOpen(false);
+    setWorkspaceCreateOpen(false);
     clearFieldEditingState();
     loadedProjectionRef.current = null;
     setLoadedProjection(null);
@@ -1901,13 +1924,114 @@ function App() {
     );
   }
 
+  function renderWorkspaceSwitcher() {
+    const label = selectedWorkspace?.name ?? "Open Workspace";
+    return (
+      <div className="topbar-workspace-switcher">
+        <button
+          type="button"
+          className="workspace-switcher-button"
+          aria-haspopup="menu"
+          aria-expanded={workspaceMenuOpen}
+          onClick={() => setWorkspaceMenuOpen((current) => !current)}
+        >
+          <FolderOpen size={15} />
+          <span>{label}</span>
+          <ChevronDown size={14} />
+        </button>
+        {workspaceMenuOpen && (
+          <div className="workspace-switcher-menu" role="menu" aria-label="Workspaces">
+            <div className="workspace-menu-list">
+              {workspaces.length === 0 ? (
+                <p className="workspace-menu-empty">No Workspaces registered</p>
+              ) : (
+                workspaces.map((workspace) => (
+                  <div key={workspace.workspace_id} className="workspace-menu-row">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={`workspace-menu-item${workspace.workspace_id === selectedWorkspaceId ? " active" : ""}`}
+                      onClick={() => void selectWorkspace(workspace.workspace_id)}
+                    >
+                      <span>
+                        <strong>{workspace.name}</strong>
+                        <small>{workspace.locator ?? workspace.workspace_id}</small>
+                      </span>
+                      {workspace.workspace_id === selectedWorkspaceId && <Check size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="workspace-menu-delete"
+                      onClick={() => void deleteWorkspace(workspace.workspace_id)}
+                      title="Remove workspace"
+                      aria-label={`Remove workspace ${workspace.name}`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <button
+              type="button"
+              role="menuitem"
+              className="workspace-menu-create"
+              onClick={() => setWorkspaceCreateOpen((current) => !current)}
+            >
+              <FolderPlus size={14} />
+              New Workspace
+            </button>
+            {workspaceCreateOpen && (
+              <div className="workspace-menu-form">
+                <label>
+                  Location
+                  <input
+                    value={workspacePath}
+                    onChange={(event) => setWorkspacePath(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
+                    placeholder="C:\\Development\\example-workspace"
+                  />
+                </label>
+                <label>
+                  Name
+                  <input
+                    value={workspaceName}
+                    onChange={(event) => setWorkspaceName(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
+                    placeholder="Optional"
+                  />
+                </label>
+                <label className="check-row compact">
+                  <input
+                    type="checkbox"
+                    checked={authorizeInit}
+                    onChange={(event) => setAuthorizeInit(event.target.checked)}
+                  />
+                  Allow `.floe/` initialization
+                </label>
+                <button
+                  type="button"
+                  className="primary-action full"
+                  onClick={() => void registerWorkspace()}
+                  disabled={!workspacePath.trim()}
+                >
+                  Create Workspace
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function renderHome() {
     return (
       <section className="workspace-home" data-testid="v6-workspace-home">
         <div className="home-band">
           <div>
             <p className="eyebrow">Workspace Home</p>
-            <h2>{selectedWorkspace?.name ?? "Workspace"}</h2>
+            <h1>{selectedWorkspace?.name ?? "Workspace"}</h1>
             <p className="home-summary">Workspace index</p>
           </div>
           <button className="ghost-action" onClick={() => setChannelOpen(true)}>
@@ -1917,21 +2041,56 @@ function App() {
         </div>
 
         <div className="home-overview-grid">
-          <article className="home-stat-card">
-            <span>Named Scopes</span>
-            <strong>{fieldSummaries.length}</strong>
-            <small>Rendered as Scope-backed Fields</small>
-          </article>
-          <article className="home-stat-card">
-            <span>Workspace actors</span>
-            <strong>{agents.length}</strong>
-            <small>Workspace-scoped identities</small>
-          </article>
-          <article className="home-stat-card">
-            <span>Workspace-level Contexts</span>
-            <strong>{recentWorkspaceContexts.length}</strong>
-            <small>Actor-anchored streams outside Scopes</small>
-          </article>
+          <section className="home-overview-card workspace-settings-card" data-testid="v6-home-workspace-settings">
+            <div className="section-title-row">
+              <div>
+                <h3>Workspace settings</h3>
+                <p>Home indexes Workspace state; it is not a Scope.</p>
+              </div>
+            </div>
+            <dl className="home-detail-list">
+              <div>
+                <dt>Location</dt>
+                <dd>{selectedWorkspace?.locator ?? "Unknown"}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{selectedWorkspace ? workspaceStatusLabel(selectedWorkspace) : "No workspace"}</dd>
+              </div>
+              <div>
+                <dt>Runtime default</dt>
+                <dd>{effectiveProfile?.label ?? effectiveProfile?.id ?? "Not configured"}{effectiveModel ? ` · ${effectiveModel}` : ""}</dd>
+              </div>
+            </dl>
+          </section>
+          <section className="home-overview-card recent-activity-card" data-testid="v6-home-recent-activity">
+            <div className="section-title-row">
+              <div>
+                <h3>Recent activity</h3>
+                <p>Workspace events and runtime traces from the bus.</p>
+              </div>
+              <span>{recentHomeActivity.length}</span>
+            </div>
+            {recentHomeActivity.length === 0 ? (
+              <div className="quiet-empty compact">
+                <Activity size={22} />
+                <strong>No recent activity</strong>
+                <span>Events, deliveries, and runtime work will appear here.</span>
+              </div>
+            ) : (
+              <div className="home-activity-list">
+                {recentHomeActivity.map((item) => (
+                  <article key={item.id} className="home-activity-row">
+                    <span className="field-icon"><Activity size={15} /></span>
+                    <span>
+                      <strong>{item.title}</strong>
+                      <small>{item.detail}</small>
+                    </span>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
 
         <section className="home-actor-pane" data-testid="v6-home-actors">
@@ -2810,43 +2969,6 @@ function App() {
               );
             })
           )}
-          <span className="rail-label">Workspaces</span>
-          {workspaces.map((workspace) => (
-            <div key={workspace.workspace_id} className="workspace-row">
-              <button
-                className={`workspace-button${workspace.workspace_id === selectedWorkspaceId ? " active" : ""}`}
-                onClick={() => void selectWorkspace(workspace.workspace_id)}
-              >
-                <FolderOpen size={15} />
-                <span>{workspace.name}</span>
-              </button>
-              <button
-                className="workspace-delete-button"
-                onClick={(e) => { e.stopPropagation(); void deleteWorkspace(workspace.workspace_id); }}
-                title="Remove workspace"
-                aria-label={`Remove workspace ${workspace.name}`}
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-        <div className="rail-new">
-          <input
-            value={workspacePath}
-            onChange={(event) => setWorkspacePath(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
-            placeholder="Workspace path"
-          />
-          <button
-            className="icon-button"
-            onClick={() => void registerWorkspace()}
-            disabled={!workspacePath.trim()}
-            title="Create Workspace"
-            aria-label="Create workspace"
-          >
-            <FolderPlus size={15} />
-          </button>
         </div>
         <button className="rail-settings" onClick={() => setShowBusSettings((current) => !current)}>
           <Settings size={14} />
@@ -2863,6 +2985,7 @@ function App() {
       <section className="main-stage">
         {error && <div className="error-bar">{error}</div>}
         <header className="topbar v6-topbar" data-testid="v6-topbar">
+          {renderWorkspaceSwitcher()}
           <nav className="breadcrumb">
             <button onClick={goToWorkspaceHome}><Home size={14} /> Workspace</button>
             {view.kind === "field" && (
@@ -2888,8 +3011,8 @@ function App() {
             </button>
           </div>
         </header>
-        <div className="content-row">
-          {renderBlockLibrary()}
+        <div className={`content-row${view.kind === "home" ? " home-content-row" : ""}`}>
+          {view.kind === "field" ? renderBlockLibrary() : null}
           <div
             className="surface-area"
             data-testid="v6-main-surface"

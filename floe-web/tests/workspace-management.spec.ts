@@ -1,6 +1,18 @@
 import { expect } from "@playwright/test";
 import { test, seedApp, WORKSPACE_ID, WORKSPACE_NAME } from "./helpers";
 
+async function openWorkspaceMenu(page: import("@playwright/test").Page) {
+  const topbar = page.getByTestId("v6-topbar");
+  await topbar.getByRole("button", { name: new RegExp(WORKSPACE_NAME) }).click();
+  return topbar;
+}
+
+async function openWorkspaceCreateForm(page: import("@playwright/test").Page) {
+  const topbar = await openWorkspaceMenu(page);
+  await page.getByRole("menuitem", { name: /New Workspace/ }).click();
+  return topbar;
+}
+
 test.describe("Workspace management", () => {
 
   test("shows directory-not-found confirmation when workspace path does not exist", async ({ page }) => {
@@ -44,10 +56,10 @@ test.describe("Workspace management", () => {
       });
     });
 
-    const sidebarInput = page.locator(".rail-new input");
-    await sidebarInput.fill("C:\\fake\\path");
+    const topbar = await openWorkspaceCreateForm(page);
+    await topbar.getByLabel("Location").fill("C:\\fake\\path");
 
-    await page.locator(".rail-new button").click();
+    await topbar.getByRole("button", { name: "Create Workspace" }).click();
     const dialog = page.getByRole("dialog", { name: "Create directory?" });
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText("C:\\fake\\path");
@@ -81,14 +93,14 @@ test.describe("Workspace management", () => {
       });
     });
 
-    const sidebarInput = page.locator(".rail-new input");
-    await sidebarInput.fill("C:\\nope");
+    const topbar = await openWorkspaceCreateForm(page);
+    await topbar.getByLabel("Location").fill("C:\\nope");
 
     page.on("dialog", async (dialog) => {
       await dialog.dismiss();
     });
 
-    await page.locator(".rail-new button").click();
+    await topbar.getByRole("button", { name: "Create Workspace" }).click();
     const dialog = page.getByRole("dialog", { name: "Create directory?" });
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Cancel" }).click();
@@ -106,9 +118,10 @@ test.describe("Workspace management", () => {
       await dialog.dismiss();
     });
 
-    const workspaceRow = page.locator(".workspace-row").first();
+    await openWorkspaceMenu(page);
+    const workspaceRow = page.locator(".workspace-menu-row").first();
     await expect(workspaceRow).toBeVisible();
-    await expect(workspaceRow.locator(".workspace-button span")).toHaveText(WORKSPACE_NAME);
+    await expect(workspaceRow.getByRole("menuitem", { name: new RegExp(WORKSPACE_NAME) })).toBeVisible();
 
     let deletePayload: unknown = null;
     await page.route(`**/v1/workspaces/${WORKSPACE_ID}/delete`, (route) => {
@@ -132,10 +145,8 @@ test.describe("Workspace management", () => {
       return route.fulfill({ status: 200, body: JSON.stringify({}) });
     });
 
-    await workspaceRow.hover();
-
-    const deleteButton = workspaceRow.locator(".workspace-delete-button");
-    await deleteButton.click({ force: true }); // force because opacity might not be fully visible
+    const deleteButton = workspaceRow.locator(".workspace-menu-delete");
+    await deleteButton.click();
     const dialog = page.getByRole("dialog", { name: "Delete workspace" });
     await expect(dialog).toBeVisible();
     const checkbox = dialog.getByTestId("dialog-delete-locator-checkbox");
@@ -155,7 +166,8 @@ test.describe("Workspace management", () => {
       await dialog.dismiss();
     });
 
-    const workspaceRow = page.locator(".workspace-row").first();
+    await openWorkspaceMenu(page);
+    const workspaceRow = page.locator(".workspace-menu-row").first();
     await expect(workspaceRow).toBeVisible();
 
     let deletePayload: unknown = null;
@@ -178,8 +190,7 @@ test.describe("Workspace management", () => {
       return route.fulfill({ status: 200, body: JSON.stringify({}) });
     });
 
-    await workspaceRow.hover();
-    await workspaceRow.locator(".workspace-delete-button").click({ force: true });
+    await workspaceRow.locator(".workspace-menu-delete").click();
     const dialog = page.getByRole("dialog", { name: "Delete workspace" });
     await expect(dialog).toBeVisible();
     await dialog.getByTestId("dialog-delete-locator-checkbox").check();
@@ -198,7 +209,8 @@ test.describe("Workspace management", () => {
       await dialog.dismiss();
     });
 
-    const workspaceRow = page.locator(".workspace-row").first();
+    await openWorkspaceMenu(page);
+    const workspaceRow = page.locator(".workspace-menu-row").first();
     let deleteCalls = 0;
     await page.route(`**/v1/workspaces/${WORKSPACE_ID}/delete`, (route) => {
       deleteCalls++;
@@ -209,9 +221,8 @@ test.describe("Workspace management", () => {
       });
     });
 
-    await workspaceRow.hover();
-    const deleteButton = workspaceRow.locator(".workspace-delete-button");
-    await deleteButton.click({ force: true });
+    const deleteButton = workspaceRow.locator(".workspace-menu-delete");
+    await deleteButton.click();
     const dialog = page.getByRole("dialog", { name: "Delete workspace" });
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Cancel" }).click();
@@ -337,9 +348,7 @@ test.describe("Spinner behavior", () => {
     await page.reload();
     await page.waitForTimeout(1000);
 
-    // Select the workspace
-    await page.locator(".workspace-button").first().click();
-    await page.waitForTimeout(500);
+    await expect(page.getByTestId("v6-topbar").getByRole("button", { name: new RegExp(WORKSPACE_NAME) })).toBeVisible();
 
     // Open the channel
     const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
