@@ -482,6 +482,22 @@ function App() {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(0, 5);
   }, [events, telemetry]);
+  const openedScopeContexts = useMemo(() => (
+    view.kind === "field" && loadedProjection
+      ? loadedProjection.projection.refs.contexts
+      : []
+  ), [loadedProjection, view]);
+  const openedScopeActorCount = useMemo(() => {
+    if (view.kind !== "field" || !loadedProjection) return 0;
+    return new Set(
+      loadedProjection.projection.relationships.context_participants.map((participant) => participant.endpoint_id)
+    ).size;
+  }, [loadedProjection, view]);
+  const openedScopeEmitCount = useMemo(() => {
+    if (view.kind !== "field" || !loadedProjection) return 0;
+    const pulseFireCount = loadedProjection.projection.refs.pulses.reduce((total, pulse) => total + pulse.fire_count, 0);
+    return loadedProjection.projection.refs.events.length + loadedProjection.projection.refs.activity.length + pulseFireCount;
+  }, [loadedProjection, view]);
 
   const workspaceBinding = selectedWorkspace
     ? runtimeBindings.find((binding) => binding.scope === "workspace_default" && binding.workspace_id === selectedWorkspace.workspace_id)
@@ -1777,7 +1793,7 @@ function App() {
   async function createField(name?: string, options: { throwOnError?: boolean } = {}): Promise<void> {
     if (!selectedWorkspace) return;
     const workspaceId = selectedWorkspace.workspace_id;
-    const nextName = name?.trim() || `Field ${fieldSummaries.length + 1}`;
+    const nextName = name?.trim() || `Scope ${fieldSummaries.length + 1}`;
     try {
       const scope = await createScope(busUrl, workspaceId, { title: nextName });
       await refreshFields(workspaceId);
@@ -1805,14 +1821,15 @@ function App() {
   }
 
   function promptCreateField(): void {
-      void promptDialog({
-        title: "New Field",
-        body: "Create a new Scope-backed Field in this workspace.",
+    void promptDialog({
+      title: "New Scope",
+      body: "Create a named Scope for intentional workspace activity.",
       confirmLabel: "Create",
       cancelLabel: "Cancel",
       input: {
-        label: "Field name",
-        placeholder: "Field name"
+        label: "Scope name",
+        placeholder: "Scope name",
+        validate: validateInlineScopeName
       },
       onConfirm: ({ value }) => createField(value, { throwOnError: true })
     });
@@ -1837,7 +1854,6 @@ function App() {
     if (event.dataTransfer.getData(fieldPrimitiveMime) !== "field") return;
     event.preventDefault();
     event.stopPropagation();
-    if (viewRef.current.kind === "field") return;
     promptCreateField();
   }
 
@@ -2278,21 +2294,21 @@ function App() {
       : null;
     const backLabel = parentTitle ? `Back to ${parentTitle}` : "Workspace Home";
     return (
-      <section className="field-surface">
+      <section className="field-surface v6-scope-field" data-testid="v6-scope-field-map">
         <div className="field-toolbar">
           <button className="icon-button" onClick={backFromField} title={backLabel} aria-label={backLabel}>
             <ArrowLeft size={16} />
           </button>
           <div className="field-title-area">
-            <p className="eyebrow">Field Surface</p>
+            <p className="eyebrow">Scope Map</p>
             {renameDraft === null ? (
               <h2>{title}</h2>
             ) : (
               <div className="field-rename-row">
                 <label>
-                  <span className="sr-only">Field title</span>
+                  <span className="sr-only">Scope title</span>
                   <input
-                    aria-label="Field title"
+                    aria-label="Scope title"
                     value={renameDraft}
                     onChange={(event) => setRenameDraft(event.target.value)}
                     onKeyDown={(event) => {
@@ -2304,7 +2320,7 @@ function App() {
                 </label>
                 <button className="primary-action" onClick={submitRenameField}>
                   <Check size={15} />
-                  Save rename
+                  Save Scope
                 </button>
                 <button className="ghost-action" onClick={cancelRenameField}>
                   Cancel
@@ -2316,7 +2332,7 @@ function App() {
             <div className="field-toolbar-actions">
               <button className="ghost-action" onClick={beginRenameField} disabled={!loadedProjection}>
                 <Edit3 size={16} />
-                Rename field
+                Rename Scope
               </button>
               <button className="ghost-action" onClick={() => setChannelOpen(true)}>
                 <MessageSquare size={16} />
@@ -2325,7 +2341,17 @@ function App() {
             </div>
           )}
         </div>
-        <div className="canvas-wrap">
+        <div className="canvas-wrap v6-scope-map-canvas">
+          <div className="map-toolbar" aria-label="Map viewport controls">
+            <button type="button" onClick={() => reactFlow.fitView({ padding: 0.22, duration: 220 })}>Fit</button>
+            <button type="button" onClick={() => reactFlow.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 220 })}>Center</button>
+          </div>
+          <div className="map-legend" data-testid="v6-scope-map-legend">
+            <span><span className="lg-dot cron" />cron</span>
+            <span><span className="lg-dot webhook" />webhook</span>
+            <span><span className="lg-dot file-watch" />file-watch</span>
+            <span><span className="lg-dot manual" />manual</span>
+          </div>
           <ReactFlow
             key={view.fieldId}
             nodes={fieldNodes}
@@ -2360,7 +2386,7 @@ function App() {
           {loadedProjection && fieldNodes.length === 0 && (
             <div className="canvas-empty">
               <SquareDashedMousePointer size={22} />
-              <strong>Empty Field</strong>
+              <strong>Empty Scope</strong>
               <span>This Scope has no projected substrate primitives yet.</span>
             </div>
           )}
@@ -2430,10 +2456,13 @@ function App() {
           </>
         ) : (
           <>
-            <InspectorSection title="Opened Field">
-              <Detail label="Id" value={view.fieldId} />
+            <InspectorSection title="Scope">
               <Detail label="Title" value={loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? "—"} />
+              <Detail label="Workspace" value={selectedWorkspace.name} />
               <Detail label="Contexts" value={String(loadedProjection?.projection.refs.contexts.length ?? 0)} />
+              <Detail label="Events" value={String(loadedProjection?.projection.refs.events.length ?? 0)} />
+              <Detail label="Actors" value={String(openedScopeActorCount)} />
+              <Detail label="Total emits" value={String(openedScopeEmitCount)} />
               <Detail label="Pulses" value={String(loadedProjection?.projection.refs.pulses.length ?? 0)} />
               <Detail label="Unsupported" value={String(loadedProjection?.projection.unsupported.length ?? 0)} />
             </InspectorSection>
@@ -2938,10 +2967,40 @@ function App() {
               </button>
             ))
           )}
-          <button type="button" className="nav-row nav-add" onClick={promptCreateField}>
+          <button
+            type="button"
+            className="nav-row nav-add"
+            onClick={promptCreateField}
+            draggable
+            onDragStart={handleFieldPrimitiveDragStart}
+            title="Create a new Scope"
+          >
             <FolderPlus size={15} />
             <span>New Scope</span>
           </button>
+          {view.kind === "field" && loadedProjection && (
+            <div className="scope-nav-section" data-testid="v6-scope-contexts">
+              <span className="rail-label nav-group-label">
+                <span>Contexts</span>
+                <span>{openedScopeContexts.length}</span>
+              </span>
+              {openedScopeContexts.length === 0 ? (
+                <div className="nav-empty">No mapped Contexts</div>
+              ) : (
+                openedScopeContexts.map((context) => (
+                  <button
+                    key={context.context_id}
+                    type="button"
+                    className={`nav-row context-nav-row${selectedContextId === context.context_id ? " active" : ""}`}
+                    onClick={() => openProjectedContext(context.context_id)}
+                  >
+                    <MessageSquare size={15} />
+                    <span>{context.first_message_preview || context.context_id}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
           <span className="rail-label nav-group-label">
             <span>Actors</span>
             <span>{agents.length}</span>
@@ -2998,6 +3057,12 @@ function App() {
             )}
           </nav>
           <div className="topbar-actions">
+            {view.kind === "field" && (
+              <div className="pill-grp scope-mode-pill" role="group" aria-label="Scope mode">
+                <button type="button" className="is-on">Map</button>
+                <button type="button" disabled title="Ops surface follows in a later v6 slice">Ops</button>
+              </div>
+            )}
             <button className="icon-button" onClick={() => void refresh()} title="Refresh" aria-label="Refresh workspace">
               <RefreshCw size={15} />
             </button>
@@ -3011,8 +3076,7 @@ function App() {
             </button>
           </div>
         </header>
-        <div className={`content-row${view.kind === "home" ? " home-content-row" : ""}`}>
-          {view.kind === "field" ? renderBlockLibrary() : null}
+        <div className={`content-row${view.kind === "home" || view.kind === "field" ? " home-content-row" : ""}`}>
           <div
             className="surface-area"
             data-testid="v6-main-surface"

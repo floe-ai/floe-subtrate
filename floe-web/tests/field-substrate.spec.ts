@@ -127,6 +127,22 @@ function boxesOverlap(
     left.y + left.height > right.y;
 }
 
+const projectionActorEndpoints = [
+  {
+    endpoint_id: `actor:${WORKSPACE_ID}:operator`,
+    workspace_id: WORKSPACE_ID,
+    name: "You",
+    status: "online"
+  },
+  {
+    endpoint_id: `actor:${WORKSPACE_ID}:floe`,
+    workspace_id: WORKSPACE_ID,
+    name: "Floe",
+    status: "idle",
+    agent_id: "floe"
+  }
+];
+
 test.describe("Field surface as Scope Projection", () => {
   test("lists Scopes as Fields and renders only top-level projected substrate refs", async ({ page }) => {
     const legacyFieldRequests: string[] = [];
@@ -162,14 +178,14 @@ test.describe("Field surface as Scope Projection", () => {
       page,
       [makeScope("default", "Default", true)],
       { default: populatedDefaultProjection() },
-      { legacyFieldRequests }
+      { legacyFieldRequests, endpoints: projectionActorEndpoints }
     );
 
     await page.locator(".field-block", { hasText: "Default" }).click();
     await page.locator(".react-flow__node", { hasText: "Research kickoff" }).getByRole("button", { name: "Open" }).click();
 
     await expect(page.getByText("Actor Conversations")).toBeVisible();
-    await expect(page.getByText("Research kickoff")).toBeVisible();
+    await expect(page.getByTestId("active-conversation-header")).toContainText("Research kickoff");
     expect(legacyFieldRequests).toEqual([]);
   });
 
@@ -179,7 +195,7 @@ test.describe("Field surface as Scope Projection", () => {
       page,
       [makeScope("default", "Default", true)],
       { default: overlapRegressionProjection() },
-      { legacyFieldRequests }
+      { legacyFieldRequests, endpoints: projectionActorEndpoints }
     );
 
     await page.locator(".field-block", { hasText: "Default" }).click();
@@ -195,7 +211,7 @@ test.describe("Field surface as Scope Projection", () => {
 
     await contextNode.getByRole("button", { name: "Open" }).click();
     await expect(page.getByText("Actor Conversations")).toBeVisible();
-    await expect(page.getByText("Research kickoff overlap regression")).toBeVisible();
+    await expect(page.getByTestId("active-conversation-header")).toContainText("Research kickoff overlap regression");
     expect(legacyFieldRequests).toEqual([]);
   });
 
@@ -211,13 +227,13 @@ test.describe("Field surface as Scope Projection", () => {
     );
 
     await page.getByRole("button", { name: /Add field/i }).click();
-    await page.getByLabel("Field name").fill("Planning Scope");
+    await page.getByLabel("Scope name").fill("Planning Scope");
     await page.getByTestId("dialog-layer").getByRole("button", { name: "Create" }).click();
     await expect(page.getByRole("heading", { name: "Planning Scope" })).toBeVisible();
 
-    await page.getByRole("button", { name: /Rename field/i }).click();
-    await page.getByLabel("Field title").fill("Renamed Planning");
-    await page.getByRole("button", { name: "Save rename" }).click();
+    await page.getByRole("button", { name: /Rename Scope/i }).click();
+    await page.getByLabel("Scope title").fill("Renamed Planning");
+    await page.getByRole("button", { name: "Save Scope" }).click();
     await expect(page.getByRole("heading", { name: "Renamed Planning" })).toBeVisible();
 
     expect(scopePosts.some((body) => body.includes("Planning Scope"))).toBe(true);

@@ -107,13 +107,13 @@ test.describe("Scope Projection Fields", () => {
     );
 
     await page.getByRole("button", { name: /Add field/i }).click();
-    await page.getByLabel("Field name").fill("Planning Scope");
+    await page.getByLabel("Scope name").fill("Planning Scope");
     await page.getByTestId("dialog-layer").getByRole("button", { name: "Create" }).click();
     await expect(page.getByRole("heading", { name: "Planning Scope" })).toBeVisible();
 
-    await page.getByRole("button", { name: /Rename field/i }).click();
-    await page.getByLabel("Field title").fill("Renamed Planning");
-    await page.getByRole("button", { name: "Save rename" }).click();
+    await page.getByRole("button", { name: /Rename Scope/i }).click();
+    await page.getByLabel("Scope title").fill("Renamed Planning");
+    await page.getByRole("button", { name: "Save Scope" }).click();
     await expect(page.getByRole("heading", { name: "Renamed Planning" })).toBeVisible();
 
     expect(scopePosts.some((body) => body.includes("Planning Scope"))).toBe(true);
@@ -134,10 +134,10 @@ test.describe("Scope Projection Fields", () => {
 
     for (const _ of [0, 1]) {
       await page.getByRole("button", { name: /Add field/i }).click();
-      await page.getByLabel("Field name").fill("Shared Planning");
+      await page.getByLabel("Scope name").fill("Shared Planning");
       await page.getByTestId("dialog-layer").getByRole("button", { name: "Create" }).click();
       await expect(page.getByRole("heading", { name: "Shared Planning" })).toBeVisible();
-      await expect(page.getByText("Empty Field")).toBeVisible();
+      await expect(page.getByText("Empty Scope")).toBeVisible();
       await expect(page.getByText(/POST .*scope_already_exists/)).toHaveCount(0);
       await page.getByRole("button", { name: "Workspace Home" }).click();
     }
