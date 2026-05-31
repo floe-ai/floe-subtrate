@@ -68,9 +68,8 @@ export function sortContextsForAgent(
   operatorEndpointId: string,
   selectedActorEndpointId: string
 ): { sorted: ContextSummary[]; defaultContextId: string | null } {
-  // Only show contexts where both self AND selected actor participate
-  const relevant = contexts.filter(c =>
-    c.participants.includes(operatorEndpointId) && c.participants.includes(selectedActorEndpointId)
+  const relevant = contexts.filter((context) =>
+    context.participants.includes(selectedActorEndpointId)
   );
   const defaultContextId = findDefaultContextId(
     relevant,
@@ -83,6 +82,15 @@ export function sortContextsForAgent(
     return bt.localeCompare(at);
   });
   return { sorted: byActivity, defaultContextId };
+}
+
+export function contextParticipationLabel(
+  ctx: ContextSummary,
+  scopeTitlesById: Record<string, string>
+): string {
+  if (!ctx.scope_id) return "Workspace-level Context";
+  const scopeTitle = scopeTitlesById[ctx.scope_id]?.trim();
+  return scopeTitle ? `Scoped Context · ${scopeTitle}` : "Scoped Context";
 }
 
 export function sortWorkspaceContexts(contexts: ContextSummary[]): ContextSummary[] {

@@ -50,6 +50,7 @@ import "./styles.css";
 import {
   buildEmitBody,
   canAssignContextToScope,
+  contextParticipationLabel,
   contextLabel,
   contextScopeAssignmentStatus,
   sortContextsForAgent,
@@ -397,6 +398,7 @@ function App() {
   const localLayoutWriteUntilRef = useRef<Map<string, number>>(new Map());
   const autoInitializedLayoutRef = useRef<Set<string>>(new Set());
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const contextsRequestRef = useRef(0);
   const contextEventsRequestRef = useRef(0);
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
@@ -418,17 +420,39 @@ function App() {
     }
     return sortContextsForAgent(contexts, humanEndpoint, selectedAgent.endpoint_id);
   }, [contexts, selectedAgent, humanEndpoint]);
+  const scopeTitlesById = useMemo(
+    () => Object.fromEntries(scopeRecords.map((scope) => [scope.scope_id, scope.title])),
+    [scopeRecords]
+  );
   const recentWorkspaceContexts = useMemo(
     () => sortWorkspaceContexts(workspaceContexts).slice(0, 6),
     [workspaceContexts]
   );
 
+  const projectedSelectedContext = selectedContextId && loadedProjection
+    ? (() => {
+      const ref = loadedProjection.projection.refs.contexts.find((context) => context.context_id === selectedContextId);
+      if (!ref) return null;
+      const participants = loadedProjection.projection.relationships.context_participants
+        .filter((participant) => participant.context_id === selectedContextId)
+        .map((participant) => participant.endpoint_id);
+      return {
+        ...ref,
+        created_by_endpoint_id: ref.created_by_endpoint_id || null,
+        participants
+      } satisfies ContextSummary;
+    })()
+    : null;
   const selectedContext = selectedContextId
     ? contexts.find((c) => c.context_id === selectedContextId) ??
       workspaceContexts.find((c) => c.context_id === selectedContextId) ??
+      projectedSelectedContext ??
       null
     : null;
   const contextEvents = contextEventsState.contextId === selectedContextId ? contextEventsState.events : [];
+  const selectedContextCanMessage = !selectedContextId
+    ? true
+    : selectedContext?.participants.includes(humanEndpoint) === true;
   const selectedFieldSummary = view.kind === "field"
     ? fieldSummaries.find((field) => field.id === view.fieldId) ?? null
     : null;
@@ -474,6 +498,7 @@ function App() {
     !!effectiveProfile &&
     effectiveProfile.provider !== "fake";
   const canMessageRuntime = runtimeReady && !runtimeBlockedByFakeAdapter;
+  const canUseChannelComposer = canMessageRuntime && selectedContextCanMessage;
 
   const floeMessages = useMemo<EventEnvelope[]>(() => {
     if (!floeAgent || !selectedContextId) return [];
@@ -670,18 +695,20 @@ function App() {
     return latest && runtimeErrorKinds.has(latest.kind) ? latest : null;
   }, [floeAgent, telemetry]);
 
-  const refreshContexts = useCallback(async (workspaceId: string) => {
+  const refreshContexts = useCallback(async (workspaceId: string, participantEndpointId?: string) => {
     try {
-      const selfId = operatorActorId(workspaceId);
+      const participantId = participantEndpointId ?? selectedAgent?.endpoint_id ?? operatorActorId(workspaceId);
+      const requestId = ++contextsRequestRef.current;
       const result = await api<{ contexts: ContextSummary[] }>(
         busUrl,
-        `/v1/contexts?participant=${encodeURIComponent(selfId)}&workspace_id=${encodeURIComponent(workspaceId)}`
+        `/v1/contexts?participant=${encodeURIComponent(participantId)}&workspace_id=${encodeURIComponent(workspaceId)}`
       );
+      if (requestId !== contextsRequestRef.current) return;
       setContexts(result.contexts);
     } catch {
       // Non-fatal — keep showing whatever we already have.
     }
-  }, [busUrl]);
+  }, [busUrl, selectedAgent?.endpoint_id]);
 
   const refreshWorkspaceContexts = useCallback(async (workspaceId: string) => {
     try {
@@ -716,11 +743,21 @@ function App() {
   }
 
   const openProjectedContext = useCallback((contextId: string) => {
+    const projection = loadedProjectionRef.current?.projection;
+    const participants = projection?.relationships.context_participants
+      .filter((participant) => participant.context_id === contextId)
+      .map((participant) => participant.endpoint_id) ?? [];
+    const fallbackActor = participants.find((participant) =>
+      participant !== selfActorId && endpoints.some((endpoint) => endpoint.endpoint_id === participant)
+    );
+    if (fallbackActor) {
+      setSelectedAgentId(fallbackActor);
+    }
     setSelectedContextId(contextId);
     setDraftMode(false);
     setChannelOpen(true);
     void refreshContextEvents(contextId);
-  }, [refreshContextEvents]);
+  }, [endpoints, refreshContextEvents, selfActorId]);
 
   const openWorkspaceContext = useCallback((context: ContextSummary) => {
     const selectedParticipates = selectedAgent
@@ -1006,13 +1043,14 @@ function App() {
   // ── Slice 5: per-agent context list + context-scoped events ──────────────
   useEffect(() => {
     if (!selectedWorkspace || !floeAgent) {
+      contextsRequestRef.current += 1;
       setContexts([]);
       setSelectedContextId(null);
       clearContextEvents();
       setDraftMode(false);
       return;
     }
-    void refreshContexts(selectedWorkspace.workspace_id);
+    void refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
   }, [selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, refreshContexts]);
 
   useEffect(() => {
@@ -1028,20 +1066,20 @@ function App() {
     if (draftMode) return;
     if (selectedContextId) return;
     if (sortedContexts.sorted.length === 0) return;
-    setSelectedContextId(sortedContexts.sorted[0].context_id);
-  }, [sortedContexts, selectedContextId, draftMode]);
+    const firstWritableContext = sortedContexts.sorted.find((context) =>
+      context.participants.includes(humanEndpoint)
+    );
+    setSelectedContextId((firstWritableContext ?? sortedContexts.sorted[0]).context_id);
+  }, [sortedContexts, selectedContextId, draftMode, humanEndpoint]);
 
   // Drop selection if it disappears (workspace switch, etc.)
   useEffect(() => {
     if (!selectedContextId) return;
-    if (
-      !contexts.some((c) => c.context_id === selectedContextId) &&
-      !workspaceContexts.some((c) => c.context_id === selectedContextId)
-    ) {
+    if (!selectedContext) {
       setSelectedContextId(null);
       clearContextEvents();
     }
-  }, [contexts, workspaceContexts, selectedContextId]);
+  }, [selectedContext, selectedContextId]);
 
   useEffect(() => {
     if (!selectedContextId) {
@@ -1055,7 +1093,7 @@ function App() {
   // and the selected context's events so live updates flow through. Cheap.
   useEffect(() => {
     if (!selectedWorkspace || !floeAgent) return;
-    void refreshContexts(selectedWorkspace.workspace_id);
+    void refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
     void refreshWorkspaceContexts(selectedWorkspace.workspace_id);
     if (selectedContextId) void refreshContextEvents(selectedContextId);
   }, [events.length, selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, selectedContextId, refreshContexts, refreshWorkspaceContexts, refreshContextEvents]);
@@ -1605,7 +1643,7 @@ function App() {
   }
 
   async function sendFloeMessage() {
-    if (!selectedWorkspace || !floeAgent || !canMessageRuntime || !channelMessage.trim()) return;
+    if (!selectedWorkspace || !floeAgent || !canUseChannelComposer || !channelMessage.trim()) return;
     await ensureOperator(selectedWorkspace.workspace_id);
     const text = channelMessage.trim();
     const body = buildEmitBody({
@@ -1627,7 +1665,7 @@ function App() {
       setSelectedContextId(newCtxId);
       setDraftMode(false);
     }
-    await refreshContexts(selectedWorkspace.workspace_id);
+    await refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
     if (newCtxId) {
       await refreshContextEvents(newCtxId);
     } else if (selectedContextId) {
@@ -2296,6 +2334,12 @@ function App() {
   function renderChannel() {
     if (!channelOpen) return null;
     const actorName = selectedAgent ? selectedAgent.name?.trim() || selectedAgent.agent_id || "Actor" : "";
+    const messageSourceLabel = (sourceEndpointId: string | null): string => {
+      if (!sourceEndpointId) return "System";
+      if (sourceEndpointId === humanEndpoint) return operatorDisplayName;
+      const endpoint = endpoints.find((item) => item.endpoint_id === sourceEndpointId);
+      return endpointDisplayName(endpoint) ?? "Actor";
+    };
     const activeContextLabel = selectedContext
       ? selectedContext.first_message_preview?.trim() || pulseLabels[selectedContext.context_id] || "Conversation"
       : null;
@@ -2309,7 +2353,7 @@ function App() {
     const activeConversationState = draftMode
       ? "Draft"
       : selectedContext
-        ? "Existing conversation"
+        ? selectedContextCanMessage ? "Existing conversation" : "Read-only Context"
         : sortedContexts.sorted.length === 0
           ? "No conversations yet"
           : "No conversation selected";
@@ -2351,6 +2395,7 @@ function App() {
                     aria-pressed={selected}
                     aria-label={`${name} ${status}${selected ? " selected" : ""}`}
                     onClick={() => {
+                      contextsRequestRef.current += 1;
                       setSelectedAgentId(agent.endpoint_id);
                       setSelectedContextId(null);
                       setDraftMode(false);
@@ -2371,7 +2416,7 @@ function App() {
         {selectedAgent && (
           <div className="channel-context-list" data-testid="context-list">
             <div className="channel-context-list-header">
-              <span>Conversations</span>
+              <span>Contexts involving {actorName}</span>
               <button
                 className="ghost-action small"
                 data-testid="new-conversation-button"
@@ -2395,6 +2440,8 @@ function App() {
                       : pulseLabels[ctx.context_id] ?? "Conversation";
                   const isActive = ctx.context_id === selectedContextId;
                   const activityTime = ctx.last_event_at ?? ctx.created_at;
+                  const participationLabel = contextParticipationLabel(ctx, scopeTitlesById);
+                  const operatorParticipates = ctx.participants.includes(humanEndpoint);
                   return (
                     <li key={ctx.context_id} className="channel-context-row">
                       <button
@@ -2410,6 +2457,7 @@ function App() {
                         }}
                       >
                         <span className="channel-context-label">{label}</span>
+                        <span className="channel-context-scope">{participationLabel}</span>
                         <time
                           className="channel-context-time"
                           data-testid="context-list-item-time"
@@ -2418,18 +2466,20 @@ function App() {
                           {formatContextTimestamp(activityTime)}
                         </time>
                       </button>
-                      <button
-                        type="button"
-                        className="channel-context-delete-button"
-                        aria-label={`Delete conversation ${label}`}
-                        title={`Delete conversation ${label}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void deleteConversation(ctx.context_id, label);
-                        }}
-                      >
-                        <X size={12} />
-                      </button>
+                      {operatorParticipates && (
+                        <button
+                          type="button"
+                          className="channel-context-delete-button"
+                          aria-label={`Delete conversation ${label}`}
+                          title={`Delete conversation ${label}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void deleteConversation(ctx.context_id, label);
+                          }}
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
                     </li>
                   );
                 })}
@@ -2470,6 +2520,12 @@ function App() {
             <div className="callout warning">
               <AlertTriangle size={15} />
               <span>The bridge is running with the fake runtime adapter, so {effectiveProfile?.id} will not be used. Set <code>bridge.runtime_adapter</code> to <code>pi-agent-core</code> and restart Floe.</span>
+            </div>
+          )}
+          {selectedAgent && selectedContext && !selectedContextCanMessage && (
+            <div className="callout warning">
+              <AlertTriangle size={15} />
+              <span>Read-only Context: {actorName} participates in this Workspace Context, but {operatorDisplayName} is not a participant.</span>
             </div>
           )}
           {!selectedAgent ? (
@@ -2531,7 +2587,7 @@ function App() {
                 const isSelf = segment.message.source_endpoint_id === humanEndpoint;
                 return (
                   <div key={segment.message.event_id} className={`channel-message ${isSelf ? "self" : "other"}`}>
-                    <div className="message-meta">{isSelf ? operatorDisplayName : actorName} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
+                    <div className="message-meta">{messageSourceLabel(segment.message.source_endpoint_id)} · {new Date(segment.message.created_at).toLocaleTimeString()}</div>
                     <div className="message-text">{isSelf ? segment.message.content.text : renderMarkdown(segment.message.content.text ?? "")}</div>
                     {segment.activity && renderActivityGroup(segment.activity)}
                   </div>
@@ -2557,14 +2613,14 @@ function App() {
                 void sendFloeMessage();
               }
             }}
-            disabled={!selectedAgent || !canMessageRuntime}
+            disabled={!selectedAgent || !canUseChannelComposer}
             aria-label={selectedAgent ? `Message ${actorName}` : "Message actor"}
-            placeholder={!selectedAgent ? "No actors available" : !runtimeReady ? "Configure runtime first" : runtimeBlockedByFakeAdapter ? "Configure bridge runtime first" : `Message ${actorName}`}
+            placeholder={!selectedAgent ? "No actors available" : !selectedContextCanMessage ? "Read-only Context" : !runtimeReady ? "Configure runtime first" : runtimeBlockedByFakeAdapter ? "Configure bridge runtime first" : `Message ${actorName}`}
           />
           <button
             className="icon-button primary-icon"
             onClick={() => void sendFloeMessage()}
-            disabled={!selectedAgent || !canMessageRuntime || !channelMessage.trim()}
+            disabled={!selectedAgent || !canUseChannelComposer || !channelMessage.trim()}
             title="Send"
             aria-label="Send message"
           >

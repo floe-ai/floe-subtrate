@@ -104,6 +104,24 @@ async function setupRoutes(page: import("@playwright/test").Page) {
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
   );
 
+  await page.route(`**/v1/workspaces/${WORKSPACE_ID}/scopes`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        scopes: [{
+          scope_id: "scope_review",
+          workspace_id: WORKSPACE_ID,
+          title: "Review Scope",
+          description: null,
+          is_default: false,
+          created_at: "2025-01-01T00:00:00Z",
+          updated_at: "2025-01-01T00:00:00Z"
+        }]
+      })
+    })
+  );
+
   await page.route("**/v1/auth/profiles", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ profiles: [] }) })
   );
@@ -128,34 +146,36 @@ async function setupRoutes(page: import("@playwright/test").Page) {
         body: JSON.stringify({ events: EVENTS_B })
       });
     }
-    // contexts list
+    const participant = new URL(url).searchParams.get("participant");
+    const contexts = [
+      {
+        context_id: CONTEXT_A,
+        workspace_id: WORKSPACE_ID,
+        scope_id: null,
+        parent_context_id: null,
+        created_by_endpoint_id: OPERATOR_ID,
+        created_at: "2025-01-01T00:00:00Z",
+        last_event_at: "2025-01-01T00:00:02Z",
+        participants: [OPERATOR_ID, FLOE_ID],
+        first_message_preview: "Context-A message from operator"
+      },
+      {
+        context_id: CONTEXT_B,
+        workspace_id: WORKSPACE_ID,
+        scope_id: "scope_review",
+        parent_context_id: null,
+        created_by_endpoint_id: FLOE_ID,
+        created_at: "2025-01-01T00:01:00Z",
+        last_event_at: "2025-01-01T00:01:02Z",
+        participants: [FLOE_ID, REVIEWER_ID],
+        first_message_preview: "Context-B message from floe to reviewer"
+      }
+    ].filter((context) => !participant || context.participants.includes(participant));
+
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        contexts: [
-          {
-            context_id: CONTEXT_A,
-            workspace_id: WORKSPACE_ID,
-            parent_context_id: null,
-            created_by_endpoint_id: OPERATOR_ID,
-            created_at: "2025-01-01T00:00:00Z",
-            last_event_at: "2025-01-01T00:00:02Z",
-            participants: [OPERATOR_ID, FLOE_ID],
-            first_message_preview: "Context-A message from operator"
-          },
-          {
-            context_id: CONTEXT_B,
-            workspace_id: WORKSPACE_ID,
-            parent_context_id: null,
-            created_by_endpoint_id: FLOE_ID,
-            created_at: "2025-01-01T00:01:00Z",
-            last_event_at: "2025-01-01T00:01:02Z",
-            participants: [FLOE_ID, REVIEWER_ID],
-            first_message_preview: "Context-B message from floe to reviewer"
-          }
-        ]
-      })
+      body: JSON.stringify({ contexts })
     });
   });
 
@@ -184,7 +204,7 @@ async function gotoAndOpenChannel(page: import("@playwright/test").Page) {
 }
 
 test.describe("No actor bleed between contexts (Slice 8)", () => {
-  test("context query uses operator self ID as participant, not selected agent", async ({ page }) => {
+  test("context query uses selected actor ID as participant, not operator self ID", async ({ page }) => {
     const contextRequests: string[] = [];
     await setupRoutes(page);
     // Intercept context list requests to capture URL
@@ -215,14 +235,14 @@ test.describe("No actor bleed between contexts (Slice 8)", () => {
     await page.click('.icon-button[aria-label="Open actor conversation panel"]');
     await page.waitForTimeout(800);
 
-    // Verify the context list query used the operator's ID, not the agent's
+    // Verify the context list query uses the selected actor's ID, not the operator's.
     const contextListReq = contextRequests.find(u => u.includes("/v1/contexts?"));
     expect(contextListReq).toBeDefined();
-    expect(contextListReq).toContain(encodeURIComponent(OPERATOR_ID));
-    expect(contextListReq).not.toContain(encodeURIComponent(FLOE_ID));
+    expect(contextListReq).toContain(encodeURIComponent(FLOE_ID));
+    expect(contextListReq).not.toContain(encodeURIComponent(OPERATOR_ID));
   });
 
-  test("context list only shows contexts where both operator and selected agent participate", async ({ page }) => {
+  test("context list shows all Workspace Contexts involving the selected actor", async ({ page }) => {
     await setupRoutes(page);
     await page.goto("/");
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
@@ -230,12 +250,27 @@ test.describe("No actor bleed between contexts (Slice 8)", () => {
     await page.click('.icon-button[aria-label="Open actor conversation panel"]');
     await page.waitForTimeout(400);
 
-    // Context B (floe↔reviewer) should not appear in the sidebar context list
     const contextList = page.locator("[data-testid='context-list']");
     const listText = await contextList.innerText();
-    expect(listText).not.toContain("Context-B message from floe to reviewer");
-    // Context A (operator↔floe) should be visible
     expect(listText).toContain("Context-A message from operator");
+    expect(listText).toContain("Context-B message from floe to reviewer");
+    expect(listText).toContain("Workspace-level Context");
+    expect(listText).toContain("Scoped Context · Review Scope");
+    expect(listText).not.toMatch(/Default (Scope|Field)/);
+  });
+
+  test("non-operator selected-actor Contexts are opened read-only", async ({ page }) => {
+    await gotoAndOpenChannel(page);
+    await page.waitForSelector(".channel-message", { timeout: 5000 });
+
+    await page.locator('[data-testid="context-list-item"][data-context-id="ctx_b"]').click();
+    await page.waitForTimeout(500);
+
+    await expect(page.getByText("Context-B message from floe to reviewer").last()).toBeVisible();
+    await expect(page.getByText(/Floe ·/).last()).toBeVisible();
+    await expect(page.getByText(/Reviewer ·/)).toBeVisible();
+    await expect(page.getByText("Read-only Context: Floe participates")).toBeVisible();
+    await expect(page.locator(".channel-composer input")).toBeDisabled();
   });
 
   test("context A shows only context-A messages, no context-B content", async ({ page }) => {
@@ -259,7 +294,7 @@ test.describe("No actor bleed between contexts (Slice 8)", () => {
     await page.waitForSelector(".channel-message", { timeout: 5000 });
 
     // Click context B in the context list
-    const contextBItem = page.locator("text=Context-B message from floe to reviewer");
+    const contextBItem = page.locator('[data-testid="context-list-item"][data-context-id="ctx_b"]');
     if (await contextBItem.isVisible()) {
       await contextBItem.click();
       await page.waitForTimeout(500);

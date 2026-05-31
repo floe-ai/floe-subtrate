@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canAssignContextToScope,
+  contextParticipationLabel,
   contextLabel,
   contextScopeAssignmentStatus,
   sortContextsForAgent,
@@ -102,23 +103,22 @@ describe("findDefaultContextId", () => {
 });
 
 describe("sortContextsForAgent", () => {
-  it("filters to only contexts where both self and selected actor participate", () => {
+  it("shows every Context involving the selected actor, including non-operator participation", () => {
     const ctxs: ContextSummary[] = [
       makeCtx({ context_id: "ctx-a", participants: [OP, FLOE], last_event_at: "2024-06-01T00:00:00.000Z" }),
       makeCtx({ context_id: "ctx-b", participants: [FLOE, REVIEWER], last_event_at: "2024-06-03T00:00:00.000Z" }),
       makeCtx({ context_id: "ctx-c", participants: [OP, REVIEWER], last_event_at: "2024-06-02T00:00:00.000Z" }),
     ];
     const result = sortContextsForAgent(ctxs, OP, FLOE);
-    expect(result.sorted).toHaveLength(1);
-    expect(result.sorted[0].context_id).toBe("ctx-a");
+    expect(result.sorted.map((ctx) => ctx.context_id)).toEqual(["ctx-b", "ctx-a"]);
   });
 
-  it("returns empty when operator has no contexts with selected actor", () => {
+  it("returns selected actor contexts even when operator is not a participant", () => {
     const ctxs: ContextSummary[] = [
       makeCtx({ context_id: "ctx-b", participants: [FLOE, REVIEWER], last_event_at: "2024-06-03T00:00:00.000Z" }),
     ];
     const result = sortContextsForAgent(ctxs, OP, FLOE);
-    expect(result.sorted).toHaveLength(0);
+    expect(result.sorted.map((ctx) => ctx.context_id)).toEqual(["ctx-b"]);
     expect(result.defaultContextId).toBeNull();
   });
 
@@ -160,6 +160,15 @@ describe("sortContextsForAgent", () => {
     ];
     const result = sortContextsForAgent(ctxs, OP, FLOE);
     expect(result.sorted.map((c) => c.context_id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("contextParticipationLabel", () => {
+  it("labels Workspace-level and scoped actor participation without Default terminology", () => {
+    expect(contextParticipationLabel(makeCtx({ scope_id: null }), {})).toBe("Workspace-level Context");
+    expect(contextParticipationLabel(makeCtx({ scope_id: "scope_research" }), { scope_research: "Research Sprint" }))
+      .toBe("Scoped Context · Research Sprint");
+    expect(contextParticipationLabel(makeCtx({ scope_id: "scope_missing" }), {})).toBe("Scoped Context");
   });
 });
 
