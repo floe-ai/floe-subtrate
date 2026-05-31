@@ -1066,7 +1066,7 @@ code {
 
 .activity-row {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
   border: 1px solid var(--border);
@@ -1077,6 +1077,24 @@ code {
 
 .activity-row.runtime {
   border-color: var(--accent-soft);
+}
+
+.activity-row.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+.activity-row-select {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
 }
 
 .activity-row-body {

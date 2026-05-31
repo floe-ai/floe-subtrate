@@ -55,7 +55,8 @@ import {
   runtimeActivityLabel,
   summarizeTelemetry,
   telemetryContextId,
-  type ActivityFilters
+  type ActivityFilters,
+  type ActivityRow
 } from "./activity";
 import {
   buildEmitBody,
@@ -95,6 +96,11 @@ import {
   type ScopeProjection,
   type ScopeRecord
 } from "./scope-projection";
+import {
+  buildActorInspectorSummary,
+  buildScopeInspectorSummary,
+  buildWorkspaceInspectorSummary
+} from "./inspector-view-model";
 import { DialogHost, confirm as confirmDialog, confirmWithOptions, prompt as promptDialog } from "./dialog/dialog";
 import { subscribePulse, unsubscribePulse } from "./pulse-api";
 
@@ -398,6 +404,7 @@ function App() {
     scopeId: "all",
     contextId: "all"
   });
+  const [selectedActivityRowId, setSelectedActivityRowId] = useState<string | null>(null);
   const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
   const [contextAssignmentTargets, setContextAssignmentTargets] = useState<Record<string, string>>({});
   const [contextEventsState, setContextEventsState] = useState<{ contextId: string | null; events: ContextEvent[] }>({
@@ -513,6 +520,14 @@ function App() {
     () => filterActivityRows(activityRows, activityFilters),
     [activityFilters, activityRows]
   );
+  const selectedActivityRow = useMemo<ActivityRow | null>(() => {
+    if (!selectedActivityRowId) return null;
+    return activityRows.find((row) => row.id === selectedActivityRowId) ?? null;
+  }, [activityRows, selectedActivityRowId]);
+  const selectedActivityContext = useMemo(() => {
+    if (!selectedActivityRow?.contextId) return null;
+    return activityContexts.find((context) => context.context_id === selectedActivityRow.contextId) ?? null;
+  }, [activityContexts, selectedActivityRow]);
   const activityContextOptions = useMemo(() => {
     return sortWorkspaceContexts(activityContexts).filter((context) => {
       if (activityFilters.scopeId === "workspace") return context.scope_id === null;
@@ -525,17 +540,23 @@ function App() {
       ? loadedProjection.projection.refs.contexts
       : []
   ), [loadedProjection, view]);
-  const openedScopeActorCount = useMemo(() => {
-    if (view.kind !== "field" || !loadedProjection) return 0;
-    return new Set(
-      loadedProjection.projection.relationships.context_participants.map((participant) => participant.endpoint_id)
-    ).size;
-  }, [loadedProjection, view]);
-  const openedScopeEmitCount = useMemo(() => {
-    if (view.kind !== "field" || !loadedProjection) return 0;
-    const pulseFireCount = loadedProjection.projection.refs.pulses.reduce((total, pulse) => total + pulse.fire_count, 0);
-    return loadedProjection.projection.refs.events.length + loadedProjection.projection.refs.activity.length + pulseFireCount;
-  }, [loadedProjection, view]);
+  const workspaceInspectorSummary = useMemo(() => buildWorkspaceInspectorSummary({
+    namedScopeCount: scopeRecords.length,
+    scopeBackedFieldCount: fieldSummaries.length,
+    contexts: activityContexts,
+    eventCount: events.length,
+    telemetryCount: telemetry.length,
+    endpointCount: endpoints.length
+  }), [activityContexts, endpoints.length, events.length, fieldSummaries.length, scopeRecords.length, telemetry.length]);
+  const scopeInspectorSummary = useMemo(() => (
+    view.kind === "field"
+      ? buildScopeInspectorSummary({
+        scopeId: view.fieldId,
+        projection: loadedProjection?.projection ?? null,
+        activityRows
+      })
+      : null
+  ), [activityRows, loadedProjection, view]);
 
   const workspaceBinding = selectedWorkspace
     ? runtimeBindings.find((binding) => binding.scope === "workspace_default" && binding.workspace_id === selectedWorkspace.workspace_id)
@@ -632,6 +653,16 @@ function App() {
   }, [floeAgent, telemetry]);
 
   const floeIsActive = floeAgent?.status === "active";
+  const inspectorActorContexts = inspectorActor ? sortedContexts.sorted : [];
+  const actorInspectorSummary = inspectorActor
+    ? buildActorInspectorSummary({
+      actorId: inspectorActor.endpoint_id,
+      contexts: inspectorActorContexts,
+      activityRows,
+      runtimeBinding: agentBinding,
+      adapter: selectedAgentRuntimeAdapter ?? bridgeRuntimeAdapterName
+    })
+    : null;
 
   const chatSegments = useMemo<ChatSegment[]>(() => {
     if (!floeAgent || !selectedContextId) return [];
@@ -1008,6 +1039,7 @@ function App() {
         setSelectedWorkspaceId(nextWorkspaceId);
         setView({ kind: "home" });
         setActivityFilters({ actorId: "all", kind: "all", scopeId: "all", contextId: "all" });
+        setSelectedActivityRowId(null);
         clearFieldEditingState();
       }
       if (nextWorkspaceId) {
@@ -1194,6 +1226,13 @@ function App() {
     }
     void refreshContextEvents(selectedContextId);
   }, [selectedContextId, refreshContextEvents]);
+
+  useEffect(() => {
+    if (!selectedActivityRowId) return;
+    if (!filteredActivityRows.some((row) => row.id === selectedActivityRowId)) {
+      setSelectedActivityRowId(null);
+    }
+  }, [filteredActivityRows, selectedActivityRowId]);
 
   // When workspace-level events change (via WS refresh), re-pull context list
   // and the selected context's events so live updates flow through. Cheap.
@@ -2512,20 +2551,33 @@ function App() {
                 ? activityContexts.find((candidate) => candidate.context_id === row.contextId) ?? null
                 : null;
               return (
-                <article key={row.id} className={`activity-row ${row.category}`} data-testid="activity-row">
-                  <span className="field-icon"><Activity size={15} /></span>
-                  <div className="activity-row-body">
-                    <div className="activity-row-title">
-                      <strong>{row.title}</strong>
-                      <span>{new Date(row.createdAt).toLocaleTimeString()}</span>
+                <article
+                  key={row.id}
+                  className={`activity-row ${row.category}${selectedActivityRowId === row.id ? " selected" : ""}`}
+                  data-testid="activity-row"
+                  aria-selected={selectedActivityRowId === row.id}
+                >
+                  <button
+                    type="button"
+                    className="activity-row-select"
+                    aria-label={`Inspect activity ${row.detail}`}
+                    aria-pressed={selectedActivityRowId === row.id}
+                    onClick={() => setSelectedActivityRowId(row.id)}
+                  >
+                    <span className="field-icon"><Activity size={15} /></span>
+                    <div className="activity-row-body">
+                      <div className="activity-row-title">
+                        <strong>{row.title}</strong>
+                        <span>{new Date(row.createdAt).toLocaleTimeString()}</span>
+                      </div>
+                      <p>{row.detail}</p>
+                      <div className="activity-row-meta">
+                        <span>{row.sourceLabel}</span>
+                        <span>{row.scopeLabel}</span>
+                        {row.contextLabel && <span>{row.contextLabel}</span>}
+                      </div>
                     </div>
-                    <p>{row.detail}</p>
-                    <div className="activity-row-meta">
-                      <span>{row.sourceLabel}</span>
-                      <span>{row.scopeLabel}</span>
-                      {row.contextLabel && <span>{row.contextLabel}</span>}
-                    </div>
-                  </div>
+                  </button>
                   {context && (
                     <button
                       type="button"
@@ -2668,17 +2720,23 @@ function App() {
         ) : inspectorActor ? (
           <>
             <InspectorSection title="Actor">
+              <Detail label="Type" value="Workspace Endpoint" />
               <Detail label="Name" value={endpointDisplayName(inspectorActor) ?? inspectorActor.agent_id ?? "Actor"} />
               <Detail label="Endpoint" value={inspectorActor.endpoint_id} />
               <Detail label="Status" value={inspectorActor.status || "unknown"} />
               {inspectorActor.agent_id && <Detail label="Agent id" value={inspectorActor.agent_id} />}
+              <Detail label="Runtime binding" value={actorInspectorSummary?.runtimeBindingLabel ?? "Unconfigured"} />
+              <Detail label="Adapter" value={actorInspectorSummary?.adapterLabel ?? "unknown"} />
+              <Detail label="Workspace-level participation" value={String(actorInspectorSummary?.workspaceLevelContextCount ?? 0)} />
+              <Detail label="Scoped participation" value={String(actorInspectorSummary?.scopedContextCount ?? 0)} />
+              <Detail label="Actor Activity" value={String(actorInspectorSummary?.activityCount ?? 0)} />
             </InspectorSection>
             <InspectorSection title="Context participation">
-              {sortedContexts.sorted.length === 0 ? (
+              {inspectorActorContexts.length === 0 ? (
                 <div className="inspector-note">No Contexts found for this actor.</div>
               ) : (
                 <div className="inspector-context-list">
-                  {sortedContexts.sorted.map((context) => {
+                  {inspectorActorContexts.map((context) => {
                     const label = contextLabel(context, null);
                     const participationLabel = contextParticipationLabel(context, scopeTitlesById);
                     const activityTime = context.last_event_at ?? context.created_at;
@@ -2704,6 +2762,27 @@ function App() {
           </>
         ) : view.kind === "activity" ? (
           <>
+            {selectedActivityRow && (
+              <InspectorSection title="Selected Activity">
+                <Detail label="Category" value={selectedActivityRow.category === "runtime" ? "Runtime" : "Event"} />
+                <Detail label="Kind" value={selectedActivityRow.kind} />
+                <Detail label="Detail" value={selectedActivityRow.detail} />
+                <Detail label="Source" value={selectedActivityRow.sourceLabel} />
+                <Detail label="Context" value={selectedActivityRow.contextLabel ?? selectedActivityRow.scopeLabel} />
+                {selectedActivityRow.contextId && <Detail label="Context id" value={selectedActivityRow.contextId} />}
+                <Detail label="Scope" value={selectedActivityRow.scopeLabel} />
+                <Detail label="When" value={new Date(selectedActivityRow.createdAt).toLocaleString()} />
+                {selectedActivityContext && (
+                  <button
+                    type="button"
+                    className="ghost-action compact inspector-action"
+                    onClick={() => openWorkspaceContext(selectedActivityContext)}
+                  >
+                    Open Context
+                  </button>
+                )}
+              </InspectorSection>
+            )}
             <InspectorSection title="Activity">
               <Detail label="Total records" value={String(activityRows.length)} />
               <Detail label="Filtered records" value={String(filteredActivityRows.length)} />
@@ -2716,10 +2795,17 @@ function App() {
         ) : view.kind === "home" ? (
           <>
             <InspectorSection title="Workspace">
+              <Detail label="Surface" value={workspaceInspectorSummary.surface} />
               <Detail label="Name" value={selectedWorkspace.name} />
               <Detail label="Location" value={selectedWorkspace.locator} />
               <Detail label=".floe" value={workspaceStatusLabel(selectedWorkspace)} />
-              <Detail label="Fields" value={String(fieldSummaries.length)} />
+              <Detail label="Named Scopes" value={String(workspaceInspectorSummary.namedScopeCount)} />
+              <Detail label="Scope-backed Fields" value={String(workspaceInspectorSummary.scopeBackedFieldCount)} />
+              <Detail label="Workspace-level Contexts" value={String(workspaceInspectorSummary.workspaceLevelContextCount)} />
+              <Detail label="All loaded Contexts" value={String(workspaceInspectorSummary.loadedContextCount)} />
+              <Detail label="Workspace Events" value={String(workspaceInspectorSummary.eventCount)} />
+              <Detail label="Runtime records" value={String(workspaceInspectorSummary.telemetryCount)} />
+              <Detail label="Actors" value={String(workspaceInspectorSummary.endpointCount)} />
             </InspectorSection>
             <RuntimeSection />
             <ActorAccessSection />
@@ -2728,14 +2814,72 @@ function App() {
           <>
             <InspectorSection title="Scope">
               <Detail label="Title" value={loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? "—"} />
+              <Detail label="Scope id" value={loadedProjection?.scope.scope_id ?? view.fieldId} />
               <Detail label="Workspace" value={selectedWorkspace.name} />
-              <Detail label="Contexts" value={String(loadedProjection?.projection.refs.contexts.length ?? 0)} />
-              <Detail label="Events" value={String(loadedProjection?.projection.refs.events.length ?? 0)} />
-              <Detail label="Actors" value={String(openedScopeActorCount)} />
-              <Detail label="Total emits" value={String(openedScopeEmitCount)} />
-              <Detail label="Pulses" value={String(loadedProjection?.projection.refs.pulses.length ?? 0)} />
-              <Detail label="Unsupported" value={String(loadedProjection?.projection.unsupported.length ?? 0)} />
+              <Detail label="Projected Contexts" value={String(scopeInspectorSummary?.projectedContextCount ?? 0)} />
+              <Detail label="Projected Events" value={String(scopeInspectorSummary?.projectedEventCount ?? 0)} />
+              <Detail label="Actors" value={String(scopeInspectorSummary?.actorCount ?? 0)} />
+              <Detail label="Activity rows" value={String(scopeInspectorSummary?.activityRowCount ?? 0)} />
+              <Detail label="Total emits" value={String(scopeInspectorSummary?.totalEmitCount ?? 0)} />
+              <Detail label="Pulses" value={String(scopeInspectorSummary?.pulseCount ?? 0)} />
+              <Detail label="Unsupported" value={String(scopeInspectorSummary?.unsupportedCount ?? 0)} />
             </InspectorSection>
+            {loadedProjection && loadedProjection.projection.refs.contexts.length > 0 && (
+              <InspectorSection title="Projected Contexts">
+                <div className="inspector-context-list">
+                  {loadedProjection.projection.refs.contexts.slice(0, 4).map((context) => (
+                    <article key={context.context_id} className="inspector-context-card">
+                      <strong>{context.first_message_preview || context.context_id}</strong>
+                      <span>{context.context_id}</span>
+                      <small>{formatContextTimestamp(context.last_event_at ?? context.created_at)}</small>
+                    </article>
+                  ))}
+                </div>
+              </InspectorSection>
+            )}
+            {loadedProjection && loadedProjection.projection.refs.pulses.length > 0 && (
+              <InspectorSection title="Pulses">
+                <div className="inspector-context-list">
+                  {loadedProjection.projection.refs.pulses.slice(0, 4).map((pulse) => (
+                    <article key={pulse.pulse_id} className="inspector-context-card">
+                      <strong>{pulse.pulse_id}</strong>
+                      <span>{pulse.status} · fired {pulse.fire_count} times</span>
+                      <small>{pulse.next_fire_at ? `Next ${formatContextTimestamp(pulse.next_fire_at)}` : "No next fire scheduled"}</small>
+                    </article>
+                  ))}
+                </div>
+              </InspectorSection>
+            )}
+            {scopeInspectorSummary && scopeInspectorSummary.activityRows.length > 0 && (
+              <InspectorSection title="Scope Activity">
+                <div className="inspector-context-list">
+                  {scopeInspectorSummary.activityRows.slice(0, 4).map((row) => (
+                    <article key={row.id} className="inspector-context-card">
+                      <strong>{row.detail}</strong>
+                      <span>{row.category === "runtime" ? "Runtime" : "Event"} · {row.kind}</span>
+                      <small>{row.sourceLabel} · {formatContextTimestamp(row.createdAt)}</small>
+                    </article>
+                  ))}
+                </div>
+              </InspectorSection>
+            )}
+            {loadedProjection && loadedProjection.projection.unsupported.length > 0 && (
+              <InspectorSection title="Projection gaps">
+                <div className="inspector-context-list">
+                  {loadedProjection.projection.unsupported.map((item, index) => (
+                    <article key={`${item.kind}-${index}`} className="inspector-context-card">
+                      <strong>{item.kind}</strong>
+                      <span>{item.kind} refs are pending substrate projection.</span>
+                    </article>
+                  ))}
+                </div>
+              </InspectorSection>
+            )}
+            {scopeInspectorSummary?.hasProjectionActivityGap && (
+              <InspectorSection title="Projection note">
+                <div className="inspector-note">Projection Event and runtime refs are not treated as authoritative absence; Scope activity is correlated from loaded Workspace Activity rows.</div>
+              </InspectorSection>
+            )}
             <ActorAccessSection />
           </>
         )}
