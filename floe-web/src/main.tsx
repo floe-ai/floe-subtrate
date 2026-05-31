@@ -48,6 +48,16 @@ import {
 } from "@xyflow/react";
 import "./styles.css";
 import {
+  buildActivityRows,
+  contextActivityLabel,
+  filterActivityRows,
+  parseTelemetryPayload,
+  runtimeActivityLabel,
+  summarizeTelemetry,
+  telemetryContextId,
+  type ActivityFilters
+} from "./activity";
+import {
   buildEmitBody,
   canAssignContextToScope,
   contextParticipationLabel,
@@ -179,6 +189,7 @@ type ChatSegment =
 
 type View =
   | { kind: "home" }
+  | { kind: "activity" }
   | { kind: "field"; fieldId: string; backStack?: string[] };
 
 type FieldConnectionEdgeData = Record<string, unknown> & {
@@ -380,6 +391,13 @@ function App() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [contexts, setContexts] = useState<ContextSummary[]>([]);
   const [workspaceContexts, setWorkspaceContexts] = useState<ContextSummary[]>([]);
+  const [activityContexts, setActivityContexts] = useState<ContextSummary[]>([]);
+  const [activityFilters, setActivityFilters] = useState<ActivityFilters>({
+    actorId: "all",
+    kind: "all",
+    scopeId: "all",
+    contextId: "all"
+  });
   const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
   const [contextAssignmentTargets, setContextAssignmentTargets] = useState<Record<string, string>>({});
   const [contextEventsState, setContextEventsState] = useState<{ contextId: string | null; events: ContextEvent[] }>({
@@ -401,6 +419,7 @@ function App() {
   const autoInitializedLayoutRef = useRef<Set<string>>(new Set());
   const chatEndRef = useRef<HTMLDivElement>(null);
   const contextsRequestRef = useRef(0);
+  const activityContextsRequestRef = useRef(0);
   const contextEventsRequestRef = useRef(0);
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
@@ -448,6 +467,7 @@ function App() {
   const selectedContext = selectedContextId
     ? contexts.find((c) => c.context_id === selectedContextId) ??
       workspaceContexts.find((c) => c.context_id === selectedContextId) ??
+      activityContexts.find((c) => c.context_id === selectedContextId) ??
       projectedSelectedContext ??
       null
     : null;
@@ -482,6 +502,24 @@ function App() {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(0, 5);
   }, [events, telemetry]);
+  const activityRows = useMemo(() => buildActivityRows({
+    events,
+    telemetry,
+    contexts: activityContexts,
+    endpoints,
+    scopes: scopeRecords
+  }), [activityContexts, endpoints, events, scopeRecords, telemetry]);
+  const filteredActivityRows = useMemo(
+    () => filterActivityRows(activityRows, activityFilters),
+    [activityFilters, activityRows]
+  );
+  const activityContextOptions = useMemo(() => {
+    return sortWorkspaceContexts(activityContexts).filter((context) => {
+      if (activityFilters.scopeId === "workspace") return context.scope_id === null;
+      if (activityFilters.scopeId !== "all") return context.scope_id === activityFilters.scopeId;
+      return true;
+    });
+  }, [activityContexts, activityFilters.scopeId]);
   const openedScopeContexts = useMemo(() => (
     view.kind === "field" && loadedProjection
       ? loadedProjection.projection.refs.contexts
@@ -758,6 +796,23 @@ function App() {
     }
   }, [busUrl]);
 
+  const refreshActivityContexts = useCallback(async (workspaceId: string) => {
+    const requestId = ++activityContextsRequestRef.current;
+    try {
+      const result = await api<{ contexts: ContextSummary[] }>(
+        busUrl,
+        `/v1/workspaces/${encodeURIComponent(workspaceId)}/contexts?scope=all&limit=200`
+      );
+      if (requestId !== activityContextsRequestRef.current) return;
+      if (workspaceId !== selectedWorkspaceIdRef.current) return;
+      setActivityContexts(result.contexts);
+    } catch {
+      if (requestId !== activityContextsRequestRef.current) return;
+      if (workspaceId !== selectedWorkspaceIdRef.current) return;
+      setActivityContexts([]);
+    }
+  }, [busUrl]);
+
   const refreshContextEvents = useCallback(async (contextId: string) => {
     const requestId = ++contextEventsRequestRef.current;
     try {
@@ -827,6 +882,7 @@ function App() {
       refreshFields(context.workspace_id),
       refreshContexts(context.workspace_id),
       refreshWorkspaceContexts(context.workspace_id),
+      refreshActivityContexts(context.workspace_id),
       refreshOpenField(context.workspace_id, scopeId)
     ]);
     setSelectedContextId(context.context_id);
@@ -951,6 +1007,7 @@ function App() {
         selectedWorkspaceIdRef.current = nextWorkspaceId;
         setSelectedWorkspaceId(nextWorkspaceId);
         setView({ kind: "home" });
+        setActivityFilters({ actorId: "all", kind: "all", scopeId: "all", contextId: "all" });
         clearFieldEditingState();
       }
       if (nextWorkspaceId) {
@@ -964,11 +1021,13 @@ function App() {
         setRuntimeBindings(bindingResult.bindings);
         setEvents(eventResult.events);
         setTelemetry(telemetryResult.records);
+        void refreshActivityContexts(nextWorkspaceId);
       } else {
         setEndpoints([]);
         setRuntimeBindings([]);
         setEvents([]);
         setTelemetry([]);
+        setActivityContexts([]);
         setScopeRecords([]);
         setFieldSummaries([]);
       }
@@ -1098,11 +1157,14 @@ function App() {
 
   useEffect(() => {
     if (!selectedWorkspace) {
+      activityContextsRequestRef.current += 1;
       setWorkspaceContexts([]);
+      setActivityContexts([]);
       return;
     }
     void refreshWorkspaceContexts(selectedWorkspace.workspace_id);
-  }, [selectedWorkspace?.workspace_id, refreshWorkspaceContexts]);
+    void refreshActivityContexts(selectedWorkspace.workspace_id);
+  }, [selectedWorkspace?.workspace_id, refreshActivityContexts, refreshWorkspaceContexts]);
 
   // Auto-select default-or-most-recent context once contexts load (unless drafting).
   useEffect(() => {
@@ -1139,8 +1201,9 @@ function App() {
     if (!selectedWorkspace || !floeAgent) return;
     void refreshContexts(selectedWorkspace.workspace_id, floeAgent.endpoint_id);
     void refreshWorkspaceContexts(selectedWorkspace.workspace_id);
+    void refreshActivityContexts(selectedWorkspace.workspace_id);
     if (selectedContextId) void refreshContextEvents(selectedContextId);
-  }, [events.length, selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, selectedContextId, refreshContexts, refreshWorkspaceContexts, refreshContextEvents]);
+  }, [events.length, selectedWorkspace?.workspace_id, floeAgent?.endpoint_id, selectedContextId, refreshContexts, refreshActivityContexts, refreshWorkspaceContexts, refreshContextEvents]);
 
   // Pulse-only label fallback: peek the first event of contexts that have no
   // first_message_preview so we can render "Pulse: <name>" labels.
@@ -2285,6 +2348,202 @@ function App() {
     );
   }
 
+  function renderActivity() {
+    const eventCount = filteredActivityRows.filter((row) => row.category === "event").length;
+    const runtimeCount = filteredActivityRows.filter((row) => row.category === "runtime").length;
+    const activeCount = filteredActivityRows.length;
+    const activeContextCount = new Set(filteredActivityRows.map((row) => row.contextId).filter(Boolean)).size;
+    const activeScopeCount = new Set(filteredActivityRows.map((row) => row.scopeId).filter(Boolean)).size;
+    const allKinds = Array.from(new Set(activityRows.map((row) => row.kind))).sort();
+    const setFilter = (patch: Partial<ActivityFilters>) => {
+      setActivityFilters((current) => ({
+        ...current,
+        ...patch,
+        contextId: patch.scopeId !== undefined || patch.kind !== undefined || patch.actorId !== undefined
+          ? "all"
+          : patch.contextId ?? current.contextId
+      }));
+    };
+    const clearFilters = () => setActivityFilters({ actorId: "all", kind: "all", scopeId: "all", contextId: "all" });
+
+    return (
+      <section className="workspace-activity" data-testid="v6-activity">
+        <div className="home-band activity-band">
+          <div>
+            <p className="eyebrow">Activity</p>
+            <h1>Workspace Activity</h1>
+            <p className="home-summary">Events, runtime work, Contexts, actors, and Scope associations from the substrate.</p>
+          </div>
+          <button className="ghost-action" onClick={() => void refresh()}>
+            <RefreshCw size={16} />
+            Refresh
+          </button>
+        </div>
+
+        <div className="activity-summary-grid" data-testid="activity-summary">
+          <div><strong>{activeCount}</strong> <span>items total</span></div>
+          <div><strong>{eventCount}</strong> <span>Events</span></div>
+          <div><strong>{runtimeCount}</strong> <span>runtime activity</span></div>
+          <div><strong>{activeContextCount}</strong> <span>Contexts</span></div>
+          <div><strong>{activeScopeCount}</strong> <span>Scopes</span></div>
+        </div>
+
+        <section className="activity-filter-panel" aria-label="Activity filters">
+          <div className="activity-filter-row">
+            <span>Actor/source</span>
+            <button
+              type="button"
+              className={`filter-chip${activityFilters.actorId === "all" ? " active" : ""}`}
+              onClick={() => setFilter({ actorId: "all" })}
+            >
+              All
+            </button>
+            {endpoints.map((endpoint) => {
+              const label = endpointDisplayName(endpoint) ?? endpoint.agent_id ?? endpoint.endpoint_id;
+              return (
+                <button
+                  key={endpoint.endpoint_id}
+                  type="button"
+                  className={`filter-chip${activityFilters.actorId === endpoint.endpoint_id ? " active" : ""}`}
+                  onClick={() => setFilter({ actorId: endpoint.endpoint_id })}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="activity-filter-row">
+            <span>Kind</span>
+            <button
+              type="button"
+              className={`filter-chip${activityFilters.kind === "all" ? " active" : ""}`}
+              onClick={() => setFilter({ kind: "all" })}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className={`filter-chip${activityFilters.kind === "events" ? " active" : ""}`}
+              onClick={() => setFilter({ kind: "events" })}
+            >
+              Events
+            </button>
+            <button
+              type="button"
+              className={`filter-chip${activityFilters.kind === "runtime" ? " active" : ""}`}
+              onClick={() => setFilter({ kind: "runtime" })}
+            >
+              Runtime
+            </button>
+            {allKinds.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className={`filter-chip${activityFilters.kind === kind ? " active" : ""}`}
+                onClick={() => setFilter({ kind })}
+              >
+                {kind}
+              </button>
+            ))}
+          </div>
+          <div className="activity-filter-row">
+            <span>Scope</span>
+            <button
+              type="button"
+              className={`filter-chip${activityFilters.scopeId === "all" ? " active" : ""}`}
+              onClick={() => setFilter({ scopeId: "all" })}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className={`filter-chip${activityFilters.scopeId === "workspace" ? " active" : ""}`}
+              onClick={() => setFilter({ scopeId: "workspace" })}
+            >
+              Workspace only
+            </button>
+            {scopeRecords.map((scope) => (
+              <button
+                key={scope.scope_id}
+                type="button"
+                className={`filter-chip${activityFilters.scopeId === scope.scope_id ? " active" : ""}`}
+                onClick={() => setFilter({ scopeId: scope.scope_id })}
+              >
+                {scope.title}
+              </button>
+            ))}
+          </div>
+          <div className="activity-filter-row">
+            <span>Context</span>
+            <button
+              type="button"
+              className={`filter-chip${activityFilters.contextId === "all" ? " active" : ""}`}
+              onClick={() => setFilter({ contextId: "all" })}
+            >
+              All
+            </button>
+            {activityContextOptions.map((context) => (
+              <button
+                key={context.context_id}
+                type="button"
+                className={`filter-chip${activityFilters.contextId === context.context_id ? " active" : ""}`}
+                onClick={() => setFilter({ contextId: context.context_id })}
+              >
+                {contextActivityLabel(context)}
+              </button>
+            ))}
+          </div>
+          <div className="activity-filter-footer">
+            <span>{activeCount} matching items</span>
+            <button type="button" className="ghost-action compact" onClick={clearFilters}>Clear filters</button>
+          </div>
+        </section>
+
+        {filteredActivityRows.length === 0 ? (
+          <div className="quiet-empty activity-empty">
+            <Activity size={22} />
+            <strong>{activityRows.length === 0 ? "No activity yet" : "No activity matches these filters"}</strong>
+            <span>Events and runtime records remain backed by the Workspace bus.</span>
+          </div>
+        ) : (
+          <div className="activity-feed">
+            {filteredActivityRows.map((row) => {
+              const context = row.contextId
+                ? activityContexts.find((candidate) => candidate.context_id === row.contextId) ?? null
+                : null;
+              return (
+                <article key={row.id} className={`activity-row ${row.category}`} data-testid="activity-row">
+                  <span className="field-icon"><Activity size={15} /></span>
+                  <div className="activity-row-body">
+                    <div className="activity-row-title">
+                      <strong>{row.title}</strong>
+                      <span>{new Date(row.createdAt).toLocaleTimeString()}</span>
+                    </div>
+                    <p>{row.detail}</p>
+                    <div className="activity-row-meta">
+                      <span>{row.sourceLabel}</span>
+                      <span>{row.scopeLabel}</span>
+                      {row.contextLabel && <span>{row.contextLabel}</span>}
+                    </div>
+                  </div>
+                  {context && (
+                    <button
+                      type="button"
+                      className="ghost-action compact"
+                      onClick={() => openWorkspaceContext(context)}
+                    >
+                      Open Context
+                    </button>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    );
+  }
+
   function renderField() {
     if (view.kind !== "field") return null;
     const title = loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? view.fieldId;
@@ -2440,6 +2699,17 @@ function App() {
                   })}
                 </div>
               )}
+            </InspectorSection>
+            <ActorAccessSection />
+          </>
+        ) : view.kind === "activity" ? (
+          <>
+            <InspectorSection title="Activity">
+              <Detail label="Total records" value={String(activityRows.length)} />
+              <Detail label="Filtered records" value={String(filteredActivityRows.length)} />
+              <Detail label="Contexts loaded" value={String(activityContexts.length)} />
+              <Detail label="Workspace-only rows" value={String(activityRows.filter((row) => row.scopeState === "workspace").length)} />
+              <Detail label="Scoped rows" value={String(activityRows.filter((row) => row.scopeState === "scoped").length)} />
             </InspectorSection>
             <ActorAccessSection />
           </>
@@ -2944,7 +3214,11 @@ function App() {
             <Home size={15} />
             <span>Home</span>
           </button>
-          <button type="button" className="nav-row" disabled title="Activity surface follows in a later v6 slice">
+          <button
+            type="button"
+            className={`nav-row ${view.kind === "activity" ? "active" : ""}`}
+            onClick={() => setView({ kind: "activity" })}
+          >
             <Activity size={15} />
             <span>Activity</span>
           </button>
@@ -3083,7 +3357,7 @@ function App() {
             onDrop={handleLibraryDropSurface}
             onDragOver={handleLibraryDragOver}
           >
-            {!selectedWorkspace ? renderNoWorkspace() : view.kind === "field" ? renderField() : renderHome()}
+            {!selectedWorkspace ? renderNoWorkspace() : view.kind === "field" ? renderField() : view.kind === "activity" ? renderActivity() : renderHome()}
           </div>
           {renderInspector()}
         </div>
@@ -3206,6 +3480,7 @@ function connectionClass(status: string): string {
 function currentContextLabel(view: View, workspace: Workspace | null, fieldTitle: string | null): string {
   if (!workspace) return "No workspace";
   if (view.kind === "field" && fieldTitle) return `Workspace: ${workspace.name}; Field: ${fieldTitle}`;
+  if (view.kind === "activity") return `Workspace: ${workspace.name}; Activity`;
   return `Workspace: ${workspace.name}; Home`;
 }
 
@@ -3219,22 +3494,6 @@ function endpointRuntimeAdapter(endpoint: Endpoint | null): string | null {
   } catch {
     return null;
   }
-}
-
-function runtimeActivityLabel(kind: string): string {
-  const labels: Record<string, string> = {
-    "BeforeToolUse": "Running",
-    "AfterToolUse": "Completed",
-    "ToolUseFailed": "Failed",
-    "runtime_error": "Error",
-    "runtime_no_visible_output": "No output",
-    "visible_output_worklog": "Runtime notes"
-  };
-  if (labels[kind]) return labels[kind];
-  return kind
-    .replace(/^runtime_/, "")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 /** Human-friendly label for a completed activity group */
@@ -3275,22 +3534,6 @@ function activityWorkingLabel(items: RuntimeActivity[]): string {
   return "Working…";
 }
 
-function parseTelemetryPayload(record: TelemetryRecord): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(record.payload_json);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function telemetryContextId(record: TelemetryRecord): string | null {
-  const payload = parseTelemetryPayload(record);
-  return typeof payload?.context_id === "string" ? payload.context_id : null;
-}
-
 function chatSegmentCreatedAt(segment: ChatSegment): string {
   if (segment.kind === "message") return segment.message.created_at;
   if (segment.kind === "pulse") return segment.event.created_at;
@@ -3306,29 +3549,6 @@ function pulseEventText(event: ContextEvent): string {
     return data.text;
   }
   return "Pulse fired.";
-}
-
-function summarizeTelemetry(record: TelemetryRecord): string {
-  try {
-    const payload = parseTelemetryPayload(record);
-    if (!payload) return record.kind;
-    // For tool calls, show summary if available, then fall back to tool name
-    if (typeof payload.summary === "string" && payload.summary.trim()) {
-      const summary = payload.summary.trim().slice(0, 140);
-      // Rename "emit" references for user-facing display
-      return summary.replace(/^emit\b/i, "sent message");
-    }
-    if (typeof payload.toolName === "string") {
-      const name = payload.toolName;
-      if (name === "emit") return "sent message";
-      return name;
-    }
-    const candidate = payload.error_message ?? payload.message ?? payload.note ?? payload.text ?? payload.code;
-    if (typeof candidate === "string" && candidate.trim()) return candidate.trim().slice(0, 140);
-  } catch {
-    return record.kind;
-  }
-  return record.kind;
 }
 
 function renderMarkdown(text: string): React.ReactNode {
