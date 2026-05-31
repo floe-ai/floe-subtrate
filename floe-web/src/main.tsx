@@ -2243,6 +2243,13 @@ function App() {
                         <strong>{label}</strong>
                         <span>{participationLabel}</span>
                         <small>{formatContextTimestamp(activityTime)}</small>
+                        <button
+                          type="button"
+                          className="ghost-action compact"
+                          onClick={() => openWorkspaceContext(context)}
+                        >
+                          Open in Channel
+                        </button>
                       </article>
                     );
                   })}

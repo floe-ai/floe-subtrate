@@ -97,10 +97,45 @@ export type EndpointRecord = {
   metadata_json?: string;
 };
 
+type AuthProfileRecord = { id: string; provider: string; model?: string | null; label?: string | null };
+
+type RuntimeBindingRecord = {
+  binding_key: string;
+  scope: "agent" | "workspace_default" | "global_default";
+  workspace_id: string | null;
+  endpoint_id: string | null;
+  auth_profile: string;
+  model: string | null;
+};
+
+type ContextEventRecord = {
+  event_id: string;
+  context_id: string;
+  type: string;
+  workspace_id?: string;
+  source_endpoint_id?: string | null;
+  destination_json?: unknown;
+  content?: unknown;
+  metadata?: unknown;
+  created_at?: string;
+};
+
 async function installBaselineRoutes(
   page: Page,
-  options: { endpoints?: EndpointRecord[] } = {}
+  options: {
+    endpoints?: EndpointRecord[];
+    authProfiles?: AuthProfileRecord[];
+    runtimeBindings?: RuntimeBindingRecord[];
+    runtimeAdapter?: string | null;
+    contextEventsById?: Record<string, ContextEventRecord[]>;
+    emitCalls?: unknown[];
+  } = {}
 ): Promise<void> {
+  const authProfiles = options.authProfiles ?? [];
+  const runtimeBindings = options.runtimeBindings ?? [];
+  const contextEventsById = options.contextEventsById ?? {};
+  const emitCalls = options.emitCalls ?? [];
+
   await page.route("**/v1/workspaces", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({
@@ -130,16 +165,28 @@ async function installBaselineRoutes(
   );
 
   await page.route("**/v1/auth/profiles", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ profiles: [] }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ profiles: authProfiles }) })
   );
 
   await page.route("**/v1/runtime/bindings**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ bindings: [] }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ bindings: runtimeBindings }) })
   );
 
-  await page.route("**/v1/events**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ events: [] }) })
+  await page.route("**/v1/local-config/status", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ bridge: { runtime_adapter: options.runtimeAdapter ?? "fake" } })
+    })
   );
+
+  await page.route("**/v1/events**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/emit") || path.endsWith("/stream")) {
+      return route.fallback();
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ events: [] }) });
+  });
 
   await page.route("**/v1/runtime/telemetry**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ records: [] }) })
@@ -150,6 +197,29 @@ async function installBaselineRoutes(
   );
 
   await page.route("**/v1/events/stream", (route) => route.abort());
+
+  await page.route("**/v1/events/emit", async (route) => {
+    const body = route.request().postDataJSON();
+    emitCalls.push(body);
+    const contextId = typeof body?.context_id === "string" ? body.context_id : "ctx-emitted";
+    const event: ContextEventRecord = {
+      event_id: `evt-${emitCalls.length}`,
+      context_id: contextId,
+      type: body?.type ?? "message",
+      workspace_id: body?.workspace_id,
+      source_endpoint_id: body?.source_endpoint_id,
+      destination_json: body?.destination,
+      content: body?.content ?? {},
+      metadata: body?.metadata ?? {},
+      created_at: new Date(0).toISOString()
+    };
+    contextEventsById[contextId] = [...(contextEventsById[contextId] ?? []), event];
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, event })
+    });
+  });
 }
 
 async function finishBoot(page: Page): Promise<void> {
@@ -206,13 +276,25 @@ export async function seedAppWithScopes(
     workspaceContexts?: WorkspaceContextRecord[];
     contextAssignments?: string[];
     endpoints?: EndpointRecord[];
+    authProfiles?: AuthProfileRecord[];
+    runtimeBindings?: RuntimeBindingRecord[];
+    runtimeAdapter?: string | null;
+    contextEventsById?: Record<string, ContextEventRecord[]>;
+    emitCalls?: unknown[];
     contextEventGets?: string[];
     projectionGets?: string[];
     scopePostFailure?: { status: number; body: unknown };
     contextAssignmentFailure?: { status: number; body: unknown };
   } = {}
 ): Promise<void> {
-  await installBaselineRoutes(page, { endpoints: options.endpoints });
+  await installBaselineRoutes(page, {
+    endpoints: options.endpoints,
+    authProfiles: options.authProfiles,
+    runtimeBindings: options.runtimeBindings,
+    runtimeAdapter: options.runtimeAdapter,
+    contextEventsById: options.contextEventsById,
+    emitCalls: options.emitCalls
+  });
 
   const scopeStore = new Map(scopes.map((scope) => [scope.scope_id, scope]));
   const projectionStore = new Map(Object.entries(projections));
@@ -499,11 +581,13 @@ export async function seedAppWithScopes(
     });
   });
   await page.route("**/v1/contexts/*/events**", (route) => {
-    options.contextEventGets?.push(route.request().url());
+    const match = route.request().url().match(/\/v1\/contexts\/([^/]+)\/events/);
+    const contextId = match ? decodeURIComponent(match[1]) : "";
+    options.contextEventGets?.push(contextId);
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ events: [] })
+      body: JSON.stringify({ events: options.contextEventsById?.[contextId] ?? [] })
     });
   });
 
