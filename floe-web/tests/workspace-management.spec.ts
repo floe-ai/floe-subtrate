@@ -350,9 +350,7 @@ test.describe("Spinner behavior", () => {
 
     await expect(page.getByTestId("v6-topbar").getByRole("button", { name: new RegExp(WORKSPACE_NAME) })).toBeVisible();
 
-    // Open the channel
-    const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
-    await channelToggle.click();
+    await page.getByLabel("Open Contexts for Floe").click();
     await page.waitForTimeout(500);
 
     // The "is working" spinner should NOT appear since endpoint is idle

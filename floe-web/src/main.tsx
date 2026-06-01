@@ -15,8 +15,6 @@ import {
   LayoutPanelLeft,
   Loader,
   MessageSquare,
-  PanelRightClose,
-  PanelRightOpen,
   RefreshCw,
   Send,
   Settings,
@@ -912,6 +910,19 @@ function App() {
     setSelectedContextId(null);
     setDraftMode(false);
     clearContextEvents();
+  }
+
+  function openActorContexts(endpointId: string) {
+    contextsRequestRef.current += 1;
+    setContexts([]);
+    setSelectedAgentId(endpointId);
+    setSelectedContextId(null);
+    setDraftMode(false);
+    clearContextEvents();
+    setChannelOpen(true);
+    if (selectedWorkspace) {
+      void refreshContexts(selectedWorkspace.workspace_id, endpointId);
+    }
   }
 
   async function completeWorkspaceContextScopeAssignment(context: ContextSummary, scopeId: string): Promise<void> {
@@ -2156,20 +2167,15 @@ function App() {
   function renderHome() {
     return (
       <section className="workspace-home" data-testid="v6-workspace-home">
-        <div className="home-band">
+        <div className="home-band hero">
           <div>
             <p className="eyebrow">Workspace Home</p>
             <h1>{selectedWorkspace?.name ?? "Workspace"}</h1>
             <p className="home-summary">Workspace index</p>
           </div>
-          <button className="ghost-action" onClick={() => setChannelOpen(true)}>
-            <MessageSquare size={16} />
-            Floe
-          </button>
         </div>
 
-        <div className="home-overview-grid">
-          <section className="home-overview-card workspace-settings-card" data-testid="v6-home-workspace-settings">
+        <section className="home-overview-card workspace-settings-card ws-settings" data-testid="v6-home-workspace-settings">
             <div className="section-title-row">
               <div>
                 <h3>Workspace settings</h3>
@@ -2208,37 +2214,7 @@ function App() {
                 ))}
               </div>
             )}
-          </section>
-          <section className="home-overview-card recent-activity-card" data-testid="v6-home-recent-activity">
-            <div className="section-title-row">
-              <div>
-                <h3>Recent activity</h3>
-                <p>Workspace events and runtime traces using the Activity view model.</p>
-              </div>
-              <span>{homeModel.recentActivity.length}</span>
-            </div>
-            {homeModel.recentActivity.length === 0 ? (
-              <div className="quiet-empty compact">
-                <Activity size={22} />
-                <strong>No recent activity</strong>
-                <span>Events, deliveries, and runtime work will appear here.</span>
-              </div>
-            ) : (
-              <div className="home-activity-list">
-                {homeModel.recentActivity.map((item) => (
-                  <article key={item.id} className="home-activity-row">
-                    <span className="field-icon"><Activity size={15} /></span>
-                    <span>
-                      <strong>{item.title}</strong>
-                      <small>{item.detail}</small>
-                      <small>{item.sourceLabel} · {item.contextLabel ?? "No Context"} · {item.scopeLabel}</small>
-                    </span>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
+        </section>
 
         <section className="home-actor-pane" data-testid="v6-home-actors">
           <div className="section-title-row">
@@ -2262,21 +2238,33 @@ function App() {
                   const name = actor.name;
                   const selected = inspectorActor?.endpoint_id === actor.endpointId;
                   return (
-                    <button
+                    <article
                       key={actor.endpointId}
-                      type="button"
                       className={`home-actor-card${selected ? " selected" : ""}`}
-                      aria-pressed={selected}
-                      onClick={() => selectActorForInspector(actor.endpointId)}
                     >
-                      <span className="home-actor-avatar">{actorInitial(name)}</span>
-                      <span>
-                        <strong>{name}</strong>
-                        <small>{actor.status} · Workspace-level {actor.workspaceLevelContextCount} · Scoped {actor.scopedContextCount}</small>
-                        <small>Activity {actor.activityCount} · {actor.runtimeBindingLabel} · {actor.adapterLabel}</small>
-                        {actor.latestActivityDetail && <small>Latest: {actor.latestActivityDetail}</small>}
-                      </span>
-                    </button>
+                      <button
+                        type="button"
+                        className="home-actor-summary"
+                        aria-pressed={selected}
+                        onClick={() => selectActorForInspector(actor.endpointId)}
+                      >
+                        <span className="home-actor-avatar">{actorInitial(name)}</span>
+                        <span>
+                          <strong>{name}</strong>
+                          <small>{actor.status} · Workspace-level {actor.workspaceLevelContextCount} · Scoped {actor.scopedContextCount}</small>
+                          <small>Activity {actor.activityCount} · {actor.runtimeBindingLabel} · {actor.adapterLabel}</small>
+                          {actor.latestActivityDetail && <small>Latest: {actor.latestActivityDetail}</small>}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-action compact"
+                        aria-label={`Open Contexts for ${name}`}
+                        onClick={() => openActorContexts(actor.endpointId)}
+                      >
+                        Open Contexts
+                      </button>
+                    </article>
                   );
                 })}
             </div>
@@ -2287,11 +2275,11 @@ function App() {
           <section className="field-list-pane" data-testid="v6-home-scopes">
             <div className="section-title-row">
               <div>
-                <h3>Fields</h3>
+                <h3>Scopes</h3>
                 <p>
                   {showAllFields
-                    ? "All workspace Fields."
-                    : "Fields are Scope projections from the substrate."}
+                    ? "All workspace Scopes."
+                    : "Named Scopes are intentional organising boundaries from the substrate."}
                 </p>
               </div>
               <span>{homeFieldSummaries.length}</span>
@@ -2301,18 +2289,18 @@ function App() {
                 className="ghost-action full"
                 onClick={() => setShowAllFields((current) => !current)}
               >
-                {showAllFields ? "Show root fields" : `Show all fields (${fieldSummaries.length})`}
+                {showAllFields ? "Show root Scopes" : `Show all Scopes (${fieldSummaries.length})`}
               </button>
             )}
             <button className="primary-action full" onClick={promptCreateField}>
               <FolderPlus size={15} />
-              Add field
+              Add Scope
             </button>
             {homeFieldSummaries.length === 0 ? (
               <div className="quiet-empty">
                 <SquareDashedMousePointer size={22} />
-                <strong>No Fields yet</strong>
-                <span>Create a Scope-backed Field to start shaping this workspace.</span>
+                <strong>No Scopes yet</strong>
+                <span>Create a named Scope to start shaping this workspace.</span>
               </div>
             ) : (
               <div className="field-list">
@@ -2330,7 +2318,7 @@ function App() {
                       <span className="field-icon"><LayoutPanelLeft size={16} /></span>
                       <span>
                         <strong>{summary.title}</strong>
-                        <small>Scope-backed Field · {loadedContextCount} loaded Context{loadedContextCount === 1 ? "" : "s"} · {activityCount} Activity row{activityCount === 1 ? "" : "s"}</small>
+                        <small>Named Scope · {loadedContextCount} loaded Context{loadedContextCount === 1 ? "" : "s"} · {activityCount} Activity row{activityCount === 1 ? "" : "s"}</small>
                         {scopeCard?.latestActivityDetail && <small>Latest: {scopeCard.latestActivityDetail}</small>}
                       </span>
                       <ChevronRight size={16} />
@@ -2340,7 +2328,39 @@ function App() {
               </div>
             )}
           </section>
-          <section className="field-list-pane workspace-context-pane" data-testid="v6-home-contexts">
+        </div>
+
+        <section className="home-overview-card recent-activity-card" data-testid="v6-home-recent-activity">
+          <div className="section-title-row">
+            <div>
+              <h3>Recent activity</h3>
+              <p>Workspace events and runtime traces using the Activity view model.</p>
+            </div>
+            <span>{homeModel.recentActivity.length}</span>
+          </div>
+          {homeModel.recentActivity.length === 0 ? (
+            <div className="quiet-empty compact">
+              <Activity size={22} />
+              <strong>No recent activity</strong>
+              <span>Events, deliveries, and runtime work will appear here.</span>
+            </div>
+          ) : (
+            <div className="home-activity-list">
+              {homeModel.recentActivity.map((item) => (
+                <article key={item.id} className="home-activity-row">
+                  <span className="field-icon"><Activity size={15} /></span>
+                  <span>
+                    <strong>{item.title}</strong>
+                    <small>{item.detail}</small>
+                    <small>{item.sourceLabel} · {item.contextLabel ?? "No Context"} · {item.scopeLabel}</small>
+                  </span>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="field-list-pane workspace-context-pane" data-testid="v6-home-contexts">
             <div className="section-title-row">
               <div>
                 <h3>Workspace-level Contexts</h3>
@@ -2421,7 +2441,6 @@ function App() {
               </div>
             )}
           </section>
-        </div>
       </section>
     );
   }
@@ -2683,10 +2702,6 @@ function App() {
               <button className="ghost-action" onClick={beginRenameField} disabled={!loadedProjection}>
                 <Edit3 size={16} />
                 Rename Scope
-              </button>
-              <button className="ghost-action" onClick={() => setChannelOpen(true)}>
-                <MessageSquare size={16} />
-                Floe
               </button>
             </div>
           )}
@@ -3379,174 +3394,137 @@ function App() {
   }
 
   return (
-    <main className={`floe-shell v6-shell ${channelOpen ? "with-channel" : ""}`} data-testid="v6-shell">
-      <aside className="workspace-rail v6-left-nav" data-testid="v6-left-nav" aria-label="Workspace navigation">
-        <div className="rail-brand">
-          <div className="brand-mark"><Workflow size={18} /></div>
-          <div>
-            <strong>Floe</strong>
-            <span className={`connection ${connectionClass(status)}`}><CircleDot size={10} />{status}</span>
-          </div>
-        </div>
-        <div className="rail-section">
-          <button
-            type="button"
-            className={`nav-row ${view.kind === "home" ? "active" : ""}`}
-            onClick={goToWorkspaceHome}
-          >
-            <Home size={15} />
-            <span>Home</span>
-          </button>
-          <button
-            type="button"
-            className={`nav-row ${view.kind === "activity" ? "active" : ""}`}
-            onClick={() => setView({ kind: "activity" })}
-          >
-            <Activity size={15} />
-            <span>Activity</span>
-          </button>
-          <span className="rail-label nav-group-label">
-            <span>Scopes</span>
-            <span>{fieldSummaries.length}</span>
-          </span>
-          {fieldSummaries.length === 0 ? (
-            <div className="nav-empty">No named Scopes yet</div>
-          ) : (
-            fieldSummaries.map((summary) => (
-              <button
-                key={summary.id}
-                type="button"
-                className={`nav-row scope-nav-row${view.kind === "field" && view.fieldId === summary.id ? " active" : ""}`}
-                onClick={() => openField(summary.id)}
-              >
-                <LayoutPanelLeft size={15} />
-                <span>{summary.title}</span>
+    <main className={`floe-shell v6-shell${channelOpen ? " with-channel" : ""}`} data-testid="v6-shell">
+      <header className="topbar v6-topbar" data-testid="v6-topbar">
+        {renderWorkspaceSwitcher()}
+        <nav className="breadcrumb">
+          <button onClick={goToWorkspaceHome}><Home size={14} /> Workspace</button>
+          {view.kind === "field" && (
+            <>
+              <ChevronRight size={14} />
+              <button className="breadcrumb-current">
+                {loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? view.fieldId}
               </button>
-            ))
+            </>
           )}
-          <button
-            type="button"
-            className="nav-row nav-add"
-            onClick={promptCreateField}
-            draggable
-            onDragStart={handleFieldPrimitiveDragStart}
-            title="Create a new Scope"
-          >
-            <FolderPlus size={15} />
-            <span>New Scope</span>
-          </button>
-          {view.kind === "field" && loadedProjection && (
-            <div className="scope-nav-section" data-testid="v6-scope-contexts">
-              <span className="rail-label nav-group-label">
-                <span>Contexts</span>
-                <span>{openedScopeContexts.length}</span>
-              </span>
-              {openedScopeContexts.length === 0 ? (
-                <div className="nav-empty">No mapped Contexts</div>
-              ) : (
-                openedScopeContexts.map((context) => (
-                  <button
-                    key={context.context_id}
-                    type="button"
-                    className={`nav-row context-nav-row${selectedContextId === context.context_id ? " active" : ""}`}
-                    onClick={() => openProjectedContext(context.context_id)}
-                  >
-                    <MessageSquare size={15} />
-                    <span>{context.first_message_preview || context.context_id}</span>
-                  </button>
-                ))
-              )}
+        </nav>
+        <div className="topbar-actions">
+          {view.kind === "field" && (
+            <div className="pill-grp scope-mode-pill" role="group" aria-label="Scope mode">
+              <button type="button" className="is-on">Map</button>
+              <button type="button" disabled title="Ops surface follows in a later v6 slice">Ops</button>
             </div>
           )}
-          <span className="rail-label nav-group-label">
-            <span>Actors</span>
-            <span>{agents.length}</span>
-          </span>
-          {agents.length === 0 ? (
-            <div className="nav-empty">No actors available</div>
-          ) : (
-            agents.map((agent) => {
-              const name = agent.name?.trim() || agent.agent_id || "Actor";
-              const selected = selectedAgent?.endpoint_id === agent.endpoint_id;
-              return (
-                <button
-                  key={agent.endpoint_id}
-                  type="button"
-                  className={`nav-row actor-nav-row${selected ? " active" : ""}`}
-                  onClick={() => {
-                    contextsRequestRef.current += 1;
-                    selectActorForInspector(agent.endpoint_id);
-                    setChannelOpen(true);
-                  }}
-                >
-                  <span className="nav-avatar">{actorInitial(name)}</span>
-                  <span>{name}</span>
-                </button>
-              );
-            })
-          )}
+          <button className="icon-button" onClick={() => void refresh()} title="Refresh" aria-label="Refresh workspace">
+            <RefreshCw size={15} />
+          </button>
         </div>
-        <button className="rail-settings" onClick={() => setShowBusSettings((current) => !current)}>
-          <Settings size={14} />
-          Bus
-        </button>
-        {showBusSettings && (
-          <div className="bus-settings">
-            <input value={busUrl} onChange={(event) => setBusUrl(event.target.value)} />
-            <button onClick={() => void refresh()}>Reconnect</button>
-          </div>
-        )}
-      </aside>
+      </header>
 
-      <section className="main-stage">
-        {error && <div className="error-bar">{error}</div>}
-        <header className="topbar v6-topbar" data-testid="v6-topbar">
-          {renderWorkspaceSwitcher()}
-          <nav className="breadcrumb">
-            <button onClick={goToWorkspaceHome}><Home size={14} /> Workspace</button>
-            {view.kind === "field" && (
-              <>
-                <ChevronRight size={14} />
-                <button className="breadcrumb-current">
-                  {loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? view.fieldId}
-                </button>
-              </>
-            )}
-          </nav>
-          <div className="topbar-actions">
-            {view.kind === "field" && (
-              <div className="pill-grp scope-mode-pill" role="group" aria-label="Scope mode">
-                <button type="button" className="is-on">Map</button>
-                <button type="button" disabled title="Ops surface follows in a later v6 slice">Ops</button>
-              </div>
-            )}
-            <button className="icon-button" onClick={() => void refresh()} title="Refresh" aria-label="Refresh workspace">
-              <RefreshCw size={15} />
+      <div className="body">
+        <aside className="workspace-rail v6-left-nav" data-testid="v6-left-nav" aria-label="Workspace navigation">
+          <div className="rail-brand">
+            <div className="brand-mark"><Workflow size={18} /></div>
+            <div>
+              <strong>Floe</strong>
+              <span className={`connection ${connectionClass(status)}`}><CircleDot size={10} />{status}</span>
+            </div>
+          </div>
+          <div className="rail-section">
+            <button
+              type="button"
+              className={`nav-row ${view.kind === "home" ? "active" : ""}`}
+              onClick={goToWorkspaceHome}
+            >
+              <Home size={15} />
+              <span>Home</span>
             </button>
             <button
-              className="icon-button"
-              onClick={() => setChannelOpen((current) => !current)}
-              title="Toggle actor conversations"
-              aria-label={channelOpen ? "Hide actor conversation panel" : "Open actor conversation panel"}
+              type="button"
+              className={`nav-row ${view.kind === "activity" ? "active" : ""}`}
+              onClick={() => setView({ kind: "activity" })}
             >
-              {channelOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+              <Activity size={15} />
+              <span>Activity</span>
             </button>
+            <span className="rail-label nav-group-label">
+              <span>Scopes</span>
+              <span>{fieldSummaries.length}</span>
+            </span>
+            {fieldSummaries.length === 0 ? (
+              <div className="nav-empty">No named Scopes yet</div>
+            ) : (
+              fieldSummaries.map((summary) => (
+                <button
+                  key={summary.id}
+                  type="button"
+                  className={`nav-row scope-nav-row${view.kind === "field" && view.fieldId === summary.id ? " active" : ""}`}
+                  onClick={() => openField(summary.id)}
+                >
+                  <LayoutPanelLeft size={15} />
+                  <span>{summary.title}</span>
+                </button>
+              ))
+            )}
+            <button
+              type="button"
+              className="nav-row nav-add"
+              onClick={promptCreateField}
+              draggable
+              onDragStart={handleFieldPrimitiveDragStart}
+              title="Create a new Scope"
+            >
+              <FolderPlus size={15} />
+              <span>New Scope</span>
+            </button>
+            {view.kind === "field" && loadedProjection && (
+              <div className="scope-nav-section" data-testid="v6-scope-contexts">
+                <span className="rail-label nav-group-label">
+                  <span>Contexts</span>
+                  <span>{openedScopeContexts.length}</span>
+                </span>
+                {openedScopeContexts.length === 0 ? (
+                  <div className="nav-empty">No mapped Contexts</div>
+                ) : (
+                  openedScopeContexts.map((context) => (
+                    <button
+                      key={context.context_id}
+                      type="button"
+                      className={`nav-row context-nav-row${selectedContextId === context.context_id ? " active" : ""}`}
+                      onClick={() => openProjectedContext(context.context_id)}
+                    >
+                      <MessageSquare size={15} />
+                      <span>{context.first_message_preview || context.context_id}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
           </div>
-        </header>
-        <div className={`content-row${view.kind === "home" || view.kind === "field" ? " home-content-row" : ""}`}>
-          <div
-            className="surface-area"
-            data-testid="v6-main-surface"
-            onDrop={handleLibraryDropSurface}
-            onDragOver={handleLibraryDragOver}
-          >
-            {!selectedWorkspace ? renderNoWorkspace() : view.kind === "field" ? renderField() : view.kind === "activity" ? renderActivity() : renderHome()}
-          </div>
-          {renderInspector()}
-        </div>
-      </section>
+          <button className="rail-settings" onClick={() => setShowBusSettings((current) => !current)}>
+            <Settings size={14} />
+            Bus
+          </button>
+          {showBusSettings && (
+            <div className="bus-settings">
+              <input value={busUrl} onChange={(event) => setBusUrl(event.target.value)} />
+              <button onClick={() => void refresh()}>Reconnect</button>
+            </div>
+          )}
+        </aside>
 
-      {renderChannel()}
+        <div
+          className="surface-area"
+          data-testid="v6-main-surface"
+          onDrop={handleLibraryDropSurface}
+          onDragOver={handleLibraryDragOver}
+        >
+          {error && <div className="error-bar">{error}</div>}
+          {!selectedWorkspace ? renderNoWorkspace() : view.kind === "field" ? renderField() : view.kind === "activity" ? renderActivity() : renderHome()}
+        </div>
+        {renderInspector()}
+        {renderChannel()}
+      </div>
       <DialogHost />
     </main>
   );

@@ -34,7 +34,7 @@ test.describe("Live emit E2E", () => {
     // Wait for workspace to load (look for workspace name or home view)
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 10000 });
 
-    const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
+    const channelToggle = page.getByLabel(/Open Contexts for /).first();
     if (await channelToggle.count() > 0) {
       await channelToggle.first().click();
       await page.waitForTimeout(500);
@@ -68,7 +68,7 @@ test.describe("Live emit E2E", () => {
     await page.waitForTimeout(1000);
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 10000 });
 
-    const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
+    const channelToggle = page.getByLabel(/Open Contexts for /).first();
     if (await channelToggle.count() > 0) {
       await channelToggle.first().click();
       await page.waitForTimeout(500);
@@ -96,7 +96,7 @@ test.describe("Live emit E2E", () => {
     await page.waitForTimeout(1000);
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 10000 });
 
-    const channelToggle = page.locator("button[aria-label='Open actor conversation panel']");
+    const channelToggle = page.getByLabel(/Open Contexts for /).first();
     if (await channelToggle.count() > 0) {
       await channelToggle.first().click();
       await page.waitForTimeout(500);

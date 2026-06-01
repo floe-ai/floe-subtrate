@@ -66,14 +66,17 @@ test.describe("V6 Workspace Home surface", () => {
     const home = page.getByTestId("v6-workspace-home");
     await expect(home).toBeVisible();
     await expect(home.getByText("Workspace index", { exact: true })).toBeVisible();
+    await expect(home.locator(":scope > .hero")).toBeVisible();
+    await expect(home.locator(":scope > .ws-settings")).toBeVisible();
     await expect(home.getByTestId("v6-home-scopes").getByRole("button", { name: /Writing System/i })).toBeVisible();
-    await expect(home.getByTestId("v6-home-actors").getByRole("button", { name: /Floe/i })).toBeVisible();
+    const floeActor = home.getByTestId("v6-home-actors").locator(".home-actor-summary", { hasText: "Floe" });
+    await expect(floeActor).toBeVisible();
     await expect(home.getByTestId("v6-home-contexts")).toContainText("Direct planning thread");
     await expect(home.getByTestId("v6-home-contexts")).toContainText("Workspace-level Context");
     await expect(page.getByText(/Default (Scope|Field)/)).toHaveCount(0);
     expect(projectionGets).toEqual([]);
 
-    await home.getByTestId("v6-home-actors").getByRole("button", { name: /Floe/i }).click();
+    await floeActor.click();
 
     const inspector = page.getByTestId("v6-inspector");
     await expect(inspector.getByRole("heading", { name: "Actor", exact: true })).toBeVisible();
@@ -218,6 +221,16 @@ test.describe("V6 Workspace Home surface", () => {
     );
 
     const home = page.getByTestId("v6-workspace-home");
+    const sectionOrder = await home.locator("[data-testid^='v6-home-']").evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("data-testid"))
+    );
+    expect(sectionOrder).toEqual([
+      "v6-home-workspace-settings",
+      "v6-home-actors",
+      "v6-home-scopes",
+      "v6-home-recent-activity",
+      "v6-home-contexts"
+    ]);
     await expect(home.getByTestId("v6-home-workspace-settings")).toContainText("Runtime readiness");
     await expect(home.getByTestId("v6-home-workspace-settings")).toContainText("Ready");
     await expect(home.getByTestId("v6-home-workspace-settings")).toContainText("pi");
@@ -236,11 +249,12 @@ test.describe("V6 Workspace Home surface", () => {
     await expect(scopes.getByRole("button", { name: /Writing Scope/i })).toContainText("Latest: checking references");
 
     const actors = home.getByTestId("v6-home-actors");
-    await expect(actors.getByRole("button", { name: /Floe/i })).toContainText("Workspace-level 1");
-    await expect(actors.getByRole("button", { name: /Floe/i })).toContainText("Scoped 1");
-    await expect(actors.getByRole("button", { name: /Floe/i })).toContainText("Activity 1");
-    await expect(actors.getByRole("button", { name: /Floe/i })).toContainText("local-dev / gpt-5");
-    await expect(actors.getByRole("button", { name: /Floe/i })).toContainText("pi");
+    const floeActor = actors.locator(".home-actor-summary", { hasText: "Floe" });
+    await expect(floeActor).toContainText("Workspace-level 1");
+    await expect(floeActor).toContainText("Scoped 1");
+    await expect(floeActor).toContainText("Activity 1");
+    await expect(floeActor).toContainText("local-dev / gpt-5");
+    await expect(floeActor).toContainText("pi");
 
     await expect(home).not.toContainText("Workspace runtime default is not fully configured");
     await expect(page.getByText(/Default (Scope|Field)|Home Scope|\bThread\b|\.floe\/blocks/)).toHaveCount(0);

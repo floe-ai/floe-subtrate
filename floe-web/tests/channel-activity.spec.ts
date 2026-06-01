@@ -253,8 +253,7 @@ async function seedAndOpenChannel(
   await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
   await page.waitForTimeout(500);
 
-  // Open channel
-  await page.click('.icon-button[aria-label="Open actor conversation panel"]');
+  await page.getByLabel("Open Contexts for Floe").click();
   await page.waitForTimeout(400);
 }
 

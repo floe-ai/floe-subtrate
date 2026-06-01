@@ -76,7 +76,7 @@ test.describe("V6 transitional Channel preservation", () => {
     );
 
     const home = page.getByTestId("v6-workspace-home");
-    await home.getByTestId("v6-home-actors").getByRole("button", { name: /Floe/i }).click();
+    await home.getByTestId("v6-home-actors").locator(".home-actor-summary", { hasText: "Floe" }).click();
 
     const inspector = page.getByTestId("v6-inspector");
     const contextCard = inspector.locator(".inspector-context-card", { hasText: "Direct planning thread" });

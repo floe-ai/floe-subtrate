@@ -255,7 +255,7 @@ test.describe("V6 Inspector content depth", () => {
     await expect(inspector).toContainText("Actors");
     expect(projectionGets).toEqual([]);
 
-    await page.getByTestId("v6-home-actors").getByRole("button", { name: /Floe/ }).click();
+    await page.getByTestId("v6-home-actors").locator(".home-actor-summary", { hasText: "Floe" }).click();
     await expect(inspector.getByRole("heading", { name: "Actor", exact: true })).toBeVisible();
     await expect(inspector).toContainText("Workspace Endpoint");
     await expect(inspector).toContainText("Runtime binding");

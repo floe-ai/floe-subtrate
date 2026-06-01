@@ -133,12 +133,18 @@ code {
 .floe-shell {
   height: 100%;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   background: var(--surface-0);
 }
 
-.floe-shell.with-channel {
-  grid-template-columns: 260px minmax(0, 1fr) 380px;
+.body {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: 240px minmax(0, 1fr) 316px;
+}
+
+.floe-shell.with-channel .body {
+  grid-template-columns: 240px minmax(0, 1fr) 316px 380px;
 }
 
 .workspace-rail {
@@ -900,7 +906,7 @@ code {
 
 .home-overview-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
+  grid-template-columns: 1fr;
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -918,6 +924,10 @@ code {
 .home-overview-card {
   align-content: start;
   gap: 12px;
+}
+
+.ws-settings {
+  margin-bottom: 18px;
 }
 
 .home-detail-list {
@@ -1157,8 +1167,7 @@ code {
 
 .home-actor-card {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  align-items: center;
+  grid-template-columns: 1fr;
   gap: 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1174,6 +1183,17 @@ code {
 .home-actor-card.selected {
   border-color: var(--accent);
   background: var(--accent-soft-2);
+}
+
+.home-actor-summary {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
 }
 
 .home-actor-avatar {
@@ -1208,8 +1228,9 @@ code {
 
 .home-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(320px, 1fr));
+  grid-template-columns: 1fr;
   gap: 18px;
+  margin-bottom: 18px;
   align-items: start;
 }
 

@@ -135,8 +135,7 @@ async function gotoAndOpenChannel(page: import("@playwright/test").Page) {
   // Wait for workspace to load
   await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
   await page.waitForTimeout(500);
-  // Open channel panel
-  await page.click('.icon-button[aria-label="Open actor conversation panel"]');
+  await page.getByLabel("Open Contexts for Floe").click();
   await page.waitForTimeout(400);
 }
 
@@ -194,7 +193,7 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
     await page.addInitScript(() => localStorage.setItem("floe-operator-name", "Cached Alice"));
     await setupRoutesForNeutralUI(page, { operatorName: "Bus Bob" });
     await page.goto("/");
-    await page.click('.icon-button[aria-label="Open actor conversation panel"]');
+    await page.getByLabel("Open Contexts for Floe").click();
     await page.waitForSelector(".channel-message.self", { timeout: 5000 });
 
     const selfMessage = page.locator(".channel-message.self").first();
@@ -261,9 +260,6 @@ test.describe("Actor-neutral UI (Slice 8)", () => {
     await page.goto("/");
     await page.waitForSelector(".workspace-home, [data-testid='workspace-loaded']", { timeout: 8000 }).catch(() => {});
     await page.waitForTimeout(500);
-    await page.click('.icon-button[aria-label="Open actor conversation panel"]');
-    await page.waitForTimeout(400);
-
     const bodyText = await page.locator("body").innerText();
     expect(bodyText).not.toContain("agent endpoint");
     expect(bodyText).not.toMatch(/\bAgent\b/);

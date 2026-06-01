@@ -226,7 +226,7 @@ test.describe("Field surface as Scope Projection", () => {
       { legacyFieldRequests, scopePosts, scopePatches }
     );
 
-    await page.getByRole("button", { name: /Add field/i }).click();
+    await page.getByRole("button", { name: /Add Scope/i }).click();
     await page.getByLabel("Scope name").fill("Planning Scope");
     await page.getByTestId("dialog-layer").getByRole("button", { name: "Create" }).click();
     await expect(page.getByRole("heading", { name: "Planning Scope" })).toBeVisible();

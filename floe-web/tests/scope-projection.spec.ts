@@ -106,7 +106,7 @@ test.describe("Scope Projection Fields", () => {
       { legacyFieldRequests, scopePosts, scopePatches }
     );
 
-    await page.getByRole("button", { name: /Add field/i }).click();
+    await page.getByRole("button", { name: /Add Scope/i }).click();
     await page.getByLabel("Scope name").fill("Planning Scope");
     await page.getByTestId("dialog-layer").getByRole("button", { name: "Create" }).click();
     await expect(page.getByRole("heading", { name: "Planning Scope" })).toBeVisible();
@@ -133,7 +133,7 @@ test.describe("Scope Projection Fields", () => {
     );
 
     for (const _ of [0, 1]) {
-      await page.getByRole("button", { name: /Add field/i }).click();
+      await page.getByRole("button", { name: /Add Scope/i }).click();
       await page.getByLabel("Scope name").fill("Shared Planning");
       await page.getByTestId("dialog-layer").getByRole("button", { name: "Create" }).click();
       await expect(page.getByRole("heading", { name: "Shared Planning" })).toBeVisible();
