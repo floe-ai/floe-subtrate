@@ -101,6 +101,7 @@ import {
   buildScopeInspectorSummary,
   buildWorkspaceInspectorSummary
 } from "./inspector-view-model";
+import { buildWorkspaceHomeModel } from "./home-view-model";
 import { DialogHost, confirm as confirmDialog, confirmWithOptions, prompt as promptDialog } from "./dialog/dialog";
 import { subscribePulse, unsubscribePulse } from "./pulse-api";
 
@@ -492,23 +493,6 @@ function App() {
   const rootFieldSummaries = useMemo(() => fieldSummaries, [fieldSummaries]);
   const homeFieldSummaries = showAllFields ? fieldSummaries : rootFieldSummaries;
   const nestedFieldCount = fieldSummaries.length - rootFieldSummaries.length;
-  const recentHomeActivity = useMemo(() => {
-    const eventItems = events.map((event) => ({
-      id: event.event_id,
-      title: event.type,
-      detail: event.content?.text?.trim() || event.context_id || event.thread_id || "Workspace event",
-      createdAt: event.created_at
-    }));
-    const telemetryItems = telemetry.map((record) => ({
-      id: record.telemetry_id,
-      title: runtimeActivityLabel(record.kind),
-      detail: summarizeTelemetry(record),
-      createdAt: record.created_at
-    }));
-    return [...eventItems, ...telemetryItems]
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, 5);
-  }, [events, telemetry]);
   const activityRows = useMemo(() => buildActivityRows({
     events,
     telemetry,
@@ -594,6 +578,32 @@ function App() {
     effectiveProfile.provider !== "fake";
   const canMessageRuntime = runtimeReady && !runtimeBlockedByFakeAdapter;
   const canUseChannelComposer = canMessageRuntime && selectedContextCanMessage;
+  const homeContextsForSummary = activityContexts.length > 0 ? activityContexts : workspaceContexts;
+  const homeModel = useMemo(() => buildWorkspaceHomeModel({
+    scopes: scopeRecords,
+    contexts: homeContextsForSummary,
+    activityRows,
+    endpoints,
+    operatorEndpointId: selfActorId,
+    authProfileCount: authProfiles.length,
+    bridgeRuntimeKnown,
+    bridgeRuntimeAdapter: bridgeRuntimeAdapterName,
+    runtimeBindings,
+    effectiveProfileId,
+    effectiveModel
+  }), [
+    activityRows,
+    authProfiles.length,
+    bridgeRuntimeAdapterName,
+    bridgeRuntimeKnown,
+    effectiveModel,
+    effectiveProfileId,
+    endpoints,
+    homeContextsForSummary,
+    runtimeBindings,
+    scopeRecords,
+    selfActorId
+  ]);
 
   const floeMessages = useMemo<EventEnvelope[]>(() => {
     if (!floeAgent || !selectedContextId) return [];
@@ -2179,17 +2189,35 @@ function App() {
                 <dt>Runtime default</dt>
                 <dd>{effectiveProfile?.label ?? effectiveProfile?.id ?? "Not configured"}{effectiveModel ? ` · ${effectiveModel}` : ""}</dd>
               </div>
+              <div>
+                <dt>Runtime readiness</dt>
+                <dd>{canMessageRuntime ? "Ready" : runtimeBlockedByFakeAdapter ? "Blocked by adapter" : "Needs setup"}</dd>
+              </div>
+              <div>
+                <dt>Runtime adapter</dt>
+                <dd>{bridgeRuntimeAdapterName ?? "unknown"}</dd>
+              </div>
             </dl>
+            {homeModel.systemWarnings.length > 0 && (
+              <div className="home-warning-list" data-testid="v6-home-system-warnings">
+                {homeModel.systemWarnings.map((warning) => (
+                  <div key={warning} className="callout warning">
+                    <AlertTriangle size={14} />
+                    <span>{warning}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
           <section className="home-overview-card recent-activity-card" data-testid="v6-home-recent-activity">
             <div className="section-title-row">
               <div>
                 <h3>Recent activity</h3>
-                <p>Workspace events and runtime traces from the bus.</p>
+                <p>Workspace events and runtime traces using the Activity view model.</p>
               </div>
-              <span>{recentHomeActivity.length}</span>
+              <span>{homeModel.recentActivity.length}</span>
             </div>
-            {recentHomeActivity.length === 0 ? (
+            {homeModel.recentActivity.length === 0 ? (
               <div className="quiet-empty compact">
                 <Activity size={22} />
                 <strong>No recent activity</strong>
@@ -2197,12 +2225,13 @@ function App() {
               </div>
             ) : (
               <div className="home-activity-list">
-                {recentHomeActivity.map((item) => (
+                {homeModel.recentActivity.map((item) => (
                   <article key={item.id} className="home-activity-row">
                     <span className="field-icon"><Activity size={15} /></span>
                     <span>
                       <strong>{item.title}</strong>
                       <small>{item.detail}</small>
+                      <small>{item.sourceLabel} · {item.contextLabel ?? "No Context"} · {item.scopeLabel}</small>
                     </span>
                   </article>
                 ))}
@@ -2227,25 +2256,29 @@ function App() {
             </div>
           ) : (
             <div className="home-actor-strip">
-              {agents.map((agent) => {
-                const name = endpointDisplayName(agent) ?? agent.agent_id ?? "Actor";
-                const selected = inspectorActor?.endpoint_id === agent.endpoint_id;
-                return (
-                  <button
-                    key={agent.endpoint_id}
-                    type="button"
-                    className={`home-actor-card${selected ? " selected" : ""}`}
-                    aria-pressed={selected}
-                    onClick={() => selectActorForInspector(agent.endpoint_id)}
-                  >
-                    <span className="home-actor-avatar">{actorInitial(name)}</span>
-                    <span>
-                      <strong>{name}</strong>
-                      <small>{agent.status || "unknown"}</small>
-                    </span>
-                  </button>
-                );
-              })}
+              {homeModel.actorCards
+                .filter((actor) => actor.endpointId !== selfActorId)
+                .map((actor) => {
+                  const name = actor.name;
+                  const selected = inspectorActor?.endpoint_id === actor.endpointId;
+                  return (
+                    <button
+                      key={actor.endpointId}
+                      type="button"
+                      className={`home-actor-card${selected ? " selected" : ""}`}
+                      aria-pressed={selected}
+                      onClick={() => selectActorForInspector(actor.endpointId)}
+                    >
+                      <span className="home-actor-avatar">{actorInitial(name)}</span>
+                      <span>
+                        <strong>{name}</strong>
+                        <small>{actor.status} · Workspace-level {actor.workspaceLevelContextCount} · Scoped {actor.scopedContextCount}</small>
+                        <small>Activity {actor.activityCount} · {actor.runtimeBindingLabel} · {actor.adapterLabel}</small>
+                        {actor.latestActivityDetail && <small>Latest: {actor.latestActivityDetail}</small>}
+                      </span>
+                    </button>
+                  );
+                })}
             </div>
           )}
         </section>
@@ -2283,21 +2316,27 @@ function App() {
               </div>
             ) : (
               <div className="field-list">
-                {homeFieldSummaries.map((summary) => (
-                  <button
-                    key={summary.id}
-                    className="field-block"
-                    onClick={() => openField(summary.id)}
-                    onDoubleClick={() => openField(summary.id)}
-                  >
-                    <span className="field-icon"><LayoutPanelLeft size={16} /></span>
-                    <span>
-                      <strong>{summary.title}</strong>
-                      <small>Scope-backed Field</small>
-                    </span>
-                    <ChevronRight size={16} />
-                  </button>
-                ))}
+                {homeFieldSummaries.map((summary) => {
+                  const scopeCard = homeModel.scopeCards.find((card) => card.scopeId === summary.id);
+                  const loadedContextCount = scopeCard?.loadedContextCount ?? 0;
+                  const activityCount = scopeCard?.activityCount ?? 0;
+                  return (
+                    <button
+                      key={summary.id}
+                      className="field-block"
+                      onClick={() => openField(summary.id)}
+                      onDoubleClick={() => openField(summary.id)}
+                    >
+                      <span className="field-icon"><LayoutPanelLeft size={16} /></span>
+                      <span>
+                        <strong>{summary.title}</strong>
+                        <small>Scope-backed Field · {loadedContextCount} loaded Context{loadedContextCount === 1 ? "" : "s"} · {activityCount} Activity row{activityCount === 1 ? "" : "s"}</small>
+                        {scopeCard?.latestActivityDetail && <small>Latest: {scopeCard.latestActivityDetail}</small>}
+                      </span>
+                      <ChevronRight size={16} />
+                    </button>
+                  );
+                })}
               </div>
             )}
           </section>
