@@ -1,0 +1,38 @@
+# FloeWeb v6 content-first completion
+
+Objective: make floe-web match the V6 mockup (floe-web-examples/mocks/v6/) closely, still using React Flow for the graph/map view, with real substrate-backed content. Preserve the corrected Workspace / Context / Scope model.
+
+Reference mockup: C:\Development\ai-powered\floe-web-examples\mocks\v6\
+
+Completed and pushed:
+- `a7954f4` - v6 shell Workspace Home.
+- `a28c973` - v6 Scope Map over React Flow / Scope Projection.
+- `2f8cefa` - v6 Activity content surface over Events, runtime Telemetry, Contexts, Scopes, and Endpoints.
+- `fe437e9` - v6 Inspector content depth.
+
+Agreed decisions (session 2026-06-01):
+- Channel overlay = V6 equivalent of context.html (keep, do not replace with a full page)
+- Add Actors section to the left nav (currently missing, V6 has it at the bottom)
+- Move workspace settings (path + profile/model) to the Home surface (currently inspector-only)
+- Scope cards on Home: grid layout with description + context/event/emit counts (currently list layout)
+- Inspector: add drag-to-resize handle, width persisted to localStorage (V6 has this)
+
+Current slice: issue #61 - v6 skeleton shell reset.
+- Goal: port the approved v6 skeleton composition into production while preserving real substrate/API behavior and corrected Workspace / Context / Scope semantics.
+- Implemented: shell hierarchy reset, Home order reset, removed global Channel toggle/legacy actor nav, added explicit Home actor "Open Contexts", kept Channel reachable through explicit Context paths, and updated legacy tests away from fake Default Field/Scope language.
+- Validation completed: targeted reset contract and targeted legacy compatibility loop pass. Full build/unit/e2e, live proof, post-implementation review, commit, and push are pending.
+
+Ordered remaining slices after #61:
+1. Left nav Actors section (add actors list matching V6 shell.js renderLeftNav)
+2. Home: workspace settings panel (compact path + profile/model inline on the home surface)
+3. Home: scope grid layout (description + counts, V6 scope-grid CSS class)
+4. Inspector: drag-to-resize handle (V6 makeResizeHandle, width persisted)
+5. (deferred) Scoped operational content where substrate support exists
+
+Validation bar for each slice:
+- Architecture brief before product edits.
+- TDD/Playwright coverage for visible behavior and terminology.
+- Separate post-implementation review against the brief.
+- Build/unit/e2e checks.
+- Live proof screenshot/data where applicable.
+- Commit and push before moving to the next slice.

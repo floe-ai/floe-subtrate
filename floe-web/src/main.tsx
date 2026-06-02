@@ -427,6 +427,53 @@ function App() {
   const contextsRequestRef = useRef(0);
   const activityContextsRequestRef = useRef(0);
   const contextEventsRequestRef = useRef(0);
+  const rinspDragRef = useRef(false);
+
+  const RINSP_KEY = "floe.rinspW";
+  const RINSP_MIN = 260;
+  const RINSP_MAX = 720;
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(RINSP_KEY);
+      if (saved) {
+        const w = parseInt(saved, 10);
+        if (w >= RINSP_MIN && w <= RINSP_MAX) {
+          const shell = document.querySelector(".floe-shell");
+          if (shell instanceof HTMLElement) shell.style.setProperty("--rinsp-w", `${w}px`);
+        }
+      }
+    } catch (_) {}
+  }, []);
+
+  function handleRinspPointerDown(ev: React.PointerEvent<HTMLDivElement>) {
+    ev.preventDefault();
+    rinspDragRef.current = true;
+    try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (_) {}
+    ev.currentTarget.classList.add("is-dragging");
+    document.body.classList.add("is-resizing-rinsp");
+  }
+
+  function handleRinspPointerMove(ev: React.PointerEvent<HTMLDivElement>) {
+    if (!rinspDragRef.current) return;
+    const next = Math.max(RINSP_MIN, Math.min(RINSP_MAX, window.innerWidth - ev.clientX));
+    const shell = document.querySelector(".floe-shell");
+    if (shell instanceof HTMLElement) shell.style.setProperty("--rinsp-w", `${next}px`);
+    try { localStorage.setItem(RINSP_KEY, String(next)); } catch (_) {}
+  }
+
+  function handleRinspPointerUp(ev: React.PointerEvent<HTMLDivElement>) {
+    if (!rinspDragRef.current) return;
+    rinspDragRef.current = false;
+    ev.currentTarget.classList.remove("is-dragging");
+    document.body.classList.remove("is-resizing-rinsp");
+    try { ev.currentTarget.releasePointerCapture(ev.pointerId); } catch (_) {}
+    const shell = document.querySelector(".floe-shell");
+    if (shell instanceof HTMLElement) {
+      const w = parseInt(getComputedStyle(shell).getPropertyValue("--rinsp-w") || "316", 10);
+      try { localStorage.setItem(RINSP_KEY, String(w)); } catch (_) {}
+    }
+  }
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
   const selfActorId = selectedWorkspace ? operatorActorId(selectedWorkspace.workspace_id) : "";
@@ -2182,28 +2229,69 @@ function App() {
                 <p>Home indexes Workspace state; it is not a Scope.</p>
               </div>
             </div>
-            <dl className="home-detail-list">
-              <div>
-                <dt>Location</dt>
-                <dd>{selectedWorkspace?.locator ?? "Unknown"}</dd>
+            <div className="wss-row">
+              <div className="wss-key">Path</div>
+              <div className="wss-val">
+                <code className="wss-path">{selectedWorkspace?.locator ?? "—"}</code>
+                {selectedWorkspace?.locator && (
+                  <button
+                    type="button"
+                    className="wss-copy"
+                    title="Copy path"
+                    onClick={() => void navigator.clipboard.writeText(selectedWorkspace.locator)}
+                  >
+                    Copy
+                  </button>
+                )}
               </div>
-              <div>
-                <dt>Status</dt>
-                <dd>{selectedWorkspace ? workspaceStatusLabel(selectedWorkspace) : "No workspace"}</dd>
+            </div>
+            <div className="wss-row">
+              <div className="wss-key">Status</div>
+              <div className="wss-val">
+                {selectedWorkspace ? workspaceStatusLabel(selectedWorkspace) : "No workspace"}
               </div>
-              <div>
-                <dt>Runtime default</dt>
-                <dd>{effectiveProfile?.label ?? effectiveProfile?.id ?? "Not configured"}{effectiveModel ? ` · ${effectiveModel}` : ""}</dd>
+            </div>
+            <div className="wss-row wss-inherit">
+              <div className="wss-key">New actors inherit</div>
+              <div className="wss-val wss-selects">
+                {authProfiles.length === 0 ? (
+                  <span className="wss-unconfigured">No profiles — run <code>floe login</code></span>
+                ) : (
+                  <>
+                    <select
+                      className="wss-select"
+                      value={workspaceBinding?.auth_profile ?? ""}
+                      onChange={(event) => void setWorkspaceProfile(event.target.value)}
+                      title="Default profile for new actors"
+                    >
+                      <option value="">Profile…</option>
+                      {authProfiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>{profile.id}</option>
+                      ))}
+                    </select>
+                    <select
+                      className="wss-select"
+                      value={workspaceBinding?.model ?? ""}
+                      onChange={(event) => void setWorkspaceModel(event.target.value)}
+                      disabled={!workspaceBinding?.auth_profile || workspaceModelOptions.length === 0}
+                      title="Default model for new actors"
+                    >
+                      <option value="">Model…</option>
+                      {workspaceModelOptions.map((model) => (
+                        <option key={model.id} value={model.id}>{model.name}</option>
+                      ))}
+                    </select>
+                  </>
+                )}
               </div>
-              <div>
-                <dt>Runtime readiness</dt>
-                <dd>{canMessageRuntime ? "Ready" : runtimeBlockedByFakeAdapter ? "Blocked by adapter" : "Needs setup"}</dd>
+            </div>
+            <div className="wss-row">
+              <div className="wss-key">Runtime</div>
+              <div className="wss-val">
+                {canMessageRuntime ? "Ready" : runtimeBlockedByFakeAdapter ? "Blocked by adapter" : "Needs setup"}
+                {bridgeRuntimeAdapterName ? ` · ${bridgeRuntimeAdapterName}` : ""}
               </div>
-              <div>
-                <dt>Runtime adapter</dt>
-                <dd>{bridgeRuntimeAdapterName ?? "unknown"}</dd>
-              </div>
-            </dl>
+            </div>
             {homeModel.systemWarnings.length > 0 && (
               <div className="home-warning-list" data-testid="v6-home-system-warnings">
                 {homeModel.systemWarnings.map((warning) => (
@@ -2303,25 +2391,29 @@ function App() {
                 <span>Create a named Scope to start shaping this workspace.</span>
               </div>
             ) : (
-              <div className="field-list">
+              <div className="scope-grid">
                 {homeFieldSummaries.map((summary) => {
                   const scopeCard = homeModel.scopeCards.find((card) => card.scopeId === summary.id);
+                  const scopeRecord = scopeRecords.find((r) => r.scope_id === summary.id);
                   const loadedContextCount = scopeCard?.loadedContextCount ?? 0;
                   const activityCount = scopeCard?.activityCount ?? 0;
                   return (
                     <button
                       key={summary.id}
-                      className="field-block"
+                      className="scope-card"
                       onClick={() => openField(summary.id)}
-                      onDoubleClick={() => openField(summary.id)}
                     >
-                      <span className="field-icon"><LayoutPanelLeft size={16} /></span>
-                      <span>
-                        <strong>{summary.title}</strong>
-                        <small>Named Scope · {loadedContextCount} loaded Context{loadedContextCount === 1 ? "" : "s"} · {activityCount} Activity row{activityCount === 1 ? "" : "s"}</small>
-                        {scopeCard?.latestActivityDetail && <small>Latest: {scopeCard.latestActivityDetail}</small>}
-                      </span>
-                      <ChevronRight size={16} />
+                      <div className="sc-head">
+                        <span className="sc-glyph">{summary.title.charAt(0).toUpperCase()}</span>
+                        <span className="sc-name">{summary.title}</span>
+                      </div>
+                      {scopeRecord?.description && (
+                        <div className="sc-desc">{scopeRecord.description}</div>
+                      )}
+                      <div className="sc-stats">
+                        <span><b>{loadedContextCount}</b> contexts</span>
+                        <span><b>{activityCount}</b> activity</span>
+                      </div>
                     </button>
                   );
                 })}
@@ -2763,6 +2855,14 @@ function App() {
   function renderInspector() {
     return (
       <aside className="inspector" data-testid="v6-inspector" aria-label="Inspector">
+        <div
+          className="rinsp-resize"
+          title="Drag to resize inspector"
+          onPointerDown={handleRinspPointerDown}
+          onPointerMove={handleRinspPointerMove}
+          onPointerUp={handleRinspPointerUp}
+          onPointerCancel={handleRinspPointerUp}
+        />
         <div className="inspector-header">
           <span>Inspector</span>
           <button className="icon-button" onClick={() => void refresh()} title="Refresh">
@@ -3498,6 +3598,26 @@ function App() {
                     </button>
                   ))
                 )}
+              </div>
+            )}
+            {agents.length > 0 && (
+              <div className="actors-nav-section" data-testid="v6-nav-actors">
+                <span className="rail-label nav-group-label">
+                  <span>Actors</span>
+                  <span>{agents.length}</span>
+                </span>
+                {agents.map((endpoint) => (
+                  <button
+                    key={endpoint.endpoint_id}
+                    type="button"
+                    className={`nav-row actor-nav-row${inspectorActor?.endpoint_id === endpoint.endpoint_id ? " active" : ""}`}
+                    onClick={() => selectActorForInspector(endpoint.endpoint_id)}
+                    title={endpoint.name}
+                  >
+                    <span className="nav-avatar">{endpoint.name.charAt(0).toUpperCase()}</span>
+                    <span>{endpoint.name}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>

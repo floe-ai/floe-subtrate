@@ -231,7 +231,7 @@ test.describe("V6 Workspace Home surface", () => {
       "v6-home-recent-activity",
       "v6-home-contexts"
     ]);
-    await expect(home.getByTestId("v6-home-workspace-settings")).toContainText("Runtime readiness");
+    await expect(home.getByTestId("v6-home-workspace-settings")).toContainText("Runtime");
     await expect(home.getByTestId("v6-home-workspace-settings")).toContainText("Ready");
     await expect(home.getByTestId("v6-home-workspace-settings")).toContainText("pi");
 
@@ -244,9 +244,8 @@ test.describe("V6 Workspace Home surface", () => {
     await expect(activity).toContainText("Workspace-only");
 
     const scopes = home.getByTestId("v6-home-scopes");
-    await expect(scopes.getByRole("button", { name: /Writing Scope/i })).toContainText("1 loaded Context");
-    await expect(scopes.getByRole("button", { name: /Writing Scope/i })).toContainText("2 Activity rows");
-    await expect(scopes.getByRole("button", { name: /Writing Scope/i })).toContainText("Latest: checking references");
+    await expect(scopes.getByRole("button", { name: /Writing Scope/i })).toContainText("1 contexts");
+    await expect(scopes.getByRole("button", { name: /Writing Scope/i })).toContainText("2 activity");
 
     const actors = home.getByTestId("v6-home-actors");
     const floeActor = actors.locator(".home-actor-summary", { hasText: "Floe" });

@@ -1,0 +1,64 @@
+{
+  "projection": {
+    "workspace_id": "workspace:6d9b3190d305387f",
+    "scope_id": "scope_245233eb-d9f3-4a45-9757-1c57ccde09b6",
+    "generated_at": "2026-05-25T05:09:08.250Z",
+    "refs": {
+      "contexts": [
+        {
+          "context_id": "ctx_8593f751-371b-4eb0-822a-5d1965936b43",
+          "workspace_id": "workspace:6d9b3190d305387f",
+          "scope_id": "scope_245233eb-d9f3-4a45-9757-1c57ccde09b6",
+          "parent_context_id": null,
+          "created_by_endpoint_id": "actor:workspace:6d9b3190d305387f:operator",
+          "created_at": "2026-05-25T05:09:08.191Z",
+          "last_event_at": "2026-05-25T05:09:08.203Z",
+          "first_message_preview": "Scope-owned conversation kickoff mpkqxwqz"
+        }
+      ],
+      "pulses": [
+        {
+          "pulse_id": "issue33_scope_acceptance_mpkqxwqz",
+          "workspace_id": "workspace:6d9b3190d305387f",
+          "scope_id": "scope_245233eb-d9f3-4a45-9757-1c57ccde09b6",
+          "persistence": "workspace",
+          "status": "active",
+          "trigger": {
+            "type": "cron",
+            "schedule": "0 9 * * *"
+          },
+          "next_fire_at": "2026-05-25T23:00:00.000Z",
+          "last_fired_at": null,
+          "fire_count": 0,
+          "created_at": "2026-05-25T05:09:08.211Z",
+          "updated_at": "2026-05-25T05:09:08.211Z"
+        }
+      ],
+      "events": [],
+      "activity": []
+    },
+    "relationships": {
+      "context_participants": [
+        {
+          "context_id": "ctx_8593f751-371b-4eb0-822a-5d1965936b43",
+          "endpoint_id": "actor:workspace:6d9b3190d305387f:floe"
+        },
+        {
+          "context_id": "ctx_8593f751-371b-4eb0-822a-5d1965936b43",
+          "endpoint_id": "actor:workspace:6d9b3190d305387f:operator"
+        }
+      ],
+      "pulse_subscribers": [
+        {
+          "pulse_id": "issue33_scope_acceptance_mpkqxwqz",
+          "subscriber": {
+            "kind": "context",
+            "context_id": "ctx_8593f751-371b-4eb0-822a-5d1965936b43"
+          }
+        }
+      ],
+      "event_context_ownership": []
+    },
+    "unsupported": []
+  }
+}

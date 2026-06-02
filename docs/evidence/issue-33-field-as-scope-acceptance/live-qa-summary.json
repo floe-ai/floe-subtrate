@@ -1,0 +1,271 @@
+{
+  "ok": true,
+  "issue": 33,
+  "git_sha": "3623c90dd1a8cbba7b6a811a7d135495e2a2916b",
+  "run_id": "mpkqxwqz",
+  "bus_url": "http://127.0.0.1:54959",
+  "web_url": "http://127.0.0.1:54960",
+  "workspace_id": "workspace:6d9b3190d305387f",
+  "workspace_name": "Issue 33 Field-as-Scope QA mpkqxwqz",
+  "workspace_path": "C:\\Users\\jfenech\\.copilot\\session-state\\550f4e57-e2f7-4b7f-9df7-506521059e7f\\files\\issue33-field-as-scope-live-qa\\workspace",
+  "default_scope_id": "default",
+  "created_scope_id": "scope_245233eb-d9f3-4a45-9757-1c57ccde09b6",
+  "context_id": "ctx_8593f751-371b-4eb0-822a-5d1965936b43",
+  "pulse_id": "issue33_scope_acceptance_mpkqxwqz",
+  "acceptance": {
+    "fresh_workspace_default_scope_field_visible": true,
+    "creating_field_created_scope": true,
+    "opened_field_rendered_scope_projection": true,
+    "context_node_opened_existing_conversation_path": true,
+    "pulse_node_and_subscriber_relationship_rendered": true,
+    "layout_persisted_after_reload": true,
+    "projection_membership_stable_after_layout_move": true,
+    "no_legacy_field_requests": true,
+    "no_field_owned_semantic_yaml": true,
+    "no_field_owned_connection_graph": true,
+    "no_blocks_artifacts": true,
+    "browser_console_errors": 0,
+    "page_errors": 0,
+    "unexpected_http_errors": 0,
+    "bus_relevant_errors": 0,
+    "bridge_relevant_errors": 0
+  },
+  "projection_counts": {
+    "contexts": 1,
+    "pulses": 1,
+    "events": 0,
+    "activity": 0,
+    "pulse_subscriber_relationships": 1,
+    "context_participants": 2
+  },
+  "filesystem": {
+    "field_yaml_files": [],
+    "block_files": [],
+    "scope_projection_layout_files": [
+      ".floe\\scope-projection-layouts\\scope_245233eb-d9f3-4a45-9757-1c57ccde09b6.layout.floeweb.yaml"
+    ]
+  },
+  "network": {
+    "scope_request_count": 26,
+    "legacy_field_request_count": 0,
+    "scope_requests": [
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes"
+      },
+      {
+        "method": "POST",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "PUT",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb"
+      }
+    ]
+  },
+  "logs": {
+    "browser_console": [
+      {
+        "type": "error",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      },
+      {
+        "type": "error",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      },
+      {
+        "type": "error",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      },
+      {
+        "type": "error",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      },
+      {
+        "type": "error",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      },
+      {
+        "type": "error",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      },
+      {
+        "type": "error",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      },
+      {
+        "type": "warning",
+        "text": "[React Flow]: It seems that you are trying to drag a node that is not initialized. Please use onNodesChange as explained in the docs. Help: https://reactflow.dev/error#015"
+      },
+      {
+        "type": "warning",
+        "text": "[React Flow]: It seems that you are trying to drag a node that is not initialized. Please use onNodesChange as explained in the docs. Help: https://reactflow.dev/error#015"
+      },
+      {
+        "type": "warning",
+        "text": "[React Flow]: It seems that you are trying to drag a node that is not initialized. Please use onNodesChange as explained in the docs. Help: https://reactflow.dev/error#015"
+      },
+      {
+        "type": "warning",
+        "text": "[React Flow]: It seems that you are trying to drag a node that is not initialized. Please use onNodesChange as explained in the docs. Help: https://reactflow.dev/error#015"
+      },
+      {
+        "type": "warning",
+        "text": "[React Flow]: It seems that you are trying to drag a node that is not initialized. Please use onNodesChange as explained in the docs. Help: https://reactflow.dev/error#015"
+      },
+      {
+        "type": "warning",
+        "text": "[React Flow]: It seems that you are trying to drag a node that is not initialized. Please use onNodesChange as explained in the docs. Help: https://reactflow.dev/error#015"
+      },
+      {
+        "type": "warning",
+        "text": "[React Flow]: It seems that you are trying to drag a node that is not initialized. Please use onNodesChange as explained in the docs. Help: https://reactflow.dev/error#015"
+      },
+      {
+        "type": "warning",
+        "text": "[React Flow]: It seems that you are trying to drag a node that is not initialized. Please use onNodesChange as explained in the docs. Help: https://reactflow.dev/error#015"
+      }
+    ],
+    "http_errors": [
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:54959/v1/workspaces/workspace%3A6d9b3190d305387f/scopes/scope_245233eb-d9f3-4a45-9757-1c57ccde09b6/projection/layout/floeweb",
+        "status": 404
+      }
+    ],
+    "unexpected_http_errors": [],
+    "bus_log_path": "C:\\Users\\jfenech\\.copilot\\session-state\\550f4e57-e2f7-4b7f-9df7-506521059e7f\\files\\issue33-field-as-scope-live-qa\\bus.log",
+    "bridge_log_path": "C:\\Users\\jfenech\\.copilot\\session-state\\550f4e57-e2f7-4b7f-9df7-506521059e7f\\files\\issue33-field-as-scope-live-qa\\bridge.log",
+    "bus_relevant_errors": [],
+    "bridge_relevant_errors": []
+  },
+  "screenshots": [
+    "screenshots\\01-default-scope-field-list.png",
+    "screenshots\\02-created-field-is-scope.png",
+    "screenshots\\03-projection-renders-context-pulse-edge.png",
+    "screenshots\\04-context-node-opens-conversation.png",
+    "screenshots\\05-layout-persists-after-reload.png"
+  ]
+}

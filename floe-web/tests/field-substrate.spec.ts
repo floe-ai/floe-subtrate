@@ -153,9 +153,9 @@ test.describe("Field surface as Scope Projection", () => {
       { legacyFieldRequests }
     );
 
-    await expect(page.locator(".field-block", { hasText: "Default" })).toBeVisible();
-    await expect(page.locator(".field-block", { hasText: "Research" })).toBeVisible();
-    await page.locator(".field-block", { hasText: "Default" }).click();
+    await expect(page.locator(".scope-card", { hasText: "Default" })).toBeVisible();
+    await expect(page.locator(".scope-card", { hasText: "Research" })).toBeVisible();
+    await page.locator(".scope-card", { hasText: "Default" }).click();
 
     await expect(page.getByRole("heading", { name: "Default" })).toBeVisible();
     await expect(page.locator(".react-flow__node", { hasText: "Research kickoff" })).toBeVisible();
@@ -181,7 +181,7 @@ test.describe("Field surface as Scope Projection", () => {
       { legacyFieldRequests, endpoints: projectionActorEndpoints }
     );
 
-    await page.locator(".field-block", { hasText: "Default" }).click();
+    await page.locator(".scope-card", { hasText: "Default" }).click();
     await page.locator(".react-flow__node", { hasText: "Research kickoff" }).getByRole("button", { name: "Open" }).click();
 
     await expect(page.getByText("Actor Conversations")).toBeVisible();
@@ -198,7 +198,7 @@ test.describe("Field surface as Scope Projection", () => {
       { legacyFieldRequests, endpoints: projectionActorEndpoints }
     );
 
-    await page.locator(".field-block", { hasText: "Default" }).click();
+    await page.locator(".scope-card", { hasText: "Default" }).click();
     const contextNode = page.locator('[data-id="context:ctx_overlap_regression"]');
     const pulseNode = page.locator('[data-id="pulse:issue36_context_projection_default_layout_click_regression"]');
     await expect(contextNode).toBeVisible();
@@ -251,7 +251,7 @@ test.describe("Field surface as Scope Projection", () => {
       { legacyFieldRequests }
     );
 
-    await page.locator(".field-block", { hasText: "Default" }).click();
+    await page.locator(".scope-card", { hasText: "Default" }).click();
     const node = page.locator(".react-flow__node", { hasText: "Research kickoff" });
     await expect(node).toBeVisible();
     const before = await node.boundingBox();

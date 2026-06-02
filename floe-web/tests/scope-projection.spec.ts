@@ -82,8 +82,8 @@ test.describe("Scope Projection Fields", () => {
       { legacyFieldRequests }
     );
 
-    await expect(page.locator(".field-block", { hasText: "Default" })).toBeVisible();
-    await page.locator(".field-block", { hasText: "Default" }).click();
+    await expect(page.locator(".scope-card", { hasText: "Default" })).toBeVisible();
+    await page.locator(".scope-card", { hasText: "Default" }).click();
 
     await expect(page.locator(".react-flow__node", { hasText: "Research kickoff" })).toBeVisible();
     await expect(page.locator(".react-flow__node", { hasText: "2 participants" })).toBeVisible();
@@ -142,7 +142,7 @@ test.describe("Scope Projection Fields", () => {
       await page.getByRole("button", { name: "Workspace Home" }).click();
     }
 
-    await expect(page.locator(".field-block", { hasText: "Shared Planning" })).toHaveCount(2);
+    await expect(page.locator(".scope-card", { hasText: "Shared Planning" })).toHaveCount(2);
     expect(scopePosts.map((body) => JSON.parse(body))).toEqual([
       { title: "Shared Planning" },
       { title: "Shared Planning" }
@@ -197,7 +197,7 @@ test.describe("Scope Projection Fields", () => {
       { default: projection },
       { legacyFieldRequests, layoutPuts }
     );
-    await page.locator(".field-block", { hasText: "Default" }).click();
+    await page.locator(".scope-card", { hasText: "Default" }).click();
     const node = page.locator(`[data-id="context:ctx_research"]`);
     await expect(node).toBeVisible();
     const box = await node.boundingBox();
@@ -216,8 +216,8 @@ test.describe("Scope Projection Fields", () => {
     expect(legacyFieldRequests).toEqual([]);
 
     await page.reload();
-    await expect(page.locator(".field-block", { hasText: "Default" })).toBeVisible();
-    await page.locator(".field-block", { hasText: "Default" }).click();
+    await expect(page.locator(".scope-card", { hasText: "Default" })).toBeVisible();
+    await page.locator(".scope-card", { hasText: "Default" }).click();
     await expect(node).toBeVisible();
     const style = await node.evaluate((element) => element.getAttribute("style") ?? "");
     const match = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/.exec(style);
@@ -275,7 +275,7 @@ test.describe("Scope Projection Fields", () => {
       { default: projection },
       { legacyFieldRequests, pulseSubscribes, pulseUnsubscribes }
     );
-    await page.locator(".field-block", { hasText: "Default" }).click();
+    await page.locator(".scope-card", { hasText: "Default" }).click();
     await expect(page.locator(".react-flow__edge")).toHaveCount(0);
 
     const pulseHandle = page.locator(`[data-id="pulse:pulse_daily"] .react-flow__handle.source`).first();

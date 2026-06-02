@@ -260,6 +260,10 @@ async function installBaselineRoutes(
 
   await page.route("**/v1/events/stream", (route) => route.abort());
 
+  await page.route("**/v1/endpoints/register", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
+  );
+
   await page.route("**/v1/events/emit", async (route) => {
     const body = route.request().postDataJSON();
     emitCalls.push(body);

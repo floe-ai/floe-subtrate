@@ -1,0 +1,17 @@
+schema: floe.field.layout.floeweb.v1
+field_id: scope_245233eb-d9f3-4a45-9757-1c57ccde09b6
+viewport:
+  x: 0
+  y: 0
+  zoom: 1
+items:
+  context:ctx_8593f751-371b-4eb0-822a-5d1965936b43:
+    x: 242
+    y: 161
+    width: 436
+    height: 41
+  pulse:issue33_scope_acceptance_mpkqxwqz:
+    x: 80
+    y: 300
+    width: 325
+    height: 40

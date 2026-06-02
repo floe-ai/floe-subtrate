@@ -1,0 +1,1089 @@
+diff --git a/floe-web/src/main.tsx b/floe-web/src/main.tsx
+index 84bf808..a1392fa 100644
+--- a/floe-web/src/main.tsx
++++ b/floe-web/src/main.tsx
+@@ -58,7 +58,6 @@ import {
+   applyNodeChangesToLayout,
+   buildSemanticUpdate,
+   fieldToReactFlow,
+-  isRootFieldSummary,
+   nestedFieldStillUsedElsewhere,
+   nextFieldConnectionId,
+   parseFieldRef,
+@@ -69,16 +68,9 @@ import {
+   type FieldSummary,
+   type FieldSemantic
+ } from "./fields";
+-import {
+-  listFields,
+-  getField,
+-  putFieldSemantic,
+-  putFieldLayout,
+-  deleteField as deleteFieldApi,
+-  parseFieldStreamMessage,
+-  subscribeToFieldEvents,
+-  type LoadedField
+-} from "./fields-api";
++import { parseFieldStreamMessage, type LoadedField } from "./fields-api";
++import { createScope, getScopeProjection, listScopes, renameScope } from "./scope-projection-api";
++import { projectionToReactFlow, type ScopeProjection, type ScopeRecord } from "./scope-projection";
+ import { DialogHost, confirm as confirmDialog, confirmWithOptions, prompt as promptDialog } from "./dialog/dialog";
+ 
+ type Workspace = {
+@@ -191,6 +183,12 @@ type FieldConnectionEdgeData = Record<string, unknown> & {
+ 
+ type FieldConnectionEdge = ReactFlowEdge<FieldConnectionEdgeData, "fieldConnection">;
+ 
++type LoadedScopeProjection = {
++  scope: ScopeRecord;
++  projection: ScopeProjection;
++  layout: FieldLayoutFloeweb | null;
++};
++
+ const defaultBusUrl = localStorage.getItem("floe.busUrl") ?? "http://127.0.0.1:5377";
+ 
+ const runtimeErrorKinds = new Set([
+@@ -206,7 +204,17 @@ const runtimeErrorKinds = new Set([
+ const fieldPrimitiveMime = "application/x-floe-field-primitive";
+ 
+ function FieldItemNode({ data }: NodeProps) {
+-  const item = data as FieldItemNodeData;
++  const item = data as FieldItemNodeData & {
++    context_id?: string;
++    onOpenContext?: (contextId: string) => void;
++    participant_count?: number;
++    subscriber_count?: number;
++  };
++  const subtitle = item.kind === "context" && typeof item.participant_count === "number"
++    ? `${item.participant_count} participant${item.participant_count === 1 ? "" : "s"}`
++    : item.kind === "pulse" && typeof item.subscriber_count === "number"
++    ? `${item.subscriber_count} subscriber${item.subscriber_count === 1 ? "" : "s"}`
++    : "";
+   return (
+     <>
+       <Handle type="target" position={Position.Top} />
+@@ -216,6 +224,16 @@ function FieldItemNode({ data }: NodeProps) {
+         data-kind={item.kind}
+       >
+         <span>{item.label}</span>
++        {subtitle && <small>{subtitle}</small>}
++        {item.kind === "context" && item.context_id && item.onOpenContext && (
++          <button
++            type="button"
++            className="canvas-node-action nodrag nopan"
++            onClick={() => item.onOpenContext?.(item.context_id as string)}
++          >
++            Open
++          </button>
++        )}
+       </div>
+       <Handle type="source" position={Position.Bottom} />
+     </>
+@@ -340,6 +358,8 @@ function App() {
+   const [view, setView] = useState<View>({ kind: "home" });
+   const [fieldSummaries, setFieldSummaries] = useState<FieldSummary[]>([]);
+   const [showAllFields, setShowAllFields] = useState(false);
++  const [scopeRecords, setScopeRecords] = useState<ScopeRecord[]>([]);
++  const [loadedProjection, setLoadedProjection] = useState<LoadedScopeProjection | null>(null);
+   const [loadedField, setLoadedField] = useState<LoadedField | null>(null);
+   const [renameDraft, setRenameDraft] = useState<string | null>(null);
+   const [itemDraft, setItemDraft] = useState<FieldItemDraft | null>(null);
+@@ -363,6 +383,7 @@ function App() {
+   const [error, setError] = useState<string | null>(null);
+   const selectedWorkspaceIdRef = useRef("");
+   const viewRef = useRef<View>({ kind: "home" });
++  const loadedProjectionRef = useRef<LoadedScopeProjection | null>(null);
+   const loadedFieldRef = useRef<LoadedField | null>(null);
+   const restoredViewportKeyRef = useRef<string | null>(null);
+   const layoutSaveTimersRef = useRef<Map<string, number>>(new Map());
+@@ -399,10 +420,10 @@ function App() {
+   const selectedFieldSummary = view.kind === "field"
+     ? fieldSummaries.find((field) => field.id === view.fieldId) ?? null
+     : null;
+-  const rootFieldSummaries = useMemo(
+-    () => fieldSummaries.filter(isRootFieldSummary),
+-    [fieldSummaries]
+-  );
++  const selectedScopeRecord = view.kind === "field"
++    ? scopeRecords.find((scope) => scope.scope_id === view.fieldId) ?? null
++    : null;
++  const rootFieldSummaries = useMemo(() => fieldSummaries, [fieldSummaries]);
+   const homeFieldSummaries = showAllFields ? fieldSummaries : rootFieldSummaries;
+   const nestedFieldCount = fieldSummaries.length - rootFieldSummaries.length;
+   const actorItemOptions = useMemo(() => {
+@@ -658,39 +679,6 @@ function App() {
+     return latest && runtimeErrorKinds.has(latest.kind) ? latest : null;
+   }, [floeAgent, telemetry]);
+ 
+-  const { nodes: fieldNodes, edges: fieldEdges } = useMemo(() => {
+-    if (!loadedField) return { nodes: [], edges: [] };
+-    const flow = fieldToReactFlow(loadedField.semantic, loadedField.layout ?? undefined);
+-    const edges: FieldConnectionEdge[] = flow.edges.map((edge) => {
+-      const label = typeof edge.label === "string" ? edge.label : "";
+-      const isEditing = editingFieldConnectionId === edge.id;
+-      return {
+-        ...edge,
+-        type: "fieldConnection",
+-        selected: selectedFieldConnectionId === edge.id,
+-        data: {
+-          ...(edge.data ?? {}),
+-          label,
+-          isEditing,
+-          draft: isEditing ? fieldConnectionLabelDraft : label,
+-          onBeginEdit: beginFieldConnectionLabelEdit,
+-          onDraftChange: setFieldConnectionLabelDraft,
+-          onCommit: commitFieldConnectionLabel,
+-          onCancel: cancelFieldConnectionLabelEdit
+-        }
+-      };
+-    });
+-    const nodes = flow.nodes.map((node) => ({
+-      ...node,
+-      selected: selectedFieldItemIds.has(node.id)
+-    }));
+-    return { nodes, edges };
+-  }, [editingFieldConnectionId, fieldConnectionLabelDraft, loadedField, selectedFieldConnectionId, selectedFieldItemIds]);
+-  const fieldViewport = useMemo<Viewport>(
+-    () => loadedField?.layout?.viewport ?? { x: 0, y: 0, zoom: 1 },
+-    [loadedField?.layout?.viewport]
+-  );
+-
+   const refreshContexts = useCallback(async (workspaceId: string) => {
+     try {
+       const selfId = operatorActorId(workspaceId);
+@@ -724,6 +712,88 @@ function App() {
+     setContextEventsState({ contextId: null, events: [] });
+   }
+ 
++  const openProjectedContext = useCallback((contextId: string) => {
++    setSelectedContextId(contextId);
++    setDraftMode(false);
++    setChannelOpen(true);
++    void refreshContextEvents(contextId);
++  }, [refreshContextEvents]);
++
++  const { nodes: fieldNodes, edges: fieldEdges } = useMemo(() => {
++    if (loadedProjection) {
++      const flow = projectionToReactFlow(loadedProjection.projection, loadedProjection.layout ?? undefined);
++      const edges: FieldConnectionEdge[] = flow.edges.map((edge) => {
++        const label = typeof edge.label === "string" ? edge.label : "";
++        return {
++          ...edge,
++          type: "fieldConnection",
++          selected: selectedFieldConnectionId === edge.id,
++          reconnectable: false,
++          data: {
++            ...(edge.data ?? {}),
++            label,
++            isEditing: false,
++            draft: label,
++            onBeginEdit: () => undefined,
++            onDraftChange: () => undefined,
++            onCommit: () => undefined,
++            onCancel: () => undefined
++          }
++        };
++      });
++      const nodes = flow.nodes.map((node) => {
++        const contextId = typeof node.data?.context_id === "string" ? node.data.context_id : null;
++        return {
++          ...node,
++          selected: selectedFieldItemIds.has(node.id),
++          data: {
++            ...(node.data ?? {}),
++            ...(contextId ? { onOpenContext: openProjectedContext } : {})
++          }
++        };
++      });
++      return { nodes, edges };
++    }
++    if (!loadedField) return { nodes: [], edges: [] };
++    const flow = fieldToReactFlow(loadedField.semantic, loadedField.layout ?? undefined);
++    const edges: FieldConnectionEdge[] = flow.edges.map((edge) => {
++      const label = typeof edge.label === "string" ? edge.label : "";
++      const isEditing = editingFieldConnectionId === edge.id;
++      return {
++        ...edge,
++        type: "fieldConnection",
++        selected: selectedFieldConnectionId === edge.id,
++        data: {
++          ...(edge.data ?? {}),
++          label,
++          isEditing,
++          draft: isEditing ? fieldConnectionLabelDraft : label,
++          onBeginEdit: beginFieldConnectionLabelEdit,
++          onDraftChange: setFieldConnectionLabelDraft,
++          onCommit: commitFieldConnectionLabel,
++          onCancel: cancelFieldConnectionLabelEdit
++        }
++      };
++    });
++    const nodes = flow.nodes.map((node) => ({
++      ...node,
++      selected: selectedFieldItemIds.has(node.id)
++    }));
++    return { nodes, edges };
++  }, [
++    editingFieldConnectionId,
++    fieldConnectionLabelDraft,
++    loadedField,
++    loadedProjection,
++    openProjectedContext,
++    selectedFieldConnectionId,
++    selectedFieldItemIds
++  ]);
++  const fieldViewport = useMemo<Viewport>(
++    () => loadedProjection?.layout?.viewport ?? loadedField?.layout?.viewport ?? { x: 0, y: 0, zoom: 1 },
++    [loadedField?.layout?.viewport, loadedProjection?.layout?.viewport]
++  );
++
+   const refresh = useCallback(async (preferredWorkspaceId?: string) => {
+     try {
+       setError(null);
+@@ -763,6 +833,8 @@ function App() {
+         setRuntimeBindings([]);
+         setEvents([]);
+         setTelemetry([]);
++        setScopeRecords([]);
++        setFieldSummaries([]);
+       }
+       setStatus("Connected");
+     } catch (caught) {
+@@ -783,6 +855,10 @@ function App() {
+     loadedFieldRef.current = loadedField;
+   }, [loadedField]);
+ 
++  useEffect(() => {
++    loadedProjectionRef.current = loadedProjection;
++  }, [loadedProjection]);
++
+   useEffect(() => () => {
+     for (const timer of layoutSaveTimersRef.current.values()) {
+       window.clearTimeout(timer);
+@@ -924,8 +1000,9 @@ function App() {
+ 
+   const refreshFields = useCallback(async (workspaceId: string) => {
+     try {
+-      const summaries = await listFields(busUrl, workspaceId);
+-      setFieldSummaries(summaries);
++      const scopes = await listScopes(busUrl, workspaceId);
++      setScopeRecords(scopes);
++      setFieldSummaries(scopes.map(scopeToFieldSummary));
+     } catch (caught) {
+       setError((caught as Error).message);
+     }
+@@ -933,39 +1010,44 @@ function App() {
+ 
+   const refreshOpenField = useCallback(async (workspaceId: string, fieldId: string) => {
+     try {
+-      const result = await getField(busUrl, workspaceId, fieldId);
++      let scope = scopeRecords.find((candidate) => candidate.scope_id === fieldId) ?? null;
++      if (!scope) {
++        const scopes = await listScopes(busUrl, workspaceId);
++        setScopeRecords(scopes);
++        setFieldSummaries(scopes.map(scopeToFieldSummary));
++        scope = scopes.find((candidate) => candidate.scope_id === fieldId) ?? null;
++      }
++      const projection = await getScopeProjection(busUrl, workspaceId, fieldId);
+       const currentView = viewRef.current;
+       if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
+-        setLoadedField(result);
++        const current = loadedProjectionRef.current;
++        setLoadedProjection({
++          scope: scope ?? projectionScopeFallback(projection),
++          projection,
++          layout: current?.scope.scope_id === fieldId ? current.layout : null
++        });
++        setLoadedField(null);
+       }
+     } catch (caught) {
+       const currentView = viewRef.current;
+       if (selectedWorkspaceIdRef.current === workspaceId && currentView.kind === "field" && currentView.fieldId === fieldId) {
++        setLoadedProjection(null);
+         setLoadedField(null);
+         clearFieldEditingState();
+       }
+       setError((caught as Error).message);
+     }
+-  }, [busUrl]);
++  }, [busUrl, scopeRecords]);
++
++  useEffect(() => {
++    if (!selectedWorkspaceId || view.kind !== "field") return;
++    void refreshOpenField(selectedWorkspaceId, view.fieldId);
++  }, [events.length, telemetry.length, selectedWorkspaceId, view, refreshOpenField]);
+ 
+   const saveOpenFieldSemantic = useCallback(async (nextSemantic: FieldSemantic): Promise<boolean> => {
+-    const workspaceId = selectedWorkspaceIdRef.current;
+-    if (!workspaceId) return false;
+-    try {
+-      const semantic = await putFieldSemantic(busUrl, workspaceId, nextSemantic.id, nextSemantic);
+-      const current = loadedFieldRef.current;
+-      if (current?.semantic.id === semantic.id) {
+-        const nextLoaded = { ...current, semantic };
+-        loadedFieldRef.current = nextLoaded;
+-        setLoadedField(nextLoaded);
+-      }
+-      await refreshFields(workspaceId);
+-      return true;
+-    } catch (caught) {
+-      setError((caught as Error).message);
+-      return false;
+-    }
+-  }, [busUrl, refreshFields]);
++    setError(`Field semantic edits are disabled for Scope projections (${nextSemantic.id}).`);
++    return false;
++  }, []);
+ 
+   const markLocalLayoutWrite = useCallback((workspaceId: string, fieldId: string) => {
+     localLayoutWriteUntilRef.current.set(fieldLayoutKey(workspaceId, fieldId), Date.now() + 2_000);
+@@ -982,10 +1064,7 @@ function App() {
+ 
+   const sendFieldLayoutSave = useCallback((pending: PendingLayoutSave) => {
+     markLocalLayoutWrite(pending.workspaceId, pending.fieldId);
+-    void putFieldLayout(busUrl, pending.workspaceId, pending.fieldId, pending.layout)
+-      .then(() => markLocalLayoutWrite(pending.workspaceId, pending.fieldId))
+-      .catch((caught) => setError((caught as Error).message));
+-  }, [busUrl, markLocalLayoutWrite]);
++  }, [markLocalLayoutWrite]);
+ 
+   const scheduleFieldLayoutSave = useCallback((
+     workspaceId: string,
+@@ -1016,10 +1095,43 @@ function App() {
+     setLoadedField(next);
+   }, []);
+ 
++  const updateLoadedProjectionLayout = useCallback((layout: FieldLayoutFloeweb) => {
++    const current = loadedProjectionRef.current;
++    if (!current || current.scope.scope_id !== layout.field_id) return;
++    const next = { ...current, layout };
++    loadedProjectionRef.current = next;
++    setLoadedProjection(next);
++  }, []);
++
+   const handleFieldNodesChange = useCallback((changes: NodeChange[]) => {
+     const workspaceId = selectedWorkspaceIdRef.current;
+-    const current = loadedFieldRef.current;
++    const projection = loadedProjectionRef.current;
+     const currentView = viewRef.current;
++    if (workspaceId && projection && currentView.kind === "field" && currentView.fieldId === projection.scope.scope_id) {
++      const selections = changes.filter((change) => change.type === "select");
++      if (selections.length > 0) {
++        setSelectedFieldItemIds((selected) => {
++          const next = new Set(selected);
++          for (const selection of selections) {
++            if (selection.type !== "select") continue;
++            if (selection.selected) next.add(selection.id);
++            else next.delete(selection.id);
++          }
++          return next;
++        });
++      }
++      const baseLayout = projection.layout ?? reactFlowToLayout(
++        projection.scope.scope_id,
++        projectionToReactFlow(projection.projection).nodes,
++        { x: 0, y: 0, zoom: 1 }
++      );
++      const nextLayout = applyNodeChangesToLayout(baseLayout, changes);
++      if (nextLayout === baseLayout) return;
++      if (projection.layout && layoutsEqual(projection.layout, nextLayout)) return;
++      updateLoadedProjectionLayout(nextLayout);
++      return;
++    }
++    const current = loadedFieldRef.current;
+     if (!workspaceId || !current || currentView.kind !== "field") return;
+     if (currentView.fieldId !== current.semantic.id) return;
+     const selections = changes.filter((change) => change.type === "select");
+@@ -1044,12 +1156,20 @@ function App() {
+     if (current.layout && layoutsEqual(current.layout, nextLayout)) return;
+     updateLoadedFieldLayout(nextLayout);
+     scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
+-  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
++  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout, updateLoadedProjectionLayout]);
+ 
+   const handleFieldMoveEnd = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+     const workspaceId = selectedWorkspaceIdRef.current;
+-    const current = loadedFieldRef.current;
++    const projection = loadedProjectionRef.current;
+     const currentView = viewRef.current;
++    if (workspaceId && projection && currentView.kind === "field" && currentView.fieldId === projection.scope.scope_id) {
++      const { nodes } = projectionToReactFlow(projection.projection, projection.layout ?? undefined);
++      const nextLayout = reactFlowToLayout(projection.scope.scope_id, nodes, viewport);
++      if (projection.layout && layoutsEqual(projection.layout, nextLayout)) return;
++      updateLoadedProjectionLayout(nextLayout);
++      return;
++    }
++    const current = loadedFieldRef.current;
+     if (!workspaceId || !current || currentView.kind !== "field") return;
+     if (currentView.fieldId !== current.semantic.id) return;
+     const { nodes } = fieldToReactFlow(current.semantic, current.layout ?? undefined);
+@@ -1057,12 +1177,34 @@ function App() {
+     if (current.layout && layoutsEqual(current.layout, nextLayout)) return;
+     updateLoadedFieldLayout(nextLayout);
+     scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
+-  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
++  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout, updateLoadedProjectionLayout]);
+ 
+   const handleFieldNodeDragStop = useCallback((_event: React.MouseEvent, node: ReactFlowNode) => {
+     const workspaceId = selectedWorkspaceIdRef.current;
+-    const current = loadedFieldRef.current;
++    const projection = loadedProjectionRef.current;
+     const currentView = viewRef.current;
++    if (workspaceId && projection && currentView.kind === "field" && currentView.fieldId === projection.scope.scope_id) {
++      const baseLayout = projection.layout ?? reactFlowToLayout(
++        projection.scope.scope_id,
++        projectionToReactFlow(projection.projection).nodes,
++        reactFlow.getViewport()
++      );
++      const nextLayout: FieldLayoutFloeweb = {
++        ...baseLayout,
++        items: {
++          ...baseLayout.items,
++          [node.id]: {
++            ...(baseLayout.items[node.id] ?? {}),
++            x: node.position.x,
++            y: node.position.y
++          }
++        }
++      };
++      if (projection.layout && layoutsEqual(projection.layout, nextLayout)) return;
++      updateLoadedProjectionLayout(nextLayout);
++      return;
++    }
++    const current = loadedFieldRef.current;
+     if (!workspaceId || !current || currentView.kind !== "field") return;
+     if (currentView.fieldId !== current.semantic.id) return;
+     const baseLayout = current.layout ?? reactFlowToLayout(
+@@ -1084,9 +1226,10 @@ function App() {
+     if (current.layout && layoutsEqual(current.layout, nextLayout)) return;
+     updateLoadedFieldLayout(nextLayout);
+     scheduleFieldLayoutSave(workspaceId, current.semantic.id, nextLayout);
+-  }, [scheduleFieldLayoutSave, updateLoadedFieldLayout]);
++  }, [reactFlow, scheduleFieldLayoutSave, updateLoadedFieldLayout, updateLoadedProjectionLayout]);
+ 
+   const handleFieldConnect = useCallback((connection: Connection) => {
++    if (loadedProjectionRef.current) return;
+     const current = loadedFieldRef.current;
+     const currentView = viewRef.current;
+     if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
+@@ -1126,11 +1269,13 @@ function App() {
+   }, []);
+ 
+   const handleFieldEdgeDoubleClick = useCallback((_: React.MouseEvent, edge: FieldConnectionEdge) => {
++    if (loadedProjectionRef.current) return;
+     const label = typeof edge.label === "string" ? edge.label : "";
+     beginFieldConnectionLabelEdit(edge.id, label);
+   }, []);
+ 
+   const handleFieldEdgesDelete = useCallback((edges: FieldConnectionEdge[]) => {
++    if (loadedProjectionRef.current) return;
+     const current = loadedFieldRef.current;
+     const currentView = viewRef.current;
+     if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
+@@ -1156,6 +1301,7 @@ function App() {
+     nodes: ReactFlowNode[];
+     edges: FieldConnectionEdge[];
+   }) => {
++    if (loadedProjectionRef.current) return false;
+     if (nodes.length === 0) return true;
+     if (nodes.length !== 1) {
+       setError("Delete one Field Item at a time.");
+@@ -1205,8 +1351,7 @@ function App() {
+       }
+       const workspaceId = selectedWorkspaceIdRef.current;
+       if (deleteReferencedField && childFieldId && workspaceId) {
+-        await deleteFieldApi(busUrl, workspaceId, childFieldId);
+-        await refreshFields(workspaceId);
++        throw new Error("Referenced Field cleanup is disabled while Fields render Scope projections.");
+       }
+     };
+     const result = await confirmWithOptions({
+@@ -1241,6 +1386,7 @@ function App() {
+   }, [busUrl, editingFieldConnectionId, fieldSummaries, refreshFields, saveOpenFieldSemantic]);
+ 
+   const handleFieldReconnect = useCallback((oldEdge: FieldConnectionEdge, connection: Connection) => {
++    if (loadedProjectionRef.current) return;
+     const current = loadedFieldRef.current;
+     const currentView = viewRef.current;
+     if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
+@@ -1276,30 +1422,16 @@ function App() {
+     setFieldConnectionLabelDraft("");
+   }
+ 
+-  useEffect(() => subscribeToFieldEvents(busUrl, (event) => {
++  useEffect(() => {
+     const workspaceId = selectedWorkspaceIdRef.current;
+-    if (!workspaceId || event.payload.workspace_id !== workspaceId) return;
+-    void refreshFields(workspaceId);
+-    const currentView = viewRef.current;
+-    if (currentView.kind !== "field" || currentView.fieldId !== event.payload.field_id) return;
+-    if (event.type === "field.deleted") {
+-      autoInitializedLayoutRef.current.delete(fieldLayoutKey(workspaceId, event.payload.field_id));
+-      setLoadedField(null);
+-      clearFieldEditingState();
+-      setView({ kind: "home" });
+-      return;
+-    }
+-    if (
+-      event.payload.changed === "layout" &&
+-      hasRecentLocalLayoutWrite(workspaceId, event.payload.field_id)
+-    ) {
++    if (workspaceId && view.kind === "field" && loadedProjection && !loadedProjection.layout && fieldNodes.length > 0) {
++      const key = fieldLayoutKey(workspaceId, loadedProjection.scope.scope_id);
++      if (autoInitializedLayoutRef.current.has(key)) return;
++      autoInitializedLayoutRef.current.add(key);
++      const layout = reactFlowToLayout(loadedProjection.scope.scope_id, fieldNodes, fieldViewport);
++      updateLoadedProjectionLayout(layout);
+       return;
+     }
+-    void refreshOpenField(workspaceId, event.payload.field_id);
+-  }), [busUrl, hasRecentLocalLayoutWrite, refreshFields, refreshOpenField]);
+-
+-  useEffect(() => {
+-    const workspaceId = selectedWorkspaceIdRef.current;
+     if (!workspaceId || view.kind !== "field" || !loadedField || loadedField.layout) return;
+     if (fieldNodes.length === 0) return;
+     const key = fieldLayoutKey(workspaceId, loadedField.semantic.id);
+@@ -1312,8 +1444,10 @@ function App() {
+     fieldNodes,
+     fieldViewport,
+     loadedField,
++    loadedProjection,
+     scheduleFieldLayoutSave,
+     updateLoadedFieldLayout,
++    updateLoadedProjectionLayout,
+     view
+   ]);
+ 
+@@ -1322,6 +1456,14 @@ function App() {
+       restoredViewportKeyRef.current = null;
+       return;
+     }
++    if (loadedProjection?.layout && loadedProjection.scope.scope_id === view.fieldId) {
++      const viewport = loadedProjection.layout.viewport;
++      const key = `${view.fieldId}:${viewport.x}:${viewport.y}:${viewport.zoom}`;
++      if (restoredViewportKeyRef.current === key) return;
++      restoredViewportKeyRef.current = key;
++      void reactFlow.setViewport(viewport, { duration: 0 });
++      return;
++    }
+     if (!loadedField?.layout || loadedField.semantic.id !== view.fieldId) return;
+     const viewport = loadedField.layout.viewport;
+     const key = `${view.fieldId}:${viewport.x}:${viewport.y}:${viewport.zoom}`;
+@@ -1331,15 +1473,20 @@ function App() {
+   }, [
+     loadedField?.layout,
+     loadedField?.semantic.id,
++    loadedProjection?.layout,
++    loadedProjection?.scope.scope_id,
+     reactFlow,
+     view
+   ]);
+ 
+   useEffect(() => {
++    loadedProjectionRef.current = null;
++    setLoadedProjection(null);
+     loadedFieldRef.current = null;
+     setLoadedField(null);
+     clearFieldEditingState();
+     if (!selectedWorkspaceId) {
++      setScopeRecords([]);
+       setFieldSummaries([]);
+       return;
+     }
+@@ -1348,11 +1495,17 @@ function App() {
+ 
+   useEffect(() => {
+     if (view.kind !== "field" || !selectedWorkspaceId) {
++      loadedProjectionRef.current = null;
++      setLoadedProjection(null);
+       loadedFieldRef.current = null;
+       setLoadedField(null);
+       clearFieldEditingState();
+       return;
+     }
++    if (loadedProjectionRef.current?.scope.scope_id !== view.fieldId) {
++      loadedProjectionRef.current = null;
++      setLoadedProjection(null);
++    }
+     if (loadedFieldRef.current?.semantic.id !== view.fieldId) {
+       loadedFieldRef.current = null;
+       setLoadedField(null);
+@@ -1382,6 +1535,8 @@ function App() {
+       setWorkspacePath("");
+       setWorkspaceName("");
+       clearFieldEditingState();
++      loadedProjectionRef.current = null;
++      setLoadedProjection(null);
+       setView({ kind: "home" });
+     } catch (err) {
+       if (err instanceof ApiError && (err.body as any)?.error === "directory_not_found") {
+@@ -1403,6 +1558,8 @@ function App() {
+     selectedWorkspaceIdRef.current = workspaceId;
+     setSelectedWorkspaceId(workspaceId);
+     clearFieldEditingState();
++    loadedProjectionRef.current = null;
++    setLoadedProjection(null);
+     setView({ kind: "home" });
+     await api(busUrl, `/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, { method: "POST" });
+     await ensureOperator(workspaceId);
+@@ -1440,6 +1597,10 @@ function App() {
+       setEndpoints([]);
+       setEvents([]);
+       setTelemetry([]);
++      setScopeRecords([]);
++      setFieldSummaries([]);
++      loadedProjectionRef.current = null;
++      setLoadedProjection(null);
+     }
+     await refresh();
+   }
+@@ -1532,7 +1693,7 @@ function App() {
+       agentEndpointId: floeAgent.endpoint_id,
+       selectedContextId: selectedContextId,
+       text,
+-      contextLabelText: currentContextLabel(view, selectedWorkspace, loadedField?.semantic.title ?? selectedFieldSummary?.title ?? null)
++      contextLabelText: currentContextLabel(view, selectedWorkspace, loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? null)
+     });
+     setChannelMessage("");
+     const result = await api<{ event?: { context_id?: string | null }; ok?: boolean }>(
+@@ -1626,9 +1787,10 @@ function App() {
+   }
+ 
+   function beginRenameField(): void {
+-    if (!loadedField) return;
++    const projection = loadedProjectionRef.current;
++    if (!projection) return;
+     setItemDraft(null);
+-    setRenameDraft(loadedField.semantic.title);
++    setRenameDraft(projection.scope.title);
+   }
+ 
+   function cancelRenameField(): void {
+@@ -1636,16 +1798,30 @@ function App() {
+   }
+ 
+   function submitRenameField(): void {
+-    const current = loadedFieldRef.current;
++    const current = loadedProjectionRef.current;
+     if (!current || renameDraft === null) return;
+     const title = renameDraft.trim();
+-    if (!title || title === current.semantic.title) {
++    if (!title || title === current.scope.title) {
+       setRenameDraft(null);
+       return;
+     }
+     setRenameDraft(null);
+-    const next = buildSemanticUpdate(current.semantic, { type: "rename", title }, new Date().toISOString());
+-    void saveOpenFieldSemantic(next);
++    const workspaceId = selectedWorkspaceIdRef.current;
++    if (!workspaceId) return;
++    void (async () => {
++      try {
++        const scope = await renameScope(busUrl, workspaceId, current.scope.scope_id, { title });
++        const latest = loadedProjectionRef.current;
++        if (latest?.scope.scope_id === scope.scope_id) {
++          const next = { ...latest, scope };
++          loadedProjectionRef.current = next;
++          setLoadedProjection(next);
++        }
++        await refreshFields(workspaceId);
++      } catch (caught) {
++        setError((caught as Error).message);
++      }
++    })();
+   }
+ 
+   function beginAddFieldItem(kind: FieldItemDraft["kind"]): void {
+@@ -1711,92 +1887,28 @@ function App() {
+     position?: { x: number; y: number },
+     options: { throwOnError?: boolean } = {}
+   ): Promise<void> {
+-    if (!selectedWorkspace) return;
+-    const current = loadedFieldRef.current;
+-    const currentView = viewRef.current;
+-    if (!current || currentView.kind !== "field" || currentView.fieldId !== current.semantic.id) return;
+-
+-    const workspaceId = selectedWorkspace.workspace_id;
+-    const title = name.trim() || `Field ${fieldSummaries.length + 1}`;
+-    const fieldId = slugifyFieldId(title);
+-    const itemRef = `field:${fieldId}`;
+-    if (current.semantic.items.some((item) => item.ref === itemRef)) {
+-      if (options.throwOnError) throw new Error("That Field is already in this Field.");
+-      setError("That Field is already in this Field.");
+-      return;
+-    }
+-    const itemId = nextFieldItemId(current.semantic, itemRef);
+-    const now = new Date().toISOString();
+-    const childSemantic = emptyFieldSemantic(fieldId, title);
+-    const nextSemantic = buildSemanticUpdate(
+-      current.semantic,
+-      {
+-        type: "add_item",
+-        item: {
+-          item_id: itemId,
+-          ref: itemRef
+-        }
+-      },
+-      now
+-    );
+-    const baseLayout = current.layout ?? reactFlowToLayout(
+-      current.semantic.id,
+-      fieldToReactFlow(current.semantic).nodes,
+-      reactFlow.getViewport()
+-    );
+-    const nextLayout = position
+-      ? {
+-          ...baseLayout,
+-          items: {
+-            ...baseLayout.items,
+-            [itemId]: {
+-              ...(baseLayout.items[itemId] ?? {}),
+-              x: position.x,
+-              y: position.y
+-            }
+-          }
+-        }
+-      : null;
+-
+-    try {
+-      await putFieldSemantic(busUrl, workspaceId, fieldId, childSemantic, { ifAbsent: true });
+-      const semantic = await putFieldSemantic(busUrl, workspaceId, nextSemantic.id, nextSemantic);
+-      let layout = current.layout;
+-      if (nextLayout) {
+-        try {
+-          markLocalLayoutWrite(workspaceId, current.semantic.id);
+-          layout = await putFieldLayout(busUrl, workspaceId, current.semantic.id, nextLayout);
+-          markLocalLayoutWrite(workspaceId, current.semantic.id);
+-        } catch (caught) {
+-          setError((caught as Error).message);
+-        }
+-      }
+-      const latest = loadedFieldRef.current;
+-      if (latest?.semantic.id === semantic.id) {
+-        const nextLoaded = { ...latest, semantic, layout };
+-        loadedFieldRef.current = nextLoaded;
+-        setLoadedField(nextLoaded);
+-      }
+-      await refreshFields(workspaceId);
+-    } catch (caught) {
+-      if (options.throwOnError) throw caught;
+-      setError((caught as Error).message);
+-    }
++    void name;
++    void position;
++    const error = new Error("Nested Field Items are disabled while Fields render Scope projections.");
++    if (options.throwOnError) throw error;
++    setError(error.message);
+   }
+ 
+   async function createField(name?: string, options: { throwOnError?: boolean } = {}): Promise<void> {
+     if (!selectedWorkspace) return;
+     const workspaceId = selectedWorkspace.workspace_id;
+     const nextName = name?.trim() || `Field ${fieldSummaries.length + 1}`;
+-    const id = slugifyFieldId(nextName);
+-    const semantic = emptyFieldSemantic(id, nextName);
++    const scopeId = slugifyFieldId(nextName);
+     try {
+-      await putFieldSemantic(busUrl, workspaceId, id, semantic, { ifAbsent: true });
++      const scope = await createScope(busUrl, workspaceId, { scope_id: scopeId, title: nextName });
+       await refreshFields(workspaceId);
++      loadedProjectionRef.current = null;
++      setLoadedProjection(null);
+       loadedFieldRef.current = null;
+       setLoadedField(null);
+       clearFieldEditingState();
+-      setView({ kind: "field", fieldId: id });
++      setView({ kind: "field", fieldId: scope.scope_id });
++      await refreshOpenField(workspaceId, scope.scope_id);
+     } catch (caught) {
+       if (options.throwOnError) throw caught;
+       setError((caught as Error).message);
+@@ -1805,6 +1917,8 @@ function App() {
+ 
+   function openField(fieldId: string): void {
+     clearFieldEditingState();
++    loadedProjectionRef.current = null;
++    setLoadedProjection(null);
+     loadedFieldRef.current = null;
+     setLoadedField(null);
+     setView({ kind: "field", fieldId });
+@@ -1812,59 +1926,13 @@ function App() {
+   }
+ 
+   function deleteOpenField(fieldId: string): void {
+-    if (!selectedWorkspace) return;
+-    const workspaceId = selectedWorkspace.workspace_id;
+-    void (async () => {
+-      let latestSummaries: FieldSummary[];
+-      try {
+-        latestSummaries = await listFields(busUrl, workspaceId);
+-        setFieldSummaries(latestSummaries);
+-      } catch (caught) {
+-        setError((caught as Error).message);
+-        return;
+-      }
+-      const current = loadedFieldRef.current;
+-      const summary = latestSummaries.find((field) => field.id === fieldId) ?? null;
+-      const title = current?.semantic.id === fieldId
+-        ? current.semantic.title
+-        : summary?.title || fieldId;
+-      const referencedByCount = summary?.parent_count ?? 0;
+-      const referenced = referencedByCount > 0;
+-      await confirmDialog({
+-        title: referenced ? "Delete referenced Field" : "Delete Field",
+-        body: referenced ? (
+-          <>
+-            <p>Delete the Field <strong>{title}</strong>?</p>
+-            <p>
+-              It is currently referenced by {referencedByCount} other {referencedByCount === 1 ? "Field" : "Fields"}.
+-              Deleting it will leave broken <code>field:{fieldId}</code> refs in those Fields. Floe will keep showing the broken refs visibly so you can repair them.
+-            </p>
+-            <p>This removes <code>{fieldId}.yaml</code> and every renderer sidecar (<code>{fieldId}.layout.*.yaml</code>) from the workspace.</p>
+-          </>
+-        ) : (
+-          <>
+-            <p>Delete the Field <strong>{title}</strong>?</p>
+-            <p>This removes <code>{fieldId}.yaml</code> and every renderer sidecar (<code>{fieldId}.layout.*.yaml</code>) from the workspace.</p>
+-          </>
+-        ),
+-        confirmLabel: referenced ? "Delete anyway" : "Delete",
+-        cancelLabel: "Cancel",
+-        variant: "danger",
+-        onConfirm: async () => {
+-          await deleteFieldApi(busUrl, workspaceId, fieldId);
+-          setLoadedField(null);
+-          clearFieldEditingState();
+-          setView({ kind: "home" });
+-          await refreshFields(workspaceId);
+-        }
+-      });
+-    })();
++    setError(`Scope deletion is not available yet (${fieldId}).`);
+   }
+ 
+   function promptCreateField(): void {
+-    void promptDialog({
+-      title: "New Field",
+-      body: "Create a new Root Field in this workspace.",
++      void promptDialog({
++        title: "New Field",
++        body: "Create a new Scope-backed Field in this workspace.",
+       confirmLabel: "Create",
+       cancelLabel: "Cancel",
+       input: {
+@@ -1876,10 +1944,6 @@ function App() {
+   }
+ 
+   function handleFieldPrimitiveClick(): void {
+-    if (view.kind === "field") {
+-      if (loadedField) promptCreateNestedFieldItem();
+-      return;
+-    }
+     promptCreateField();
+   }
+ 
+@@ -1898,18 +1962,17 @@ function App() {
+     if (event.dataTransfer.getData(fieldPrimitiveMime) !== "field") return;
+     event.preventDefault();
+     event.stopPropagation();
+-    if (viewRef.current.kind === "field" && loadedFieldRef.current) {
+-      const position = reactFlow.screenToFlowPosition({
+-        x: event.clientX,
+-        y: event.clientY
+-      });
+-      promptCreateNestedFieldItem(position);
+-      return;
+-    }
++    if (viewRef.current.kind === "field") return;
+     promptCreateField();
+   }
+ 
+   const handleFieldNodeDoubleClick = useCallback((_: React.MouseEvent, node: ReactFlowNode) => {
++    const projection = loadedProjectionRef.current;
++    if (projection) {
++      const contextId = typeof node.data?.context_id === "string" ? node.data.context_id : null;
++      if (contextId) openProjectedContext(contextId);
++      return;
++    }
+     const current = loadedFieldRef.current;
+     const currentView = viewRef.current;
+     if (!current || currentView.kind !== "field") return;
+@@ -1927,7 +1990,7 @@ function App() {
+     });
+     const workspaceId = selectedWorkspaceIdRef.current;
+     if (workspaceId) void refreshOpenField(workspaceId, parsed.id);
+-  }, [refreshOpenField]);
++  }, [openProjectedContext, refreshOpenField]);
+ 
+   function backFromField() {
+     clearFieldEditingState();
+@@ -1935,6 +1998,8 @@ function App() {
+     if (currentView.kind === "field" && currentView.backStack?.length) {
+       const backStack = currentView.backStack.slice(0, -1);
+       const parentFieldId = currentView.backStack[currentView.backStack.length - 1];
++      loadedProjectionRef.current = null;
++      setLoadedProjection(null);
+       loadedFieldRef.current = null;
+       setLoadedField(null);
+       setView({
+@@ -1951,6 +2016,8 @@ function App() {
+ 
+   function goToWorkspaceHome() {
+     clearFieldEditingState();
++    loadedProjectionRef.current = null;
++    setLoadedProjection(null);
+     setView({ kind: "home" });
+   }
+ 
+@@ -2023,7 +2090,7 @@ function App() {
+                 <p>
+                   {showAllFields
+                     ? "All workspace Fields."
+-                    : <>Root Fields stored under <code>.floe/fields/</code>.</>}
++                    : "Fields are Scope projections from the substrate."}
+                 </p>
+               </div>
+               <span>{homeFieldSummaries.length}</span>
+@@ -2044,7 +2111,7 @@ function App() {
+               <div className="quiet-empty">
+                 <SquareDashedMousePointer size={22} />
+                 <strong>No Fields yet</strong>
+-                <span>Create a Field to start shaping this workspace.</span>
++                <span>Create a Scope-backed Field to start shaping this workspace.</span>
+               </div>
+             ) : (
+               <div className="field-list">
+@@ -2058,7 +2125,7 @@ function App() {
+                     <span className="field-icon"><LayoutPanelLeft size={16} /></span>
+                     <span>
+                       <strong>{summary.title}</strong>
+-                      <small>{summary.item_count} items{(summary.parent_count ?? 0) > 0 ? " - nested" : ""}</small>
++                      <small>Scope projection</small>
+                     </span>
+                     <ChevronRight size={16} />
+                   </button>
+@@ -2105,7 +2172,7 @@ function App() {
+ 
+   function renderField() {
+     if (view.kind !== "field") return null;
+-    const title = loadedField?.semantic.title ?? selectedFieldSummary?.title ?? view.fieldId;
++    const title = loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? view.fieldId;
+     const parentFieldId = view.backStack?.at(-1);
+     const parentTitle = parentFieldId
+       ? fieldSummaries.find((field) => field.id === parentFieldId)?.title ?? parentFieldId
+@@ -2148,23 +2215,7 @@ function App() {
+           </div>
+           {renameDraft === null && (
+             <div className="field-toolbar-actions">
+-              <button
+-                className="ghost-action"
+-                onClick={() => beginAddFieldItem("actor")}
+-                disabled={!loadedField || actorItemOptions.length === 0}
+-              >
+-                <CircleDot size={16} />
+-                Add actor item
+-              </button>
+-              <button
+-                className="ghost-action"
+-                onClick={() => beginAddFieldItem("field")}
+-                disabled={!loadedField || fieldItemOptions.length === 0}
+-              >
+-                <LayoutPanelLeft size={16} />
+-                Add field item
+-              </button>
+-              <button className="ghost-action" onClick={beginRenameField} disabled={!loadedField}>
++              <button className="ghost-action" onClick={beginRenameField} disabled={!loadedProjection}>
+                 <Edit3 size={16} />
+                 Rename field
+               </button>
+@@ -2208,11 +2259,11 @@ function App() {
+             <Controls position="bottom-left" />
+             <MiniMap pannable zoomable position="bottom-right" />
+           </ReactFlow>
+-          {loadedField && fieldNodes.length === 0 && (
++          {loadedProjection && fieldNodes.length === 0 && (
+             <div className="canvas-empty">
+               <SquareDashedMousePointer size={22} />
+               <strong>Empty Field</strong>
+-              <span>Add an actor or nested Field item to start shaping this Field.</span>
++              <span>This Scope has no projected substrate primitives yet.</span>
+             </div>
+           )}
+         </div>
+@@ -2246,13 +2297,12 @@ function App() {
+           <>
+             <InspectorSection title="Opened Field">
+               <Detail label="Id" value={view.fieldId} />
+-              <Detail label="Title" value={loadedField?.semantic.title ?? selectedFieldSummary?.title ?? "—"} />
+-              <Detail label="Items" value={String(loadedField?.semantic.items.length ?? selectedFieldSummary?.item_count ?? 0)} />
+-              <Detail label="Connections" value={String(loadedField?.semantic.connections.length ?? selectedFieldSummary?.connection_count ?? 0)} />
+-              <button className="primary-action full" onClick={() => deleteOpenField(view.fieldId)}>
+-                <X size={15} />
+-                Delete field
+-              </button>
++              <Detail label="Title" value={loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? "—"} />
++              <Detail label="Contexts" value={String(loadedProjection?.projection.refs.contexts.length ?? 0)} />
++              <Detail label="Pulses" value={String(loadedProjection?.projection.refs.pulses.length ?? 0)} />
++              <Detail label="Events" value={String(loadedProjection?.projection.refs.events.length ?? 0)} />
++              <Detail label="Activity" value={String(loadedProjection?.projection.refs.activity.length ?? 0)} />
++              <Detail label="Unsupported" value={String(loadedProjection?.projection.unsupported.length ?? 0)} />
+             </InspectorSection>
+             <ActorAccessSection />
+           </>
+@@ -2309,7 +2359,7 @@ function App() {
+       <aside className="library-panel">
+         <div className="library-header">
+           <h3>Block Library</h3>
+-          <p>{view.kind === "field" ? "Drop into the canvas or click to add a nested Field." : "Click or drag to create a Field."}</p>
++          <p>{view.kind === "field" ? "Click to create another Scope-backed Field." : "Click or drag to create a Scope-backed Field."}</p>
+         </div>
+         {!selectedWorkspace ? (
+           <div className="quiet-empty small">
+@@ -2322,7 +2372,6 @@ function App() {
+             <button
+               className="library-primitive"
+               onClick={handleFieldPrimitiveClick}
+-              disabled={view.kind === "field" && !loadedField}
+               draggable
+               onDragStart={handleFieldPrimitiveDragStart}
+               title="Create a new Field"
+@@ -2766,7 +2815,7 @@ function App() {
+               <>
+                 <ChevronRight size={14} />
+                 <button className="breadcrumb-current">
+-                  {loadedField?.semantic.title ?? selectedFieldSummary?.title ?? view.fieldId}
++                  {loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? view.fieldId}
+                 </button>
+               </>
+             )}
+@@ -2878,6 +2927,29 @@ function actorFieldItemRef(endpoint: Endpoint, workspaceId: string): string | nu
+   return actorId ? `actor:${workspaceId}:${actorId}` : null;
+ }
+ 
++function scopeToFieldSummary(scope: ScopeRecord): FieldSummary {
++  return {
++    id: scope.scope_id,
++    title: scope.title || scope.scope_id,
++    item_count: 0,
++    connection_count: 0,
++    parent_count: 0,
++    updated_at: scope.updated_at
++  };
++}
++
++function projectionScopeFallback(projection: ScopeProjection): ScopeRecord {
++  return {
++    workspace_id: projection.workspace_id,
++    scope_id: projection.scope_id,
++    title: projection.scope_id,
++    description: null,
++    is_default: projection.scope_id === "default",
++    created_at: projection.generated_at,
++    updated_at: projection.generated_at
++  };
++}
++
+ function actorDisplayNameFromRef(ref: string): string {
+   const parsed = parseFieldRef(ref);
+   if (parsed.kind !== "actor") return ref;
