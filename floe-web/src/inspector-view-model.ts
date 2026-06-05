@@ -1,5 +1,5 @@
 import { type ActivityRow } from "./activity";
-import { type ContextSummary } from "./contexts";
+import { contextLabel, type ContextEvent, type ContextSummary } from "./contexts";
 import { type ScopeProjection } from "./scope-projection";
 
 export type InspectorRuntimeBinding = {
@@ -85,5 +85,36 @@ export function buildScopeInspectorSummary({
       projection.refs.events.length === 0 &&
       projection.refs.activity.length === 0 &&
       scopedActivityRows.length > 0
+  };
+}
+
+export function buildContextInspectorSummary({
+  context,
+  events,
+  scopeTitlesById
+}: {
+  context: ContextSummary;
+  events: ContextEvent[];
+  scopeTitlesById: Record<string, string>;
+}) {
+  const orderedEvents = [...events].sort((left, right) => left.created_at.localeCompare(right.created_at));
+  const firstEvent = orderedEvents[0] ?? null;
+  const lastEvent = orderedEvents[orderedEvents.length - 1] ?? null;
+  const messageCount = orderedEvents.filter((event) => event.type === "message").length;
+  const scopeTitle = context.scope_id ? scopeTitlesById[context.scope_id]?.trim() ?? "" : "";
+
+  return {
+    label: contextLabel(context, firstEvent),
+    scopeLabel: context.scope_id
+      ? scopeTitle
+        ? `${scopeTitle} Scope`
+        : "Scoped Context"
+      : "Workspace Context",
+    participantIds: context.participants,
+    participantCount: context.participants.length,
+    totalEmitCount: orderedEvents.length,
+    messageCount,
+    createdAt: firstEvent?.created_at ?? context.created_at,
+    lastActiveAt: lastEvent?.created_at ?? context.last_event_at ?? context.created_at
   };
 }

@@ -1,0 +1,627 @@
+version: 2
+system:
+  id: floe
+  name: floe
+  intent: "Bootstrap draft generated from repository structure and relative import analysis. Review candidate Cells before promoting them into ownership-bearing Cells."
+  clusters:
+    - id: examples
+      name: Examples
+      intent: "Bootstrap draft cluster for Examples. Review and rename if needed."
+      cells: []
+      bootstrap:
+        candidateCells:
+          - id: extensions
+            name: Extensions
+            intent: "Bootstrap candidate Cell for Extensions. Review ownership before promoting this to a real Cell."
+            reviewNotes:
+              - "Bootstrap candidate only. Promote this to a real Cell only after ownership review."
+              - "A Cell must represent the smallest unit that owns mutable state or an external integration contract."
+            paths:
+              - examples/extensions/**
+            dependsOn:
+              cells: []
+              externalContracts: []
+            moduleCandidates:
+              - id: todo
+                name: Todo
+                intent: "Bootstrap module candidate for Todo. Review whether this is the smallest practical routing boundary for implementation work."
+                paths:
+                  - examples/extensions/todo/**
+                responsibilities:
+                  - "Implementation work currently routes through Todo."
+                allowedDependencies:
+                  cells: []
+                  externalContracts: []
+                evidence:
+                  files:
+                    - examples/extensions/todo/index.ts
+            evidence:
+              files:
+                - examples/extensions/todo/index.ts
+        unclassifiedPaths: []
+    - id: floe-bridge
+      name: "Floe Bridge"
+      intent: "Bootstrap draft cluster for Floe Bridge. Review and rename if needed."
+      cells: []
+      bootstrap:
+        candidateCells:
+          - id: adapters
+            name: Adapters
+            intent: "Bootstrap candidate Cell for Adapters. Review ownership before promoting this to a real Cell."
+            reviewNotes:
+              - "Bootstrap candidate only. Promote this to a real Cell only after ownership review."
+              - "A Cell must represent the smallest unit that owns mutable state or an external integration contract."
+            paths:
+              - floe-bridge/adapters/**
+            dependsOn:
+              cells: []
+              externalContracts: []
+            moduleCandidates:
+              - id: main
+                name: Main
+                intent: "Bootstrap module candidate for Main. Review whether this is the smallest practical routing boundary for implementation work."
+                paths:
+                  - floe-bridge/adapters/**
+                responsibilities:
+                  - "Implementation work currently routes through Main."
+                allowedDependencies:
+                  cells: []
+                  externalContracts: []
+                evidence:
+                  files:
+                    - floe-bridge/src/adapters/copilot-sdk-adapter.ts
+                    - floe-bridge/src/adapters/fake-runtime-adapter.ts
+                    - floe-bridge/src/adapters/pi-agent-core-adapter.ts
+                    - floe-bridge/src/adapters/runtime-adapter.ts
+            evidence:
+              files:
+                - floe-bridge/src/adapters/copilot-sdk-adapter.ts
+                - floe-bridge/src/adapters/fake-runtime-adapter.ts
+                - floe-bridge/src/adapters/pi-agent-core-adapter.ts
+                - floe-bridge/src/adapters/runtime-adapter.ts
+          - id: runtime-core
+            name: "Runtime Core"
+            intent: "Bootstrap candidate Cell for Runtime Core. Review ownership before promoting this to a real Cell."
+            reviewNotes:
+              - "Bootstrap candidate only. Promote this to a real Cell only after ownership review."
+              - "A Cell must represent the smallest unit that owns mutable state or an external integration contract."
+            paths:
+              - floe-bridge/runtime-core/**
+            dependsOn:
+              cells: []
+              externalContracts: []
+            moduleCandidates:
+              - id: main
+                name: Main
+                intent: "Bootstrap module candidate for Main. Review whether this is the smallest practical routing boundary for implementation work."
+                paths:
+                  - floe-bridge/runtime-core/**
+                responsibilities:
+                  - "Implementation work currently routes through Main."
+                allowedDependencies:
+                  cells: []
+                  externalContracts: []
+                evidence:
+                  files:
+                    - floe-bridge/src/runtime-core/guidance.ts
+                    - floe-bridge/src/runtime-core/index.ts
+                    - floe-bridge/src/runtime-core/neutral-ref.ts
+                    - floe-bridge/src/runtime-core/types.ts
+                    - floe-bridge/src/runtime-core/worklog.ts
+            evidence:
+              files:
+                - floe-bridge/src/runtime-core/guidance.ts
+                - floe-bridge/src/runtime-core/index.ts
+                - floe-bridge/src/runtime-core/neutral-ref.ts
+                - floe-bridge/src/runtime-core/types.ts
+                - floe-bridge/src/runtime-core/worklog.ts
+          - id: tools
+            name: Tools
+            intent: "Bootstrap candidate Cell for Tools. Review ownership before promoting this to a real Cell."
+            reviewNotes:
+              - "Bootstrap candidate only. Promote this to a real Cell only after ownership review."
+              - "A Cell must represent the smallest unit that owns mutable state or an external integration contract."
+            paths:
+              - floe-bridge/tools/**
+            dependsOn:
+              cells: []
+              externalContracts: []
+            moduleCandidates:
+              - id: main
+                name: Main
+                intent: "Bootstrap module candidate for Main. Review whether this is the smallest practical routing boundary for implementation work."
+                paths:
+                  - floe-bridge/tools/**
+                responsibilities:
+                  - "Implementation work currently routes through Main."
+                allowedDependencies:
+                  cells: []
+                  externalContracts: []
+                evidence:
+                  files:
+                    - floe-bridge/src/tools/actor-tools.ts
+                    - floe-bridge/src/tools/bash.ts
+                    - floe-bridge/src/tools/edit-diff.ts
+                    - floe-bridge/src/tools/edit.ts
+                    - floe-bridge/src/tools/env-sanitise.ts
+                    - floe-bridge/src/tools/find.ts
+                    - floe-bridge/src/tools/grep.ts
+                    - floe-bridge/src/tools/index.ts
+                    - floe-bridge/src/tools/ls.ts
+                    - floe-bridge/src/tools/path-scoping.ts
+                    - floe-bridge/src/tools/pulse-tools.ts
+                    - floe-bridge/src/tools/read.ts
+                    - floe-bridge/src/tools/truncation.ts
+                    - floe-bridge/src/tools/types.ts
+                    - floe-bridge/src/tools/write.ts
+            evidence:
+              files:
+                - floe-bridge/src/tools/actor-tools.ts
+                - floe-bridge/src/tools/bash.ts
+                - floe-bridge/src/tools/edit-diff.ts
+                - floe-bridge/src/tools/edit.ts
+                - floe-bridge/src/tools/env-sanitise.ts
+                - floe-bridge/src/tools/find.ts
+                - floe-bridge/src/tools/grep.ts
+                - floe-bridge/src/tools/index.ts
+                - floe-bridge/src/tools/ls.ts
+                - floe-bridge/src/tools/path-scoping.ts
+                - floe-bridge/src/tools/pulse-tools.ts
+                - floe-bridge/src/tools/read.ts
+                - floe-bridge/src/tools/truncation.ts
+                - floe-bridge/src/tools/types.ts
+                - floe-bridge/src/tools/write.ts
+        unclassifiedPaths:
+          - file: floe-bridge/src/auth.ts
+            rawSegments:
+              - floe-bridge
+              - src
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bridge/src/bus-client.ts
+            rawSegments:
+              - floe-bridge
+              - src
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bridge/src/config.ts
+            rawSegments:
+              - floe-bridge
+              - src
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bridge/src/daemon.ts
+            rawSegments:
+              - floe-bridge
+              - src
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bridge/src/extension-loader.ts
+            rawSegments:
+              - floe-bridge
+              - src
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bridge/src/hooks.ts
+            rawSegments:
+              - floe-bridge
+              - src
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bridge/src/index.ts
+            rawSegments:
+              - floe-bridge
+              - src
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bridge/src/project.ts
+            rawSegments:
+              - floe-bridge
+              - src
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bridge/vitest.config.ts
+            rawSegments:
+              - floe-bridge
+            semanticSegments:
+              - floe-bridge
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+    - id: floe-bus
+      name: "Floe Bus"
+      intent: "Bootstrap draft cluster for Floe Bus. Review and rename if needed."
+      cells: []
+      bootstrap:
+        candidateCells:
+          - id: contexts
+            name: Contexts
+            intent: "Bootstrap candidate Cell for Contexts. Review ownership before promoting this to a real Cell."
+            reviewNotes:
+              - "Bootstrap candidate only. Promote this to a real Cell only after ownership review."
+              - "A Cell must represent the smallest unit that owns mutable state or an external integration contract."
+            paths:
+              - floe-bus/contexts/**
+            dependsOn:
+              cells: []
+              externalContracts: []
+            moduleCandidates:
+              - id: main
+                name: Main
+                intent: "Bootstrap module candidate for Main. Review whether this is the smallest practical routing boundary for implementation work."
+                paths:
+                  - floe-bus/contexts/**
+                responsibilities:
+                  - "Implementation work currently routes through Main."
+                allowedDependencies:
+                  cells: []
+                  externalContracts: []
+                evidence:
+                  files:
+                    - floe-bus/src/contexts/resolver.ts
+                    - floe-bus/src/contexts/store.ts
+            evidence:
+              files:
+                - floe-bus/src/contexts/resolver.ts
+                - floe-bus/src/contexts/store.ts
+          - id: scopes
+            name: Scopes
+            intent: "Bootstrap candidate Cell for Scopes. Review ownership before promoting this to a real Cell."
+            reviewNotes:
+              - "Bootstrap candidate only. Promote this to a real Cell only after ownership review."
+              - "A Cell must represent the smallest unit that owns mutable state or an external integration contract."
+            paths:
+              - floe-bus/scopes/**
+            dependsOn:
+              cells: []
+              externalContracts: []
+            moduleCandidates:
+              - id: main
+                name: Main
+                intent: "Bootstrap module candidate for Main. Review whether this is the smallest practical routing boundary for implementation work."
+                paths:
+                  - floe-bus/scopes/**
+                responsibilities:
+                  - "Implementation work currently routes through Main."
+                allowedDependencies:
+                  cells: []
+                  externalContracts: []
+                evidence:
+                  files:
+                    - floe-bus/src/scopes/projection.ts
+                    - floe-bus/src/scopes/store.ts
+            evidence:
+              files:
+                - floe-bus/src/scopes/projection.ts
+                - floe-bus/src/scopes/store.ts
+        unclassifiedPaths:
+          - file: floe-bus/src/config.ts
+            rawSegments:
+              - floe-bus
+              - src
+            semanticSegments:
+              - floe-bus
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bus/src/index.ts
+            rawSegments:
+              - floe-bus
+              - src
+            semanticSegments:
+              - floe-bus
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bus/src/pulse-scheduler.ts
+            rawSegments:
+              - floe-bus
+              - src
+            semanticSegments:
+              - floe-bus
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bus/src/scope-projection-layout-store.ts
+            rawSegments:
+              - floe-bus
+              - src
+            semanticSegments:
+              - floe-bus
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bus/src/server.ts
+            rawSegments:
+              - floe-bus
+              - src
+            semanticSegments:
+              - floe-bus
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bus/src/store.ts
+            rawSegments:
+              - floe-bus
+              - src
+            semanticSegments:
+              - floe-bus
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-bus/vitest.config.ts
+            rawSegments:
+              - floe-bus
+            semanticSegments:
+              - floe-bus
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+    - id: floe-cli
+      name: "Floe Cli"
+      intent: "Bootstrap draft cluster for Floe Cli. Review and rename if needed."
+      cells: []
+      bootstrap:
+        candidateCells: []
+        unclassifiedPaths:
+          - file: floe-cli/src/auth.ts
+            rawSegments:
+              - floe-cli
+              - src
+            semanticSegments:
+              - floe-cli
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-cli/src/config.ts
+            rawSegments:
+              - floe-cli
+              - src
+            semanticSegments:
+              - floe-cli
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-cli/src/index.ts
+            rawSegments:
+              - floe-cli
+              - src
+            semanticSegments:
+              - floe-cli
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-cli/src/process-manager.ts
+            rawSegments:
+              - floe-cli
+              - src
+            semanticSegments:
+              - floe-cli
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+    - id: floe-web
+      name: "Floe Web"
+      intent: "Bootstrap draft cluster for Floe Web. Review and rename if needed."
+      cells:
+        - id: workspace-ui
+          name: "Workspace UI"
+          intent: "Owns the browser-rendered workspace experience, including shell composition, UI state, and the floe-web contract boundary to workspace and scope APIs."
+          owns:
+            mutableState:
+              - "Browser workspace view state"
+              - "Inspector, channel, and scope-map presentation state"
+              - "Dialog interaction state"
+            externalContracts:
+              - "Floe Bus workspace HTTP APIs"
+              - "Floe Bus scope projection stream and layout APIs"
+          writeAuthority:
+            allowedModules:
+              - shell-surfaces
+              - workspace-contracts
+              - dialog
+            notes:
+              - "Only floe-web workspace UI modules may mutate browser workspace view state or dialog state."
+              - "Other clusters may read through the published HTTP and event contracts but must not write floe-web browser state directly."
+          paths:
+            - floe-web/src/**
+          dependsOn:
+            cells: []
+            externalContracts:
+              - "Floe Bus workspace HTTP APIs"
+              - "Floe Bus scope projection stream and layout APIs"
+              - "React Flow renderer"
+          modules:
+            - id: shell-surfaces
+              name: "Shell Surfaces"
+              intent: "Smallest routing boundary for the rendered V6-style shell, navigation, home surface, activity surface, inspector, and scope-map composition."
+              paths:
+                - floe-web/src/main.tsx
+                - floe-web/src/styles.css
+                - floe-web/src/components/ui/**
+                - floe-web/src/home-view-model.ts
+                - floe-web/src/home-view-model.test.ts
+                - floe-web/src/inspector-view-model.ts
+                - floe-web/src/inspector-view-model.test.ts
+                - floe-web/src/lib/utils.ts
+              owns:
+                mutableState:
+                  - "Workspace shell composition state"
+                  - "Rendered surface layout and inspector sizing state"
+                externalContracts: []
+              responsibilities:
+                - "Compose the visible floe-web shell and route users between Home, Activity, Scope Map, Inspector, and Channel surfaces."
+                - "Translate workspace, actor, and scope data into V6-aligned surface models."
+                - "Own Tailwind and shadcn-backed shell foundation primitives used by the floe-web workspace chrome."
+              allowedDependencies:
+                cells: []
+                externalContracts:
+                  - "React Flow renderer"
+            - id: workspace-content
+              name: "Workspace Content"
+              intent: "Owns pure workspace content shaping for activity, contexts, fields, and scope projection data consumed by the shell."
+              paths:
+                - floe-web/src/activity.ts
+                - floe-web/src/activity.test.ts
+                - floe-web/src/contexts.ts
+                - floe-web/src/contexts.test.ts
+                - floe-web/src/fields.ts
+                - floe-web/src/fields.test.ts
+                - floe-web/src/scope-projection.ts
+                - floe-web/src/scope-projection.test.ts
+              owns:
+                mutableState: []
+                externalContracts: []
+              responsibilities:
+                - "Normalize substrate-backed workspace data into content models used by the visible surfaces."
+                - "Project scope data into React Flow-friendly nodes, edges, and layout structures."
+              allowedDependencies:
+                cells: []
+                externalContracts:
+                  - "React Flow renderer"
+            - id: workspace-contracts
+              name: "Workspace Contracts"
+              intent: "Owns floe-web calls to workspace, scope, pulse, and context assignment APIs."
+              paths:
+                - floe-web/src/context-assignment-api.ts
+                - floe-web/src/context-assignment-api.test.ts
+                - floe-web/src/pulse-api.ts
+                - floe-web/src/pulse-api.test.ts
+                - floe-web/src/scope-projection-api.ts
+                - floe-web/src/scope-projection-api.test.ts
+              owns:
+                mutableState: []
+                externalContracts:
+                  - "Floe Bus workspace HTTP APIs"
+                  - "Floe Bus scope projection stream and layout APIs"
+              responsibilities:
+                - "Enforce request and response handling for workspace-backed browser interactions."
+                - "Keep floe-web API adapters aligned with substrate-backed scope and pulse contracts."
+              allowedDependencies:
+                cells: []
+                externalContracts:
+                  - "Floe Bus workspace HTTP APIs"
+                  - "Floe Bus scope projection stream and layout APIs"
+            - id: dialog
+              name: "Dialog"
+              intent: "Owns modal confirmation and prompt interactions used by the workspace shell."
+              paths:
+                - floe-web/src/dialog/**
+                - floe-web/src/no-native-popups.test.ts
+              owns:
+                mutableState:
+                  - "Dialog queue and resolution state"
+                externalContracts: []
+              responsibilities:
+                - "Provide the only supported path for modal confirmation and prompt flows inside floe-web."
+              allowedDependencies:
+                cells: []
+                externalContracts: []
+      bootstrap:
+        candidateCells:
+          - id: dialog
+            name: Dialog
+            intent: "Bootstrap candidate Cell for Dialog. Review ownership before promoting this to a real Cell."
+            reviewNotes:
+              - "Bootstrap candidate only. Promote this to a real Cell only after ownership review."
+              - "A Cell must represent the smallest unit that owns mutable state or an external integration contract."
+            paths:
+              - floe-web/dialog/**
+            dependsOn:
+              cells: []
+              externalContracts: []
+            moduleCandidates:
+              - id: main
+                name: Main
+                intent: "Bootstrap module candidate for Main. Review whether this is the smallest practical routing boundary for implementation work."
+                paths:
+                  - floe-web/dialog/**
+                responsibilities:
+                  - "Implementation work currently routes through Main."
+                allowedDependencies:
+                  cells: []
+                  externalContracts: []
+                evidence:
+                  files:
+                    - floe-web/src/dialog/dialog-controller.ts
+                    - floe-web/src/dialog/dialog.tsx
+            evidence:
+              files:
+                - floe-web/src/dialog/dialog-controller.ts
+                - floe-web/src/dialog/dialog.tsx
+        unclassifiedPaths:
+          - file: floe-web/playwright.config.ts
+            rawSegments:
+              - floe-web
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/activity.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/context-assignment-api.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/contexts.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/fields.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/home-view-model.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/inspector-view-model.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/main.tsx
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/pulse-api.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/scope-projection-api.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/src/scope-projection.ts
+            rawSegments:
+              - floe-web
+              - src
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/vite.config.ts
+            rawSegments:
+              - floe-web
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+          - file: floe-web/vitest.config.ts
+            rawSegments:
+              - floe-web
+            semanticSegments:
+              - floe-web
+            reason: "No ownership-like Cell candidate could be inferred from this path after removing implementation-only segments."
+bootstrap:
+  reviewRequired: true
+  intent: "Candidate clusters and modules were inferred deterministically. Candidate Cells are suggestions only until ownership review confirms them."

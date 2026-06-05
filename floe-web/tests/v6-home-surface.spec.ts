@@ -65,10 +65,11 @@ test.describe("V6 Workspace Home surface", () => {
 
     const home = page.getByTestId("v6-workspace-home");
     await expect(home).toBeVisible();
-    await expect(home.getByText("Workspace index", { exact: true })).toBeVisible();
+    await expect(home).toContainText("Actors, Scopes, and live Activity.");
     await expect(home.locator(":scope > .hero")).toBeVisible();
     await expect(home.locator(":scope > .ws-settings")).toBeVisible();
     await expect(home.getByTestId("v6-home-scopes").getByRole("button", { name: /Writing System/i })).toBeVisible();
+    await expect(home.getByTestId("v6-home-scopes").getByRole("button", { name: /Add Scope/i })).toBeVisible();
     const floeActor = home.getByTestId("v6-home-actors").locator(".home-actor-summary", { hasText: "Floe" });
     await expect(floeActor).toBeVisible();
     await expect(home.getByTestId("v6-home-contexts")).toContainText("Direct planning thread");

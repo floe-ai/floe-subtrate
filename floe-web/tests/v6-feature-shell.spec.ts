@@ -69,16 +69,16 @@ test.describe("V6 feature-complete shell", () => {
     const home = page.getByTestId("v6-workspace-home");
     await expect(home).toBeVisible();
     await expect(home.getByRole("heading", { name: /Writing System/ })).toBeVisible();
-    await expect(home).toContainText("Workspace index");
+    await expect(home).toContainText("Home indexes Workspace state without becoming a Scope.");
     await expect(home.getByTestId("v6-home-actors")).toContainText("Floe");
     await expect(home.getByTestId("v6-home-scopes")).toContainText("Writing System");
     await expect(home.getByTestId("v6-home-contexts")).toContainText("Workspace-level planning thread");
     await expect(page.getByText(/Default (Scope|Field)/)).toHaveCount(0);
 
     await topbar.getByRole("button", { name: /Writing System/ }).click();
-    await page.getByRole("menuitem", { name: "Research Lab" }).click();
+    await page.getByRole("menu").getByRole("button", { name: /^Research Lab / }).click();
 
-    await expect(topbar.locator(".workspace-switcher-button")).toContainText("Research Lab");
+    await expect(topbar.getByRole("button", { name: /Research Lab/ })).toBeVisible();
     await expect(home.getByRole("heading", { name: /Research Lab/ })).toBeVisible();
   });
 
@@ -104,12 +104,12 @@ test.describe("V6 feature-complete shell", () => {
 
     const topbar = page.getByTestId("v6-topbar");
     await topbar.getByRole("button", { name: /Writing System/ }).click();
-    await page.getByRole("menuitem", { name: /New Workspace/ }).click();
-    await topbar.getByLabel("Location").fill("C:\\Development\\research-lab");
-    await topbar.getByLabel("Name").fill("Research Lab");
+    await page.getByRole("menu").getByRole("button", { name: /New Workspace/ }).click();
+    await page.getByRole("menu").getByLabel("Location").fill("C:\\Development\\research-lab");
+    await page.getByRole("menu").getByLabel("Name").fill("Research Lab");
     await page.getByRole("button", { name: "Create Workspace" }).click();
 
-    await expect(topbar.locator(".workspace-switcher-button")).toContainText("Research Lab");
+    await expect(topbar.getByRole("button", { name: /Research Lab/ })).toBeVisible();
     await expect(page.getByTestId("v6-workspace-home").getByRole("heading", { name: /Research Lab/ })).toBeVisible();
     expect(registerCalls).toEqual([
       expect.objectContaining({

@@ -1,3 +1,7 @@
+/*
+ * @invariant shell-surfaces composes the only supported floe-web shell chrome, including Tailwind/shadcn primitives, V6-aligned panels, and React Flow-backed scope surfaces.
+ * @invariant Workspace, Context, Scope, Inspector, and Channel semantics stay substrate-backed here; UI foundation changes must not replace or bypass those contracts.
+ */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -17,7 +21,6 @@ import {
   MessageSquare,
   RefreshCw,
   Send,
-  Settings,
   SquareDashedMousePointer,
   Workflow,
   X
@@ -25,26 +28,31 @@ import {
 import {
   Background,
   BackgroundVariant,
-  BaseEdge,
   Controls,
-  EdgeLabelRenderer,
-  Handle,
   MiniMap,
-  Position,
   ReactFlow,
   ReactFlowProvider,
-  getBezierPath,
   useReactFlow,
   type Connection,
   type Edge as ReactFlowEdge,
   type EdgeChange,
-  type EdgeProps,
   type Node as ReactFlowNode,
   type NodeChange,
-  type NodeProps,
   type Viewport
 } from "@xyflow/react";
 import "./styles.css";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 import {
   buildActivityRows,
   contextActivityLabel,
@@ -73,7 +81,6 @@ import {
   applyNodeChangesToLayout,
   reactFlowToLayout,
   type FieldLayoutFloeweb,
-  type FieldItemNodeData,
   type FieldSummary
 } from "./fields";
 import {
@@ -96,6 +103,7 @@ import {
 } from "./scope-projection";
 import {
   buildActorInspectorSummary,
+  buildContextInspectorSummary,
   buildScopeInspectorSummary,
   buildWorkspaceInspectorSummary
 } from "./inspector-view-model";
@@ -197,18 +205,6 @@ type View =
   | { kind: "activity" }
   | { kind: "field"; fieldId: string; backStack?: string[] };
 
-type FieldConnectionEdgeData = Record<string, unknown> & {
-  label: string;
-  isEditing: boolean;
-  draft: string;
-  onBeginEdit?: (id: string, label: string) => void;
-  onDraftChange: (value: string) => void;
-  onCommit: (id: string) => void;
-  onCancel: () => void;
-};
-
-type FieldConnectionEdge = ReactFlowEdge<FieldConnectionEdgeData, "fieldConnection">;
-
 type LoadedScopeProjection = {
   scope: ScopeRecord;
   projection: ScopeProjection;
@@ -228,127 +224,13 @@ const runtimeErrorKinds = new Set([
   "runtime_profile_required"
 ]);
 const fieldPrimitiveMime = "application/x-floe-field-primitive";
-
-function FieldItemNode({ data }: NodeProps) {
-  const item = data as FieldItemNodeData & {
-    context_id?: string;
-    onOpenContext?: (contextId: string) => void;
-    participant_count?: number;
-    subscriber_count?: number;
-  };
-  const subtitle = item.kind === "context" && typeof item.participant_count === "number"
-    ? `${item.participant_count} participant${item.participant_count === 1 ? "" : "s"}`
-    : item.kind === "pulse" && typeof item.subscriber_count === "number"
-    ? `${item.subscriber_count} subscriber${item.subscriber_count === 1 ? "" : "s"}`
-    : "";
-  return (
-    <>
-      <Handle type="target" position={Position.Top} />
-      <div
-        className="canvas-field-node"
-        title={item.kind === "actor" ? item.label : item.ref.raw}
-        data-kind={item.kind}
-      >
-        <span>{item.label}</span>
-        {subtitle && <small>{subtitle}</small>}
-        {item.kind === "context" && item.context_id && item.onOpenContext && (
-          <button
-            type="button"
-            className="canvas-node-action nodrag nopan"
-            onClick={() => item.onOpenContext?.(item.context_id as string)}
-          >
-            Open
-          </button>
-        )}
-      </div>
-      <Handle type="source" position={Position.Bottom} />
-    </>
-  );
-}
-
-const fieldNodeTypes = {
-  fieldItem: FieldItemNode
-};
-
-function FieldConnectionEdgeComponent({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  markerEnd,
-  markerStart,
-  style,
-  data
-}: EdgeProps<FieldConnectionEdge>) {
-  const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition
-  });
-  const label = data?.label ?? "";
-  const draft = data?.draft ?? label;
-  const isEditing = data?.isEditing ?? false;
-  const showLabel = isEditing || label.trim().length > 0;
-
-  return (
-    <>
-      <BaseEdge id={id} path={edgePath} markerStart={markerStart} markerEnd={markerEnd} style={style} />
-      {showLabel && (
-        <EdgeLabelRenderer>
-          <div
-            className={`field-edge-label${isEditing ? " editing" : ""}`}
-            style={{
-              position: "absolute",
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              pointerEvents: "all"
-            }}
-          >
-            {isEditing ? (
-              <input
-                className="nodrag nopan"
-                aria-label="Connection label"
-                value={draft}
-                placeholder="Label"
-                autoFocus
-                onChange={(event) => data?.onDraftChange(event.target.value)}
-                onBlur={() => data?.onCommit(id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    data?.onCommit(id);
-                  }
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    data?.onCancel();
-                  }
-                }}
-              />
-            ) : (
-              <button
-                type="button"
-                className="field-edge-label-button nodrag nopan"
-                aria-label={`Edit connection label ${label}`}
-                onClick={() => data?.onBeginEdit?.(id, label)}
-              >
-                {label}
-              </button>
-            )}
-          </div>
-        </EdgeLabelRenderer>
-      )}
-    </>
-  );
-}
-
-const fieldEdgeTypes = {
-  fieldConnection: FieldConnectionEdgeComponent
-};
+const shellLeftPanelMinWidthPx = 248;
+const shellLeftPanelDefaultWidthPx = 272;
+const shellLeftPanelMaxWidthPx = 340;
+const shellMainPanelMinWidthPx = 520;
+const shellInspectorPanelMinWidthPx = 304;
+const shellInspectorPanelDefaultWidthPx = 344;
+const shellInspectorPanelMaxWidthPx = 420;
 
 function layoutsEqual(a: FieldLayoutFloeweb, b: FieldLayoutFloeweb): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -367,7 +249,6 @@ function fieldLayoutKey(workspaceId: string, fieldId: string): string {
 function App() {
   const reactFlow = useReactFlow();
   const [busUrl, setBusUrl] = useState(defaultBusUrl);
-  const [showBusSettings, setShowBusSettings] = useState(false);
   const [workspacePath, setWorkspacePath] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
   const [authorizeInit, setAuthorizeInit] = useState(true);
@@ -427,53 +308,6 @@ function App() {
   const contextsRequestRef = useRef(0);
   const activityContextsRequestRef = useRef(0);
   const contextEventsRequestRef = useRef(0);
-  const rinspDragRef = useRef(false);
-
-  const RINSP_KEY = "floe.rinspW";
-  const RINSP_MIN = 260;
-  const RINSP_MAX = 720;
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(RINSP_KEY);
-      if (saved) {
-        const w = parseInt(saved, 10);
-        if (w >= RINSP_MIN && w <= RINSP_MAX) {
-          const shell = document.querySelector(".floe-shell");
-          if (shell instanceof HTMLElement) shell.style.setProperty("--rinsp-w", `${w}px`);
-        }
-      }
-    } catch (_) {}
-  }, []);
-
-  function handleRinspPointerDown(ev: React.PointerEvent<HTMLDivElement>) {
-    ev.preventDefault();
-    rinspDragRef.current = true;
-    try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (_) {}
-    ev.currentTarget.classList.add("is-dragging");
-    document.body.classList.add("is-resizing-rinsp");
-  }
-
-  function handleRinspPointerMove(ev: React.PointerEvent<HTMLDivElement>) {
-    if (!rinspDragRef.current) return;
-    const next = Math.max(RINSP_MIN, Math.min(RINSP_MAX, window.innerWidth - ev.clientX));
-    const shell = document.querySelector(".floe-shell");
-    if (shell instanceof HTMLElement) shell.style.setProperty("--rinsp-w", `${next}px`);
-    try { localStorage.setItem(RINSP_KEY, String(next)); } catch (_) {}
-  }
-
-  function handleRinspPointerUp(ev: React.PointerEvent<HTMLDivElement>) {
-    if (!rinspDragRef.current) return;
-    rinspDragRef.current = false;
-    ev.currentTarget.classList.remove("is-dragging");
-    document.body.classList.remove("is-resizing-rinsp");
-    try { ev.currentTarget.releasePointerCapture(ev.pointerId); } catch (_) {}
-    const shell = document.querySelector(".floe-shell");
-    if (shell instanceof HTMLElement) {
-      const w = parseInt(getComputedStyle(shell).getPropertyValue("--rinsp-w") || "316", 10);
-      try { localStorage.setItem(RINSP_KEY, String(w)); } catch (_) {}
-    }
-  }
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
   const selfActorId = selectedWorkspace ? operatorActorId(selectedWorkspace.workspace_id) : "";
@@ -561,7 +395,7 @@ function App() {
     return sortWorkspaceContexts(activityContexts).filter((context) => {
       if (activityFilters.scopeId === "workspace") return context.scope_id === null;
       if (activityFilters.scopeId !== "all") return context.scope_id === activityFilters.scopeId;
-      return true;
+      return false;
     });
   }, [activityContexts, activityFilters.scopeId]);
   const openedScopeContexts = useMemo(() => (
@@ -716,6 +550,22 @@ function App() {
       activityRows,
       runtimeBinding: agentBinding,
       adapter: selectedAgentRuntimeAdapter ?? bridgeRuntimeAdapterName
+    })
+    : null;
+  const channelActorSummary = selectedAgent
+    ? buildActorInspectorSummary({
+      actorId: selectedAgent.endpoint_id,
+      contexts: sortedContexts.sorted,
+      activityRows,
+      runtimeBinding: agentBinding,
+      adapter: selectedAgentRuntimeAdapter ?? bridgeRuntimeAdapterName
+    })
+    : null;
+  const selectedContextInspectorSummary = selectedContext
+    ? buildContextInspectorSummary({
+      context: selectedContext,
+      events: contextEvents,
+      scopeTitlesById
     })
     : null;
 
@@ -1041,34 +891,27 @@ function App() {
   const { nodes: fieldNodes, edges: fieldEdges } = useMemo(() => {
     if (loadedProjection) {
       const flow = projectionToReactFlow(loadedProjection.projection, loadedProjection.layout ?? undefined);
-      const edges: FieldConnectionEdge[] = flow.edges.map((edge) => {
+      const edges: ReactFlowEdge[] = flow.edges.map((edge) => {
         const label = typeof edge.label === "string" ? edge.label : "";
         return {
           ...edge,
-          type: "fieldConnection",
+          type: undefined,
           selected: selectedFieldConnectionId === edge.id,
           reconnectable: false,
-          data: {
-            ...(edge.data ?? {}),
-            label,
-            isEditing: false,
-            draft: label,
-            onBeginEdit: () => undefined,
-            onDraftChange: () => undefined,
-            onCommit: () => undefined,
-            onCancel: () => undefined
-          }
+          label,
+          labelShowBg: true,
+          labelBgPadding: [6, 2],
+          labelBgBorderRadius: 999,
+          style: scopeMapEdgeStyle(selectedFieldConnectionId === edge.id)
         };
       });
       const nodes = flow.nodes.map((node) => {
-        const contextId = typeof node.data?.context_id === "string" ? node.data.context_id : null;
+        const kind = typeof node.data?.kind === "string" ? node.data.kind : "context";
         return {
           ...node,
+          type: undefined,
           selected: selectedFieldItemIds.has(node.id),
-          data: {
-            ...(node.data ?? {}),
-            ...(contextId ? { onOpenContext: openProjectedContext } : {})
-          }
+          style: scopeMapNodeStyle(kind, selectedFieldItemIds.has(node.id))
         };
       });
       return { nodes, edges };
@@ -1076,7 +919,6 @@ function App() {
     return { nodes: [], edges: [] };
   }, [
     loadedProjection,
-    openProjectedContext,
     selectedFieldConnectionId,
     selectedFieldItemIds
   ]);
@@ -1547,7 +1389,7 @@ function App() {
     }
   }, [busUrl, refreshOpenField]);
 
-  const handleFieldEdgesChange = useCallback((changes: EdgeChange<FieldConnectionEdge>[]) => {
+  const handleFieldEdgesChange = useCallback((changes: EdgeChange<ReactFlowEdge>[]) => {
     const selection = [...changes].reverse().find((change) => change.type === "select");
     if (!selection || selection.type !== "select") return;
     if (selection.selected) {
@@ -1557,13 +1399,7 @@ function App() {
     setSelectedFieldConnectionId((current) => current === selection.id ? null : current);
   }, []);
 
-  const handleFieldEdgeDoubleClick = useCallback((_: React.MouseEvent, edge: FieldConnectionEdge) => {
-    const data = edge.data as FieldConnectionEdgeData | undefined;
-    if (!data?.onBeginEdit) return;
-    data.onBeginEdit(edge.id, typeof edge.label === "string" ? edge.label : "");
-  }, []);
-
-  const handleFieldEdgesDelete = useCallback((edges: FieldConnectionEdge[]) => {
+  const handleFieldEdgesDelete = useCallback((edges: ReactFlowEdge[]) => {
     const projection = loadedProjectionRef.current;
     const workspaceId = selectedWorkspaceIdRef.current;
     const currentView = viewRef.current;
@@ -1607,12 +1443,12 @@ function App() {
     nodes
   }: {
     nodes: ReactFlowNode[];
-    edges: FieldConnectionEdge[];
+    edges: ReactFlowEdge[];
   }) => {
     return nodes.length === 0;
   }, []);
 
-  const handleFieldReconnect = useCallback((oldEdge: FieldConnectionEdge, connection: Connection) => {
+  const handleFieldReconnect = useCallback((oldEdge: ReactFlowEdge, connection: Connection) => {
     // Projection edge reconnect would require unsubscribe+subscribe atomicity; use delete+connect for this slice.
     void oldEdge;
     void connection;
@@ -2066,8 +1902,8 @@ function App() {
   function renderNoWorkspace() {
     return (
       <section className="empty-start">
-        <div className="empty-start-panel">
-          <div className="brand-lockup">
+        <div className="empty-start-panel overflow-hidden border border-border/70 bg-card/95 shadow-2xl shadow-black/35">
+          <div className="brand-lockup bg-[linear-gradient(180deg,hsl(var(--accent))/0.12,transparent)]">
             <div className="brand-mark"><Workflow size={22} /></div>
             <div>
               <h1>Floe</h1>
@@ -2077,7 +1913,7 @@ function App() {
           <div className="workspace-form">
             <label>
               Workspace folder
-              <input
+              <Input
                 value={workspacePath}
                 onChange={(event) => setWorkspacePath(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
@@ -2086,7 +1922,7 @@ function App() {
             </label>
             <label>
               Name
-              <input
+              <Input
                 value={workspaceName}
                 onChange={(event) => setWorkspaceName(event.target.value)}
                 placeholder="Optional"
@@ -2100,10 +1936,10 @@ function App() {
               />
               Allow `.floe/` initialization when needed
             </label>
-            <button className="primary-action" onClick={() => void registerWorkspace()} disabled={!workspacePath.trim()}>
+            <Button className="primary-action" onClick={() => void registerWorkspace()} disabled={!workspacePath.trim()}>
               <FolderPlus size={16} />
               Create Workspace
-            </button>
+            </Button>
           </div>
         </div>
       </section>
@@ -2113,323 +1949,369 @@ function App() {
   function renderWorkspaceSwitcher() {
     const label = selectedWorkspace?.name ?? "Open Workspace";
     return (
-      <div className="topbar-workspace-switcher">
-        <button
-          type="button"
-          className="workspace-switcher-button"
-          aria-haspopup="menu"
-          aria-expanded={workspaceMenuOpen}
-          onClick={() => setWorkspaceMenuOpen((current) => !current)}
+      <DropdownMenu
+        open={workspaceMenuOpen}
+        onOpenChange={(open) => {
+          setWorkspaceMenuOpen(open);
+          if (!open) setWorkspaceCreateOpen(false);
+        }}
+      >
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10 min-w-[13rem] justify-between rounded-xl border-border/70 bg-background/55 px-3 text-sm text-foreground shadow-sm hover:bg-accent/30"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <FolderOpen size={15} />
+              <span className="truncate">{label}</span>
+            </span>
+            <ChevronDown size={14} className={cn("transition-transform", workspaceMenuOpen && "rotate-180")} />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          sideOffset={10}
+          className="w-[26rem] border-border/70 bg-popover/95 p-2 shadow-2xl shadow-black/35 backdrop-blur-xl"
         >
-          <FolderOpen size={15} />
-          <span>{label}</span>
-          <ChevronDown size={14} />
-        </button>
-        {workspaceMenuOpen && (
-          <div className="workspace-switcher-menu" role="menu" aria-label="Workspaces">
-            <div className="workspace-menu-list">
+          <div className="px-2 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            Workspaces
+          </div>
+          <ScrollArea className="max-h-72">
+            <div className="space-y-2 pr-2">
               {workspaces.length === 0 ? (
-                <p className="workspace-menu-empty">No Workspaces registered</p>
+                <p className="workspace-menu-empty rounded-xl border border-dashed border-border/70 bg-background/45 px-3 py-4">
+                  No Workspaces registered
+                </p>
               ) : (
                 workspaces.map((workspace) => (
-                  <div key={workspace.workspace_id} className="workspace-menu-row">
-                    <button
+                  <div key={workspace.workspace_id} className="workspace-menu-row flex items-stretch gap-2">
+                    <Button
                       type="button"
-                      role="menuitem"
-                      className={`workspace-menu-item${workspace.workspace_id === selectedWorkspaceId ? " active" : ""}`}
+                      variant="ghost"
+                      className={cn(
+                        "workspace-menu-item h-auto flex-1 items-start justify-between rounded-xl border border-transparent px-3 py-3 text-left hover:bg-accent/25",
+                        workspace.workspace_id === selectedWorkspaceId && "border-border/70 bg-accent/30 text-accent-foreground"
+                      )}
                       onClick={() => void selectWorkspace(workspace.workspace_id)}
                     >
-                      <span>
-                        <strong>{workspace.name}</strong>
-                        <small>{workspace.locator ?? workspace.workspace_id}</small>
+                      <span className="min-w-0">
+                        <strong className="block truncate">{workspace.name}</strong>
+                        <small className="mt-1 block truncate text-muted-foreground">
+                          {workspace.locator ?? workspace.workspace_id}
+                        </small>
                       </span>
-                      {workspace.workspace_id === selectedWorkspaceId && <Check size={14} />}
-                    </button>
-                    <button
+                      {workspace.workspace_id === selectedWorkspaceId && <Check size={14} className="mt-0.5 shrink-0" />}
+                    </Button>
+                    <Button
                       type="button"
-                      className="workspace-menu-delete"
+                      variant="ghost"
+                      size="icon"
+                      className="workspace-menu-delete h-auto rounded-xl border border-transparent text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
                       onClick={() => void deleteWorkspace(workspace.workspace_id)}
                       title="Remove workspace"
                       aria-label={`Remove workspace ${workspace.name}`}
                     >
                       <X size={12} />
-                    </button>
+                    </Button>
                   </div>
                 ))
               )}
             </div>
-            <button
-              type="button"
-              role="menuitem"
-              className="workspace-menu-create"
-              onClick={() => setWorkspaceCreateOpen((current) => !current)}
-            >
-              <FolderPlus size={14} />
-              New Workspace
-            </button>
-            {workspaceCreateOpen && (
-              <div className="workspace-menu-form">
-                <label>
-                  Location
-                  <input
-                    value={workspacePath}
-                    onChange={(event) => setWorkspacePath(event.target.value)}
-                    onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
-                    placeholder="C:\\Development\\example-workspace"
-                  />
-                </label>
-                <label>
-                  Name
-                  <input
-                    value={workspaceName}
-                    onChange={(event) => setWorkspaceName(event.target.value)}
-                    onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
-                    placeholder="Optional"
-                  />
-                </label>
-                <label className="check-row compact">
-                  <input
-                    type="checkbox"
-                    checked={authorizeInit}
-                    onChange={(event) => setAuthorizeInit(event.target.checked)}
-                  />
-                  Allow `.floe/` initialization
-                </label>
-                <button
-                  type="button"
-                  className="primary-action full"
-                  onClick={() => void registerWorkspace()}
-                  disabled={!workspacePath.trim()}
-                >
-                  Create Workspace
-                </button>
+          </ScrollArea>
+          <DropdownMenuSeparator />
+          <Button
+            type="button"
+            variant="ghost"
+            className="workspace-menu-create w-full justify-start rounded-xl px-3 text-left hover:bg-accent/25"
+            onClick={() => setWorkspaceCreateOpen((current) => !current)}
+          >
+            <FolderPlus size={14} />
+            {workspaceCreateOpen ? "Hide workspace form" : "New Workspace"}
+          </Button>
+          {workspaceCreateOpen && (
+            <div className="workspace-menu-form mt-2 space-y-3 rounded-2xl border border-border/70 bg-background/55 p-3">
+              <label>
+                Location
+                <Input
+                  value={workspacePath}
+                  onChange={(event) => setWorkspacePath(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
+                  placeholder="C:\\Development\\example-workspace"
+                />
+              </label>
+              <label>
+                Name
+                <Input
+                  value={workspaceName}
+                  onChange={(event) => setWorkspaceName(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") void registerWorkspace(); }}
+                  placeholder="Optional"
+                />
+              </label>
+              <label className="check-row compact">
+                <input
+                  type="checkbox"
+                  checked={authorizeInit}
+                  onChange={(event) => setAuthorizeInit(event.target.checked)}
+                />
+                Allow `.floe/` initialization
+              </label>
+              <Button
+                type="button"
+                className="primary-action full"
+                onClick={() => void registerWorkspace()}
+                disabled={!workspacePath.trim()}
+              >
+                Create Workspace
+              </Button>
+            </div>
+          )}
+          <DropdownMenuSeparator />
+          <div className="space-y-3 rounded-2xl border border-border/70 bg-background/55 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Connection</div>
+                <div className="mt-1 text-sm text-foreground/90">Workspace bus</div>
               </div>
-            )}
+              <span className={cn("inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-1 text-[11px] font-medium", connectionClass(status))}>
+                <CircleDot size={10} />
+                {status}
+              </span>
+            </div>
+            <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              URL
+              <Input
+                value={busUrl}
+                onChange={(event) => setBusUrl(event.target.value)}
+                className="mt-2"
+                aria-label="Workspace bus URL"
+              />
+            </label>
+            <Button type="button" variant="outline" className="w-full" onClick={() => void refresh()}>
+              Reconnect
+            </Button>
           </div>
-        )}
-      </div>
+        </DropdownMenuContent>
+      </DropdownMenu>
     );
   }
 
   function renderHome() {
+    const homeActorCards = homeModel.actorCards.filter((actor) => actor.endpointId !== selfActorId);
+    const runtimeStateLabel = canMessageRuntime ? "Ready" : runtimeBlockedByFakeAdapter ? "Blocked by adapter" : "Needs setup";
     return (
-      <section className="workspace-home" data-testid="v6-workspace-home">
-        <div className="home-band hero">
-          <div>
-            <p className="eyebrow">Workspace Home</p>
-            <h1>{selectedWorkspace?.name ?? "Workspace"}</h1>
-            <p className="home-summary">Workspace index</p>
+      <section className="workspace-home home2" data-testid="v6-workspace-home">
+        <section className="hero">
+          <p className="eyebrow">Workspace</p>
+          <h1>{selectedWorkspace?.name ?? "Workspace"}</h1>
+          <p className="home-summary">
+            Actors, Scopes, and live Activity. Home indexes Workspace state without becoming a Scope.
+            Open Activity for the full substrate stream.
+          </p>
+          <div className="home-hero-actions">
+            <Button type="button" variant="ghost" size="sm" className="home-inline-button" onClick={() => setView({ kind: "activity" })}>
+              <Activity size={14} />
+              <span>Open Activity</span>
+            </Button>
           </div>
-        </div>
-
-        <section className="home-overview-card workspace-settings-card ws-settings" data-testid="v6-home-workspace-settings">
-            <div className="section-title-row">
-              <div>
-                <h3>Workspace settings</h3>
-                <p>Home indexes Workspace state; it is not a Scope.</p>
-              </div>
-            </div>
-            <div className="wss-row">
-              <div className="wss-key">Path</div>
-              <div className="wss-val">
-                <code className="wss-path">{selectedWorkspace?.locator ?? "—"}</code>
-                {selectedWorkspace?.locator && (
-                  <button
-                    type="button"
-                    className="wss-copy"
-                    title="Copy path"
-                    onClick={() => void navigator.clipboard.writeText(selectedWorkspace.locator)}
-                  >
-                    Copy
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="wss-row">
-              <div className="wss-key">Status</div>
-              <div className="wss-val">
-                {selectedWorkspace ? workspaceStatusLabel(selectedWorkspace) : "No workspace"}
-              </div>
-            </div>
-            <div className="wss-row wss-inherit">
-              <div className="wss-key">New actors inherit</div>
-              <div className="wss-val wss-selects">
-                {authProfiles.length === 0 ? (
-                  <span className="wss-unconfigured">No profiles — run <code>floe login</code></span>
-                ) : (
-                  <>
-                    <select
-                      className="wss-select"
-                      value={workspaceBinding?.auth_profile ?? ""}
-                      onChange={(event) => void setWorkspaceProfile(event.target.value)}
-                      title="Default profile for new actors"
-                    >
-                      <option value="">Profile…</option>
-                      {authProfiles.map((profile) => (
-                        <option key={profile.id} value={profile.id}>{profile.id}</option>
-                      ))}
-                    </select>
-                    <select
-                      className="wss-select"
-                      value={workspaceBinding?.model ?? ""}
-                      onChange={(event) => void setWorkspaceModel(event.target.value)}
-                      disabled={!workspaceBinding?.auth_profile || workspaceModelOptions.length === 0}
-                      title="Default model for new actors"
-                    >
-                      <option value="">Model…</option>
-                      {workspaceModelOptions.map((model) => (
-                        <option key={model.id} value={model.id}>{model.name}</option>
-                      ))}
-                    </select>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="wss-row">
-              <div className="wss-key">Runtime</div>
-              <div className="wss-val">
-                {canMessageRuntime ? "Ready" : runtimeBlockedByFakeAdapter ? "Blocked by adapter" : "Needs setup"}
-                {bridgeRuntimeAdapterName ? ` · ${bridgeRuntimeAdapterName}` : ""}
-              </div>
-            </div>
-            {homeModel.systemWarnings.length > 0 && (
-              <div className="home-warning-list" data-testid="v6-home-system-warnings">
-                {homeModel.systemWarnings.map((warning) => (
-                  <div key={warning} className="callout warning">
-                    <AlertTriangle size={14} />
-                    <span>{warning}</span>
-                  </div>
-                ))}
-              </div>
-            )}
         </section>
 
-        <section className="home-actor-pane" data-testid="v6-home-actors">
-          <div className="section-title-row">
-            <div>
-              <h3>Actors</h3>
-              <p>Workspace-level identities. Selecting one updates the inspector without changing Field membership.</p>
+        <section className="ws-settings" data-testid="v6-home-workspace-settings">
+          <div className="wss-row">
+            <div className="wss-key">Path</div>
+            <div className="wss-val">
+              <code className="wss-path">{selectedWorkspace?.locator ?? "—"}</code>
+              {selectedWorkspace?.locator && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="wss-copy"
+                  title="Copy path"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(selectedWorkspace.locator).catch(() => {
+                      setError("Could not copy the Workspace path.");
+                    });
+                  }}
+                >
+                  Copy
+                </Button>
+              )}
             </div>
-            <span>{agents.length}</span>
           </div>
-          {agents.length === 0 ? (
+          <div className="wss-row">
+            <div className="wss-key">Status</div>
+            <div className="wss-val">{selectedWorkspace ? workspaceStatusLabel(selectedWorkspace) : "No workspace"}</div>
+          </div>
+          <div className="wss-row">
+            <div className="wss-key">New actors inherit</div>
+            <div className="wss-val wss-inline">
+              {authProfiles.length === 0 ? (
+                <span className="wss-unconfigured">No profiles — run <code>floe login</code></span>
+              ) : (
+                <>
+                  <select
+                    className="wss-select"
+                    value={workspaceBinding?.auth_profile ?? ""}
+                    onChange={(event) => void setWorkspaceProfile(event.target.value)}
+                    title="Default profile for new actors"
+                  >
+                    <option value="">Profile…</option>
+                    {authProfiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>{profile.id}</option>
+                    ))}
+                  </select>
+                  <span className="wss-sep">·</span>
+                  <select
+                    className="wss-select"
+                    value={workspaceBinding?.model ?? ""}
+                    onChange={(event) => void setWorkspaceModel(event.target.value)}
+                    disabled={!workspaceBinding?.auth_profile || workspaceModelOptions.length === 0}
+                    title="Default model for new actors"
+                  >
+                    <option value="">Model…</option>
+                    {workspaceModelOptions.map((model) => (
+                      <option key={model.id} value={model.id}>{model.name}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="wss-row">
+            <div className="wss-key">Runtime</div>
+            <div className="wss-val">
+              {runtimeStateLabel}
+              {bridgeRuntimeAdapterName ? ` · ${bridgeRuntimeAdapterName}` : ""}
+            </div>
+          </div>
+          {homeModel.systemWarnings.length > 0 && (
+            <div className="home-warning-list" data-testid="v6-home-system-warnings">
+              {homeModel.systemWarnings.map((warning) => (
+                <div key={warning} className="callout warning">
+                  <AlertTriangle size={14} />
+                  <span>{warning}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section data-testid="v6-home-actors">
+          <h2 className="sect">
+            <span>Actors</span>
+            <span className="ct">{homeActorCards.length}</span>
+          </h2>
+          {homeActorCards.length === 0 ? (
             <div className="quiet-empty compact">
               <CircleDot size={22} />
               <strong>No actors available</strong>
               <span>Registered Workspace actors will appear here.</span>
             </div>
           ) : (
-            <div className="home-actor-strip">
-              {homeModel.actorCards
-                .filter((actor) => actor.endpointId !== selfActorId)
-                .map((actor) => {
-                  const name = actor.name;
-                  const selected = inspectorActor?.endpoint_id === actor.endpointId;
-                  return (
-                    <article
-                      key={actor.endpointId}
-                      className={`home-actor-card${selected ? " selected" : ""}`}
+            <div className="actor-strip home-actor-strip">
+              {homeActorCards.map((actor) => {
+                const name = actor.name;
+                const selected = inspectorActor?.endpoint_id === actor.endpointId;
+                return (
+                  <article key={actor.endpointId} className={`actor-card home-actor-card${selected ? " is-on selected" : ""}`}>
+                    <button
+                      type="button"
+                      className="home-actor-summary"
+                      aria-pressed={selected}
+                      onClick={() => selectActorForInspector(actor.endpointId)}
                     >
-                      <button
-                        type="button"
-                        className="home-actor-summary"
-                        aria-pressed={selected}
-                        onClick={() => selectActorForInspector(actor.endpointId)}
-                      >
-                        <span className="home-actor-avatar">{actorInitial(name)}</span>
-                        <span>
-                          <strong>{name}</strong>
-                          <small>{actor.status} · Workspace-level {actor.workspaceLevelContextCount} · Scoped {actor.scopedContextCount}</small>
-                          <small>Activity {actor.activityCount} · {actor.runtimeBindingLabel} · {actor.adapterLabel}</small>
-                          {actor.latestActivityDetail && <small>Latest: {actor.latestActivityDetail}</small>}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-action compact"
-                        aria-label={`Open Contexts for ${name}`}
-                        onClick={() => openActorContexts(actor.endpointId)}
-                      >
-                        Open Contexts
-                      </button>
-                    </article>
-                  );
-                })}
+                      <span className="av home-actor-avatar">{actorInitial(name)}</span>
+                      <span className="actor-meta">
+                        <strong className="nm">{name}</strong>
+                        <small>{actor.status} · Workspace-level {actor.workspaceLevelContextCount} · Scoped {actor.scopedContextCount}</small>
+                        <small>Activity {actor.activityCount} · {actor.runtimeBindingLabel} · {actor.adapterLabel}</small>
+                        {actor.latestActivityDetail && <small>Latest: {actor.latestActivityDetail}</small>}
+                      </span>
+                    </button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="home-inline-button home-actor-action"
+                      aria-label={`Open Contexts for ${name}`}
+                      onClick={() => openActorContexts(actor.endpointId)}
+                    >
+                      Open Contexts
+                    </Button>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
 
-        <div className="home-grid">
-          <section className="field-list-pane" data-testid="v6-home-scopes">
-            <div className="section-title-row">
-              <div>
-                <h3>Scopes</h3>
-                <p>
-                  {showAllFields
-                    ? "All workspace Scopes."
-                    : "Named Scopes are intentional organising boundaries from the substrate."}
-                </p>
-              </div>
-              <span>{homeFieldSummaries.length}</span>
+        <section data-testid="v6-home-scopes">
+          <h2 className="sect">
+            <span>Scopes</span>
+            <span className="ct">{homeFieldSummaries.length}</span>
+            <span className="actions">
+              {nestedFieldCount > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="home-inline-button"
+                  onClick={() => setShowAllFields((current) => !current)}
+                >
+                  {showAllFields ? "Show root Scopes" : `Show all Scopes (${fieldSummaries.length})`}
+                </Button>
+              )}
+            </span>
+          </h2>
+          {homeFieldSummaries.length === 0 ? (
+            <div className="quiet-empty">
+              <SquareDashedMousePointer size={22} />
+              <strong>No Scopes yet</strong>
+              <span>Create a named Scope to start shaping this workspace.</span>
             </div>
-            {nestedFieldCount > 0 && (
-              <button
-                className="ghost-action full"
-                onClick={() => setShowAllFields((current) => !current)}
-              >
-                {showAllFields ? "Show root Scopes" : `Show all Scopes (${fieldSummaries.length})`}
+          ) : (
+            <div className="scope-grid">
+              {homeFieldSummaries.map((summary) => {
+                const scopeCard = homeModel.scopeCards.find((card) => card.scopeId === summary.id);
+                const scopeRecord = scopeRecords.find((record) => record.scope_id === summary.id);
+                const loadedContextCount = scopeCard?.loadedContextCount ?? 0;
+                const activityCount = scopeCard?.activityCount ?? 0;
+                return (
+                  <button key={summary.id} className="scope-card" onClick={() => openField(summary.id)}>
+                    <div className="sc-head">
+                      <span className="sc-glyph">{summary.title.charAt(0).toUpperCase()}</span>
+                      <span className="sc-name">{summary.title}</span>
+                    </div>
+                    <div className="sc-desc">
+                      {scopeRecord?.description?.trim() || `Field map with ${summary.item_count} item${summary.item_count === 1 ? "" : "s"} and ${summary.connection_count} connection${summary.connection_count === 1 ? "" : "s"}.`}
+                    </div>
+                    <div className="sc-stats">
+                      <span><b>{loadedContextCount}</b> contexts</span>
+                      <span><b>{activityCount}</b> activity</span>
+                    </div>
+                  </button>
+                );
+              })}
+              <button type="button" className="scope-add" onClick={promptCreateField}>
+                <FolderPlus size={15} />
+                <span>Add Scope</span>
               </button>
-            )}
-            <button className="primary-action full" onClick={promptCreateField}>
-              <FolderPlus size={15} />
-              Add Scope
-            </button>
-            {homeFieldSummaries.length === 0 ? (
-              <div className="quiet-empty">
-                <SquareDashedMousePointer size={22} />
-                <strong>No Scopes yet</strong>
-                <span>Create a named Scope to start shaping this workspace.</span>
-              </div>
-            ) : (
-              <div className="scope-grid">
-                {homeFieldSummaries.map((summary) => {
-                  const scopeCard = homeModel.scopeCards.find((card) => card.scopeId === summary.id);
-                  const scopeRecord = scopeRecords.find((r) => r.scope_id === summary.id);
-                  const loadedContextCount = scopeCard?.loadedContextCount ?? 0;
-                  const activityCount = scopeCard?.activityCount ?? 0;
-                  return (
-                    <button
-                      key={summary.id}
-                      className="scope-card"
-                      onClick={() => openField(summary.id)}
-                    >
-                      <div className="sc-head">
-                        <span className="sc-glyph">{summary.title.charAt(0).toUpperCase()}</span>
-                        <span className="sc-name">{summary.title}</span>
-                      </div>
-                      {scopeRecord?.description && (
-                        <div className="sc-desc">{scopeRecord.description}</div>
-                      )}
-                      <div className="sc-stats">
-                        <span><b>{loadedContextCount}</b> contexts</span>
-                        <span><b>{activityCount}</b> activity</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-        </div>
-
-        <section className="home-overview-card recent-activity-card" data-testid="v6-home-recent-activity">
-          <div className="section-title-row">
-            <div>
-              <h3>Recent activity</h3>
-              <p>Workspace events and runtime traces using the Activity view model.</p>
             </div>
-            <span>{homeModel.recentActivity.length}</span>
-          </div>
+          )}
+        </section>
+
+        <section data-testid="v6-home-recent-activity">
+          <h2 className="sect">
+            <span>Recent activity</span>
+            <span className="ct">{homeModel.recentActivity.length}</span>
+            <span className="actions">
+              <Button type="button" variant="ghost" size="sm" className="home-inline-button" onClick={() => setView({ kind: "activity" })}>
+                View all
+              </Button>
+            </span>
+          </h2>
           {homeModel.recentActivity.length === 0 ? (
             <div className="quiet-empty compact">
               <Activity size={22} />
@@ -2437,102 +2319,95 @@ function App() {
               <span>Events, deliveries, and runtime work will appear here.</span>
             </div>
           ) : (
-            <div className="home-activity-list">
-              {homeModel.recentActivity.map((item) => (
-                <article key={item.id} className="home-activity-row">
-                  <span className="field-icon"><Activity size={15} /></span>
-                  <span>
-                    <strong>{item.title}</strong>
-                    <small>{item.detail}</small>
-                    <small>{item.sourceLabel} · {item.contextLabel ?? "No Context"} · {item.scopeLabel}</small>
-                  </span>
-                </article>
-              ))}
-            </div>
+            <ScrollArea className="ws-stream">
+              <div className="home-activity-list">
+                {homeModel.recentActivity.map((item) => (
+                  <article key={item.id} className="home-activity-row">
+                    <span className="field-icon"><Activity size={15} /></span>
+                    <span className="home-activity-body">
+                      <strong>{item.title}</strong>
+                      <small>{item.detail}</small>
+                      <small>{item.sourceLabel} · {item.contextLabel ?? "No Context"} · {item.scopeLabel}</small>
+                    </span>
+                    <time className="home-activity-time" dateTime={item.createdAt}>{formatContextTimestamp(item.createdAt)}</time>
+                  </article>
+                ))}
+              </div>
+            </ScrollArea>
           )}
         </section>
 
-        <section className="field-list-pane workspace-context-pane" data-testid="v6-home-contexts">
-            <div className="section-title-row">
-              <div>
-                <h3>Workspace-level Contexts</h3>
-                <p>Actor-anchored streams that are not assigned to a Scope.</p>
-              </div>
-              <span>{recentWorkspaceContexts.length}</span>
+        <section data-testid="v6-home-contexts">
+          <h2 className="sect">
+            <span>Workspace contexts</span>
+            <span className="ct">{recentWorkspaceContexts.length}</span>
+          </h2>
+          {recentWorkspaceContexts.length === 0 ? (
+            <div className="quiet-empty">
+              <MessageSquare size={22} />
+              <strong>No Workspace-level Contexts yet</strong>
+              <span>Direct actor conversations will appear here without assigning them to a Scope.</span>
             </div>
-            {recentWorkspaceContexts.length === 0 ? (
-              <div className="quiet-empty">
-                <MessageSquare size={22} />
-                <strong>No Workspace-level Contexts yet</strong>
-                <span>Direct actor conversations will appear here without assigning them to a Scope.</span>
-              </div>
-            ) : (
-              <div className="workspace-context-list">
-                {recentWorkspaceContexts.map((context) => {
-                  const label = workspaceContextLabel(context);
-                  const activityTime = context.last_event_at ?? context.created_at;
-                  const canAssign = canAssignContextToScope(context);
-                  const selectedTargetScope = contextAssignmentTargets[context.context_id] ?? "";
-                  return (
-                    <article
-                      key={context.context_id}
-                      className="workspace-context-block"
-                    >
-                      <span className="field-icon"><MessageSquare size={16} /></span>
-                      <span>
-                        <strong>{label}</strong>
-                        <small>
-                          {contextParticipationLabel(context, scopeTitlesById)} · {formatContextTimestamp(activityTime)} · {contextScopeAssignmentStatus(context)}
-                        </small>
+          ) : (
+            <div className="ctx-list workspace-context-list">
+              {recentWorkspaceContexts.map((context) => {
+                const label = workspaceContextLabel(context);
+                const activityTime = context.last_event_at ?? context.created_at;
+                const canAssign = canAssignContextToScope(context);
+                const selectedTargetScope = contextAssignmentTargets[context.context_id] ?? "";
+                return (
+                  <article key={context.context_id} className="workspace-context-block ctx-row">
+                    <span className="glyph field-icon"><MessageSquare size={14} /></span>
+                    <span className="workspace-context-body ctx-body">
+                      <strong className="label">{label}</strong>
+                      <small className="preview workspace-context-preview">{context.first_message_preview ?? "Workspace-level Context"}</small>
+                      <span className="meta workspace-context-meta">
+                        <span>{contextParticipationLabel(context, scopeTitlesById)}</span>
+                        <span>{formatContextTimestamp(activityTime)}</span>
+                        <span>{contextScopeAssignmentStatus(context)}</span>
                       </span>
-                      <span className="workspace-context-actions">
-                        <button
-                          type="button"
-                          className="ghost-action compact"
-                          onClick={() => openWorkspaceContext(context)}
-                        >
-                          Open
-                        </button>
-                        {canAssign && (
-                          <>
-                            <select
-                              aria-label={`Scope for ${label}`}
-                              value={selectedTargetScope}
-                              onChange={(event) => setContextAssignmentTargets((current) => ({
-                                ...current,
-                                [context.context_id]: event.target.value
-                              }))}
-                              disabled={scopeRecords.length === 0}
-                            >
-                              <option value="">{scopeRecords.length === 0 ? "No named Scopes" : "Choose Scope"}</option>
-                              {scopeRecords.map((scope) => (
-                                <option key={scope.scope_id} value={scope.scope_id}>{scope.title}</option>
-                              ))}
-                            </select>
-                            <button
-                              type="button"
-                              className="primary-action compact"
-                              onClick={() => void assignWorkspaceContextToScope(context, selectedTargetScope)}
-                              disabled={!selectedTargetScope}
-                            >
-                              Assign to Scope
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-action compact"
-                              onClick={() => promptCreateScopeAndAssign(context)}
-                            >
-                              Create Scope and assign
-                            </button>
-                          </>
-                        )}
-                      </span>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+                    </span>
+                    <span className="workspace-context-actions">
+                      <Button type="button" variant="ghost" size="sm" className="home-inline-button" onClick={() => openWorkspaceContext(context)}>
+                        Open
+                      </Button>
+                      {canAssign && (
+                        <>
+                          <select
+                            aria-label={`Scope for ${label}`}
+                            value={selectedTargetScope}
+                            onChange={(event) => setContextAssignmentTargets((current) => ({
+                              ...current,
+                              [context.context_id]: event.target.value
+                            }))}
+                            disabled={scopeRecords.length === 0}
+                          >
+                            <option value="">{scopeRecords.length === 0 ? "No named Scopes" : "Choose Scope"}</option>
+                            {scopeRecords.map((scope) => (
+                              <option key={scope.scope_id} value={scope.scope_id}>{scope.title}</option>
+                            ))}
+                          </select>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="home-primary-button"
+                            onClick={() => void assignWorkspaceContextToScope(context, selectedTargetScope)}
+                            disabled={!selectedTargetScope}
+                          >
+                            Assign to Scope
+                          </Button>
+                          <Button type="button" variant="ghost" size="sm" className="home-inline-button" onClick={() => promptCreateScopeAndAssign(context)}>
+                            Create Scope and assign
+                          </Button>
+                        </>
+                      )}
+                    </span>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
       </section>
     );
   }
@@ -2544,6 +2419,7 @@ function App() {
     const activeContextCount = new Set(filteredActivityRows.map((row) => row.contextId).filter(Boolean)).size;
     const activeScopeCount = new Set(filteredActivityRows.map((row) => row.scopeId).filter(Boolean)).size;
     const allKinds = Array.from(new Set(activityRows.map((row) => row.kind))).sort();
+    const hasActiveFilters = Object.values(activityFilters).some((value) => value !== "all");
     const setFilter = (patch: Partial<ActivityFilters>) => {
       setActivityFilters((current) => ({
         ...current,
@@ -2557,191 +2433,217 @@ function App() {
 
     return (
       <section className="workspace-activity" data-testid="v6-activity">
-        <div className="home-band activity-band">
-          <div>
+        <div className="activity-summary-bar" data-testid="activity-summary">
+          <div className="activity-summary-title">
             <p className="eyebrow">Activity</p>
             <h1>Workspace Activity</h1>
-            <p className="home-summary">Events, runtime work, Contexts, actors, and Scope associations from the substrate.</p>
           </div>
-          <button className="ghost-action" onClick={() => void refresh()}>
-            <RefreshCw size={16} />
-            Refresh
-          </button>
+          <div className="activity-summary-metrics">
+            <span><strong>{activeCount}</strong> {hasActiveFilters ? "matching records" : "records total"}</span>
+            <span><strong>{eventCount}</strong> Events</span>
+            <span><strong>{runtimeCount}</strong> runtime activity</span>
+            <span><strong>{activeContextCount}</strong> Contexts</span>
+            <span><strong>{activeScopeCount}</strong> Scopes</span>
+          </div>
+          {hasActiveFilters && (
+            <Button type="button" variant="outline" size="sm" className="activity-summary-clear" onClick={clearFilters}>
+              Clear filters
+            </Button>
+          )}
         </div>
 
-        <div className="activity-summary-grid" data-testid="activity-summary">
-          <div><strong>{activeCount}</strong> <span>items total</span></div>
-          <div><strong>{eventCount}</strong> <span>Events</span></div>
-          <div><strong>{runtimeCount}</strong> <span>runtime activity</span></div>
-          <div><strong>{activeContextCount}</strong> <span>Contexts</span></div>
-          <div><strong>{activeScopeCount}</strong> <span>Scopes</span></div>
-        </div>
-
-        <section className="activity-filter-panel" aria-label="Activity filters">
-          <div className="activity-filter-row">
-            <span>Actor/source</span>
-            <button
-              type="button"
-              className={`filter-chip${activityFilters.actorId === "all" ? " active" : ""}`}
-              onClick={() => setFilter({ actorId: "all" })}
-            >
-              All
-            </button>
+        <section className="activity-filter-bar" aria-label="Activity filters">
+          <div className="activity-filter-group">
+            <span className="activity-filter-label">Actor</span>
             {endpoints.map((endpoint) => {
               const label = endpointDisplayName(endpoint) ?? endpoint.agent_id ?? endpoint.endpoint_id;
               return (
-                <button
+                <Button
                   key={endpoint.endpoint_id}
                   type="button"
-                  className={`filter-chip${activityFilters.actorId === endpoint.endpoint_id ? " active" : ""}`}
-                  onClick={() => setFilter({ actorId: endpoint.endpoint_id })}
+                  variant="ghost"
+                  size="sm"
+                  className={cn("activity-filter-chip", activityFilters.actorId === endpoint.endpoint_id && "active")}
+                  onClick={() => setFilter({ actorId: activityFilters.actorId === endpoint.endpoint_id ? "all" : endpoint.endpoint_id })}
                 >
                   {label}
-                </button>
+                </Button>
               );
             })}
           </div>
-          <div className="activity-filter-row">
-            <span>Kind</span>
-            <button
+
+          <div className="activity-filter-group">
+            <span className="activity-filter-label">Kind</span>
+            <Button
               type="button"
-              className={`filter-chip${activityFilters.kind === "all" ? " active" : ""}`}
-              onClick={() => setFilter({ kind: "all" })}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              className={`filter-chip${activityFilters.kind === "events" ? " active" : ""}`}
-              onClick={() => setFilter({ kind: "events" })}
+              variant="ghost"
+              size="sm"
+              className={cn("activity-filter-chip", activityFilters.kind === "events" && "active")}
+              onClick={() => setFilter({ kind: activityFilters.kind === "events" ? "all" : "events" })}
             >
               Events
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className={`filter-chip${activityFilters.kind === "runtime" ? " active" : ""}`}
-              onClick={() => setFilter({ kind: "runtime" })}
+              variant="ghost"
+              size="sm"
+              className={cn("activity-filter-chip", activityFilters.kind === "runtime" && "active")}
+              onClick={() => setFilter({ kind: activityFilters.kind === "runtime" ? "all" : "runtime" })}
             >
               Runtime
-            </button>
+            </Button>
             {allKinds.map((kind) => (
-              <button
+              <Button
                 key={kind}
                 type="button"
-                className={`filter-chip${activityFilters.kind === kind ? " active" : ""}`}
-                onClick={() => setFilter({ kind })}
+                variant="ghost"
+                size="sm"
+                className={cn("activity-filter-chip", activityFilters.kind === kind && "active")}
+                onClick={() => setFilter({ kind: activityFilters.kind === kind ? "all" : kind })}
               >
                 {kind}
-              </button>
+              </Button>
             ))}
           </div>
-          <div className="activity-filter-row">
-            <span>Scope</span>
-            <button
+
+          <div className="activity-filter-group">
+            <span className="activity-filter-label">Scope</span>
+            <Button
               type="button"
-              className={`filter-chip${activityFilters.scopeId === "all" ? " active" : ""}`}
+              variant="ghost"
+              size="sm"
+              className={cn("activity-filter-chip", activityFilters.scopeId === "all" && "active")}
               onClick={() => setFilter({ scopeId: "all" })}
             >
               All
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className={`filter-chip${activityFilters.scopeId === "workspace" ? " active" : ""}`}
-              onClick={() => setFilter({ scopeId: "workspace" })}
+              variant="ghost"
+              size="sm"
+              className={cn("activity-filter-chip", activityFilters.scopeId === "workspace" && "active")}
+              onClick={() => setFilter({ scopeId: activityFilters.scopeId === "workspace" ? "all" : "workspace" })}
             >
               Workspace only
-            </button>
+            </Button>
             {scopeRecords.map((scope) => (
-              <button
+              <Button
                 key={scope.scope_id}
                 type="button"
-                className={`filter-chip${activityFilters.scopeId === scope.scope_id ? " active" : ""}`}
-                onClick={() => setFilter({ scopeId: scope.scope_id })}
+                variant="ghost"
+                size="sm"
+                className={cn("activity-filter-chip", activityFilters.scopeId === scope.scope_id && "active")}
+                onClick={() => setFilter({ scopeId: activityFilters.scopeId === scope.scope_id ? "all" : scope.scope_id })}
               >
                 {scope.title}
-              </button>
+              </Button>
             ))}
           </div>
-          <div className="activity-filter-row">
-            <span>Context</span>
-            <button
-              type="button"
-              className={`filter-chip${activityFilters.contextId === "all" ? " active" : ""}`}
-              onClick={() => setFilter({ contextId: "all" })}
-            >
-              All
-            </button>
-            {activityContextOptions.map((context) => (
-              <button
-                key={context.context_id}
-                type="button"
-                className={`filter-chip${activityFilters.contextId === context.context_id ? " active" : ""}`}
-                onClick={() => setFilter({ contextId: context.context_id })}
-              >
-                {contextActivityLabel(context)}
-              </button>
-            ))}
-          </div>
-          <div className="activity-filter-footer">
-            <span>{activeCount} matching items</span>
-            <button type="button" className="ghost-action compact" onClick={clearFilters}>Clear filters</button>
+
+          <div className="activity-filter-group">
+            <span className="activity-filter-label">Context</span>
+            {activityContextOptions.length === 0 ? (
+              <span className="activity-filter-empty">
+                {activityFilters.scopeId === "all" ? "Pick a Scope first" : "No Contexts in this selection"}
+              </span>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className={cn("activity-filter-chip", activityFilters.contextId === "all" && "active")}
+                  onClick={() => setFilter({ contextId: "all" })}
+                >
+                  All
+                </Button>
+                {activityContextOptions.map((context) => (
+                  <Button
+                    key={context.context_id}
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className={cn("activity-filter-chip", activityFilters.contextId === context.context_id && "active")}
+                    onClick={() => setFilter({ contextId: activityFilters.contextId === context.context_id ? "all" : context.context_id })}
+                  >
+                    {contextActivityLabel(context)}
+                  </Button>
+                ))}
+              </>
+            )}
           </div>
         </section>
 
-        {filteredActivityRows.length === 0 ? (
-          <div className="quiet-empty activity-empty">
-            <Activity size={22} />
-            <strong>{activityRows.length === 0 ? "No activity yet" : "No activity matches these filters"}</strong>
-            <span>Events and runtime records remain backed by the Workspace bus.</span>
-          </div>
-        ) : (
-          <div className="activity-feed">
-            {filteredActivityRows.map((row) => {
-              const context = row.contextId
-                ? activityContexts.find((candidate) => candidate.context_id === row.contextId) ?? null
-                : null;
-              return (
-                <article
-                  key={row.id}
-                  className={`activity-row ${row.category}${selectedActivityRowId === row.id ? " selected" : ""}`}
-                  data-testid="activity-row"
-                  aria-selected={selectedActivityRowId === row.id}
-                >
-                  <button
-                    type="button"
-                    className="activity-row-select"
-                    aria-label={`Inspect activity ${row.detail}`}
-                    aria-pressed={selectedActivityRowId === row.id}
-                    onClick={() => setSelectedActivityRowId(row.id)}
+        <div className="activity-stream-body">
+          {filteredActivityRows.length === 0 ? (
+            <div className="quiet-empty activity-empty">
+              <Activity size={22} />
+              <strong>{activityRows.length === 0 ? "No activity yet" : "No activity matches these filters"}</strong>
+              <span>Events and runtime records remain backed by the Workspace bus.</span>
+            </div>
+          ) : (
+            <div className="activity-feed">
+              {filteredActivityRows.map((row) => {
+                const context = row.contextId
+                  ? activityContexts.find((candidate) => candidate.context_id === row.contextId) ?? null
+                  : null;
+                return (
+                  <article
+                    key={row.id}
+                    className={`activity-row ${row.category}${selectedActivityRowId === row.id ? " selected" : ""}`}
+                    data-testid="activity-row"
+                    aria-selected={selectedActivityRowId === row.id}
                   >
-                    <span className="field-icon"><Activity size={15} /></span>
-                    <div className="activity-row-body">
-                      <div className="activity-row-title">
-                        <strong>{row.title}</strong>
-                        <span>{new Date(row.createdAt).toLocaleTimeString()}</span>
-                      </div>
-                      <p>{row.detail}</p>
-                      <div className="activity-row-meta">
-                        <span>{row.sourceLabel}</span>
-                        <span>{row.scopeLabel}</span>
-                        {row.contextLabel && <span>{row.contextLabel}</span>}
-                      </div>
-                    </div>
-                  </button>
-                  {context && (
                     <button
                       type="button"
-                      className="ghost-action compact"
-                      onClick={() => openWorkspaceContext(context)}
+                      className="activity-row-select"
+                      aria-label={`Inspect activity ${row.detail}`}
+                      aria-pressed={selectedActivityRowId === row.id}
+                      onClick={() => setSelectedActivityRowId(row.id)}
                     >
-                      Open Context
+                      <span className={cn("activity-row-glyph", row.category === "runtime" && "runtime")}>
+                        {row.category === "runtime" ? <Workflow size={15} /> : <MessageSquare size={15} />}
+                      </span>
+                      <div className="activity-row-body">
+                        <div className="activity-row-heading">
+                          <span className="activity-row-source">{row.sourceLabel}</span>
+                          <span className="activity-row-separator">·</span>
+                          <strong>{row.title}</strong>
+                          {row.contextLabel && (
+                            <>
+                              <span className="activity-row-separator">·</span>
+                              <span>{row.contextLabel}</span>
+                            </>
+                          )}
+                          <time dateTime={row.createdAt}>{new Date(row.createdAt).toLocaleTimeString()}</time>
+                        </div>
+                        <p>{row.detail}</p>
+                        <div className="activity-row-meta">
+                          <span className={cn("activity-row-pill", row.category === "runtime" && "runtime")}>
+                            {row.category === "runtime" ? "Runtime" : "Event"}
+                          </span>
+                          <span className="activity-row-pill">{row.scopeLabel}</span>
+                          {row.kind !== row.title && <span className="activity-row-pill subtle">{row.kind}</span>}
+                        </div>
+                      </div>
                     </button>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        )}
+                    {context && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="activity-row-action"
+                        onClick={() => openWorkspaceContext(context)}
+                      >
+                        Open Context
+                      </Button>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </section>
     );
   }
@@ -2749,104 +2651,129 @@ function App() {
   function renderField() {
     if (view.kind !== "field") return null;
     const title = loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? view.fieldId;
-    const parentFieldId = view.backStack?.at(-1);
-    const parentTitle = parentFieldId
-      ? fieldSummaries.find((field) => field.id === parentFieldId)?.title ?? parentFieldId
-      : null;
-    const backLabel = parentTitle ? `Back to ${parentTitle}` : "Workspace Home";
+    const scopeDescription = selectedScopeRecord?.description?.trim() || "React Flow projection of substrate-backed Contexts, Pulses, and route relationships.";
+    const projectedContextCount = scopeInspectorSummary?.projectedContextCount ?? 0;
+    const pulseCount = scopeInspectorSummary?.pulseCount ?? 0;
+    const projectedRouteCount = (scopeInspectorSummary?.projectedEventCount ?? 0) + (scopeInspectorSummary?.projectedActivityRefCount ?? 0);
+    const actorCount = scopeInspectorSummary?.actorCount ?? 0;
     return (
       <section className="field-surface v6-scope-field" data-testid="v6-scope-field-map">
-        <div className="field-toolbar">
-          <button className="icon-button" onClick={backFromField} title={backLabel} aria-label={backLabel}>
-            <ArrowLeft size={16} />
-          </button>
-          <div className="field-title-area">
-            <p className="eyebrow">Scope Map</p>
-            {renameDraft === null ? (
-              <h2>{title}</h2>
-            ) : (
-              <div className="field-rename-row">
-                <label>
-                  <span className="sr-only">Scope title</span>
-                  <input
-                    aria-label="Scope title"
-                    value={renameDraft}
-                    onChange={(event) => setRenameDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") submitRenameField();
-                      if (event.key === "Escape") cancelRenameField();
-                    }}
-                    autoFocus
-                  />
-                </label>
-                <button className="primary-action" onClick={submitRenameField}>
-                  <Check size={15} />
-                  Save Scope
+        <div className="scope-stage-shell">
+          <div className="scope-stage-header" data-testid="v6-scope-stage-header">
+            <div className="scope-stage-heading">
+              <p className="eyebrow">Scope</p>
+              <p className="scope-stage-description">{scopeDescription}</p>
+              <div className="scope-stage-stats" aria-label="Scope summary">
+                <span className="scope-stage-stat">
+                  <strong>{projectedContextCount}</strong>
+                  Contexts
+                </span>
+                <span className="scope-stage-stat">
+                  <strong>{pulseCount}</strong>
+                  Pulses
+                </span>
+                <span className="scope-stage-stat">
+                  <strong>{projectedRouteCount}</strong>
+                  Route refs
+                </span>
+                <span className="scope-stage-stat">
+                  <strong>{actorCount}</strong>
+                  Actors
+                </span>
+              </div>
+            </div>
+            <div className="field-toolbar">
+              <div className="field-title-area">
+                <p className="eyebrow">Scope Map</p>
+                {renameDraft === null ? (
+                  <h2>{title}</h2>
+                ) : (
+                  <div className="field-rename-row">
+                    <label>
+                      <span className="sr-only">Scope title</span>
+                      <input
+                        aria-label="Scope title"
+                        value={renameDraft}
+                        onChange={(event) => setRenameDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") submitRenameField();
+                          if (event.key === "Escape") cancelRenameField();
+                        }}
+                        autoFocus
+                      />
+                    </label>
+                    <button className="primary-action" onClick={submitRenameField}>
+                      <Check size={15} />
+                      Save Scope
+                    </button>
+                    <button className="ghost-action" onClick={cancelRenameField}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="field-toolbar-actions">
+                <button className="ghost-action" onClick={backFromField} title="Back to Home">
+                  <ArrowLeft size={16} />
+                  Back
                 </button>
-                <button className="ghost-action" onClick={cancelRenameField}>
-                  Cancel
-                </button>
+                {renameDraft === null && (
+                  <button className="ghost-action" onClick={beginRenameField} disabled={!loadedProjection}>
+                    <Edit3 size={16} />
+                    Rename Scope
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="canvas-wrap v6-scope-map-canvas">
+            <div className="map-toolbar" aria-label="Map viewport controls" data-testid="v6-scope-map-toolbar">
+              <span className="map-toolbar-label">Viewport</span>
+              <button type="button" onClick={() => reactFlow.fitView({ padding: 0.22, duration: 220 })}>Fit</button>
+              <button type="button" onClick={() => reactFlow.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 220 })}>Center</button>
+            </div>
+            <div className="map-legend" data-testid="v6-scope-map-legend">
+              <span><span className="lg-dot cron" />cron</span>
+              <span><span className="lg-dot webhook" />webhook</span>
+              <span><span className="lg-dot file-watch" />file-watch</span>
+              <span><span className="lg-dot manual" />manual</span>
+            </div>
+            <ReactFlow
+              key={view.fieldId}
+              nodes={fieldNodes}
+              edges={fieldEdges}
+              onNodesChange={handleFieldNodesChange}
+              onEdgesChange={handleFieldEdgesChange}
+              onBeforeDelete={handleFieldBeforeDelete}
+              onEdgesDelete={handleFieldEdgesDelete}
+              onMoveEnd={handleFieldMoveEnd}
+              onNodeDragStop={handleFieldNodeDragStop}
+              onNodeDoubleClick={handleFieldNodeDoubleClick}
+              onConnect={handleFieldConnect}
+              onReconnect={handleFieldReconnect}
+              onDrop={handleLibraryDropSurface}
+              onDragOver={handleLibraryDragOver}
+              deleteKeyCode={["Delete", "Backspace"]}
+              defaultViewport={fieldViewport}
+              edgesReconnectable
+              panOnDrag
+              zoomOnScroll
+              minZoom={0.2}
+              maxZoom={1.8}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
+              <Controls position="bottom-left" />
+              <MiniMap pannable zoomable position="bottom-right" />
+            </ReactFlow>
+            {loadedProjection && fieldNodes.length === 0 && (
+              <div className="canvas-empty">
+                <SquareDashedMousePointer size={22} />
+                <strong>Empty Scope</strong>
+                <span>This Scope has no projected substrate primitives yet.</span>
               </div>
             )}
           </div>
-          {renameDraft === null && (
-            <div className="field-toolbar-actions">
-              <button className="ghost-action" onClick={beginRenameField} disabled={!loadedProjection}>
-                <Edit3 size={16} />
-                Rename Scope
-              </button>
-            </div>
-          )}
-        </div>
-        <div className="canvas-wrap v6-scope-map-canvas">
-          <div className="map-toolbar" aria-label="Map viewport controls">
-            <button type="button" onClick={() => reactFlow.fitView({ padding: 0.22, duration: 220 })}>Fit</button>
-            <button type="button" onClick={() => reactFlow.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 220 })}>Center</button>
-          </div>
-          <div className="map-legend" data-testid="v6-scope-map-legend">
-            <span><span className="lg-dot cron" />cron</span>
-            <span><span className="lg-dot webhook" />webhook</span>
-            <span><span className="lg-dot file-watch" />file-watch</span>
-            <span><span className="lg-dot manual" />manual</span>
-          </div>
-          <ReactFlow
-            key={view.fieldId}
-            nodes={fieldNodes}
-            edges={fieldEdges}
-            nodeTypes={fieldNodeTypes}
-            edgeTypes={fieldEdgeTypes}
-            onNodesChange={handleFieldNodesChange}
-            onEdgesChange={handleFieldEdgesChange}
-            onBeforeDelete={handleFieldBeforeDelete}
-            onEdgesDelete={handleFieldEdgesDelete}
-            onMoveEnd={handleFieldMoveEnd}
-            onNodeDragStop={handleFieldNodeDragStop}
-            onNodeDoubleClick={handleFieldNodeDoubleClick}
-            onEdgeDoubleClick={handleFieldEdgeDoubleClick}
-            onConnect={handleFieldConnect}
-            onReconnect={handleFieldReconnect}
-            onDrop={handleLibraryDropSurface}
-            onDragOver={handleLibraryDragOver}
-            deleteKeyCode={["Delete", "Backspace"]}
-            defaultViewport={fieldViewport}
-            edgesReconnectable
-            panOnDrag
-            zoomOnScroll
-            minZoom={0.2}
-            maxZoom={1.8}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
-            <Controls position="bottom-left" />
-            <MiniMap pannable zoomable position="bottom-right" />
-          </ReactFlow>
-          {loadedProjection && fieldNodes.length === 0 && (
-            <div className="canvas-empty">
-              <SquareDashedMousePointer size={22} />
-              <strong>Empty Scope</strong>
-              <span>This Scope has no projected substrate primitives yet.</span>
-            </div>
-          )}
         </div>
       </section>
     );
@@ -2854,25 +2781,26 @@ function App() {
 
   function renderInspector() {
     return (
-      <aside className="inspector" data-testid="v6-inspector" aria-label="Inspector">
-        <div
-          className="rinsp-resize"
-          title="Drag to resize inspector"
-          onPointerDown={handleRinspPointerDown}
-          onPointerMove={handleRinspPointerMove}
-          onPointerUp={handleRinspPointerUp}
-          onPointerCancel={handleRinspPointerUp}
-        />
-        <div className="inspector-header">
-          <span>Inspector</span>
-          <button className="icon-button" onClick={() => void refresh()} title="Refresh">
-            <RefreshCw size={14} />
-          </button>
-        </div>
-        {!selectedWorkspace ? (
-          <div className="inspector-section muted">No workspace selected.</div>
-        ) : inspectorActor ? (
+      <aside
+        className="inspector flex h-full min-h-0 flex-col border-l border-border/70 bg-card/90 backdrop-blur-xl"
+        data-testid="v6-inspector"
+        aria-label="Inspector"
+      >
+        {channelOpen ? (
+          renderChannel()
+        ) : (
           <>
+            <div className="inspector-header flex items-center justify-between border-b border-border/70 px-4">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Inspector</span>
+              <Button variant="ghost" size="icon" className="icon-button h-8 w-8 rounded-lg" onClick={() => void refresh()} title="Refresh">
+                <RefreshCw size={14} />
+              </Button>
+            </div>
+            <ScrollArea className="flex-1">
+              {!selectedWorkspace ? (
+            <div className="inspector-section muted">No workspace selected.</div>
+          ) : inspectorActor ? (
+            <>
             <InspectorSection title="Actor">
               <Detail label="Type" value="Workspace Endpoint" />
               <Detail label="Name" value={endpointDisplayName(inspectorActor) ?? inspectorActor.agent_id ?? "Actor"} />
@@ -2890,25 +2818,7 @@ function App() {
                 <div className="inspector-note">No Contexts found for this actor.</div>
               ) : (
                 <div className="inspector-context-list">
-                  {inspectorActorContexts.map((context) => {
-                    const label = contextLabel(context, null);
-                    const participationLabel = contextParticipationLabel(context, scopeTitlesById);
-                    const activityTime = context.last_event_at ?? context.created_at;
-                    return (
-                      <article key={context.context_id} className="inspector-context-card">
-                        <strong>{label}</strong>
-                        <span>{participationLabel}</span>
-                        <small>{formatContextTimestamp(activityTime)}</small>
-                        <button
-                          type="button"
-                          className="ghost-action compact"
-                          onClick={() => openWorkspaceContext(context)}
-                        >
-                          Open in Channel
-                        </button>
-                      </article>
-                    );
-                  })}
+                  {inspectorActorContexts.map((context) => renderInspectorContextPill(context))}
                 </div>
               )}
             </InspectorSection>
@@ -3035,6 +2945,9 @@ function App() {
               </InspectorSection>
             )}
             <ActorAccessSection />
+          </>
+          )}
+            </ScrollArea>
           </>
         )}
       </aside>
@@ -3193,6 +3106,33 @@ function App() {
     );
   }
 
+  function renderInspectorContextPill(context: ContextSummary) {
+    const label = neutralContextLabel(context, scopeTitlesById, pulseLabels[context.context_id]);
+    const participationLabel = contextParticipationLabel(context, scopeTitlesById);
+    const activityTime = context.last_event_at ?? context.created_at;
+    return (
+      <article
+        key={context.context_id}
+        className={cn("inspector-context-pill", selectedContextId === context.context_id && "active")}
+      >
+        <div className="inspector-context-pill-copy">
+          <strong>{label}</strong>
+          <span>{participationLabel}</span>
+        </div>
+        <div className="inspector-context-pill-meta">
+          <small>{formatContextTimestamp(activityTime)}</small>
+          <button
+            type="button"
+            className="ghost-action compact"
+            onClick={() => openWorkspaceContext(context)}
+          >
+            Open
+          </button>
+        </div>
+      </article>
+    );
+  }
+
   function renderChannel() {
     if (!channelOpen) return null;
     const actorName = selectedAgent ? selectedAgent.name?.trim() || selectedAgent.agent_id || "Actor" : "";
@@ -3202,12 +3142,9 @@ function App() {
       const endpoint = endpoints.find((item) => item.endpoint_id === sourceEndpointId);
       return endpointDisplayName(endpoint) ?? "Actor";
     };
-    const activeContextLabel = selectedContext
-      ? selectedContext.first_message_preview?.trim() || pulseLabels[selectedContext.context_id] || "Conversation"
-      : null;
     const activeConversationTitle = draftMode
       ? `New conversation with ${actorName}`
-      : activeContextLabel ?? (
+      : selectedContext ? neutralContextLabel(selectedContext, scopeTitlesById, pulseLabels[selectedContext.context_id]) : (
         sortedContexts.sorted.length === 0
           ? `No conversations with ${actorName} yet`
           : "Select a conversation"
@@ -3220,23 +3157,29 @@ function App() {
           ? "No conversations yet"
           : "No conversation selected";
     return (
-      <aside className="channel" data-testid="v6-channel" aria-label="Actor conversations">
-        <div className="channel-header">
-          <div className="channel-title">
-            <div className="channel-avatar"><CircleDot size={16} /></div>
-            <div>
-              <strong>Actor conversations</strong>
-              <span>{selectedAgent ? `${actorName} selected` : "No actors available"}</span>
+      <section className="channel channel-context-shell flex-1 min-h-0" data-testid="v6-channel" aria-label="Actor conversations">
+        <div className="channel-header channel-context-header">
+          <div className="channel-title channel-context-title">
+            <div className="channel-avatar"><MessageSquare size={16} /></div>
+            <div className="min-w-0">
+              <strong>Actor Conversations</strong>
+              <span>
+                {selectedAgent
+                  ? `${draftMode ? "Draft context" : selectedContextInspectorSummary?.scopeLabel ?? "Context"} · ${actorName}`
+                  : "Select an actor from the workspace shell"}
+              </span>
             </div>
           </div>
-          <button
-            className="icon-button"
+          <Button
+            variant="ghost"
+            size="icon"
+            className="icon-button h-9 w-9 rounded-xl"
             onClick={() => setChannelOpen(false)}
             title="Close actor conversation panel"
             aria-label="Close actor conversation panel"
           >
             <X size={16} />
-          </button>
+          </Button>
         </div>
         {agents.length > 0 && (
           <section className="actor-selector" role="group" aria-label="Actors" data-testid="actor-selector">
@@ -3256,13 +3199,7 @@ function App() {
                     className={`actor-selector-item${selected ? " active" : ""}`}
                     aria-pressed={selected}
                     aria-label={`${name} ${status}${selected ? " selected" : ""}`}
-                    onClick={() => {
-                      contextsRequestRef.current += 1;
-                      setSelectedAgentId(agent.endpoint_id);
-                      setSelectedContextId(null);
-                      setDraftMode(false);
-                      clearContextEvents();
-                    }}
+                    onClick={() => openActorContexts(agent.endpoint_id)}
                   >
                     <span className="actor-selector-avatar" aria-hidden="true">{actorInitial(name)}</span>
                     <span className="actor-selector-copy">
@@ -3296,10 +3233,7 @@ function App() {
             ) : (
               <ul className="channel-context-items">
                 {sortedContexts.sorted.map((ctx) => {
-                  const label =
-                    ctx.first_message_preview?.trim()
-                      ? ctx.first_message_preview
-                      : pulseLabels[ctx.context_id] ?? "Conversation";
+                  const label = neutralContextLabel(ctx, scopeTitlesById, pulseLabels[ctx.context_id]);
                   const isActive = ctx.context_id === selectedContextId;
                   const activityTime = ctx.last_event_at ?? ctx.created_at;
                   const participationLabel = contextParticipationLabel(ctx, scopeTitlesById);
@@ -3466,191 +3400,266 @@ function App() {
           <div ref={chatEndRef} />
         </div>
         <div className="channel-composer">
-          <input
-            value={channelMessage}
-            onChange={(event) => setChannelMessage(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void sendFloeMessage();
-              }
-            }}
-            disabled={!selectedAgent || !canUseChannelComposer}
-            aria-label={selectedAgent ? `Message ${actorName}` : "Message actor"}
-            placeholder={!selectedAgent ? "No actors available" : !selectedContextCanMessage ? "Read-only Context" : !runtimeReady ? "Configure runtime first" : runtimeBlockedByFakeAdapter ? "Configure bridge runtime first" : `Message ${actorName}`}
-          />
-          <button
-            className="icon-button primary-icon"
-            onClick={() => void sendFloeMessage()}
-            disabled={!selectedAgent || !canUseChannelComposer || !channelMessage.trim()}
-            title="Send"
-            aria-label="Send message"
-          >
-            <Send size={15} />
-          </button>
+          <div className="channel-composer-head">
+            <span className="channel-composer-label">
+              {!selectedAgent
+                ? "Channel closed to actor messaging"
+                : draftMode
+                  ? `Starting as ${operatorDisplayName}`
+                  : selectedContext ? neutralContextLabel(selectedContext, scopeTitlesById, pulseLabels[selectedContext.context_id]) : `Messaging ${actorName}`}
+            </span>
+            <span className="channel-composer-hint">Enter to send</span>
+          </div>
+          <div className="channel-composer-row">
+            <Input
+              value={channelMessage}
+              onChange={(event) => setChannelMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendFloeMessage();
+                }
+              }}
+              disabled={!selectedAgent || !canUseChannelComposer}
+              aria-label={selectedAgent ? `Message ${actorName}` : "Message actor"}
+              placeholder={!selectedAgent ? "No actors available" : !selectedContextCanMessage ? "Read-only Context" : !runtimeReady ? "Configure runtime first" : runtimeBlockedByFakeAdapter ? "Configure bridge runtime first" : `Message ${actorName}`}
+              className="h-11 border-border/70 bg-background/70"
+            />
+            <Button
+              className="icon-button primary-icon h-11 w-11 rounded-xl"
+              size="icon"
+              onClick={() => void sendFloeMessage()}
+              disabled={!selectedAgent || !canUseChannelComposer || !channelMessage.trim()}
+              title="Send"
+              aria-label="Send message"
+            >
+              <Send size={15} />
+            </Button>
+          </div>
         </div>
-      </aside>
+      </section>
     );
   }
 
+  const shellNavButtonClass =
+    "h-10 w-full justify-start gap-2 rounded-xl border border-transparent px-3 text-sm font-medium text-muted-foreground shadow-none hover:bg-accent/25 hover:text-foreground";
+  const shellNavButtonActiveClass = "border-border/70 bg-accent/30 text-accent-foreground";
+  const shellSectionLabelClass = "mb-2 flex items-center justify-between px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground";
+
   return (
-    <main className={`floe-shell v6-shell${channelOpen ? " with-channel" : ""}`} data-testid="v6-shell">
-      <header className="topbar v6-topbar" data-testid="v6-topbar">
-        {renderWorkspaceSwitcher()}
-        <nav className="breadcrumb">
-          <button onClick={goToWorkspaceHome}><Home size={14} /> Workspace</button>
-          {view.kind === "field" && (
-            <>
-              <ChevronRight size={14} />
-              <button className="breadcrumb-current">
-                {loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? view.fieldId}
-              </button>
-            </>
+    <main className="shell-root v6-shell flex h-full min-h-0 flex-col bg-background text-foreground" data-testid="v6-shell">
+      <header className="v6-topbar flex h-14 items-center justify-between gap-4 border-b border-border/70 bg-[color:var(--chrome)] px-4 backdrop-blur-xl" data-testid="v6-topbar">
+        <div className="flex min-w-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={goToWorkspaceHome}
+            className="flex items-center gap-2 rounded-xl px-2 py-1.5 text-sm font-semibold text-foreground transition-colors hover:bg-accent/20"
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-background">
+              <Workflow size={16} />
+            </span>
+            <span className="hidden sm:inline">Floe</span>
+          </button>
+          <Separator orientation="vertical" className="hidden h-6 bg-border/70 sm:block" />
+          {renderWorkspaceSwitcher()}
+          {view.kind !== "home" && (
+            <nav className="breadcrumb hidden min-w-0 items-center gap-2 md:flex">
+              <ChevronRight size={14} className="text-muted-foreground" />
+              <span className="breadcrumb-current truncate rounded-lg px-2 py-1 text-sm font-medium text-foreground">
+                {view.kind === "activity"
+                  ? "Activity"
+                  : loadedProjection?.scope.title ?? selectedFieldSummary?.title ?? view.fieldId}
+              </span>
+            </nav>
           )}
-        </nav>
-        <div className="topbar-actions">
+        </div>
+        <div className="topbar-actions flex items-center gap-2">
           {view.kind === "field" && (
-            <div className="pill-grp scope-mode-pill" role="group" aria-label="Scope mode">
-              <button type="button" className="is-on">Map</button>
-              <button type="button" disabled title="Ops surface follows in a later v6 slice">Ops</button>
+            <div className="flex items-center rounded-xl border border-border/70 bg-background/55 p-1" role="group" aria-label="Scope mode">
+              <Button type="button" size="sm" className="h-8 rounded-lg px-3">Map</Button>
+              <Button type="button" variant="ghost" size="sm" className="h-8 rounded-lg px-3 text-muted-foreground" disabled title="Ops surface follows in a later v6 slice">
+                Ops
+              </Button>
             </div>
           )}
-          <button className="icon-button" onClick={() => void refresh()} title="Refresh" aria-label="Refresh workspace">
+          <Button variant="ghost" size="icon" className="icon-button h-9 w-9 rounded-xl" onClick={() => void refresh()} title="Refresh" aria-label="Refresh workspace">
             <RefreshCw size={15} />
-          </button>
+          </Button>
         </div>
       </header>
 
-      <div className="body">
-        <aside className="workspace-rail v6-left-nav" data-testid="v6-left-nav" aria-label="Workspace navigation">
-          <div className="rail-brand">
-            <div className="brand-mark"><Workflow size={18} /></div>
-            <div>
-              <strong>Floe</strong>
-              <span className={`connection ${connectionClass(status)}`}><CircleDot size={10} />{status}</span>
-            </div>
-          </div>
-          <div className="rail-section">
-            <button
-              type="button"
-              className={`nav-row ${view.kind === "home" ? "active" : ""}`}
-              onClick={goToWorkspaceHome}
-            >
-              <Home size={15} />
-              <span>Home</span>
-            </button>
-            <button
-              type="button"
-              className={`nav-row ${view.kind === "activity" ? "active" : ""}`}
-              onClick={() => setView({ kind: "activity" })}
-            >
-              <Activity size={15} />
-              <span>Activity</span>
-            </button>
-            <span className="rail-label nav-group-label">
-              <span>Scopes</span>
-              <span>{fieldSummaries.length}</span>
-            </span>
-            {fieldSummaries.length === 0 ? (
-              <div className="nav-empty">No named Scopes yet</div>
-            ) : (
-              fieldSummaries.map((summary) => (
-                <button
-                  key={summary.id}
-                  type="button"
-                  className={`nav-row scope-nav-row${view.kind === "field" && view.fieldId === summary.id ? " active" : ""}`}
-                  onClick={() => openField(summary.id)}
-                >
-                  <LayoutPanelLeft size={15} />
-                  <span>{summary.title}</span>
-                </button>
-              ))
-            )}
-            <button
-              type="button"
-              className="nav-row nav-add"
-              onClick={promptCreateField}
-              draggable
-              onDragStart={handleFieldPrimitiveDragStart}
-              title="Create a new Scope"
-            >
-              <FolderPlus size={15} />
-              <span>New Scope</span>
-            </button>
-            {view.kind === "field" && loadedProjection && (
-              <div className="scope-nav-section" data-testid="v6-scope-contexts">
-                <span className="rail-label nav-group-label">
-                  <span>Contexts</span>
-                  <span>{openedScopeContexts.length}</span>
-                </span>
-                {openedScopeContexts.length === 0 ? (
-                  <div className="nav-empty">No mapped Contexts</div>
-                ) : (
-                  openedScopeContexts.map((context) => (
-                    <button
-                      key={context.context_id}
-                      type="button"
-                      className={`nav-row context-nav-row${selectedContextId === context.context_id ? " active" : ""}`}
-                      onClick={() => openProjectedContext(context.context_id)}
-                    >
-                      <MessageSquare size={15} />
-                      <span>{context.first_message_preview || context.context_id}</span>
-                    </button>
-                  ))
+      <ResizablePanelGroup
+        key={channelOpen ? "with-channel" : "without-channel"}
+        orientation="horizontal"
+        className="body shell-body !flex flex-1 min-h-0"
+      >
+        <ResizablePanel
+          defaultSize={shellLeftPanelDefaultWidthPx}
+          minSize={shellLeftPanelMinWidthPx}
+          maxSize={shellLeftPanelMaxWidthPx}
+          className="shell-left-nav v6-left-nav"
+          aria-label="Workspace navigation"
+        >
+          <aside
+            className="flex h-full min-h-0 flex-col border-r border-border/70 bg-card/85 backdrop-blur-xl"
+            data-testid="v6-left-nav"
+            aria-label="Workspace navigation"
+          >
+            <ScrollArea className="flex-1">
+              <div className="space-y-4 p-3 pt-4">
+                <div className="space-y-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className={cn(shellNavButtonClass, view.kind === "home" && shellNavButtonActiveClass)}
+                    onClick={goToWorkspaceHome}
+                  >
+                    <Home size={15} />
+                    <span>Home</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className={cn(shellNavButtonClass, view.kind === "activity" && shellNavButtonActiveClass)}
+                    onClick={() => setView({ kind: "activity" })}
+                  >
+                    <Activity size={15} />
+                    <span>Activity</span>
+                  </Button>
+                </div>
+
+                <div className="space-y-1">
+                  <span className={shellSectionLabelClass}>
+                    <span>Scopes</span>
+                    <span>{fieldSummaries.length}</span>
+                  </span>
+                  {fieldSummaries.length === 0 ? (
+                    <div className="nav-empty px-3 py-2 text-sm text-muted-foreground">No named Scopes yet</div>
+                  ) : (
+                    fieldSummaries.map((summary) => (
+                      <Button
+                        key={summary.id}
+                        type="button"
+                        variant="ghost"
+                        className={cn(shellNavButtonClass, "ml-3 w-[calc(100%-0.75rem)]", view.kind === "field" && view.fieldId === summary.id && shellNavButtonActiveClass)}
+                        onClick={() => openField(summary.id)}
+                      >
+                        <LayoutPanelLeft size={15} />
+                        <span className="truncate">{summary.title}</span>
+                      </Button>
+                    ))
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className={cn(shellNavButtonClass, "border-dashed border-border/70 text-accent-foreground")}
+                    onClick={promptCreateField}
+                    draggable
+                    onDragStart={handleFieldPrimitiveDragStart}
+                    title="Create a new Scope"
+                  >
+                    <FolderPlus size={15} />
+                    <span>New Scope</span>
+                  </Button>
+                </div>
+
+                {view.kind === "field" && loadedProjection && (
+                  <div className="space-y-1" data-testid="v6-scope-contexts">
+                    <span className={shellSectionLabelClass}>
+                      <span>Contexts</span>
+                      <span>{openedScopeContexts.length}</span>
+                    </span>
+                    {openedScopeContexts.length === 0 ? (
+                      <div className="nav-empty px-3 py-2 text-sm text-muted-foreground">No mapped Contexts</div>
+                    ) : (
+                      openedScopeContexts.map((context) => (
+                        <Button
+                          key={context.context_id}
+                          type="button"
+                          variant="ghost"
+                          className={cn(shellNavButtonClass, "ml-3 w-[calc(100%-0.75rem)]", selectedContextId === context.context_id && shellNavButtonActiveClass)}
+                          onClick={() => openProjectedContext(context.context_id)}
+                        >
+                          <MessageSquare size={15} />
+                          <span className="truncate">{neutralContextLabel(context, scopeTitlesById, pulseLabels[context.context_id])}</span>
+                        </Button>
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {agents.length > 0 && (
+                  <div className="space-y-1" data-testid="v6-nav-actors">
+                    <span className={shellSectionLabelClass}>
+                      <span>Actors</span>
+                      <span>{agents.length}</span>
+                    </span>
+                    {agents.map((endpoint) => (
+                      <Button
+                        key={endpoint.endpoint_id}
+                        type="button"
+                        variant="ghost"
+                        className={cn(
+                          shellNavButtonClass,
+                          "ml-3 w-[calc(100%-0.75rem)] justify-start",
+                          inspectorActor?.endpoint_id === endpoint.endpoint_id && shellNavButtonActiveClass
+                        )}
+                        onClick={() => selectActorForInspector(endpoint.endpoint_id)}
+                        title={endpoint.name}
+                      >
+                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-background/80 text-xs font-semibold text-accent-foreground">
+                          {endpoint.name.charAt(0).toUpperCase()}
+                        </span>
+                        <span className="truncate">{endpoint.name}</span>
+                      </Button>
+                    ))}
+                  </div>
                 )}
               </div>
-            )}
-            {agents.length > 0 && (
-              <div className="actors-nav-section" data-testid="v6-nav-actors">
-                <span className="rail-label nav-group-label">
-                  <span>Actors</span>
-                  <span>{agents.length}</span>
-                </span>
-                {agents.map((endpoint) => (
-                  <button
-                    key={endpoint.endpoint_id}
-                    type="button"
-                    className={`nav-row actor-nav-row${inspectorActor?.endpoint_id === endpoint.endpoint_id ? " active" : ""}`}
-                    onClick={() => selectActorForInspector(endpoint.endpoint_id)}
-                    title={endpoint.name}
-                  >
-                    <span className="nav-avatar">{endpoint.name.charAt(0).toUpperCase()}</span>
-                    <span>{endpoint.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <button className="rail-settings" onClick={() => setShowBusSettings((current) => !current)}>
-            <Settings size={14} />
-            Bus
-          </button>
-          {showBusSettings && (
-            <div className="bus-settings">
-              <input value={busUrl} onChange={(event) => setBusUrl(event.target.value)} />
-              <button onClick={() => void refresh()}>Reconnect</button>
-            </div>
-          )}
-        </aside>
+            </ScrollArea>
+          </aside>
+        </ResizablePanel>
 
-        <div
-          className="surface-area"
-          data-testid="v6-main-surface"
-          onDrop={handleLibraryDropSurface}
-          onDragOver={handleLibraryDragOver}
+        <ShellResizeHandle />
+
+        <ResizablePanel minSize={shellMainPanelMinWidthPx} className="shell-main-panel">
+          <div
+            className="surface-area flex h-full min-h-0 flex-col bg-background/35"
+            data-testid="v6-main-surface"
+            onDrop={handleLibraryDropSurface}
+            onDragOver={handleLibraryDragOver}
+          >
+            {error && <div className="error-bar">{error}</div>}
+            {!selectedWorkspace ? renderNoWorkspace() : view.kind === "field" ? renderField() : view.kind === "activity" ? renderActivity() : renderHome()}
+          </div>
+        </ResizablePanel>
+
+        <ShellResizeHandle />
+
+        <ResizablePanel
+          defaultSize={shellInspectorPanelDefaultWidthPx}
+          minSize={shellInspectorPanelMinWidthPx}
+          maxSize={shellInspectorPanelMaxWidthPx}
+          className="shell-inspector-panel"
         >
-          {error && <div className="error-bar">{error}</div>}
-          {!selectedWorkspace ? renderNoWorkspace() : view.kind === "field" ? renderField() : view.kind === "activity" ? renderActivity() : renderHome()}
-        </div>
-        {renderInspector()}
-        {renderChannel()}
-      </div>
+          {renderInspector()}
+        </ResizablePanel>
+      </ResizablePanelGroup>
       <DialogHost />
     </main>
   );
 }
 
-function InspectorSection(props: { title: string; children: React.ReactNode }) {
+function ShellResizeHandle() {
+  return (
+    <ResizableHandle className="group relative w-2 bg-transparent">
+      <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/6 transition-colors group-hover:bg-[color:var(--accent)] group-data-[resize-handle-state=drag]:bg-[color:var(--accent)]" />
+      <span className="sr-only">Resize panel</span>
+    </ResizableHandle>
+  );
+}
+
+function InspectorSection(props: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="inspector-section">
       <h3>{props.title}</h3>
@@ -3681,6 +3690,49 @@ function formatContextTimestamp(value: string): string {
     hour: "numeric",
     minute: "2-digit"
   });
+}
+
+function neutralContextLabel(
+  context: { scope_id: string | null },
+  scopeTitlesById: Record<string, string>,
+  pulseLabel?: string | null
+): string {
+  const pulse = pulseLabel?.trim();
+  if (pulse) return pulse;
+  if (!context.scope_id) return "Workspace Context";
+  return scopeTitlesById[context.scope_id]?.trim() || "Scoped Context";
+}
+
+function scopeMapNodeStyle(kind: unknown, selected: boolean): React.CSSProperties {
+  const palette =
+    kind === "pulse"
+      ? {
+          background: "hsl(var(--warn-soft))",
+          border: "1px solid hsl(var(--warn) / 0.35)",
+          color: "hsl(var(--warn))"
+        }
+      : {
+          background: "hsl(var(--card))",
+          border: "1px solid hsl(var(--border))",
+          color: "hsl(var(--foreground))"
+        };
+
+  return {
+    ...palette,
+    borderRadius: 8,
+    boxShadow: selected ? "0 0 0 2px hsl(var(--ring) / 0.2)" : "none",
+    fontSize: 12,
+    fontWeight: 600,
+    minWidth: 148,
+    padding: "10px 14px"
+  };
+}
+
+function scopeMapEdgeStyle(selected: boolean): React.CSSProperties {
+  return {
+    stroke: selected ? "hsl(var(--primary))" : "hsl(var(--border))",
+    strokeWidth: selected ? 2.5 : 1.75
+  };
 }
 
 class ApiError extends Error {

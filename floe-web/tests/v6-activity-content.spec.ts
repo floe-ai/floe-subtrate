@@ -96,10 +96,11 @@ test.describe("V6 Activity content", () => {
     const activity = page.getByTestId("v6-activity");
     const rows = activity.getByTestId("activity-row");
     await expect(activity.getByRole("heading", { name: "Workspace Activity" })).toBeVisible();
-    await expect(activity.getByTestId("activity-summary")).toContainText("3 items total");
+    await expect(activity.getByTestId("activity-summary")).toContainText("3 records total");
     await expect(activity.getByTestId("activity-summary")).toContainText("2 Events");
     await expect(activity.getByTestId("activity-summary")).toContainText("1 runtime activity");
     await expect(activity.getByTestId("activity-summary")).toContainText("2 Contexts");
+    await expect(activity.getByText("Pick a Scope first")).toBeVisible();
     await expect(activity.getByText("Workspace conversation note")).toBeVisible();
     await expect(activity.getByText("Daily drafting pulse fired")).toBeVisible();
     await expect(activity.getByText("checking references")).toBeVisible();
@@ -109,7 +110,7 @@ test.describe("V6 Activity content", () => {
     await expect(rows.filter({ hasText: "Workspace-only" })).toBeVisible();
 
     await activity.getByRole("button", { name: "Floe" }).click();
-    await expect(activity.getByTestId("activity-summary")).toContainText("1 items total");
+    await expect(activity.getByTestId("activity-summary")).toContainText("1 matching records");
     await expect(activity.getByTestId("activity-summary")).toContainText("0 Events");
     await expect(activity.getByTestId("activity-summary")).toContainText("1 runtime activity");
     await expect(activity.getByTestId("activity-summary")).toContainText("1 Contexts");
@@ -124,11 +125,12 @@ test.describe("V6 Activity content", () => {
     await activity.getByRole("button", { name: "Clear filters" }).click();
 
     await activity.getByRole("button", { name: "Workspace only" }).click();
-    await expect(activity.getByTestId("activity-summary")).toContainText("1 items total");
+    await expect(activity.getByTestId("activity-summary")).toContainText("1 matching records");
     await expect(activity.getByTestId("activity-summary")).toContainText("1 Contexts");
     await expect(activity.getByTestId("activity-summary")).toContainText("0 Scopes");
     await expect(activity.getByText("Workspace conversation note")).toBeVisible();
     await expect(activity.getByText("Daily drafting pulse fired")).toHaveCount(0);
+    await expect(activity.getByRole("button", { name: "Direct critique notes" })).toBeVisible();
     await activity.getByRole("button", { name: "Clear filters" }).click();
 
     await activity.getByRole("button", { name: "Writing Scope" }).click();

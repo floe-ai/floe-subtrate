@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { buildActorInspectorSummary, buildScopeInspectorSummary, buildWorkspaceInspectorSummary } from "./inspector-view-model";
+import {
+  buildActorInspectorSummary,
+  buildContextInspectorSummary,
+  buildScopeInspectorSummary,
+  buildWorkspaceInspectorSummary
+} from "./inspector-view-model";
 import { type ActivityRow } from "./activity";
 import { type ContextSummary } from "./contexts";
 import { type ScopeProjection } from "./scope-projection";
@@ -105,6 +110,42 @@ describe("Inspector view models", () => {
       actorCount: 1,
       activityRowCount: 1,
       hasProjectionActivityGap: true
+    });
+  });
+
+  test("builds context metadata for the right inspector without duplicating stream semantics", () => {
+    expect(buildContextInspectorSummary({
+      context: scopedContext,
+      events: [
+        {
+          event_id: "evt_created",
+          type: "context.created",
+          context_id: "ctx_scoped",
+          source_endpoint_id: "actor:operator",
+          destination_json: { kind: "broadcast" },
+          content: {},
+          created_at: "2026-05-24T00:00:00.000Z"
+        },
+        {
+          event_id: "evt_message",
+          type: "message",
+          context_id: "ctx_scoped",
+          source_endpoint_id: "actor:floe",
+          destination_json: { kind: "endpoint", endpoint_id: "actor:operator" },
+          content: { text: "Scoped notes" },
+          created_at: "2026-05-24T00:05:00.000Z"
+        }
+      ],
+      scopeTitlesById: { scope_writing: "Writing" }
+    })).toEqual({
+      label: "Scoped notes",
+      scopeLabel: "Writing Scope",
+      participantIds: ["actor:operator", "actor:floe"],
+      participantCount: 2,
+      totalEmitCount: 2,
+      messageCount: 1,
+      createdAt: "2026-05-24T00:00:00.000Z",
+      lastActiveAt: "2026-05-24T00:05:00.000Z"
     });
   });
 });

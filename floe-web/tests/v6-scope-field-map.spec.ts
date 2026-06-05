@@ -114,6 +114,10 @@ test.describe("V6 Scope Field map", () => {
 
     await expect(page.getByTestId("v6-scope-contexts")).toContainText("Drafting outline");
     await expect(page.getByTestId("v6-scope-contexts")).toContainText("Snippet review · with Floe");
+    await expect(field.getByTestId("v6-scope-stage-header")).toContainText("Contexts");
+    await expect(field.getByTestId("v6-scope-stage-header")).toContainText("Pulses");
+    await expect(field.getByTestId("v6-scope-stage-header")).toContainText("Route refs");
+    await expect(field.getByTestId("v6-scope-map-toolbar")).toContainText("Viewport");
     await expect(field.locator(".react-flow")).toBeVisible();
     await expect(field.locator(".react-flow__node", { hasText: "Drafting outline" })).toBeVisible();
     await expect(field.locator(".canvas-field-node[data-kind='pulse']", { hasText: "pulse_30m_nudge" })).toBeVisible();
@@ -129,6 +133,10 @@ test.describe("V6 Scope Field map", () => {
     await expect(inspector).toContainText("Contexts");
     await expect(inspector).toContainText("Events");
     await expect(inspector).toContainText("Actors");
+    const leftNavWidth = await page.getByTestId("v6-left-nav").evaluate((element) => element.getBoundingClientRect().width);
+    const inspectorWidth = await page.getByTestId("v6-inspector").evaluate((element) => element.getBoundingClientRect().width);
+    expect(leftNavWidth).toBeGreaterThan(220);
+    expect(inspectorWidth).toBeGreaterThan(280);
     expect(legacyFieldRequests).toEqual([]);
     expect(projectionGets.some((url) => url.includes("/scopes/scope_writing/projection"))).toBe(true);
   });
