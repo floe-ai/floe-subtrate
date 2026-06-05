@@ -1,38 +1,289 @@
-# FloeWeb v6 content-first completion
+# FloeWeb V6 hard replacement plan
 
-Objective: make floe-web match the V6 mockup (floe-web-examples/mocks/v6/) closely, still using React Flow for the graph/map view, with real substrate-backed content. Preserve the corrected Workspace / Context / Scope model.
+Objective: make `floe-web` render the **V6 interface itself**, not a V6-inspired variant. The visual and structural source of truth is `C:\Development\ai-powered\floe-web-examples\mocks\v6\`. Preserve real Floe substrate behavior underneath. Keep **React Flow** for the Scope graph only. Use **Tailwind + shadcn/ui + Radix** for styling and interaction primitives. Do not use bespoke UI hacks when library primitives cover the behavior.
 
-Reference mockup: C:\Development\ai-powered\floe-web-examples\mocks\v6\
+Architecture route for this work:
+- Cluster: `floe-web`
+- Cell: `workspace-ui`
+- Module: `shell-surfaces`
 
-Completed and pushed:
-- `a7954f4` - v6 shell Workspace Home.
-- `a28c973` - v6 Scope Map over React Flow / Scope Projection.
-- `2f8cefa` - v6 Activity content surface over Events, runtime Telemetry, Contexts, Scopes, and Endpoints.
-- `fe437e9` - v6 Inspector content depth.
+Recommendation from architecture lookup:
+- `modify-existing-module`
 
-Agreed decisions (session 2026-06-01):
-- Channel overlay = V6 equivalent of context.html (keep, do not replace with a full page)
-- Add Actors section to the left nav (currently missing, V6 has it at the bottom)
-- Move workspace settings (path + profile/model) to the Home surface (currently inspector-only)
-- Scope cards on Home: grid layout with description + context/event/emit counts (currently list layout)
-- Inspector: add drag-to-resize handle, width persisted to localStorage (V6 has this)
+## Non-negotiables
 
-Current slice: issue #61 - v6 skeleton shell reset.
-- Goal: port the approved v6 skeleton composition into production while preserving real substrate/API behavior and corrected Workspace / Context / Scope semantics.
-- Implemented: shell hierarchy reset, Home order reset, removed global Channel toggle/legacy actor nav, added explicit Home actor "Open Contexts", kept Channel reachable through explicit Context paths, and updated legacy tests away from fake Default Field/Scope language.
-- Validation completed: targeted reset contract and targeted legacy compatibility loop pass. Full build/unit/e2e, live proof, post-implementation review, commit, and push are pending.
+1. **V6 is the source of truth for layout, hierarchy, labels, and composition.**
+2. **React Flow stays** as the graph engine inside the Scope Map surface.
+3. **Tailwind + shadcn/ui + Radix stay** as the styling and UI primitive stack.
+4. **No “inspiration” passes, no interpretation passes, no incremental restyling of the old shell.**
+5. Preserve **real substrate-backed Workspace / Context / Scope behavior** and current corrected semantics.
+6. Remove or hide default UI that does not exist in V6 unless it is intentionally reintroduced as a clearly post-V6 extension.
 
-Ordered remaining slices after #61:
-1. Left nav Actors section (add actors list matching V6 shell.js renderLeftNav)
-2. Home: workspace settings panel (compact path + profile/model inline on the home surface)
-3. Home: scope grid layout (description + counts, V6 scope-grid CSS class)
-4. Inspector: drag-to-resize handle (V6 makeResizeHandle, width persisted)
-5. (deferred) Scoped operational content where substrate support exists
+## Source of truth files
 
-Validation bar for each slice:
-- Architecture brief before product edits.
-- TDD/Playwright coverage for visible behavior and terminology.
-- Separate post-implementation review against the brief.
-- Build/unit/e2e checks.
-- Live proof screenshot/data where applicable.
-- Commit and push before moving to the next slice.
+V6 shell and surfaces:
+- `mocks\v6\shell.js`
+- `mocks\v6\home.html`
+- `mocks\v6\activity.html`
+- `mocks\v6\context.html`
+- `mocks\v6\scope.html`
+- `mocks\v6\components\home-overview.js`
+- `mocks\v6\v6.css`
+- `mocks\v6\linear-calm.css`
+
+Important V6 structural facts:
+- `home.html` renders the persistent shell as `topbar + left nav + main + right inspector`
+- `activity.html` is the workspace-wide stream surface
+- `context.html` defines the V6 conversation treatment
+- `scope.html` contains **both Map and Ops** via the scope topbar mode pill
+- `shell.js` defines the persistent shell contract shared across V6 pages
+
+## What went wrong in the current effort
+
+The current work tried to adapt the existing Floe UI toward V6 styling instead of replacing the UI with the V6 composition itself. That preserved too much of the old Floe shell and too many non-V6 surfaces, so the result could never converge to exact V6 parity.
+
+From this point forward the plan is:
+- **replace shell and surfaces from the mock outward**
+- **wire real Floe data into the V6 structure**
+- **delete or suppress old UI that leaks through**
+
+## Gap analysis
+
+### Things currently in `floe-web` that are missing from V6
+
+These should not shape the default V6 shell unless explicitly reintroduced after parity:
+
+1. The current shell is still centered on one large bespoke React surface in `src\main.tsx` rather than the V6 page/component structure.
+2. There is still old-product composition pressure from legacy Floe shell/state decisions.
+3. The Scope surface currently exposes extra graph chrome not present in V6, such as viewport toolbar, legend, MiniMap, and React Flow controls.
+4. The current Home surface includes richer operational detail than V6, especially around actor metrics and workspace context tooling.
+5. The current Home workspace-context section includes direct **assign-to-scope** controls and scope-creation controls that are not present in the V6 mock.
+6. The current inspector/home flow exposes runtime/config details in ways the V6 mock does not.
+7. The current Activity surface has broader filter/detail treatment than the V6 mock.
+8. The current app still carries product-specific labels and fallback copy that do not match V6 wording.
+9. The current Scope topbar still has an unfinished disabled Ops button rather than the real V6 Map/Ops implementation.
+10. The current implementation still depends too much on `styles.css` plus bespoke composition instead of V6-faithful React components backed by Tailwind/shadcn primitives.
+
+### Things present in V6 that are currently missing or incomplete in `floe-web`
+
+1. The exact persistent shell contract from `shell.js`.
+2. The exact V6 topbar behavior: **brand + workspace switcher + crumb + contextual right-side controls only**.
+3. The exact V6 left-nav rules:
+   - Home
+   - Activity
+   - Scopes
+   - scope-only Contexts in the left nav
+   - Actors
+4. The exact V6 inspector composition and default states from `shell.js`.
+5. The exact V6 Home component structure from `components\home-overview.js`.
+6. The exact V6 conversation presentation from `context.html`.
+7. The real V6 **Scope Map / Ops mode switch** from `scope.html`.
+8. The real V6 **Ops stage** for a Scope.
+9. The exact V6 shell spacing, density, and component hierarchy across all surfaces.
+10. The exact V6 DOM/layout structure needed to make visual parity objective instead of subjective.
+
+## Delivery strategy
+
+This must be delivered as a **hard shell replacement**, not as a cosmetic patch. To control token cost, do it in explicit vertical slices, each ending in a concrete parity checkpoint.
+
+### Slice 1 — Shared V6 shell replacement
+
+Goal: replace the current bespoke shell frame with the V6 shell contract.
+
+Build:
+- `V6Topbar`
+- `V6LeftNav`
+- `V6InspectorFrame`
+- `V6ShellLayout`
+- shared shell state matching V6 selection rules
+
+Must match:
+- `shell.js`
+- shell portions of `home.html`, `activity.html`, `context.html`, `scope.html`
+
+Rules:
+- topbar must be V6-accurate
+- left nav must be V6-accurate
+- right inspector must be the persistent V6 inspector region
+- do not preserve old shell chrome just because it already exists
+
+Acceptance:
+- shell frame visually and structurally matches V6 before deeper feature wiring
+
+### Slice 2 — Home page exact replacement
+
+Goal: make `floe-web` Home render the V6 Home page structure, then wire live data into it.
+
+Must match:
+- `home.html`
+- `components\home-overview.js`
+
+Includes:
+- hero
+- workspace settings block
+- actor strip
+- scope grid
+- recent activity section
+- workspace-contexts section
+- actor selection coupling with inspector
+
+Rules:
+- match the V6 hierarchy and density exactly first
+- then bind live Floe values into those exact sections
+- suppress non-V6 management controls from the default Home surface
+
+Acceptance:
+- Home reads as the same screen as `home.html`
+
+### Slice 3 — Activity page exact replacement
+
+Goal: make Activity match `activity.html` rather than the current expanded Floe activity interpretation.
+
+Includes:
+- header
+- summary
+- filters
+- stream body
+- inspector interactions
+
+Rules:
+- keep real events/telemetry underneath
+- match V6 visual density and layout hierarchy
+- remove non-V6 Activity chrome from the default path
+
+Acceptance:
+- Activity looks and behaves like V6 Activity, fed by real data
+
+### Slice 4 — Context / chat in the inspector
+
+Goal: make the V6 context experience exact, with chat where V6 puts it.
+
+Must match:
+- `context.html`
+- `shell.js` inspector usage patterns
+
+Includes:
+- conversation selection
+- active conversation header
+- message stream
+- composer
+- participant presentation
+- actor/context selection behavior
+
+Rules:
+- the default experience is **chat in the inspector region**
+- do not introduce an alternate standalone chat layout unless it exists in V6
+- labels and context presentation must follow V6, not current message-preview shortcuts
+
+Acceptance:
+- selecting actors/contexts produces the V6 conversation experience in the right place
+
+### Slice 5 — Scope page exact replacement, Map mode
+
+Goal: make `scope.html` Map mode structurally accurate while keeping React Flow as the graph engine.
+
+Must match:
+- scope topbar crumb + mode pill
+- stage chrome
+- left nav behavior for scope contexts
+- inspector behavior for scope selections
+
+Rules:
+- React Flow is only the renderer for the graph canvas
+- V6 owns the surrounding chrome
+- remove non-V6 map tooling from the default surface unless explicitly justified later
+
+Acceptance:
+- Scope Map mode reads as V6, with React Flow hidden underneath the chrome contract
+
+### Slice 6 — Scope page exact replacement, Ops mode
+
+Goal: implement the real V6 Ops stage instead of the current disabled placeholder.
+
+Must match:
+- Ops mode in `scope.html`
+- Sources column
+- Events column
+- Ops card composition
+- mode switching between Map and Ops
+
+Rules:
+- this is part of the V6 Scope page, not a future nice-to-have
+- preserve real Floe event/source/runtime semantics where possible
+- where live data is not yet available in identical shape, adapt data to the V6 structure without changing the V6 layout
+
+Acceptance:
+- Scope page can switch between Map and Ops exactly like V6
+
+### Slice 7 — Removal of conflicting non-V6 UI
+
+Goal: remove remaining default UI that prevents exact V6 parity.
+
+Candidates for removal/suppression:
+- extra runtime/config panels in default flows
+- extra management controls absent from V6
+- expanded graph chrome absent from V6
+- old breadcrumb/chrome wording
+- oversized cards and density mismatches
+- old shell state branches that create non-V6 layouts
+
+Acceptance:
+- no conflicting default UI remains in the V6 path
+
+## Implementation rules
+
+1. **Break up `src\main.tsx` aggressively.**
+   - the current monolith is the main reason old UI keeps leaking through
+   - move each V6 shell region into dedicated React components
+
+2. **Build React components that mirror the V6 pages.**
+   - `V6ShellLayout`
+   - `V6HomePage`
+   - `V6ActivityPage`
+   - `V6ContextInspector`
+   - `V6ScopePage`
+   - `V6ScopeMapStage`
+   - `V6ScopeOpsStage`
+
+3. **Use library primitives instead of custom behavior where possible.**
+   - panels: `react-resizable-panels`
+   - menus/dropdowns: Radix via shadcn
+   - scroll regions: Radix/shadcn scroll area
+   - buttons/inputs/dialogs: shadcn
+   - graph canvas: React Flow
+
+4. **Only write custom code for Floe-specific state/data wiring.**
+
+5. **Do not treat existing Floe UI structure as an asset.**
+   - treat it as migration debt unless it directly helps reproduce V6
+
+## Validation standard
+
+Each slice must pass:
+- `npm run build`
+- `npm run test:unit`
+- architecture validation
+- architecture reconciliation
+
+UI validation rule:
+- compare the touched surface directly to the V6 mock structure
+- do not accept “close enough”
+- do not spend tokens on non-deterministic UI checking
+
+## Budget control
+
+To avoid burning the remaining budget on another failed parity pass:
+
+1. do **one slice at a time**
+2. do not mix shell replacement with unrelated polish
+3. do not keep both old and new default shells alive longer than necessary
+4. do not start Scope Ops late — it is part of V6, not optional
+
+## Definition of done
+
+`floe-web` is done when:
+- Home, Activity, Context/Inspector, Scope Map, and Scope Ops all render as the V6 interface
+- React Flow remains the graph engine
+- Tailwind + shadcn/ui + Radix remain the styling/component stack
+- old non-V6 default shell paths are removed or suppressed
+- parity judgments are based on the mock files, not on interpretation
