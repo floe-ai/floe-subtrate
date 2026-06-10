@@ -645,6 +645,45 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   // Context API (Slice 2) — thin wrappers over ContextStore
   // ---------------------------------------------------------------------------
 
+  function serializeContextListRow(r: {
+    context_id: string;
+    workspace_id: string;
+    scope_id: string | null;
+    parent_context_id: string | null;
+    created_by_endpoint_id: string | null;
+    created_at: string;
+    last_event_at: string | null;
+    participants: string[];
+  }) {
+    return {
+      context_id: r.context_id,
+      workspace_id: r.workspace_id,
+      scope_id: r.scope_id,
+      parent_context_id: r.parent_context_id,
+      created_by_endpoint_id: r.created_by_endpoint_id,
+      created_at: r.created_at,
+      last_event_at: r.last_event_at,
+      participants: r.participants,
+      first_message_preview: store.contextStore.getFirstMessagePreview(r.context_id)
+    };
+  }
+
+  app.get("/v1/workspaces/:workspace_id/contexts", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const query = z.object({
+      scope: z.enum(["all", "scoped", "unscoped"]).optional().default("all"),
+      limit: z.coerce.number().int().positive().max(200).optional().default(50)
+    }).parse(request.query);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    const rows = store.contextStore.listContextsForWorkspace(params.workspace_id, {
+      scope: query.scope,
+      limit: query.limit
+    });
+    return { contexts: rows.map(serializeContextListRow) };
+  });
+
   app.get("/v1/contexts", async (request) => {
     const query = z.object({
       participant: z.string().min(1),
@@ -658,17 +697,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       return true;
     });
     return {
-      contexts: filtered.map((r) => ({
-        context_id: r.context_id,
-        workspace_id: r.workspace_id,
-        scope_id: r.scope_id,
-        parent_context_id: r.parent_context_id,
-        created_by_endpoint_id: r.created_by_endpoint_id,
-        created_at: r.created_at,
-        last_event_at: r.last_event_at,
-        participants: r.participants,
-        first_message_preview: store.contextStore.getFirstMessagePreview(r.context_id)
-      }))
+      contexts: filtered.map(serializeContextListRow)
     };
   });
 

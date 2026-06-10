@@ -16,6 +16,8 @@ export type ContextListRow = ContextRecord & {
   topic: string | null;
 };
 
+export type ContextScopeFilter = "all" | "scoped" | "unscoped";
+
 /**
  * Read-only surface used by the context resolver. Keeps the resolver decoupled
  * from the BusStore so it can be unit-tested in isolation.
@@ -201,6 +203,20 @@ export class ContextStore implements ContextStoreReader {
     return text.slice(0, maxChars) + "…";
   }
 
+  private mapContextListRow(row: any): ContextListRow {
+    return {
+      context_id: row.context_id,
+      workspace_id: row.workspace_id,
+      scope_id: row.scope_id ?? null,
+      parent_context_id: row.parent_context_id ?? null,
+      created_by_endpoint_id: row.created_by_endpoint_id ?? null,
+      created_at: row.created_at,
+      last_event_at: (row.last_event_at as string | null) ?? null,
+      topic: null,
+      participants: this.getContextParticipants(row.context_id)
+    };
+  }
+
   listContextsForParticipant(endpoint_id: string): ContextListRow[] {
     const rows = this.db
       .prepare(
@@ -215,17 +231,36 @@ export class ContextStore implements ContextStoreReader {
       `
       )
       .all(endpoint_id) as any[];
-    return rows.map((row) => ({
-      context_id: row.context_id,
-      workspace_id: row.workspace_id,
-      scope_id: row.scope_id ?? null,
-      parent_context_id: row.parent_context_id ?? null,
-      created_by_endpoint_id: row.created_by_endpoint_id ?? null,
-      created_at: row.created_at,
-      last_event_at: (row.last_event_at as string | null) ?? null,
-      topic: null,
-      participants: this.getContextParticipants(row.context_id)
-    }));
+    return rows.map((row) => this.mapContextListRow(row));
+  }
+
+  listContextsForWorkspace(
+    workspace_id: string,
+    options: { scope?: ContextScopeFilter; limit?: number } = {}
+  ): ContextListRow[] {
+    const params: Array<string | number> = [workspace_id];
+    let scopeClause = "";
+    if (options.scope === "scoped") {
+      scopeClause = "AND c.scope_id IS NOT NULL";
+    } else if (options.scope === "unscoped") {
+      scopeClause = "AND c.scope_id IS NULL";
+    }
+    const limit = options.limit ?? 50;
+    params.push(limit);
+    const rows = this.db
+      .prepare(
+        `
+        SELECT c.*, MAX(e.created_at) AS last_event_at
+        FROM contexts c
+        LEFT JOIN events e ON e.context_id = c.context_id
+        WHERE c.workspace_id = ? ${scopeClause}
+        GROUP BY c.context_id
+        ORDER BY (last_event_at IS NULL) ASC, last_event_at DESC, c.created_at DESC
+        LIMIT ?
+      `
+      )
+      .all(...params) as any[];
+    return rows.map((row) => this.mapContextListRow(row));
   }
 
   listContextsForScope(workspace_id: string, scope_id: string): ContextListRow[] {
@@ -241,16 +276,6 @@ export class ContextStore implements ContextStoreReader {
       `
       )
       .all(workspace_id, scope_id) as any[];
-    return rows.map((row) => ({
-      context_id: row.context_id,
-      workspace_id: row.workspace_id,
-      scope_id: row.scope_id ?? null,
-      parent_context_id: row.parent_context_id ?? null,
-      created_by_endpoint_id: row.created_by_endpoint_id ?? null,
-      created_at: row.created_at,
-      last_event_at: (row.last_event_at as string | null) ?? null,
-      topic: null,
-      participants: this.getContextParticipants(row.context_id)
-    }));
+    return rows.map((row) => this.mapContextListRow(row));
   }
 }

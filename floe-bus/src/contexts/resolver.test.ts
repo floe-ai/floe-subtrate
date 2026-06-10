@@ -19,7 +19,7 @@ function makeReader(contexts: Record<string, { participants: string[]; topic?: s
       return {
         context_id: id,
         workspace_id: WS,
-        scope_id: "default",
+        scope_id: null,
         parent_context_id: null,
         created_by_endpoint_id: contexts[id].participants[0],
         created_at: "2026-01-01T00:00:00.000Z"
@@ -37,7 +37,7 @@ function makeReader(contexts: Record<string, { participants: string[]; topic?: s
         .map(([id, v]) => ({
           context_id: id,
           workspace_id: WS,
-          scope_id: "default",
+          scope_id: null,
           parent_context_id: null,
           created_by_endpoint_id: v.participants[0],
           created_at: "2026-01-01T00:00:00.000Z",
