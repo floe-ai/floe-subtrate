@@ -109,6 +109,10 @@ async function installBaselineRoutes(page: Page): Promise<void> {
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ bindings: [] }) })
   );
 
+  await page.route("**/v1/runtime/status", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ bridge: { online: false, runtime_adapter: null } }) })
+  );
+
   await page.route("**/v1/events**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ events: [] }) })
   );

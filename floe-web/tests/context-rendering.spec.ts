@@ -52,6 +52,22 @@ type WorldState = {
   eventsByContext: Record<string, ContextEvent[]>;
   contextEventDelayMs: Record<string, number>;
   telemetry: TelemetryRecord[];
+  runtimeBindings: Array<{
+    binding_key: string;
+    scope: "agent" | "workspace_default" | "global_default";
+    workspace_id: string | null;
+    endpoint_id: string | null;
+    auth_profile: string;
+    model: string | null;
+    thinking_level?: string | null;
+  }>;
+  authModels: Array<{
+    id: string;
+    name: string;
+    provider: string;
+    api: string;
+    reasoning: boolean;
+  }>;
   emitCalls: unknown[];
   legacyEventsCalls: number;
   contextEventsCalls: Record<string, number>;
@@ -68,6 +84,22 @@ function makeWorld(initial?: Partial<WorldState>): WorldState {
     eventsByContext: {},
     contextEventDelayMs: {},
     telemetry: [],
+    runtimeBindings: [{
+      binding_key: "workspace-default",
+      scope: "workspace_default",
+      workspace_id: WORKSPACE_ID,
+      endpoint_id: null,
+      auth_profile: "prof_1",
+      model: "gpt-4",
+      thinking_level: "medium"
+    }],
+    authModels: [{
+      id: "gpt-4",
+      name: "GPT-4",
+      provider: "openai",
+      api: "openai-responses",
+      reasoning: true
+    }],
     emitCalls: [],
     legacyEventsCalls: 0,
     contextEventsCalls: {},
@@ -75,7 +107,7 @@ function makeWorld(initial?: Partial<WorldState>): WorldState {
     deleteContextCalls: [],
     deleteContextFailure: null,
     bridgeRuntimeAdapter: "pi-agent-core",
-    endpointRuntimeAdapter: null,
+    endpointRuntimeAdapter: "pi-agent-core",
     ...initial
   };
 }
@@ -171,40 +203,46 @@ async function setupRoutes(page: Page, world: WorldState): Promise<void> {
     })
   );
 
-  await page.route("**/v1/local-config/status", (route) =>
+  await page.route("**/v1/runtime/status", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        ok: true,
-        bridge: world.bridgeRuntimeAdapter === null ? {} : { runtime_adapter: world.bridgeRuntimeAdapter }
+        bridge: {
+          online: world.bridgeRuntimeAdapter !== null,
+          runtime_adapter: world.bridgeRuntimeAdapter
+        }
       })
     })
   );
 
-  await page.route("**/v1/runtime/bindings**", (route) =>
-    route.fulfill({
+  await page.route("**/v1/runtime/bindings**", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = JSON.parse(route.request().postData() ?? "{}") as WorldState["runtimeBindings"][number];
+      const bindingKey = body.scope === "workspace_default" ? "workspace-default" : "binding-posted";
+      const nextBinding = { ...body, binding_key: bindingKey };
+      const existingIndex = world.runtimeBindings.findIndex((binding) => binding.scope === body.scope);
+      if (existingIndex >= 0) world.runtimeBindings[existingIndex] = nextBinding;
+      else world.runtimeBindings.push(nextBinding);
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ binding: nextBinding })
+      });
+    }
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        bindings: [{
-          binding_key: "b1",
-          scope: "agent",
-          workspace_id: WORKSPACE_ID,
-          endpoint_id: FLOE,
-          auth_profile: "prof_1",
-          model: "gpt-4"
-        }]
-      })
-    })
-  );
+      body: JSON.stringify({ bindings: world.runtimeBindings })
+    });
+  });
 
   await page.route("**/v1/runtime/telemetry**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ records: world.telemetry }) })
   );
 
   await page.route("**/v1/auth/models**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [] }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: world.authModels }) })
   );
 
   // Context-scoped events: must be hit (not the legacy workspace-wide one).
@@ -431,7 +469,7 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
   });
 
   test("selected profile cannot silently send through the fake bridge adapter", async ({ page }) => {
-    const world = makeWorld({ bridgeRuntimeAdapter: null });
+    const world = makeWorld({ bridgeRuntimeAdapter: "fake", endpointRuntimeAdapter: null });
 
     await bootApp(page, world);
 
@@ -447,6 +485,20 @@ test.describe("Slice 5 — context-scoped chat rendering", () => {
 
     await expect(page.getByText(/bridge is running with the fake runtime adapter/i)).toHaveCount(0);
     await expect(page.locator(".channel-composer input")).toBeEnabled();
+  });
+
+  test("workspace reasoning effort persists through runtime bindings", async ({ page }) => {
+    const world = makeWorld();
+
+    await bootApp(page, world);
+
+    const selector = page.getByLabel("Reasoning effort");
+    await expect(selector).toBeVisible();
+    await expect(selector).toHaveValue("medium");
+
+    await selector.selectOption("high");
+    await expect(selector).toHaveValue("high");
+    expect(world.runtimeBindings.find((binding) => binding.scope === "workspace_default")?.thinking_level).toBe("high");
   });
 
   test("chat fetch hits /v1/contexts/:id/events not /v1/events?workspace_id (E2E-8 mirror)", async ({ page }) => {

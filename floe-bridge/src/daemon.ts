@@ -1,3 +1,8 @@
+/**
+ * @invariant The bridge is the sole owner of effective runtime embodiment.
+ * Adapter selection and runtime resolution happen here; callers may provide bindings and config,
+ * but only the bridge decides the live adapter and the effective runtime passed into sessions.
+ */
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AgentRuntimeConfig } from "./auth.js";
@@ -461,6 +466,7 @@ export class BridgeDaemon {
         // Binding model takes priority over project-declared model
         model: resolvedAuth.model ?? runtimeConfig?.model ?? undefined,
         model_source: resolvedAuth.model_source ?? undefined,
+        thinking_level: resolvedAuth.thinking_level ?? runtimeConfig?.thinking_level ?? undefined,
         instructions: instructions ?? undefined
       };
       console.log("[bridge] effective runtime resolved", {
@@ -532,14 +538,21 @@ export class BridgeDaemon {
     workspaceId: string,
     endpointId: string,
     runtimeConfig: AgentRuntimeConfig | undefined
-  ): Promise<{ auth_profile: string | null; model: string | null; source: string | null; model_source: string | null }> {
+  ): Promise<{
+    auth_profile: string | null;
+    model: string | null;
+    source: string | null;
+    model_source: string | null;
+    thinking_level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null;
+  }> {
     const bindings = await this.bus.resolveRuntimeBinding(workspaceId, endpointId);
     if (bindings.endpoint_auth_profile) {
       return {
         auth_profile: bindings.endpoint_auth_profile,
         model: bindings.endpoint_model ?? bindings.workspace_model ?? bindings.global_model ?? null,
         source: "agent_binding",
-        model_source: bindings.endpoint_model ? "agent_binding" : bindings.workspace_model ? "workspace_binding" : bindings.global_model ? "global_binding" : null
+        model_source: bindings.endpoint_model ? "agent_binding" : bindings.workspace_model ? "workspace_binding" : bindings.global_model ? "global_binding" : null,
+        thinking_level: (bindings.endpoint_thinking_level ?? bindings.workspace_thinking_level ?? bindings.global_thinking_level ?? null) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
       };
     }
     if (bindings.workspace_auth_profile) {
@@ -547,7 +560,8 @@ export class BridgeDaemon {
         auth_profile: bindings.workspace_auth_profile,
         model: bindings.workspace_model ?? bindings.global_model ?? null,
         source: "workspace_binding",
-        model_source: bindings.workspace_model ? "workspace_binding" : bindings.global_model ? "global_binding" : null
+        model_source: bindings.workspace_model ? "workspace_binding" : bindings.global_model ? "global_binding" : null,
+        thinking_level: (bindings.workspace_thinking_level ?? bindings.global_thinking_level ?? null) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
       };
     }
     if (runtimeConfig?.auth_profile?.trim()) {
@@ -555,7 +569,8 @@ export class BridgeDaemon {
         auth_profile: runtimeConfig.auth_profile.trim(),
         model: null,
         source: "project_runtime",
-        model_source: null
+        model_source: null,
+        thinking_level: (bindings.global_thinking_level ?? null) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
       };
     }
     if (bindings.global_auth_profile) {
@@ -563,7 +578,8 @@ export class BridgeDaemon {
         auth_profile: bindings.global_auth_profile,
         model: bindings.global_model ?? null,
         source: "runtime_binding_global",
-        model_source: bindings.global_model ? "global_binding" : null
+        model_source: bindings.global_model ? "global_binding" : null,
+        thinking_level: (bindings.global_thinking_level ?? null) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
       };
     }
     if (this.config.runtime?.default_auth_profile?.trim()) {
@@ -571,10 +587,17 @@ export class BridgeDaemon {
         auth_profile: this.config.runtime.default_auth_profile.trim(),
         model: null,
         source: "config_global_default",
-        model_source: null
+        model_source: null,
+        thinking_level: (bindings.global_thinking_level ?? null) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
       };
     }
-    return { auth_profile: null, model: null, source: null, model_source: null };
+    return {
+      auth_profile: null,
+      model: null,
+      source: null,
+      model_source: null,
+      thinking_level: (bindings.global_thinking_level ?? null) as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
+    };
   }
 }
 

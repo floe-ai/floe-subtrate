@@ -1,3 +1,8 @@
+/**
+ * @invariant This module is the bridge-side runtime auth resolver.
+ * It must resolve provider, model, auth profile, and workspace-level runtime options from
+ * the shared Floe auth files without leaking secrets or bypassing binding precedence.
+ */
 import { execSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -86,6 +91,7 @@ export type AgentRuntimeConfig = {
   provider?: string;
   model?: string;
   auth_profile?: string;
+  thinking_level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Source of the auth_profile selection. "agent_binding" and "workspace_binding" indicate
    *  a local override; project-declared provider/model do not take precedence in that case. */
   auth_profile_source?: string;

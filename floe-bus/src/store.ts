@@ -1,3 +1,8 @@
+/**
+ * @invariant BusStore is the sole mutable substrate store for bus-owned records.
+ * Runtime bindings, bridges, deliveries, and telemetry must be persisted and resolved here
+ * with explicit precedence rules; callers must not invent parallel runtime state.
+ */
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, parse, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -186,8 +191,17 @@ export type RuntimeBindingRecord = {
   endpoint_id: string | null;
   auth_profile: string;
   model: string | null;
+  thinking_level: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type BridgeRecord = {
+  bridge_id: string;
+  status: string;
+  capabilities: Record<string, unknown>;
+  last_seen_at: string;
+  created_at: string;
 };
 
 function now(): string {
@@ -432,6 +446,7 @@ export class BusStore {
     this.addColumnIfMissing("delivery_bundles", "resume_reason", "TEXT NOT NULL DEFAULT 'event'");
     this.addColumnIfMissing("runtime_telemetry", "delivery_id", "TEXT");
     this.addColumnIfMissing("runtime_bindings", "model", "TEXT");
+    this.addColumnIfMissing("runtime_bindings", "thinking_level", "TEXT");
     this.addColumnIfMissing("pulses", "persistence", "TEXT NOT NULL DEFAULT 'local'");
     this.addColumnIfMissing("pulses", "scope_id", "TEXT");
     this.relaxPulseScopeColumn();
@@ -746,32 +761,38 @@ export class BusStore {
     endpoint_model: string | null;
     workspace_model: string | null;
     global_model: string | null;
+    endpoint_thinking_level: string | null;
+    workspace_thinking_level: string | null;
+    global_thinking_level: string | null;
   } {
     const endpoint = this.db.prepare(`
-      SELECT auth_profile, model
+      SELECT auth_profile, model, thinking_level
       FROM runtime_bindings
       WHERE scope = 'agent' AND workspace_id = ? AND endpoint_id = ?
       LIMIT 1
-    `).get(workspaceId, endpointId) as { auth_profile: string; model: string | null } | undefined;
+    `).get(workspaceId, endpointId) as { auth_profile: string; model: string | null; thinking_level: string | null } | undefined;
     const workspace = this.db.prepare(`
-      SELECT auth_profile, model
+      SELECT auth_profile, model, thinking_level
       FROM runtime_bindings
       WHERE scope = 'workspace_default' AND workspace_id = ?
       LIMIT 1
-    `).get(workspaceId) as { auth_profile: string; model: string | null } | undefined;
+    `).get(workspaceId) as { auth_profile: string; model: string | null; thinking_level: string | null } | undefined;
     const global = this.db.prepare(`
-      SELECT auth_profile, model
+      SELECT auth_profile, model, thinking_level
       FROM runtime_bindings
       WHERE scope = 'global_default'
       LIMIT 1
-    `).get() as { auth_profile: string; model: string | null } | undefined;
+    `).get() as { auth_profile: string; model: string | null; thinking_level: string | null } | undefined;
     return {
       endpoint_auth_profile: endpoint?.auth_profile ?? null,
       workspace_auth_profile: workspace?.auth_profile ?? null,
       global_auth_profile: global?.auth_profile ?? null,
       endpoint_model: endpoint?.model ?? null,
       workspace_model: workspace?.model ?? null,
-      global_model: global?.model ?? null
+      global_model: global?.model ?? null,
+      endpoint_thinking_level: endpoint?.thinking_level ?? null,
+      workspace_thinking_level: workspace?.thinking_level ?? null,
+      global_thinking_level: global?.thinking_level ?? null
     };
   }
 
@@ -781,16 +802,18 @@ export class BusStore {
     endpoint_id?: string | null;
     auth_profile: string;
     model?: string | null;
+    thinking_level?: string | null;
   }, broadcast: Broadcast): RuntimeBindingRecord {
     const timestamp = now();
     const bindingKey = runtimeBindingKey(input.scope, input.workspace_id ?? null, input.endpoint_id ?? null);
     this.db.prepare(`
       INSERT INTO runtime_bindings (
-        binding_key, scope, workspace_id, endpoint_id, auth_profile, model, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        binding_key, scope, workspace_id, endpoint_id, auth_profile, model, thinking_level, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(binding_key) DO UPDATE SET
         auth_profile = excluded.auth_profile,
         model = excluded.model,
+        thinking_level = excluded.thinking_level,
         updated_at = excluded.updated_at
     `).run(
       bindingKey,
@@ -799,6 +822,7 @@ export class BusStore {
       input.endpoint_id ?? null,
       input.auth_profile,
       input.model ?? null,
+      input.thinking_level ?? null,
       timestamp,
       timestamp
     );
@@ -817,6 +841,17 @@ export class BusStore {
     this.db.prepare("DELETE FROM runtime_bindings WHERE binding_key = ?").run(bindingKey);
     broadcast("runtime_binding_cleared", { binding_key: bindingKey });
     return { ok: true, binding_key: bindingKey };
+  }
+
+  listBridges(): BridgeRecord[] {
+    const rows = this.db.prepare("SELECT * FROM bridges ORDER BY created_at, bridge_id").all() as any[];
+    return rows.map((row) => ({
+      bridge_id: String(row.bridge_id),
+      status: String(row.status),
+      capabilities: parseJson<Record<string, unknown>>(String(row.capabilities_json ?? "{}")),
+      last_seen_at: String(row.last_seen_at),
+      created_at: String(row.created_at)
+    }));
   }
 
   deleteWorkspace(workspaceId: string, options: { delete_locator?: boolean }, broadcast: Broadcast): {
@@ -2208,6 +2243,7 @@ export class BusStore {
       endpoint_id: row.endpoint_id ?? null,
       auth_profile: String(row.auth_profile),
       model: row.model ?? null,
+      thinking_level: row.thinking_level ?? null,
       created_at: String(row.created_at),
       updated_at: String(row.updated_at)
     };

@@ -1,3 +1,8 @@
+/**
+ * @invariant This adapter is the only Pi Agent Core embodiment for Floe runtime turns.
+ * Session reuse must stay keyed to the effective runtime configuration so that model or
+ * thinking changes rebuild the session before processing the next delivery.
+ */
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
@@ -25,6 +30,7 @@ type AgentFactoryInput = {
   tools: AgentTool[];
   getApiKey: () => Promise<string>;
   systemPrompt: string;
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 };
 
 type AgentFactory = (input: AgentFactoryInput) => AgentLike;
@@ -65,6 +71,7 @@ type SessionState = {
   workspaceId: string;
   provider: string;
   modelId: string;
+  thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   instructionsHash: string;
   context?: RuntimeContext;
   activeTurn?: RuntimeTurnContext;
@@ -310,11 +317,18 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     const rawInstructions = runtimeConfig?.instructions?.trim() ?? "";
     // Build the full system prompt: agent instructions + Floe substrate guidance
     const systemPrompt = buildSystemPrompt(rawInstructions);
+    const thinkingLevel = runtimeConfig?.thinking_level ?? "off";
 
     const instructionsHash = instructionHash(systemPrompt);
 
     const existing = this.sessions.get(key);
-    if (existing && existing.provider === resolved.provider && existing.modelId === resolved.model.id && existing.instructionsHash === instructionsHash) {
+    if (
+      existing &&
+      existing.provider === resolved.provider &&
+      existing.modelId === resolved.model.id &&
+      existing.thinkingLevel === thinkingLevel &&
+      existing.instructionsHash === instructionsHash
+    ) {
       existing.context = context;
       return existing;
     }
@@ -337,6 +351,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       workspaceId: bundle.workspace_id,
       provider: resolved.provider,
       modelId: resolved.model.id,
+      thinkingLevel,
       instructionsHash,
       context
     };
@@ -363,6 +378,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     console.log("[bridge] pi agent instructions loaded", {
       endpoint_id: bundle.endpoint_id,
       instructions_bytes: rawInstructions.length,
+      thinking_level: thinkingLevel,
       instructions_hash: instructionsHash
     });
 
@@ -394,7 +410,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
         if (!latest) throw new Error(`Provider '${resolved.provider}' is missing authentication. Run 'floe login'.`);
         return latest;
-      }
+      },
+      thinkingLevel
     });
 
     this.sessions.set(key, state);
@@ -840,28 +857,36 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
   }
 }
 
+export function summarizePiRequestPayload(payload: any, model: any) {
+  const inputItems = Array.isArray(payload?.input) ? payload.input : [];
+  const roles = inputItems.map((m: any) => m?.role ?? m?.type ?? "unknown");
+  return {
+    model_id: model?.id,
+    provider: model?.provider,
+    api: model?.api,
+    input_items: inputItems.length,
+    roles: roles.slice(0, 20),
+    has_reasoning: !!payload?.reasoning,
+    reasoning: payload?.reasoning ?? null,
+    has_thinking: !!payload?.thinking,
+    thinking: payload?.thinking ?? null,
+    has_tools: Array.isArray(payload?.tools) && payload.tools.length > 0,
+    tool_count: Array.isArray(payload?.tools) ? payload.tools.length : 0
+  };
+}
+
 function createDefaultAgent(input: AgentFactoryInput): AgentLike {
   return new Agent({
     initialState: {
       model: input.model,
       systemPrompt: input.systemPrompt,
-      tools: input.tools
+      tools: input.tools,
+      thinkingLevel: input.thinkingLevel ?? "off"
     },
     getApiKey: input.getApiKey,
     onPayload: (payload: any, model: any) => {
       // Log request structure (no content/tokens) for diagnostics
-      const inputItems = Array.isArray(payload?.input) ? payload.input : [];
-      const roles = inputItems.map((m: any) => m?.role ?? m?.type ?? "unknown");
-      console.log("[bridge] pi request payload", {
-        model_id: model?.id,
-        provider: model?.provider,
-        api: model?.api,
-        input_items: inputItems.length,
-        roles: roles.slice(0, 20),
-        has_thinking: !!payload?.thinking,
-        has_tools: Array.isArray(payload?.tools) && payload.tools.length > 0,
-        tool_count: Array.isArray(payload?.tools) ? payload.tools.length : 0
-      });
+      console.log("[bridge] pi request payload", summarizePiRequestPayload(payload, model));
       return payload;
     },
     onResponse: (response: any, model: any) => {

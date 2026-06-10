@@ -1,13 +1,16 @@
+/**
+ * @invariant This file is the only public HTTP/WebSocket boundary for floe-bus.
+ * API handlers must expose bus-owned truth without bypassing BusStore precedence,
+ * bridge-reported runtime state, or the shared auth/model registry.
+ */
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { z } from "zod";
-import YAML from "yaml";
-import { getModels, getProviders } from "@mariozechner/pi-ai";
 import type { LocalConfig } from "./config.js";
-import { parseListen, resolveLocalPath } from "./config.js";
+import { parseListen } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
@@ -16,6 +19,10 @@ import {
 } from "./scope-projection-layout-store.js";
 import { ScopeAlreadyExistsError, ScopeNotFoundError, ScopeReservedIdError } from "./scopes/store.js";
 import { buildScopeProjection } from "./scopes/projection.js";
+import { listAuthModels, listAuthProfiles } from "./auth.js";
+
+const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
+const BRIDGE_LIVENESS_MS = 90_000;
 
 const EventCommandSchema = z.object({
   type: z.string().min(1),
@@ -54,7 +61,8 @@ const RuntimeBindingUpsertSchema = z.object({
   workspace_id: z.string().nullable().optional(),
   endpoint_id: z.string().nullable().optional(),
   auth_profile: z.string().min(1),
-  model: z.string().nullable().optional()
+  model: z.string().nullable().optional(),
+  thinking_level: ThinkingLevelSchema.nullable().optional()
 });
 
 const PulseSubscriberSchema = z.union([
@@ -132,6 +140,27 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     web: config.web,
     bridge: config.bridge
   }));
+
+  app.get("/v1/runtime/status", async () => {
+    const nowMs = Date.now();
+    const onlineBridges = store.listBridges().filter((bridge) => {
+      const seenAt = Date.parse(bridge.last_seen_at);
+      return Number.isFinite(seenAt) && nowMs - seenAt <= BRIDGE_LIVENESS_MS;
+    });
+    const runtimeAdapter = onlineBridges
+      .flatMap((bridge) => {
+        const adapters = Array.isArray(bridge.capabilities.runtime_adapters)
+          ? bridge.capabilities.runtime_adapters
+          : [];
+        return adapters.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+      })[0] ?? null;
+    return {
+      bridge: {
+        online: onlineBridges.length > 0,
+        runtime_adapter: runtimeAdapter
+      }
+    };
+  });
 
   app.get("/v1/events/stream", { websocket: true }, (socket) => {
     const client = socket as unknown as SocketLike;
@@ -435,7 +464,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       workspace_id: body.workspace_id ?? null,
       endpoint_id: body.endpoint_id ?? null,
       auth_profile: body.auth_profile,
-      model: body.model ?? null
+      model: body.model ?? null,
+      thinking_level: body.thinking_level ?? null
     }, broadcast);
     if (body.scope === "agent" && body.endpoint_id && body.workspace_id) {
       const endpoint = store.getEndpoint(body.endpoint_id) as any;
@@ -488,7 +518,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   app.get("/v1/auth/profiles", async () => {
-    const profiles = loadAuthProfiles(configPath, config);
+    const profiles = listAuthProfiles(configPath, config);
     return {
       profiles,
       default_auth_profile: typeof config.runtime?.default_auth_profile === "string"
@@ -499,21 +529,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.get("/v1/auth/models", async (request) => {
     const query = z.object({ provider: z.string().optional() }).parse(request.query);
-    const providers = getProviders();
-    const allModels = query.provider
-      ? (providers.includes(query.provider as any) ? getModels(query.provider as any) : [])
-      : providers.flatMap((p) => getModels(p as any));
-    const models = allModels.map((m) => ({
-      id: m.id,
-      name: m.name,
-      provider: m.provider,
-      api: m.api,
-      reasoning: m.reasoning,
-      contextWindow: m.contextWindow,
-      maxTokens: m.maxTokens,
-      input: m.input
-    }));
-    return { models };
+    return { models: listAuthModels(configPath, config, query.provider) };
   });
 
   app.post("/v1/bridges/register", async (request, reply) => {
@@ -1160,29 +1176,4 @@ function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, p
   }
 
   broadcast("pulse_fired", { pulse_id: pulseId, fired_at: fireTimestamp, subscriber_count: subscribers.length });
-}
-
-function loadAuthProfiles(configPath: string, config: LocalConfig): Array<{
-  id: string;
-  provider: string;
-  model?: string;
-  label?: string;
-}> {
-  const home = resolveLocalPath(configPath, config.home, ".");
-  const path = join(home, "auth", "profiles.yaml");
-  if (!existsSync(path)) return [];
-  try {
-    const parsed = YAML.parse(readFileSync(path, "utf8")) as any;
-    const profiles = Array.isArray(parsed?.profiles) ? parsed.profiles : [];
-    return profiles
-      .filter((profile: any) => typeof profile?.id === "string" && typeof profile?.provider === "string")
-      .map((profile: any) => ({
-        id: String(profile.id),
-        provider: String(profile.provider),
-        model: typeof profile.model === "string" ? profile.model : undefined,
-        label: typeof profile.label === "string" ? profile.label : undefined
-      }));
-  } catch {
-    return [];
-  }
 }

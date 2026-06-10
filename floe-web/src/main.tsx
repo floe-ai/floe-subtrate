@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -54,6 +54,7 @@ import {
   type ContextEvent,
   type ContextSummary
 } from "./contexts";
+import { CHANNEL_AUTO_SCROLL_THRESHOLD_PX } from "./channel-scroll";
 import {
   applyNodeChangesToLayout,
   reactFlowToLayout,
@@ -109,9 +110,11 @@ type RuntimeBinding = {
   endpoint_id: string | null;
   auth_profile: string;
   model: string | null;
+  thinking_level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | null;
 };
-type LocalConfigStatus = {
+type RuntimeStatus = {
   bridge?: {
+    online?: boolean;
     runtime_adapter?: string | null;
   };
 };
@@ -390,6 +393,9 @@ function App() {
   const localLayoutWriteUntilRef = useRef<Map<string, number>>(new Map());
   const autoInitializedLayoutRef = useRef<Set<string>>(new Set());
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const channelBodyRef = useRef<HTMLDivElement>(null);
+  const lastAutoScrollKeyRef = useRef<string | null>(null);
+  const [channelPinnedToBottom, setChannelPinnedToBottom] = useState(true);
   const contextEventsRequestRef = useRef(0);
 
   const selectedWorkspace = workspaces.find((item) => item.workspace_id === selectedWorkspaceId) ?? null;
@@ -449,11 +455,14 @@ function App() {
       }
     ];
   }, [availableModels, effectiveProfile?.provider, workspaceBinding?.model]);
+  const workspaceThinkingLevel = workspaceBinding?.thinking_level ?? "off";
+  const selectedWorkspaceModel = workspaceModelOptions.find((model) => model.id === (workspaceBinding?.model ?? ""));
+  const reasoningSupported = !!selectedWorkspaceModel?.reasoning;
   const runtimeReady = !!effectiveProfileId && !!effectiveModel;
   const bridgeRuntimeAdapterName = selectedAgentRuntimeAdapter
     ? selectedAgentRuntimeAdapter
     : bridgeRuntimeKnown
-    ? (bridgeRuntimeAdapter?.trim().toLowerCase() || "fake")
+    ? (bridgeRuntimeAdapter?.trim().toLowerCase() || null)
     : null;
   const runtimeBlockedByFakeAdapter =
     runtimeReady &&
@@ -650,6 +659,53 @@ function App() {
     return orderedSegments;
   }, [floeAgent, floeMessages, floeIsActive, humanEndpoint, streamingTurns, telemetry, selectedContextId, contextEvents]);
 
+  const showThinkingStrip =
+    floeIsActive &&
+    !chatSegments.some((segment) => segment.kind === "activity" && segment.group.status === "working");
+
+  const autoScrollKey = useMemo(() => {
+    const messageKey = floeMessages
+      .map((message) => `${message.event_id}:${message.created_at}`)
+      .join("|");
+    const streamingKey = Object.entries(streamingTurns)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .filter(([, turn]) => turn.text.trim().length > 0)
+      .map(([turnId, turn]) => `${turnId}:${turn.created_at}:${turn.text}`)
+      .join("|");
+    return `${selectedContextId ?? "none"}|messages:${messageKey}|streaming:${streamingKey}`;
+  }, [floeMessages, selectedContextId, streamingTurns]);
+
+  useEffect(() => {
+    setChannelPinnedToBottom(true);
+  }, [selectedContextId]);
+
+  useEffect(() => {
+    const root = channelBodyRef.current;
+    const target = chatEndRef.current;
+    if (!channelOpen || !root || !target || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setChannelPinnedToBottom(entry?.isIntersecting ?? false);
+      },
+      {
+        root,
+        threshold: 0,
+        rootMargin: `0px 0px ${CHANNEL_AUTO_SCROLL_THRESHOLD_PX}px 0px`
+      }
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [channelOpen, selectedContextId]);
+
+  useLayoutEffect(() => {
+    if (autoScrollKey === lastAutoScrollKeyRef.current) return;
+    lastAutoScrollKeyRef.current = autoScrollKey;
+    if (!channelOpen || !channelPinnedToBottom) return;
+    chatEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [channelOpen, autoScrollKey, channelPinnedToBottom]);
+
   const latestRuntimeError = useMemo(() => {
     if (!floeAgent) return null;
     const items = telemetry.filter((record) => record.endpoint_id === floeAgent.endpoint_id);
@@ -747,13 +803,13 @@ function App() {
   const refresh = useCallback(async (preferredWorkspaceId?: string) => {
     try {
       setError(null);
-      const [workspaceResult, authResult, configResult] = await Promise.all([
+      const [workspaceResult, authResult, runtimeStatusResult] = await Promise.all([
         api<{ workspaces: Workspace[] }>(busUrl, "/v1/workspaces"),
         api<{ profiles: AuthProfile[] }>(busUrl, "/v1/auth/profiles"),
-        api<LocalConfigStatus>(busUrl, "/v1/local-config/status").catch(() => null)
+        api<RuntimeStatus>(busUrl, "/v1/runtime/status").catch(() => null)
       ]);
-      setBridgeRuntimeKnown(configResult !== null);
-      setBridgeRuntimeAdapter(configResult?.bridge?.runtime_adapter ?? null);
+      setBridgeRuntimeKnown(runtimeStatusResult !== null);
+      setBridgeRuntimeAdapter(runtimeStatusResult?.bridge?.runtime_adapter ?? null);
       setWorkspaces(workspaceResult.workspaces);
       setAuthProfiles(authResult.profiles);
       const knownWorkspaceIds = new Set(workspaceResult.workspaces.map((workspace) => workspace.workspace_id));
@@ -892,10 +948,6 @@ function App() {
       window.clearInterval(recovery);
     };
   }, [busUrl, refresh]);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [floeMessages, streamingTurns]);
 
   // ── Slice 5: per-agent context list + context-scoped events ──────────────
   useEffect(() => {
@@ -1465,7 +1517,8 @@ function App() {
           scope: "workspace_default",
           workspace_id: selectedWorkspace.workspace_id,
           auth_profile: profileId,
-          model: null
+          model: null,
+          thinking_level: workspaceBinding?.thinking_level ?? null
         }
       });
     }
@@ -1480,8 +1533,24 @@ function App() {
         scope: "workspace_default",
         workspace_id: selectedWorkspace.workspace_id,
         auth_profile: workspaceBinding.auth_profile,
-        model: modelId || null
+        model: modelId || null,
+        thinking_level: modelId ? (workspaceBinding?.thinking_level ?? "off") : null
       }
+    });
+    await refresh(selectedWorkspace.workspace_id);
+  }
+
+  async function setWorkspaceThinkingLevel(thinkingLevel: "" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh") {
+    if (!selectedWorkspace || !workspaceBinding?.auth_profile) return;
+    await api(busUrl, "/v1/runtime/bindings", {
+    method: "POST",
+    body: {
+      scope: "workspace_default",
+      workspace_id: selectedWorkspace.workspace_id,
+      auth_profile: workspaceBinding.auth_profile,
+      model: workspaceBinding.model ?? null,
+      thinking_level: thinkingLevel || null
+    }
     });
     await refresh(selectedWorkspace.workspace_id);
   }
@@ -1979,6 +2048,21 @@ function App() {
                 ))}
               </select>
             </label>
+            <label className="stacked-label">
+              Reasoning effort
+              <select
+                value={workspaceThinkingLevel}
+                onChange={(event) => void setWorkspaceThinkingLevel(event.target.value as "" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh")}
+                disabled={!workspaceBinding?.auth_profile || !workspaceBinding?.model || !reasoningSupported}
+              >
+                <option value="off">Off</option>
+                <option value="minimal">Minimal</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">XHigh</option>
+              </select>
+            </label>
           </>
         )}
         <Detail label="Floe actor" value={floeAgent?.status ?? "not registered"} />
@@ -2256,7 +2340,7 @@ function App() {
             </div>
           </section>
         )}
-        <div className="channel-body">
+        <div className="channel-body" ref={channelBodyRef}>
           {!selectedAgent && (
             <div className="callout warning">
               <AlertTriangle size={15} />
@@ -2342,13 +2426,13 @@ function App() {
               })}
             </>
           )}
-          {floeIsActive && !chatSegments.some((s) => s.kind === "activity" && s.group.status === "working") && (
+          {showThinkingStrip && (
             <div className="thinking-strip">
               <Loader size={13} className="spin" />
               <span>{actorName} is working…</span>
             </div>
           )}
-          <div ref={chatEndRef} />
+          <div ref={chatEndRef} aria-hidden="true" style={{ height: 1 }} />
         </div>
         <div className="channel-composer">
           <input

@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -13,7 +13,7 @@ const E3 = "actor:test:e3";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
-async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Promise<void> }> {
+async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Promise<void>; tmp: string }> {
   const tmp = mkdtempSync(join(tmpdir(), "floe-bus-srv-"));
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
@@ -31,6 +31,7 @@ async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Prom
   }
   return {
     handle,
+    tmp,
     cleanup: async () => {
       try { await handle.app.close(); } catch {}
       rmSync(tmp, { recursive: true, force: true });
@@ -65,11 +66,13 @@ function emit(handle: ServerHandle, opts: {
 describe("Slice 2 — Context API HTTP routes", () => {
   let handle: ServerHandle;
   let cleanup: () => Promise<void>;
+  let tmp: string;
 
   beforeEach(async () => {
     const made = await makeServer();
     handle = made.handle;
     cleanup = made.cleanup;
+    tmp = made.tmp;
   });
   afterEach(async () => { await cleanup(); });
 
@@ -299,6 +302,120 @@ describe("Trigger ingress Scope API routes", () => {
       error: "scope_required",
       workspace_id: WS,
       reason: "webhook route must be configured with a Scope"
+    });
+  });
+});
+
+describe("Runtime config truth and auth registry routes", () => {
+  let handle: ServerHandle;
+  let cleanup: () => Promise<void>;
+  let tmp: string;
+
+  beforeEach(async () => {
+    const made = await makeServer();
+    handle = made.handle;
+    cleanup = made.cleanup;
+    tmp = made.tmp;
+  });
+  afterEach(async () => { await cleanup(); });
+
+  it("reports the live bridge runtime adapter from bridge capabilities", async () => {
+    const register = await handle.app.inject({
+      method: "POST",
+      url: "/v1/bridges/register",
+      payload: {
+        bridge_id: "bridge:runtime",
+        capabilities: { runtime_adapters: ["pi-agent-core"] }
+      }
+    });
+    expect(register.statusCode).toBe(201);
+
+    const liveness = await handle.app.inject({
+      method: "POST",
+      url: "/v1/bridges/bridge%3Aruntime/liveness"
+    });
+    expect(liveness.statusCode).toBe(200);
+
+    const res = await handle.app.inject({ method: "GET", url: "/v1/runtime/status" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      bridge: {
+        online: true,
+        runtime_adapter: "pi-agent-core"
+      }
+    });
+  });
+
+  it("serves auth models merged from local overlays", async () => {
+    const authDir = join(tmp, "auth");
+    mkdirSync(authDir, { recursive: true });
+    writeFileSync(join(authDir, "profiles.yaml"), YAML.stringify({
+      version: 1,
+      profiles: [{ id: "copilot-atvi", provider: "github-copilot", model: "gpt-5.4" }]
+    }), "utf8");
+    writeFileSync(join(authDir, "models.json"), JSON.stringify({
+      providers: {
+        "github-copilot": {
+          models: [{
+            id: "gpt-5.4",
+            name: "GPT 5.4",
+            api: "openai-responses",
+            reasoning: true
+          }]
+        }
+      }
+    }, null, 2), "utf8");
+
+    const res = await handle.app.inject({ method: "GET", url: "/v1/auth/models?provider=github-copilot" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().models).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "gpt-5.4",
+        provider: "github-copilot",
+        reasoning: true
+      })
+    ]));
+  });
+
+  it("round-trips workspace thinking level through bindings and resolution", async () => {
+    const post = await handle.app.inject({
+      method: "POST",
+      url: "/v1/runtime/bindings",
+      payload: {
+        scope: "workspace_default",
+        workspace_id: WS,
+        auth_profile: "copilot-atvi",
+        model: "gpt-5.4",
+        thinking_level: "high"
+      }
+    });
+    expect(post.statusCode).toBe(201);
+    expect(post.json().binding).toMatchObject({
+      scope: "workspace_default",
+      workspace_id: WS,
+      auth_profile: "copilot-atvi",
+      model: "gpt-5.4",
+      thinking_level: "high"
+    });
+
+    const list = await handle.app.inject({ method: "GET", url: `/v1/runtime/bindings?workspace_id=${encodeURIComponent(WS)}` });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().bindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scope: "workspace_default",
+        thinking_level: "high"
+      })
+    ]));
+
+    const resolved = await handle.app.inject({
+      method: "GET",
+      url: `/v1/runtime/bindings/resolve?workspace_id=${encodeURIComponent(WS)}&endpoint_id=${encodeURIComponent(E1)}`
+    });
+    expect(resolved.statusCode).toBe(200);
+    expect(resolved.json()).toMatchObject({
+      workspace_auth_profile: "copilot-atvi",
+      workspace_model: "gpt-5.4",
+      workspace_thinking_level: "high"
     });
   });
 });

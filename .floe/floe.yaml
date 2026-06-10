@@ -1,0 +1,15 @@
+schema: floe.workspace.v1
+version: 1
+applied_config:
+  config_id: cfg_composition_floe_default
+  version: 1
+  source: initial_template
+agents:
+  - id: floe
+    path: ./agents/floe.md
+pulse:
+  default: off
+  after_idle: 30m
+  min_interval: 30m
+state:
+  path: ./state

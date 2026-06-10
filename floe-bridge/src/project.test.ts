@@ -70,16 +70,18 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
     expect(content).not.toContain("auth_profile");
   });
 
-  it("uses actor-neutral default agent instructions", () => {
+  it("uses the canonical default Floe operating doctrine", () => {
     const workspace = makeTmp();
     ensureProjectTemplate(workspace, "Test Project");
 
     const content = readFileSync(join(workspace, ".floe", "agents", "floe.md"), "utf8");
 
-    expect(content).toContain("You are an actor in Floe.");
-    expect(content).toContain("source actor");
+    expect(content).toContain("You are Floe, the default agent for this project.");
+    expect(content).toContain("You are the primary builder/coordinator");
+    expect(content).toContain("Route before broad exploration");
+    expect(content).toContain("Work from first principles.");
+    expect(content).toContain("Be highly token-conscious.");
     expect(content).not.toContain("runtime-backed endpoint");
-    expect(content).not.toContain("another endpoint");
     expect(content).not.toContain("source endpoint");
   });
 

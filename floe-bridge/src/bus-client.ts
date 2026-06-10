@@ -48,6 +48,9 @@ export type RuntimeBindingResolution = {
   endpoint_model: string | null;
   workspace_model: string | null;
   global_model: string | null;
+  endpoint_thinking_level: string | null;
+  workspace_thinking_level: string | null;
+  global_thinking_level: string | null;
 };
 
 export type EventCommand = Omit<EventEnvelope, "event_id" | "created_at" | "metadata" | "correlation_id" | "destination_json" | "response" | "context_id"> & {

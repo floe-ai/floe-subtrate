@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PiAgentCoreAdapter } from "./pi-agent-core-adapter.js";
+import { PiAgentCoreAdapter, summarizePiRequestPayload } from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import { HookRegistry, type HookName, type HookPayload } from "../hooks.js";
 
@@ -53,6 +53,31 @@ class FakeAgent {
 }
 
 describe("PiAgentCoreAdapter", () => {
+  it("summarizes openai-responses reasoning separately from thinking", () => {
+    const summary = summarizePiRequestPayload(
+      {
+        input: [{ role: "user" }, { type: "reasoning" }, { type: "function_call" }],
+        reasoning: { effort: "high", summary: "auto" },
+        tools: [{ type: "function" }]
+      },
+      { id: "gpt-5.4", provider: "github-copilot", api: "openai-responses" }
+    );
+
+    expect(summary).toMatchObject({
+      model_id: "gpt-5.4",
+      provider: "github-copilot",
+      api: "openai-responses",
+      input_items: 3,
+      roles: ["user", "reasoning", "function_call"],
+      has_reasoning: true,
+      reasoning: { effort: "high", summary: "auto" },
+      has_thinking: false,
+      thinking: null,
+      has_tools: true,
+      tool_count: 1
+    });
+  });
+
   it("records visible output as work-log telemetry without auto-emitting messages", async () => {
     const fakeAgent = new FakeAgent();
     const telemetryCalls: any[] = [];
@@ -766,6 +791,87 @@ describe("Substrate guidance", () => {
     expect(guidance).toContain("only");
     expect(guidance).toContain("emit");
     expect(guidance).toContain("NOT automatically a message");
+  });
+});
+
+describe("PiAgentCoreAdapter – thinking level", () => {
+  function makeThinkingAdapter(agentFactory: ReturnType<typeof vi.fn>) {
+    return new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model",
+                name: "Mock",
+                api: "openai-responses",
+                provider: "mock-provider",
+                baseUrl: "https://example.invalid",
+                reasoning: true,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000,
+                maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      { agentFactory, turnFinalizeTimeoutMs: 1_000 }
+    );
+  }
+
+  function makeThinkingContext() {
+    return {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry() {},
+        async emit() {}
+      }
+    } as any;
+  }
+
+  it("passes thinking level into the agent factory", async () => {
+    const agentFactory = vi.fn(() => new FakeAgent());
+    const adapter = makeThinkingAdapter(agentFactory);
+
+    await adapter.handleBundle(
+      makeThinkingContext(),
+      makeDelivery("del-thinking", "thread-thinking", "hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "high" }
+    );
+
+    expect(agentFactory).toHaveBeenCalledTimes(1);
+    expect(agentFactory.mock.calls[0][0].thinkingLevel).toBe("high");
+  });
+
+  it("recreates the session when thinking level changes", async () => {
+    const agentFactory = vi.fn(() => new FakeAgent());
+    const adapter = makeThinkingAdapter(agentFactory);
+    const context = makeThinkingContext();
+
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-thinking-1", "thread-thinking-1", "hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "low" }
+    );
+    await adapter.handleBundle(
+      context,
+      makeDelivery("del-thinking-2", "thread-thinking-2", "hello again"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "high" }
+    );
+
+    expect(agentFactory).toHaveBeenCalledTimes(2);
+    expect(agentFactory.mock.calls[0][0].thinkingLevel).toBe("low");
+    expect(agentFactory.mock.calls[1][0].thinkingLevel).toBe("high");
   });
 });
 

@@ -13,8 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mariozechner/pi-agent-core": "file:../../pi-mono/packages/agent",
-    "@mariozechner/pi-ai": "file:../../pi-mono/packages/ai",
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-ai": "*",
     "diff": "^9.0.0",
     "vite": "8.0.10",
     "yaml": "^2.6.0",

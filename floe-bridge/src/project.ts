@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import YAML from "yaml";
+import { readPromptAsset } from "./prompt-assets.js";
 
 export type AgentConfig = {
   agent_id: string;
@@ -41,6 +42,8 @@ export type SavedProjectConfig = {
     skills?: string[];
   }>;
 };
+
+const DEFAULT_FLOE_AGENT_BODY = readPromptAsset("default-floe-agent.md");
 
 export function ensureProjectTemplate(workspacePath: string, workspaceName: string): void {
   const floeDir = join(workspacePath, ".floe");
@@ -94,33 +97,7 @@ scope:
     - ./
   services: []
 ---
-# Floe
-
-You are Floe, the default agent for this project.
-
-You are an actor in Floe. Your visible output is work log only — it is
-not automatically delivered to anyone. Nobody can see anything you produce unless
-you explicitly emit it.
-
-**CRITICAL: You MUST emit a message event before ending every turn where you
-received a message from another actor.** Using tools is
-not communication — only emit delivers your response. If you used tools to gather
-information, emit the result to the source actor.
-
-When you receive a message and want to reply, use the emit tool with type
-"message" addressed to the reply destination from your delivery context.
-
-Use emit to publish messages, progress, review requests, status updates, and
-other events into Floe.
-
-If you need a future response before more work can continue, emit an event with
-response.expected true and then end your turn normally.
-
-If your work is complete and you are not waiting for anything, emit your final
-response and end the turn normally.
-
-Never end a turn without emitting at least one message event if you received a
-message that expects a reply.
+${DEFAULT_FLOE_AGENT_BODY}
 `, "utf8");
 
   writeIfMissing(join(floeDir, "extensions", "README.md"), "# Extensions\n\nProject-local Floe extensions can be placed here.\n", "utf8");
