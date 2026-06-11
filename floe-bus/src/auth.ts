@@ -8,12 +8,14 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getModels, getProviders, type Model } from "@mariozechner/pi-ai";
+import { getOAuthApiKey } from "@mariozechner/pi-ai/oauth";
+import type { OAuthCredentials } from "@mariozechner/pi-ai/oauth";
 import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 import { fetchLiveModelIds, intersectWithLive } from "./live-model-probe.js";
-import type { FetchFn } from "./live-model-probe.js";
+import type { FetchFn, ResolvedCredential } from "./live-model-probe.js";
 
 const ProfileSchema = z.object({
   id: z.string().min(1),
@@ -109,7 +111,7 @@ export async function listAuthModels(
   ensureAuthFiles(paths);
   const authData = readAuthStorage(paths.authJsonPath);
   const registry = new BusModelRegistry(paths.modelsJsonPath);
-  return registry.list(provider, authData, fetchFn);
+  return registry.list(provider, authData, paths.authJsonPath, fetchFn);
 }
 
 function readAuthStorage(authJsonPath: string): AuthStorageData {
@@ -118,6 +120,50 @@ function readAuthStorage(authJsonPath: string): AuthStorageData {
   } catch {
     return {};
   }
+}
+
+function writeAuthStorage(authJsonPath: string, data: AuthStorageData): void {
+  writeFileSync(authJsonPath, JSON.stringify(data, null, 2) + "\n", "utf8");
+  chmodSafe(authJsonPath, 0o600);
+}
+
+/**
+ * Resolve a stored credential to a probe-ready token.
+ * For OAuth credentials: calls pi's getOAuthApiKey which refreshes expired tokens.
+ * Persists refreshed credentials back to auth.json (same 0600 care as ensureAuthFiles).
+ * Returns undefined (fail-open) on any error.
+ */
+async function resolveStoredCredential(
+  provider: string,
+  credential: StoredCredential | undefined,
+  authJsonPath: string,
+  authData: AuthStorageData,
+): Promise<ResolvedCredential | undefined> {
+  if (!credential) return undefined;
+  if (credential.type === "api_key") {
+    const token = credential.key.trim();
+    return token ? { token, isOAuth: false } : undefined;
+  }
+  if (credential.type === "oauth") {
+    try {
+      const oauthCredentials: Record<string, OAuthCredentials> = {};
+      for (const [key, value] of Object.entries(authData)) {
+        if (value.type === "oauth") oauthCredentials[key] = value;
+      }
+      const refreshed = await getOAuthApiKey(provider, oauthCredentials);
+      if (!refreshed) return undefined;
+      // Persist refreshed credentials back to auth.json if token changed
+      if (refreshed.newCredentials.access !== credential.access) {
+        authData[provider] = { type: "oauth", ...refreshed.newCredentials };
+        writeAuthStorage(authJsonPath, authData);
+      }
+      const token = refreshed.apiKey.trim();
+      return token ? { token, isOAuth: true } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function getFloeAuthPaths(configPath: string, config: LocalConfig): FloeAuthPaths {
@@ -157,18 +203,20 @@ class BusModelRegistry {
     this.applyOverlays();
   }
 
-  async list(provider: string | undefined, authData: AuthStorageData, fetchFn?: FetchFn): Promise<AuthModelRecord[]> {
+  async list(provider: string | undefined, authData: AuthStorageData, authJsonPath: string, fetchFn?: FetchFn): Promise<AuthModelRecord[]> {
     // Group models by provider so we do at most one probe per provider.
     const providerSet = provider
       ? new Set([provider])
       : new Set(this.models.map((m) => m.provider));
 
-    // Fetch live IDs per provider concurrently; failures return undefined (fail-open).
+    // Resolve credentials (refreshing expired OAuth tokens) then probe concurrently.
+    // Failures return undefined (fail-open) at both the resolve and probe stages.
     const liveIdsByProvider = new Map<string, Set<string> | undefined>();
     await Promise.all(
       [...providerSet].map(async (prov) => {
-        const credential = authData[prov] as StoredCredential | undefined;
-        const liveIds = await fetchLiveModelIds(prov, credential, fetchFn);
+        const rawCredential = authData[prov] as StoredCredential | undefined;
+        const resolved = await resolveStoredCredential(prov, rawCredential, authJsonPath, authData);
+        const liveIds = await fetchLiveModelIds(prov, resolved, fetchFn);
         liveIdsByProvider.set(prov, liveIds);
       }),
     );

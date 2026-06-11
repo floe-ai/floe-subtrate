@@ -9,6 +9,16 @@
 /** Injectable fetch function for testability. */
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * A pre-resolved credential token ready for use in probe HTTP calls.
+ * OAuth tokens are refreshed (if expired) before this is constructed — that
+ * refresh happens in the bus auth layer, not here.
+ */
+export type ResolvedCredential = {
+  token: string;
+  isOAuth: boolean;
+};
+
 /** Probe result: set of live model IDs for a provider, or undefined on any failure. */
 export type LiveModelIds = Set<string> | undefined;
 
@@ -36,8 +46,10 @@ function cacheKey(provider: string, credentialToken: string): string {
 
 /**
  * Probe Anthropic for live model IDs.
- * Uses x-api-key for both plain API keys and OAuth tokens.
- * Sends anthropic-beta: oauth-2025-04-20 for OAuth credentials.
+ * OAuth tokens (sk-ant-oat prefix) use Authorization: Bearer + anthropic-beta containing
+ * "oauth-2025-04-20" — mirroring pi-ai's createClient() at
+ * node_modules/@mariozechner/pi-ai/dist/providers/anthropic.js lines 629-643.
+ * Plain API keys use x-api-key only.
  * Paginates via limit=1000 + after_id/has_more.
  */
 async function probeAnthropic(credential: string, isOAuth: boolean, fetchFn: FetchFn): Promise<LiveModelIds> {
@@ -52,9 +64,15 @@ async function probeAnthropic(credential: string, isOAuth: boolean, fetchFn: Fet
 
     const headers: Record<string, string> = {
       "anthropic-version": "2023-06-01",
-      "x-api-key": credential,
     };
-    if (isOAuth) headers["anthropic-beta"] = "oauth-2025-04-20";
+    if (isOAuth) {
+      // OAuth: Bearer auth with claude-code identity beta headers
+      // (matches pi-ai providers/anthropic.js createClient OAuth branch)
+      headers["Authorization"] = `Bearer ${credential}`;
+      headers["anthropic-beta"] = "claude-code-20250219,oauth-2025-04-20";
+    } else {
+      headers["x-api-key"] = credential;
+    }
 
     const res = await withTimeout(fetchFn(url.toString(), { headers }), PROBE_TIMEOUT_MS);
     if (!res.ok) return undefined;
@@ -193,30 +211,25 @@ async function probeCopilot(
   return ids.size > 0 ? ids : undefined;
 }
 
-/** Credential shape stored in ~/.floe/auth/auth.json */
-type StoredCredential =
-  | { type: "api_key"; key: string }
-  | { type: "oauth"; refresh: string; access: string; expires: number; enterpriseUrl?: string; [key: string]: unknown };
-
 /**
  * Probe a provider for its live model IDs.
  * Returns undefined (fail-open) on any error, timeout, unexpected shape, or missing credential.
  * Results are cached per provider+credential for CACHE_TTL_MS.
  *
- * @param provider  - pi provider string (e.g. "anthropic", "google", "openai", "github-copilot")
- * @param credential - raw stored credential from auth.json (or undefined if none)
- * @param fetchFn   - injectable fetch implementation (defaults to global fetch)
+ * @param provider   - pi provider string (e.g. "anthropic", "google", "openai", "github-copilot")
+ * @param credential - pre-resolved credential (token already refreshed by auth layer, or undefined)
+ * @param fetchFn    - injectable fetch implementation (defaults to global fetch)
  * @param getBaseUrl - injectable base-URL resolver for Copilot (defaults to pi's helper)
  */
 export async function fetchLiveModelIds(
   provider: string,
-  credential: StoredCredential | undefined,
+  credential: ResolvedCredential | undefined,
   fetchFn: FetchFn = globalFetch,
   getBaseUrl?: (token: string) => string,
 ): Promise<LiveModelIds> {
   if (!credential) return undefined;
 
-  const token = resolveCredentialToken(credential);
+  const { token, isOAuth } = credential;
   if (!token) return undefined;
 
   const key = cacheKey(provider, token);
@@ -228,10 +241,10 @@ export async function fetchLiveModelIds(
     let ids: LiveModelIds;
     switch (provider) {
       case "anthropic":
-        ids = await probeAnthropic(token, credential.type === "oauth", fetchFn);
+        ids = await probeAnthropic(token, isOAuth, fetchFn);
         break;
       case "google":
-        ids = await probeGoogle(token, credential.type === "oauth", fetchFn);
+        ids = await probeGoogle(token, isOAuth, fetchFn);
         break;
       case "openai":
       case "openai-codex":
@@ -276,12 +289,6 @@ export function intersectWithLive<T extends { id: string; provider: string }>(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-function resolveCredentialToken(credential: StoredCredential): string | undefined {
-  if (credential.type === "api_key") return credential.key.trim() || undefined;
-  if (credential.type === "oauth") return (credential.access ?? "").trim() || undefined;
-  return undefined;
-}
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {

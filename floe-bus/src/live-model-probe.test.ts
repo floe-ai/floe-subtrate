@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { fetchLiveModelIds, intersectWithLive, clearLiveModelCache } from "./live-model-probe.js";
-import type { FetchFn } from "./live-model-probe.js";
+import type { FetchFn, ResolvedCredential } from "./live-model-probe.js";
 
 // ---------------------------------------------------------------------------
 // Helpers to build mock Response objects
@@ -33,11 +33,11 @@ function makeFetch(responses: Array<{ url: string | RegExp; response: Response }
   };
 }
 
-const API_KEY_CRED = { type: "api_key" as const, key: "sk-ant-api03-test-key" };
-const OAUTH_CRED = { type: "oauth" as const, refresh: "r", access: "sk-ant-ocp-test-oauth", expires: Date.now() + 9999999 };
-const GOOGLE_KEY_CRED = { type: "api_key" as const, key: "AIza-test-google-key" };
-const OPENAI_KEY_CRED = { type: "api_key" as const, key: "sk-openai-test" };
-const COPILOT_OAUTH_CRED = { type: "oauth" as const, refresh: "r", access: "ghu_copilot_token", expires: Date.now() + 9999999 };
+const API_KEY_CRED: ResolvedCredential = { token: "sk-ant-api03-test-key", isOAuth: false };
+const OAUTH_CRED: ResolvedCredential = { token: "sk-ant-ocp-test-oauth", isOAuth: true };
+const GOOGLE_KEY_CRED: ResolvedCredential = { token: "AIza-test-google-key", isOAuth: false };
+const OPENAI_KEY_CRED: ResolvedCredential = { token: "sk-openai-test", isOAuth: false };
+const COPILOT_OAUTH_CRED: ResolvedCredential = { token: "ghu_copilot_token", isOAuth: true };
 
 // ---------------------------------------------------------------------------
 // fetchLiveModelIds — Anthropic
@@ -80,7 +80,7 @@ describe("fetchLiveModelIds — anthropic", () => {
     expect(page).toBe(2);
   });
 
-  it("sends anthropic-beta header for OAuth credential", async () => {
+  it("sends Authorization: Bearer + anthropic-beta for OAuth credential", async () => {
     let capturedHeaders: Record<string, string> = {};
     const fetch: FetchFn = async (_url, init) => {
       capturedHeaders = (init?.headers ?? {}) as Record<string, string>;
@@ -88,8 +88,11 @@ describe("fetchLiveModelIds — anthropic", () => {
     };
 
     await fetchLiveModelIds("anthropic", OAUTH_CRED, fetch);
-    expect(capturedHeaders["anthropic-beta"]).toBe("oauth-2025-04-20");
-    expect(capturedHeaders["x-api-key"]).toBe(OAUTH_CRED.access);
+    // OAuth uses Bearer auth — pi-ai providers/anthropic.js createClient OAuth branch
+    expect(capturedHeaders["Authorization"]).toBe(`Bearer ${OAUTH_CRED.token}`);
+    expect(capturedHeaders["anthropic-beta"]).toContain("oauth-2025-04-20");
+    expect(capturedHeaders["anthropic-beta"]).toContain("claude-code-20250219");
+    expect(capturedHeaders["x-api-key"]).toBeUndefined();
   });
 
   it("does NOT send anthropic-beta for plain API key", async () => {
@@ -101,6 +104,8 @@ describe("fetchLiveModelIds — anthropic", () => {
 
     await fetchLiveModelIds("anthropic", API_KEY_CRED, fetch);
     expect(capturedHeaders["anthropic-beta"]).toBeUndefined();
+    expect(capturedHeaders["x-api-key"]).toBe(API_KEY_CRED.token);
+    expect(capturedHeaders["Authorization"]).toBeUndefined();
   });
 
   it("fails open on non-200 response", async () => {
@@ -157,7 +162,7 @@ describe("fetchLiveModelIds — google", () => {
     };
 
     await fetchLiveModelIds("google", GOOGLE_KEY_CRED, fetch);
-    expect(capturedUrl).toContain(`key=${GOOGLE_KEY_CRED.key}`);
+    expect(capturedUrl).toContain(`key=${GOOGLE_KEY_CRED.token}`);
     expect(capturedUrl).not.toContain("Authorization");
   });
 
@@ -167,7 +172,7 @@ describe("fetchLiveModelIds — google", () => {
       capturedHeaders = (init?.headers ?? {}) as Record<string, string>;
       return mockResponse(200, { models: [{ name: "models/gemini-2.0-flash" }] });
     };
-    const oauthCred = { type: "oauth" as const, refresh: "r", access: "ya29-google-token", expires: Date.now() + 9999999 };
+    const oauthCred: ResolvedCredential = { token: "ya29-google-token", isOAuth: true };
 
     await fetchLiveModelIds("google", oauthCred, fetch);
     expect(capturedHeaders["Authorization"]).toBe("Bearer ya29-google-token");
@@ -205,7 +210,7 @@ describe("fetchLiveModelIds — openai", () => {
     };
 
     await fetchLiveModelIds("openai", OPENAI_KEY_CRED, fetch);
-    expect(capturedHeaders["Authorization"]).toBe(`Bearer ${OPENAI_KEY_CRED.key}`);
+    expect(capturedHeaders["Authorization"]).toBe(`Bearer ${OPENAI_KEY_CRED.token}`);
   });
 
   it("fails open on unexpected shape", async () => {
@@ -248,7 +253,7 @@ describe("fetchLiveModelIds — github-copilot", () => {
 
     await fetchLiveModelIds("github-copilot", COPILOT_OAUTH_CRED, fetch, getBaseUrl);
     expect(capturedHeaders["Copilot-Integration-Id"]).toBe("vscode-chat");
-    expect(capturedHeaders["Authorization"]).toBe(`Bearer ${COPILOT_OAUTH_CRED.access}`);
+    expect(capturedHeaders["Authorization"]).toBe(`Bearer ${COPILOT_OAUTH_CRED.token}`);
   });
 
   it("fails open when Copilot returns unexpected shape", async () => {

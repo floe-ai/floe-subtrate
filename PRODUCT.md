@@ -35,7 +35,7 @@ Floe Web succeeds when the user understands this mental model:
 
 `floe-init.md` is authoritative for substrate semantics.
 
-Floe Web must preserve these v58 decisions:
+Floe Web must preserve these decisions (labelled "v58" historically; v58 north-star doc is superseded, but these principles remain current — current authority is `docs/floe_thought_log.md`):
 
 - `floe-bus` owns events, endpoints, deliveries, pending responses, broadcasts, pulse, workspaces, and observability.
 - `floe-web` talks to `floe-bus`; browser code does not read or write workspace files directly.

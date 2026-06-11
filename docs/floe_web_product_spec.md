@@ -1,8 +1,10 @@
 # Floe Web Product Spec — Workspace, Blocks, Fields, and Floe
 
+> **Note:** This spec references "v58 substrate handoff" as authority. The v58 north-star doc has been superseded — current canonical direction is `docs/floe_thought_log.md` and `docs/adr/0004-scope-as-substrate-organising-boundary.md`. Read those before acting on this spec. The product surface concepts (Workspace, Scope/Field, Blocks) remain directionally valid.
+
 **Status:** Rewritten draft for builder planning  
 **Scope:** Floe Web product/interface layer  
-**Substrate reference:** Floe Substrate Builder Handoff v58  
+**Substrate reference:** Floe Substrate Builder Handoff v58 (superseded — see note above)  
 **Primary goal:** define the next Floe Web direction without redefining or conflicting with the v58 substrate.
 
 ---

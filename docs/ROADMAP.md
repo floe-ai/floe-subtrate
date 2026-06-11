@@ -216,7 +216,7 @@ Domain blocks should remain extensions or workspace conventions until proven oth
 
 ## Required next slice
 
-Status: **not started**. Implement Scope correctly in the substrate before continuing Field/Block parity.
+Status: **in progress**. Scope substrate work has landed: audited context scope assignment and workspace context discovery are in the working tree (commits `f7dd031`, `6f1e64f`). Remaining: scope deletion safety, `scope_id` on Pulse, propagation rules, FloeWeb Scope-as-Field rendering.
 
 The focused slice should prove:
 

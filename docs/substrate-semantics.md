@@ -1,6 +1,6 @@
 # Floe Substrate Semantics
 
-**Status:** Addendum to Floe Substrate Builder Handoff v58  
+**Status:** Addendum to Floe Substrate Builder Handoff v58 (v58 itself is superseded — see `docs/floe_thought_log.md` — but the semantics here remain current substrate doctrine)  
 **Purpose:** Clarify the substrate model so implementation language, APIs, and runtime
 guidance do not drift toward chat-shaped assumptions.
 
