@@ -27,6 +27,20 @@ const ProfilesDocumentSchema = z.object({
   profiles: z.array(ProfileSchema)
 });
 
+/**
+ * Thinking capability declaration for a model entry.
+ *
+ * - "adaptive"  : model accepts { type: "adaptive" } (Opus 4.6+, Sonnet 4.6+)
+ * - "budget"    : model accepts legacy { type: "enabled", budget_tokens:N } shapes (haiku 4.5, etc.)
+ * - "always-on" : model rejects any explicit thinking param; it must be omitted entirely (e.g. claude-fable-5)
+ * - "none"      : no thinking support; the thinking param must be omitted
+ *
+ * When absent, pi-ai's own internal inference logic applies (no regression for existing configs).
+ */
+export type ModelThinkingCapability = "adaptive" | "budget" | "always-on" | "none";
+
+const ModelThinkingCapabilitySchema = z.enum(["adaptive", "budget", "always-on", "none"]);
+
 const ModelsConfigSchema = z.object({
   providers: z.record(z.string(), z.object({
     apiKey: z.string().optional(),
@@ -36,6 +50,12 @@ const ModelsConfigSchema = z.object({
       api: z.string().optional(),
       baseUrl: z.string().optional(),
       reasoning: z.boolean().optional(),
+      /**
+       * Explicit thinking capability declaration.
+       * When present, the bridge clamps thinking_level at the bridge/bus boundary
+       * rather than relying on pi-ai's internal model-id substring inference.
+       */
+      thinking: ModelThinkingCapabilitySchema.optional(),
       input: z.array(z.enum(["text", "image"])).optional(),
       cost: z.object({
         input: z.number(),
@@ -87,6 +107,12 @@ export type BridgeAuthRuntime = {
   profiles: ProfilesDocument;
 };
 
+/**
+ * Resolved thinking capability for a model, derived from its registry entry.
+ * Undefined means no declaration was made; pi-ai's own inference applies.
+ */
+export type ResolvedThinkingCapability = ModelThinkingCapability | undefined;
+
 export type AgentRuntimeConfig = {
   provider?: string;
   model?: string;
@@ -117,6 +143,11 @@ export type RuntimeAuthResolved = {
   apiKey: string;
   authProfileId: string | null;
   usedEnvFallback: boolean;
+  /**
+   * Declared thinking capability for this model (from models.json).
+   * Undefined means no declaration; pi-ai's own inference applies.
+   */
+  thinkingCapability: ModelThinkingCapability | undefined;
 };
 
 export class RuntimeAuthError extends Error {
@@ -180,6 +211,8 @@ class BridgeAuthStorage {
 class BridgeModelRegistry {
   private models: Model<any>[] = [];
   private providerApiKeys = new Map<string, string>();
+  /** Thinking capability declarations keyed by "provider/modelId" */
+  private thinkingCapabilities = new Map<string, ModelThinkingCapability>();
 
   constructor(
     private readonly authStorage: BridgeAuthStorage,
@@ -190,6 +223,7 @@ class BridgeModelRegistry {
 
   refresh(): void {
     this.providerApiKeys.clear();
+    this.thinkingCapabilities.clear();
     const builtIn = getProviders().flatMap((provider) => getModels(provider as any)) as Model<any>[];
     this.models = [...builtIn];
     try {
@@ -215,6 +249,10 @@ class BridgeModelRegistry {
           const index = this.models.findIndex((model) => model.provider === provider && model.id === modelDef.id);
           if (index >= 0) this.models[index] = custom;
           else this.models.push(custom);
+          // Store declared thinking capability if present
+          if (modelDef.thinking) {
+            this.thinkingCapabilities.set(`${provider}/${modelDef.id}`, modelDef.thinking);
+          }
         }
       }
     } catch {
@@ -228,6 +266,10 @@ class BridgeModelRegistry {
 
   find(provider: string, modelId: string): Model<any> | undefined {
     return this.models.find((model) => model.provider === provider && model.id === modelId);
+  }
+
+  getThinkingCapability(provider: string, modelId: string): ModelThinkingCapability | undefined {
+    return this.thinkingCapabilities.get(`${provider}/${modelId}`);
   }
 
   async getApiKeyForProvider(provider: string): Promise<string | undefined> {
@@ -377,7 +419,8 @@ export async function resolveRuntimeAuth(
     modelId,
     apiKey,
     authProfileId: profile?.id ?? null,
-    usedEnvFallback
+    usedEnvFallback,
+    thinkingCapability: runtime.modelRegistry.getThinkingCapability?.(provider, modelId)
   };
 }
 

@@ -529,7 +529,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.get("/v1/auth/models", async (request) => {
     const query = z.object({ provider: z.string().optional() }).parse(request.query);
-    return { models: listAuthModels(configPath, config, query.provider) };
+    return { models: await listAuthModels(configPath, config, query.provider) };
   });
 
   app.post("/v1/bridges/register", async (request, reply) => {

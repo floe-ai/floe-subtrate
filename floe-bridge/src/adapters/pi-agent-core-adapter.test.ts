@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PiAgentCoreAdapter, summarizePiRequestPayload } from "./pi-agent-core-adapter.js";
+import { PiAgentCoreAdapter, TurnFailedError, summarizePiRequestPayload, applyThinkingCapabilityClamp } from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import { HookRegistry, type HookName, type HookPayload } from "../hooks.js";
 
@@ -679,7 +679,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
     });
   });
 
-  it("fires Error hook when runtime turn handling fails", async () => {
+  it("fires Error hook and re-throws TurnFailedError when runtime turn handling fails", async () => {
     const errors: Array<HookPayload<"Error">> = [];
     const hooks = new HookRegistry();
     hooks.on("Error", "test-ext", (payload) => {
@@ -694,20 +694,24 @@ describe("PiAgentCoreAdapter – output classification", () => {
       }
     });
 
-    await adapter.handleBundle(
-      {
-        bridge_id: "bridge:test",
-        hooks,
-        bus: {
-          async appendRuntimeTelemetry(_input: any) {},
-          async emit(_event: any) {},
-          async listEndpoints() { return []; }
-        }
-      } as any,
-      makeDelivery("del-error-hook", "thread-error-hook", "fail"),
-      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
-    );
+    // The adapter now re-throws as TurnFailedError so the daemon can emit runtime_error events
+    await expect(
+      adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          hooks,
+          bus: {
+            async appendRuntimeTelemetry(_input: any) {},
+            async emit(_event: any) {},
+            async listEndpoints() { return []; }
+          }
+        } as any,
+        makeDelivery("del-error-hook", "thread-error-hook", "fail"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      )
+    ).rejects.toThrow(TurnFailedError);
 
+    // Error hook still fires before the re-throw
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({
       workspace_id: "workspace:test",
@@ -795,7 +799,7 @@ describe("Substrate guidance", () => {
 });
 
 describe("PiAgentCoreAdapter – thinking level", () => {
-  function makeThinkingAdapter(agentFactory: ReturnType<typeof vi.fn>) {
+  function makeThinkingAdapter(agentFactory: (...args: any[]) => any) {
     return new PiAgentCoreAdapter(
       {
         paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
@@ -850,7 +854,7 @@ describe("PiAgentCoreAdapter – thinking level", () => {
     );
 
     expect(agentFactory).toHaveBeenCalledTimes(1);
-    expect(agentFactory.mock.calls[0][0].thinkingLevel).toBe("high");
+    expect((agentFactory.mock.calls[0] as any[])[0].thinkingLevel).toBe("high");
   });
 
   it("recreates the session when thinking level changes", async () => {
@@ -870,8 +874,8 @@ describe("PiAgentCoreAdapter – thinking level", () => {
     );
 
     expect(agentFactory).toHaveBeenCalledTimes(2);
-    expect(agentFactory.mock.calls[0][0].thinkingLevel).toBe("low");
-    expect(agentFactory.mock.calls[1][0].thinkingLevel).toBe("high");
+    expect((agentFactory.mock.calls[0] as any[])[0].thinkingLevel).toBe("low");
+    expect((agentFactory.mock.calls[1] as any[])[0].thinkingLevel).toBe("high");
   });
 });
 
@@ -1983,5 +1987,587 @@ describe("extractShortRef (removed — superseded by toNeutralRef)", () => {
     // toNeutralRef from runtime-core/neutral-ref returns neutral refs ("floe", "operator")
     // and is exhaustively unit-tested in runtime-core/neutral-ref.test.ts.
     expect(true).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 1: TurnFailedError propagation
+// ---------------------------------------------------------------------------
+
+describe("TurnFailedError propagation (FIX 1)", () => {
+  function makeFailingAdapter(promptError: Error) {
+    return new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "anthropic-messages", provider: "mock-provider",
+                baseUrl: "https://api.anthropic.com", reasoning: false, input: ["text"],
+                cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+                contextWindow: 200000, maxTokens: 64000
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: () => {
+          const listeners: Array<(event: any) => void | Promise<void>> = [];
+          return {
+            subscribe(listener: (event: any) => void | Promise<void>) { listeners.push(listener); },
+            async prompt() { throw promptError; }
+          };
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+  }
+
+  it("re-throws as TurnFailedError carrying structured context", async () => {
+    const adapter = makeFailingAdapter(new Error("POST .../v1/messages failed: 400 Bad Request"));
+
+    const delivery = makeDelivery("del-fail-1", "thread-fail-1", "hello");
+    let thrown: unknown;
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry() {},
+            async emit() {}
+          }
+        } as any,
+        delivery,
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(TurnFailedError);
+    const err = thrown as TurnFailedError;
+    expect(err.code).toBe("turn_failed");
+    expect(err.delivery_id).toBe("del-fail-1");
+    expect(err.workspace_id).toBe("workspace:test");
+    expect(err.model_id).toBe("mock-model");
+    expect(err.provider).toBe("mock-provider");
+    expect(err.http_status).toBe(400);
+    expect(err.source_endpoint_id).toBe("actor:workspace:test:operator");
+  });
+
+  it("extracts http_status null when error message has no status code", async () => {
+    const adapter = makeFailingAdapter(new Error("network timeout"));
+
+    let thrown: unknown;
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry() {},
+            async emit() {}
+          }
+        } as any,
+        makeDelivery("del-fail-2", "thread-fail-2", "hello"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(TurnFailedError);
+    expect((thrown as TurnFailedError).http_status).toBeNull();
+  });
+
+  it("records runtime_error telemetry before re-throwing", async () => {
+    const telemetryCalls: any[] = [];
+    const adapter = makeFailingAdapter(new Error("POST failed: 400 Bad Request"));
+
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
+            async emit() {}
+          }
+        } as any,
+        makeDelivery("del-fail-3", "thread-fail-3", "hello"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch {
+      // expected
+    }
+
+    const errorTelemetry = telemetryCalls.filter((t) => t.kind === "runtime_error");
+    expect(errorTelemetry.length).toBeGreaterThan(0);
+    expect(errorTelemetry[0].payload).toMatchObject({
+      provider: "mock-provider",
+      model: "mock-model",
+      http_status: 400
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GAP FIX: stop_reason 'error' without a thrown exception → TurnFailedError
+// ---------------------------------------------------------------------------
+
+describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError", () => {
+  function makeAdapterWithErrorStopReason(errorStopMessage: string | null) {
+    return new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "anthropic-messages", provider: "mock-provider",
+                baseUrl: "https://api.anthropic.com", reasoning: false, input: ["text"],
+                cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+                contextWindow: 200000, maxTokens: 64000
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: () => {
+          const listeners: Array<(event: any) => void | Promise<void>> = [];
+          return {
+            subscribe(listener: (event: any) => void | Promise<void>) { listeners.push(listener); },
+            async prompt() {
+              // Pi does NOT throw — it emits an assistant message with stopReason 'error'
+              const errorAssistantMessage = {
+                role: "assistant",
+                content: [],
+                stopReason: "error",
+                errorMessage: errorStopMessage,
+                usage: { input: 5, output: 0, totalTokens: 5 },
+                model: "mock-model",
+                provider: "mock-provider"
+              };
+              for (const l of listeners) await l({ type: "message_end", message: errorAssistantMessage });
+              for (const l of listeners) await l({ type: "agent_end", messages: [errorAssistantMessage] });
+            }
+          };
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+  }
+
+  it("throws TurnFailedError when pi turn ends with stop_reason 'error' and no pi throw", async () => {
+    const adapter = makeAdapterWithErrorStopReason("model not found: 404 Not Found");
+    const delivery = makeDelivery("del-stop-err-1", "thread-stop-err-1", "hello");
+
+    let thrown: unknown;
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry() {},
+            async emit() {}
+          }
+        } as any,
+        delivery,
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(TurnFailedError);
+    const err = thrown as TurnFailedError;
+    expect(err.code).toBe("turn_failed");
+    expect(err.delivery_id).toBe("del-stop-err-1");
+    expect(err.workspace_id).toBe("workspace:test");
+    expect(err.model_id).toBe("mock-model");
+    expect(err.provider).toBe("mock-provider");
+    expect(err.source_endpoint_id).toBe("actor:workspace:test:operator");
+    // errorMessage from AssistantMessage.errorMessage field (pi-ai types.d.ts line 155)
+    expect(err.message).toContain("model not found: 404 Not Found");
+  });
+
+  it("extracts http_status from pi errorMessage when stop_reason is 'error'", async () => {
+    const adapter = makeAdapterWithErrorStopReason("model_not_found: 404 Not Found");
+
+    let thrown: unknown;
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry() {},
+            async emit() {}
+          }
+        } as any,
+        makeDelivery("del-stop-err-2", "thread-stop-err-2", "hello"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(TurnFailedError);
+    expect((thrown as TurnFailedError).http_status).toBe(404);
+  });
+
+  it("sets http_status to null when pi errorMessage has no HTTP status code", async () => {
+    const adapter = makeAdapterWithErrorStopReason("connection reset");
+
+    let thrown: unknown;
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry() {},
+            async emit() {}
+          }
+        } as any,
+        makeDelivery("del-stop-err-3", "thread-stop-err-3", "hello"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(TurnFailedError);
+    expect((thrown as TurnFailedError).http_status).toBeNull();
+  });
+
+  it("sets http_status to null when pi errorMessage is null", async () => {
+    const adapter = makeAdapterWithErrorStopReason(null);
+
+    let thrown: unknown;
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry() {},
+            async emit() {}
+          }
+        } as any,
+        makeDelivery("del-stop-err-4", "thread-stop-err-4", "hello"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(TurnFailedError);
+    expect((thrown as TurnFailedError).http_status).toBeNull();
+  });
+
+  it("records runtime_error and usage telemetry before propagating TurnFailedError", async () => {
+    const telemetryCalls: any[] = [];
+    const adapter = makeAdapterWithErrorStopReason("model not found: 404 Not Found");
+
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
+            async emit() {}
+          }
+        } as any,
+        makeDelivery("del-stop-err-5", "thread-stop-err-5", "hello"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch {
+      // expected
+    }
+
+    // runtime_error telemetry recorded (from finalizeTurn before rejection)
+    const errorTelemetry = telemetryCalls.filter((t) => t.kind === "runtime_error");
+    expect(errorTelemetry.length).toBeGreaterThan(0);
+    expect(errorTelemetry[0].payload).toMatchObject({
+      stop_reason: "error",
+      error_message: "model not found: 404 Not Found"
+    });
+
+    // usage telemetry also recorded (from finalizeTurn)
+    const usageTelemetry = telemetryCalls.filter((t) => t.kind === "usage");
+    expect(usageTelemetry.length).toBeGreaterThan(0);
+    expect(usageTelemetry[0].payload).toMatchObject({
+      stop_reason: "error",
+      model: "mock-model"
+    });
+  });
+
+  it("fires Error hook when stop_reason is 'error'", async () => {
+    const errors: Array<any> = [];
+    const hooks = new HookRegistry();
+    hooks.on("Error", "test-ext", (payload) => { errors.push(payload); });
+
+    const adapter = makeAdapterWithErrorStopReason("model not found: 404 Not Found");
+
+    try {
+      await adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          hooks,
+          bus: {
+            async appendRuntimeTelemetry() {},
+            async emit() {},
+            async listEndpoints() { return []; }
+          }
+        } as any,
+        makeDelivery("del-stop-err-6", "thread-stop-err-6", "trigger"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      );
+    } catch {
+      // expected TurnFailedError
+    }
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      workspace_id: "workspace:test",
+      delivery_id: "del-stop-err-6",
+      trigger_event_id: "evt:del-stop-err-6"
+    });
+  });
+
+  it("does NOT throw TurnFailedError for other stop_reasons with empty visible output", async () => {
+    // stop_reason 'stop' with no text content is a legitimate tool-only turn — must NOT fail
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "anthropic-messages", provider: "mock-provider",
+                baseUrl: "https://api.anthropic.com", reasoning: false, input: ["text"],
+                cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+                contextWindow: 200000, maxTokens: 64000
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: () => {
+          const listeners: Array<(event: any) => void | Promise<void>> = [];
+          return {
+            subscribe(listener: (event: any) => void | Promise<void>) { listeners.push(listener); },
+            async prompt() {
+              // Tool-only turn: stopReason 'stop', no text content
+              const toolOnlyMessage = {
+                role: "assistant",
+                content: [],  // no text content
+                stopReason: "stop",
+                usage: { input: 5, output: 10, totalTokens: 15 },
+                model: "mock-model",
+                provider: "mock-provider"
+              };
+              for (const l of listeners) await l({ type: "message_end", message: toolOnlyMessage });
+              for (const l of listeners) await l({ type: "agent_end", messages: [toolOnlyMessage] });
+            }
+          };
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    // Must resolve successfully (not throw)
+    await expect(
+      adapter.handleBundle(
+        {
+          bridge_id: "bridge:test",
+          bus: {
+            async appendRuntimeTelemetry() {},
+            async emit() {}
+          }
+        } as any,
+        makeDelivery("del-tool-only", "thread-tool-only", "do something silently"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+      )
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 2: Thinking capability clamping
+// ---------------------------------------------------------------------------
+
+describe("applyThinkingCapabilityClamp (FIX 2)", () => {
+  it("returns config unchanged when thinkingCapability is undefined", () => {
+    const config = { thinking_level: "high" as const, auth_profile: "p" };
+    expect(applyThinkingCapabilityClamp(config, undefined, "some-model")).toBe(config);
+  });
+
+  it("returns config unchanged when thinkingCapability is undefined (undefined config)", () => {
+    expect(applyThinkingCapabilityClamp(undefined, undefined, "some-model")).toBeUndefined();
+  });
+
+  it("clamps thinking_level to off for always-on capability", () => {
+    const config = { thinking_level: "high" as const, auth_profile: "p" };
+    const result = applyThinkingCapabilityClamp(config, "always-on", "claude-fable-5");
+    expect(result?.thinking_level).toBe("off");
+  });
+
+  it("clamps thinking_level to off for none capability", () => {
+    const config = { thinking_level: "medium" as const, auth_profile: "p" };
+    const result = applyThinkingCapabilityClamp(config, "none", "some-model");
+    expect(result?.thinking_level).toBe("off");
+  });
+
+  it("already-off thinking_level passes through always-on without change", () => {
+    const config = { thinking_level: "off" as const, auth_profile: "p" };
+    const result = applyThinkingCapabilityClamp(config, "always-on", "claude-fable-5");
+    expect(result?.thinking_level).toBe("off");
+  });
+
+  it("passes through unchanged for adaptive capability", () => {
+    const config = { thinking_level: "high" as const, auth_profile: "p" };
+    const result = applyThinkingCapabilityClamp(config, "adaptive", "claude-opus-4-6");
+    expect(result).toBe(config); // Same reference — no clamp applied
+  });
+
+  it("passes through unchanged for budget capability", () => {
+    const config = { thinking_level: "low" as const, auth_profile: "p" };
+    const result = applyThinkingCapabilityClamp(config, "budget", "claude-haiku-4-5");
+    expect(result).toBe(config); // Same reference — no clamp applied
+  });
+
+  it("clamps undefined runtimeConfig with always-on to { thinking_level: off }", () => {
+    const result = applyThinkingCapabilityClamp(undefined, "always-on", "claude-fable-5");
+    expect(result?.thinking_level).toBe("off");
+  });
+});
+
+describe("Thinking capability integration (FIX 2)", () => {
+  function makeAdapterWithThinkingCapability(
+    thinkingCapability: string | undefined,
+    capturedLevels: string[]
+  ) {
+    return new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "anthropic-messages", provider: "mock-provider",
+                baseUrl: "https://api.anthropic.com", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 200000, maxTokens: 64000
+              } as any;
+            }
+            return undefined;
+          },
+          getThinkingCapability(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") return thinkingCapability;
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input) => {
+          capturedLevels.push(input.thinkingLevel ?? "off");
+          return new FakeAgent();
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+  }
+
+  it("clamps thinking_level to off when model declares always-on capability", async () => {
+    const capturedLevels: string[] = [];
+    const adapter = makeAdapterWithThinkingCapability("always-on", capturedLevels);
+
+    await adapter.handleBundle(
+      {
+        bridge_id: "bridge:test",
+        bus: { async appendRuntimeTelemetry() {}, async emit() {} }
+      } as any,
+      makeDelivery("del-alwayson", "thread-1", "hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "high" }
+    );
+
+    // Agent was created with thinking_level = off (clamped from high)
+    expect(capturedLevels[0]).toBe("off");
+  });
+
+  it("clamps thinking_level to off when model declares none capability", async () => {
+    const capturedLevels: string[] = [];
+    const adapter = makeAdapterWithThinkingCapability("none", capturedLevels);
+
+    await adapter.handleBundle(
+      {
+        bridge_id: "bridge:test",
+        bus: { async appendRuntimeTelemetry() {}, async emit() {} }
+      } as any,
+      makeDelivery("del-none", "thread-1", "hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "low" }
+    );
+
+    expect(capturedLevels[0]).toBe("off");
+  });
+
+  it("passes thinking_level through unchanged when model declares budget capability", async () => {
+    const capturedLevels: string[] = [];
+    const adapter = makeAdapterWithThinkingCapability("budget", capturedLevels);
+
+    await adapter.handleBundle(
+      {
+        bridge_id: "bridge:test",
+        bus: { async appendRuntimeTelemetry() {}, async emit() {} }
+      } as any,
+      makeDelivery("del-budget", "thread-1", "hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "low" }
+    );
+
+    expect(capturedLevels[0]).toBe("low");
+  });
+
+  it("passes thinking_level through unchanged when no thinking capability declared", async () => {
+    const capturedLevels: string[] = [];
+    const adapter = makeAdapterWithThinkingCapability(undefined, capturedLevels);
+
+    await adapter.handleBundle(
+      {
+        bridge_id: "bridge:test",
+        bus: { async appendRuntimeTelemetry() {}, async emit() {} }
+      } as any,
+      makeDelivery("del-nodecl", "thread-1", "hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "medium" }
+    );
+
+    expect(capturedLevels[0]).toBe("medium");
   });
 });

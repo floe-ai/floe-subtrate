@@ -2,6 +2,8 @@
  * @invariant This module is the bus-local read model for Floe auth metadata.
  * It must merge pi-ai built-ins with local auth overlays from models.json and profiles.yaml
  * without exposing credentials, commands, or other secret-bearing auth state to the web.
+ * Live model-list intersection (filtering retired pi catalog entries) is applied at list time
+ * via live-model-probe. All failure modes are fail-open: a probe error never shrinks the list.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +12,8 @@ import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
+import { fetchLiveModelIds, intersectWithLive } from "./live-model-probe.js";
+import type { FetchFn } from "./live-model-probe.js";
 
 const ProfileSchema = z.object({
   id: z.string().min(1),
@@ -76,6 +80,13 @@ type FloeAuthPaths = {
   profilesYamlPath: string;
 };
 
+/** Credential shape stored in ~/.floe/auth/auth.json (subset used for probing). */
+type StoredCredential =
+  | { type: "api_key"; key: string }
+  | { type: "oauth"; refresh: string; access: string; expires: number; [key: string]: unknown };
+
+type AuthStorageData = Record<string, StoredCredential>;
+
 export function listAuthProfiles(configPath: string, config: LocalConfig): AuthProfileRecord[] {
   const paths = getFloeAuthPaths(configPath, config);
   ensureAuthFiles(paths);
@@ -88,11 +99,25 @@ export function listAuthProfiles(configPath: string, config: LocalConfig): AuthP
   }
 }
 
-export function listAuthModels(configPath: string, config: LocalConfig, provider?: string): AuthModelRecord[] {
+export async function listAuthModels(
+  configPath: string,
+  config: LocalConfig,
+  provider?: string,
+  fetchFn?: FetchFn,
+): Promise<AuthModelRecord[]> {
   const paths = getFloeAuthPaths(configPath, config);
   ensureAuthFiles(paths);
+  const authData = readAuthStorage(paths.authJsonPath);
   const registry = new BusModelRegistry(paths.modelsJsonPath);
-  return registry.list(provider);
+  return registry.list(provider, authData, fetchFn);
+}
+
+function readAuthStorage(authJsonPath: string): AuthStorageData {
+  try {
+    return JSON.parse(readFileSync(authJsonPath, "utf8")) as AuthStorageData;
+  } catch {
+    return {};
+  }
 }
 
 function getFloeAuthPaths(configPath: string, config: LocalConfig): FloeAuthPaths {
@@ -123,6 +148,8 @@ function ensureAuthFiles(paths: FloeAuthPaths): void {
 
 class BusModelRegistry {
   private readonly models: Model<any>[] = [];
+  /** Keys of models that came from models.json custom entries — never filtered out. */
+  private readonly customModelKeys = new Set<string>();
 
   constructor(private readonly modelsPath: string) {
     const builtIns = getProviders().flatMap((provider) => getModels(provider as any)) as Model<any>[];
@@ -130,9 +157,28 @@ class BusModelRegistry {
     this.applyOverlays();
   }
 
-  list(provider?: string): AuthModelRecord[] {
+  async list(provider: string | undefined, authData: AuthStorageData, fetchFn?: FetchFn): Promise<AuthModelRecord[]> {
+    // Group models by provider so we do at most one probe per provider.
+    const providerSet = provider
+      ? new Set([provider])
+      : new Set(this.models.map((m) => m.provider));
+
+    // Fetch live IDs per provider concurrently; failures return undefined (fail-open).
+    const liveIdsByProvider = new Map<string, Set<string> | undefined>();
+    await Promise.all(
+      [...providerSet].map(async (prov) => {
+        const credential = authData[prov] as StoredCredential | undefined;
+        const liveIds = await fetchLiveModelIds(prov, credential, fetchFn);
+        liveIdsByProvider.set(prov, liveIds);
+      }),
+    );
+
     return this.models
       .filter((model) => !provider || model.provider === provider)
+      .filter((model) => {
+        const liveIds = liveIdsByProvider.get(model.provider);
+        return intersectWithLive([model], this.customModelKeys, liveIds).length > 0;
+      })
       .map((model) => ({
         id: model.id,
         name: model.name,
@@ -168,6 +214,7 @@ class BusModelRegistry {
           const existingIndex = this.models.findIndex((model) => model.provider === provider && model.id === modelDef.id);
           if (existingIndex >= 0) this.models[existingIndex] = custom;
           else this.models.push(custom);
+          this.customModelKeys.add(`${provider}/${modelDef.id}`);
         }
       }
     } catch {

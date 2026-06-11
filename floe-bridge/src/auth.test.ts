@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveRuntimeAuth, RuntimeAuthError } from "./auth.js";
-import type { BridgeAuthRuntime } from "./auth.js";
+import type { BridgeAuthRuntime, ModelThinkingCapability } from "./auth.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -282,5 +282,67 @@ describe("resolveRuntimeAuth – model selection (model discovery)", () => {
     ).rejects.toSatisfy((e: unknown) => {
       return e instanceof RuntimeAuthError && e.code === "runtime_model_unknown";
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// thinkingCapability propagation (FIX 2)
+// ---------------------------------------------------------------------------
+
+describe("resolveRuntimeAuth – thinkingCapability propagation (FIX 2)", () => {
+  function makeRuntimeWithCapability(capability: ModelThinkingCapability | undefined): BridgeAuthRuntime {
+    const thinkingCapabilities = new Map<string, ModelThinkingCapability>();
+    if (capability !== undefined) thinkingCapabilities.set("anthropic/claude-haiku-4-5", capability);
+
+    return {
+      paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+      authStorage: {} as any,
+      modelRegistry: {
+        find(provider: string, modelId: string) {
+          if (provider === "anthropic" && modelId === "claude-haiku-4-5") {
+            return makeModel("anthropic", "claude-haiku-4-5");
+          }
+          return undefined;
+        },
+        getThinkingCapability(provider: string, modelId: string) {
+          return thinkingCapabilities.get(`${provider}/${modelId}`);
+        },
+        async getApiKeyForProvider(provider: string) {
+          if (provider === "anthropic") return "sk-ant-fake";
+          return undefined;
+        }
+      } as any,
+      profiles: {
+        version: 1,
+        profiles: [{ id: "anthropic-profile", provider: "anthropic", model: "claude-haiku-4-5" }]
+      }
+    } as BridgeAuthRuntime;
+  }
+
+  it("resolves thinkingCapability from registry for declared model", async () => {
+    const runtime = makeRuntimeWithCapability("budget");
+    const result = await resolveRuntimeAuth(runtime, {
+      auth_profile: "anthropic-profile",
+      auth_profile_source: "workspace_binding"
+    });
+    expect(result.thinkingCapability).toBe("budget");
+  });
+
+  it("resolves thinkingCapability as undefined when no declaration exists", async () => {
+    const runtime = makeRuntimeWithCapability(undefined);
+    const result = await resolveRuntimeAuth(runtime, {
+      auth_profile: "anthropic-profile",
+      auth_profile_source: "workspace_binding"
+    });
+    expect(result.thinkingCapability).toBeUndefined();
+  });
+
+  it("resolves thinkingCapability as always-on for fable-style models", async () => {
+    const runtime = makeRuntimeWithCapability("always-on");
+    const result = await resolveRuntimeAuth(runtime, {
+      auth_profile: "anthropic-profile",
+      auth_profile_source: "workspace_binding"
+    });
+    expect(result.thinkingCapability).toBe("always-on");
   });
 });

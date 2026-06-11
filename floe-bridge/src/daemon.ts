@@ -14,7 +14,7 @@ import { BusClient, type DeliveryBundle } from "./bus-client.js";
 import { ensureProjectTemplate, loadProject, materializeSavedConfig } from "./project.js";
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
-import { PiAgentCoreAdapter } from "./adapters/pi-agent-core-adapter.js";
+import { PiAgentCoreAdapter, TurnFailedError } from "./adapters/pi-agent-core-adapter.js";
 import { loadExtensions, type LoadedExtension } from "./extension-loader.js";
 import { HookRegistry } from "./hooks.js";
 
@@ -525,6 +525,55 @@ export class BridgeDaemon {
         await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "deferred", `${error.code}: ${error.message}`);
         return;
       }
+
+      // Turn failures from the runtime adapter: emit a runtime_error event to the
+      // originating endpoint so the failure surfaces in the normal event stream.
+      if (error instanceof TurnFailedError) {
+        console.log("[bridge] turn failed — emitting runtime_error event", {
+          delivery_id: error.delivery_id,
+          source_endpoint_id: error.source_endpoint_id,
+          model: error.model_id,
+          http_status: error.http_status
+        });
+        const errorSummary =
+          `Runtime turn failed for model '${error.model_id}' (provider: ${error.provider})` +
+          (error.http_status ? `, HTTP ${error.http_status}` : "") +
+          `: ${error.message}`;
+        try {
+          await this.bus.emit({
+            type: "runtime_error",
+            workspace_id: error.workspace_id,
+            source_endpoint_id: delivery.endpoint_id,
+            destination: { kind: "endpoint", endpoint_id: error.source_endpoint_id },
+            thread_id: error.thread_id,
+            context_id: error.context_id,
+            correlation_id: null,
+            content: {
+              text: errorSummary,
+              data: {
+                origin: "runtime_turn_failed",
+                delivery_id: error.delivery_id,
+                model: error.model_id,
+                provider: error.provider,
+                http_status: error.http_status,
+                message: error.message
+              }
+            },
+            response: { expected: false },
+            metadata: {
+              runtime: "pi-agent-core",
+              origin: "turn_failed",
+              delivery_id: error.delivery_id
+            }
+          });
+        } catch (emitErr) {
+          console.error("[bridge] failed to emit runtime_error event", emitErr);
+        }
+        await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", error.message);
+        await this.bus.reportTurnEnd(delivery.endpoint_id);
+        return;
+      }
+
       console.log("[bridge] delivery failed", {
         delivery_id: delivery.delivery_id,
         error: (error as Error).message

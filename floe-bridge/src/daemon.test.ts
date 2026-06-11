@@ -5,6 +5,7 @@ import YAML from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultConfig, type LocalConfig } from "./config.js";
 import { BridgeDaemon, chooseAdapter } from "./daemon.js";
+import { TurnFailedError } from "./adapters/pi-agent-core-adapter.js";
 import { HookRegistry, type HookPayload } from "./hooks.js";
 
 const envStack: Array<string | undefined> = [];
@@ -357,6 +358,132 @@ describe("BridgeDaemon hook event stream", () => {
       expect(receivedEventIds.filter((eventId) => eventId === "evt:webhook:0")).toHaveLength(2);
     } finally {
       (globalThis as any).WebSocket = previousWebSocket;
+      made.cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 1: TurnFailedError handling in daemon handleDelivery
+// ---------------------------------------------------------------------------
+
+describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
+  it("emits runtime_error event to originating endpoint and marks delivery failed", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+
+      const emittedEvents: any[] = [];
+      const deliveryStatusUpdates: Array<{ id: string; state: string; error?: string | null }> = [];
+      const endpointStatusUpdates: Array<{ id: string; status: string }> = [];
+
+      const delivery = {
+        delivery_id: "del-turn-fail-1",
+        endpoint_id: "actor:workspace:test:floe",
+        workspace_id: "workspace:test",
+        trigger_event_id: "evt:del-turn-fail-1",
+        delivered_at: new Date().toISOString(),
+        events: [
+          {
+            event_id: "evt:del-turn-fail-1",
+            type: "message",
+            workspace_id: "workspace:test",
+            source_endpoint_id: "actor:workspace:test:operator",
+            thread_id: "thread:test:1",
+            context_id: "ctx:test:1",
+            correlation_id: null,
+            destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
+            content: { text: "hello" },
+            response: { expected: false },
+            metadata: {},
+            created_at: new Date().toISOString()
+          }
+        ]
+      };
+
+      // Adapter that throws TurnFailedError (simulating a pi turn failure)
+      (daemon as any).adapter = {
+        name: "test-failing-adapter",
+        async handleBundle() {
+          throw new TurnFailedError(
+            "del-turn-fail-1",
+            "actor:workspace:test:operator",
+            "workspace:test",
+            "ctx:test:1",
+            "thread:test:1",
+            "claude-haiku-4-5",
+            "anthropic",
+            400,
+            "POST /v1/messages failed: 400 Bad Request"
+          );
+        }
+      };
+
+      (daemon as any).bus = {
+        async emit(event: any) { emittedEvents.push(event); },
+        async reportDeliveryStatus(bridgeId: string, id: string, state: string, error?: string) {
+          deliveryStatusUpdates.push({ id, state, error: error ?? null });
+        },
+        async reportTurnEnd() {},
+        async updateEndpointStatus(id: string, status: string) {
+          endpointStatusUpdates.push({ id, status });
+        },
+        async appendRuntimeTelemetry() {},
+        async resolveRuntimeBinding() {
+          return {
+            endpoint_auth_profile: "test-profile",
+            workspace_auth_profile: null,
+            global_auth_profile: null,
+            endpoint_model: null,
+            workspace_model: null,
+            global_model: null,
+            endpoint_thinking_level: null,
+            workspace_thinking_level: null,
+            global_thinking_level: null
+          };
+        }
+      };
+
+      (daemon as any).endpointRuntime.set("actor:workspace:test:floe", {
+        config: { auth_profile: "test-profile", provider: "anthropic", model: "claude-haiku-4-5" },
+        instructions: "",
+        workspace_locator: undefined,
+        agent_id: undefined
+      });
+
+      await (daemon as any).handleDelivery(delivery);
+
+      // runtime_error event must be emitted to the originating operator endpoint
+      expect(emittedEvents).toHaveLength(1);
+      expect(emittedEvents[0]).toMatchObject({
+        type: "runtime_error",
+        workspace_id: "workspace:test",
+        source_endpoint_id: "actor:workspace:test:floe",
+        destination: { kind: "endpoint", endpoint_id: "actor:workspace:test:operator" },
+        thread_id: "thread:test:1",
+        context_id: "ctx:test:1",
+        content: expect.objectContaining({
+          data: expect.objectContaining({
+            origin: "runtime_turn_failed",
+            delivery_id: "del-turn-fail-1",
+            model: "claude-haiku-4-5",
+            provider: "anthropic",
+            http_status: 400
+          })
+        })
+      });
+
+      // Delivery must be marked failed (not acknowledged)
+      const failedUpdate = deliveryStatusUpdates.find((u) => u.state === "failed");
+      expect(failedUpdate).toBeDefined();
+      expect(failedUpdate?.id).toBe("del-turn-fail-1");
+
+      // Endpoint must NOT be set to error status (turn failures don't invalidate the endpoint)
+      const errorStatus = endpointStatusUpdates.find((u) => u.status === "error");
+      expect(errorStatus).toBeUndefined();
+    } finally {
       made.cleanup();
     }
   });

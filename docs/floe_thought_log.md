@@ -77,3 +77,42 @@ Purpose: concise, context-dense capture of project-specific brain-dump notes. En
 - The system may resolve responsibility gaps by assigning new responsibility to an existing actor, creating a new actor, or restructuring actor boundaries so the work can be handled with the most useful context density for the token/work budget.
 - This keeps the actor system coherent: agents specialise, avoid overreach, route work through visible responsibility boundaries, and evolve coverage only when the substrate identifies a real gap.
 
+## Humans are ordinary actor endpoints
+
+- The human never appears as a special-cased "human" inside the substrate. A human is just another actor endpoint whose role and responsibilities are defined in actor files, exactly like an agent's.
+- If a person sits behind an endpoint, it is their responsibility to fulfil the role that endpoint declares. Escalation duties (e.g. "approves high-level impact") are properties of a role, not of humanness, so they can later be delegated to any actor — human or agent — without changing the system.
+- Early on, more escalations will route to the owner's endpoint; over time those roles migrate to other actors. The philosophy must hold through that transition: only the role assignment changes, never the substrate's model of actors.
+- Equality means: given the same permissions, a human actor and an agent actor can behave identically from the system's perspective. Humans differ only in interface, never in authority model.
+- Permission/scope design is still open. Interim rule: an actor has full permissions within its own workspace, regardless of actor type.
+
+## North-star use cases and six-month proof
+
+- Personal north star: an AI-first game design company. The owner discusses a multi-year vision with a co-founding agent, then steps back. The human steps in only for testing and unavoidable real-world actions (payments, authentication). The AI counterpart runs the company.
+- Six-month proof: a colleague of any discipline installs Floe, describes a desired outcome in plain language (e.g. an idea-to-published-video pipeline using named tools like GPT image models and Runway/Leonardo), and the agent designs the entire workflow system itself: storyboard/shot-board/narrative decomposition, spawning actors per stage, webhooks for remote-API callbacks, pulses that watch a folder for human-dropped ideas, and self-written extensions (e.g. a video playback / shot-board browser surface) — without the human explaining any system design.
+- The human can step into a running system at any time to observe progress, drop thoughts/encouragement/feedback, or redirect — but the system keeps moving whether or not the human is present. The human is the ultimate executive; the world does not pause for them.
+- Hosting model: self-hosted on the owner's machine/server first, with cloud deployability as a later option. Durability across host restarts matters; "the world keeps moving" implies an always-on host, not a laptop-session lifetime.
+- Keystone economic property: a human's 30 seconds of reaction must be worth an agent's hours of work. Feedback must feel like conversation, not review, or the "human spends no time working in the system" dream fails.
+
+## Trust gate for full autonomy, and the real fear
+
+- The fear is not large token consumption; it is high cost with little momentum. Spend is acceptable when it visibly converts into value/progress.
+- Spend-to-outcome telemetry (cost per workspace/actor/mission tied to legibility records) is acknowledged as needed, but deliberately a later layer once the substrate spine works — not an early build target.
+- Full-autonomy trust gate: an agent can set a one-to-three-year mission, decompose it into small pieces, keep the company profitable along the way (e.g. shipping smaller sellable tools), schedule and run its own pulses/events on its own accord, and hold the long-term mission in sight — effectively and efficiently. AI must be able to *run* a company, not just instruct within one.
+- Current trust deficits to close: memory and retrieval quality, and agents' ability to plan and operate workflows autonomously over long horizons.
+
+## v58 is superseded; current architectural posture
+
+- The v58 north-star doc is outdated in the owner's mind. Direction has evolved through subsequent PRDs/decisions: field → scope movement, and strict layering where the substrate owns all state.
+- The web is purely a visual layer over the substrate. It may persist web-only metadata (e.g. React Flow node positions) but owns no substrate state. Bridge and CLI are independent projects.
+- Pi is not load-bearing philosophically, but it is currently load-bearing practically: it provides multi-provider auth (Anthropic, OpenAI/GPT, GitHub Copilot, Gemini — both subscription OAuth and API keys) and runtime/hook plumbing that Floe would otherwise have to rebuild. Decision: keep Pi for now and spend tokens elsewhere; a replacement (e.g. Claude Agent SDK adapter beside or instead of Pi) needs a written proposal before any build.
+- Any runtime replacement must preserve multi-provider support: Anthropic, OpenAI/GPT, GitHub Copilot, and Gemini subscriptions as well as API keys across these.
+- The single biggest blocker to dogfooding (Floe building Floe) is that frontier models such as Claude are not yet available as agents inside the system, due to the pi-ai dependency. Self-hosting is otherwise considered close.
+- Resolved 2026-06-10: frontier Claude models run through the existing Pi path via custom entries in `~/.floe/auth/models.json` (`claude-fable-5`, `claude-opus-4-8`) with `reasoning: false`. pi-ai 0.73.1 doesn't recognize these ids for adaptive thinking and would otherwise send a `thinking` param they reject (400); with `reasoning: false` the param is omitted and the model defaults to adaptive server-side. Trade-off: binding-level `thinking_level` is a no-op for these entries until Pi deps catch up. First end-to-end Fable turn verified (bus → bridge → pi runtime → emit → reply, ~$0.01).
+- ADRs and PRDs in the repo are inspiration anchored to their creation date, not contracts; perspective is expected to shift toward supporting frontier models.
+
+## Memory as a harness-agnostic parallel system
+
+- Memory should be built as a standalone system usable in any harness, not welded to the Floe substrate. It can be developed in parallel with the substrate.
+- Packaging target: an official Floe extension, enabled by default expectation but disableable by users who do not want it.
+- This keeps the substrate core memory-free (consistent with earlier "memory remains external" decisions) while still treating memory quality as a first-class trust problem to solve.
+

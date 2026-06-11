@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
 import { getGitHubCopilotBaseUrl } from "@mariozechner/pi-ai/oauth";
-import type { AgentRuntimeConfig, BridgeAuthRuntime, RuntimeAuthResolved } from "../auth.js";
+import type { AgentRuntimeConfig, BridgeAuthRuntime, ModelThinkingCapability, RuntimeAuthResolved } from "../auth.js";
 import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
@@ -19,6 +19,46 @@ import { createWorkspaceTools } from "../tools/index.js";
 import type { ToolContext } from "../tools/index.js";
 import { createPulseTools } from "../tools/pulse-tools.js";
 import { createActorTools } from "../tools/actor-tools.js";
+
+/**
+ * Thrown by the adapter when a pi runtime turn fails after the delivery was already
+ * injected to the runtime. Carries structured fields so the daemon can emit a
+ * runtime_error event to the originating endpoint.
+ */
+export class TurnFailedError extends Error {
+  readonly code = "turn_failed" as const;
+  constructor(
+    readonly delivery_id: string,
+    readonly source_endpoint_id: string,
+    readonly workspace_id: string,
+    readonly context_id: string | null,
+    readonly thread_id: string,
+    readonly model_id: string,
+    readonly provider: string,
+    readonly http_status: number | null,
+    message: string
+  ) {
+    super(message);
+    this.name = "TurnFailedError";
+  }
+}
+
+/**
+ * Internal sentinel thrown from finalizeTurn when pi completes a turn with
+ * stopReason === 'error' (no HTTP throw from the runtime). Carries the pi
+ * errorMessage so the handleBundle catch path can build a TurnFailedError
+ * without re-recording telemetry that finalizeTurn already emitted.
+ */
+class PiErrorStopReasonSignal extends Error {
+  readonly code = "pi_error_stop_reason" as const;
+  constructor(
+    readonly piErrorMessage: string | null,
+    readonly piHttpStatus: number | null
+  ) {
+    super(piErrorMessage ?? "Pi runtime returned stop_reason 'error' with no error message.");
+    this.name = "PiErrorStopReasonSignal";
+  }
+}
 
 type AgentLike = {
   prompt(input: unknown): Promise<void>;
@@ -96,7 +136,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
   async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void> {
     const resolved = await resolveRuntimeAuth(this.authRuntime, runtimeConfig);
-    const session = await this.getOrCreateSession(context, bundle, resolved, runtimeConfig);
+    // Apply thinking capability clamping (Fix 2): when a model has an explicit
+    // thinking capability declaration, enforce it before handing off to pi-ai.
+    const clampedRuntimeConfig = applyThinkingCapabilityClamp(runtimeConfig, resolved.thinkingCapability, resolved.model.id);
+    const session = await this.getOrCreateSession(context, bundle, resolved, clampedRuntimeConfig);
     if (!session.initialized) {
       this.subscribeAgentEvents(session);
       session.initialized = true;
@@ -264,18 +307,35 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       this.writeWorkLog(context, bundle, turn, "completed");
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      // PiErrorStopReasonSignal carries a pre-parsed http_status; for genuine
+      // thrown errors, extract from the message text (e.g. "POST … failed: 400 …").
+      const httpStatus =
+        error instanceof PiErrorStopReasonSignal
+          ? error.piHttpStatus
+          : (() => {
+              const m = errorMessage.match(/:\s*(\d{3})\b/);
+              return m ? parseInt(m[1], 10) : null;
+            })();
+
       console.error("[bridge] pi runtime error", {
         delivery_id: bundle.delivery_id,
         runtime_turn_id: turn.runtime_turn_id,
         endpoint_id: bundle.endpoint_id,
-        error: errorMessage
+        http_status: httpStatus,
+        error: errorMessage,
+        source: error instanceof PiErrorStopReasonSignal ? "stop_reason_error" : "thrown"
       });
-      // Surface runtime error as telemetry
-      await this.appendTelemetry(context, turn, "runtime_error", {
-        error_message: errorMessage,
-        provider: resolved.provider,
-        model: resolved.model.id
-      });
+      // Surface runtime error as telemetry — but only for thrown errors; for
+      // PiErrorStopReasonSignal the runtime_error entry was already written by
+      // finalizeTurn before it rejected the completion promise.
+      if (!(error instanceof PiErrorStopReasonSignal)) {
+        await this.appendTelemetry(context, turn, "runtime_error", {
+          error_message: errorMessage,
+          http_status: httpStatus,
+          provider: resolved.provider,
+          model: resolved.model.id
+        });
+      }
 
       // Fire Error hook
       if (context.hooks?.hasHandlers("Error")) {
@@ -300,7 +360,19 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         console.log("[bridge] pi session invalidated due to error", { endpoint_id: bundle.endpoint_id });
         this.sessions.delete(bundle.endpoint_id);
       }
-      return; // Don't re-throw; error is surfaced via telemetry
+      // Re-throw as TurnFailedError so the daemon can emit a runtime_error event
+      // to the originating endpoint and mark the delivery as failed.
+      throw new TurnFailedError(
+        bundle.delivery_id,
+        turn.source_endpoint_id,
+        bundle.workspace_id,
+        turn.context_id,
+        turn.thread_id,
+        resolved.model.id,
+        resolved.provider,
+        httpStatus,
+        errorMessage
+      );
     }
   }
 
@@ -761,7 +833,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         });
       } else {
         const stopReason = assistantMessage?.stopReason ?? assistantMessage?.stop_reason ?? null;
-        const errorMessage = assistantMessage?.errorMessage ?? null;
+        const piErrorMessage = assistantMessage?.errorMessage ?? null;
         console.log("[bridge] no visible output", {
           runtime_turn_id: turn.runtime_turn_id,
           delivery_id: turn.delivery_id,
@@ -769,11 +841,29 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           stop_reason: stopReason
         });
         if (stopReason === "error") {
+          // Extract HTTP status from pi errorMessage if present (e.g. "400 Bad Request")
+          const httpStatusMatch = piErrorMessage?.match(/\b(\d{3})\b/);
+          const piHttpStatus = httpStatusMatch ? parseInt(httpStatusMatch[1], 10) : null;
           await this.appendTelemetry(context, turn, "runtime_error", {
-            note: "Pi runtime returned an error.",
+            note: "Pi runtime returned stop_reason 'error' without throwing.",
             stop_reason: stopReason,
-            error_message: errorMessage
+            error_message: piErrorMessage,
+            http_status: piHttpStatus
           });
+          // Record usage telemetry before signalling failure
+          if (assistantMessage) {
+            await this.appendTelemetry(context, turn, "usage", {
+              usage: assistantMessage.usage ?? null,
+              model: assistantMessage.model ?? null,
+              provider: assistantMessage.provider ?? null,
+              stop_reason: stopReason,
+              error_message: piErrorMessage
+            });
+          }
+          // Reject the completion so handleBundle's catch path emits the
+          // runtime_error bus event and marks the delivery as failed.
+          turn.completion.reject(new PiErrorStopReasonSignal(piErrorMessage, piHttpStatus));
+          return;
         }
       }
 
@@ -1020,4 +1110,38 @@ function createDeferred<T>(): Deferred<T> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Apply thinking capability clamping at the bridge/bus boundary.
+ *
+ * When a model entry declares an explicit `thinking` capability, the requested
+ * `thinking_level` is clamped before anything is handed to pi-ai, preventing
+ * the pi runtime from sending thinking params the model cannot accept.
+ *
+ * Capability mapping:
+ * - "always-on" / "none"  → force thinking_level to "off" (pi-ai will omit the
+ *   thinking param when thinkingLevel="off", regardless of model.reasoning)
+ * - "adaptive" / "budget" → pass through unchanged (pi-ai handles these correctly
+ *   when reasoning=true; the custom registry entry should set reasoning accordingly)
+ * - undefined             → no change (existing behaviour; pi-ai's own inference applies)
+ */
+export function applyThinkingCapabilityClamp(
+  runtimeConfig: AgentRuntimeConfig | undefined,
+  thinkingCapability: ModelThinkingCapability | undefined,
+  modelId: string
+): AgentRuntimeConfig | undefined {
+  if (!thinkingCapability) return runtimeConfig;
+  if (thinkingCapability === "always-on" || thinkingCapability === "none") {
+    const requested = runtimeConfig?.thinking_level ?? "off";
+    if (requested !== "off") {
+      console.log(
+        `[bridge] thinking_level '${requested}' clamped to 'off' for model '${modelId}' ` +
+        `(declared capability: '${thinkingCapability}')`
+      );
+    }
+    return { ...runtimeConfig, thinking_level: "off" };
+  }
+  // "adaptive" or "budget": pass through; pi-ai handles serialization
+  return runtimeConfig;
 }
