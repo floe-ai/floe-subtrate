@@ -157,7 +157,7 @@ export class RuntimeAuthError extends Error {
   }
 }
 
-class BridgeAuthStorage {
+export class BridgeAuthStorage {
   private data: AuthStorageData = {};
   private errors: Error[] = [];
 
@@ -174,6 +174,10 @@ class BridgeAuthStorage {
   }
 
   async getApiKey(provider: string): Promise<string | undefined> {
+    // Reload from disk on every resolution. External writers (e.g. the bus probe refresh)
+    // may have persisted fresher credentials since construction. Anthropic rotates refresh
+    // tokens on each refresh, so a stale in-memory token is immediately invalid.
+    this.reload();
     const credential = this.data[provider];
     if (credential?.type === "api_key") return credential.key.trim();
     if (credential?.type === "oauth") {

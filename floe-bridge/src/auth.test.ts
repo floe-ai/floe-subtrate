@@ -1,5 +1,8 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { resolveRuntimeAuth, RuntimeAuthError } from "./auth.js";
+import { BridgeAuthStorage, resolveRuntimeAuth, RuntimeAuthError } from "./auth.js";
 import type { BridgeAuthRuntime, ModelThinkingCapability } from "./auth.js";
 
 // ---------------------------------------------------------------------------
@@ -344,5 +347,58 @@ describe("resolveRuntimeAuth – thinkingCapability propagation (FIX 2)", () => 
       auth_profile_source: "workspace_binding"
     });
     expect(result.thinkingCapability).toBe("always-on");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BridgeAuthStorage – OAuth credential staleness race fix
+// ---------------------------------------------------------------------------
+
+describe("BridgeAuthStorage – reload-before-use picks up external writes", () => {
+  function makeTempAuthJson(contents: object): string {
+    const dir = mkdtempSync(join(tmpdir(), "floe-bridge-auth-test-"));
+    const path = join(dir, "auth.json");
+    writeFileSync(path, JSON.stringify(contents), "utf8");
+    return path;
+  }
+
+  it("(a) oauth path: external rewrite between constructor and getApiKey is picked up", async () => {
+    // far-future expires so getOAuthApiKey will NOT attempt a network refresh
+    const farFuture = Date.now() + 3_600_000;
+
+    const initialCredential = {
+      type: "oauth",
+      access: "access-token-OLD",
+      refresh: "refresh-token-OLD",
+      expires: farFuture
+    };
+
+    const path = makeTempAuthJson({ "anthropic": initialCredential });
+    const storage = new BridgeAuthStorage(path);
+
+    // Simulate the bus writing a fresher credential after the bridge was constructed
+    const fresherCredential = {
+      type: "oauth",
+      access: "access-token-NEW",
+      refresh: "refresh-token-NEW",
+      expires: farFuture
+    };
+    writeFileSync(path, JSON.stringify({ "anthropic": fresherCredential }), "utf8");
+
+    // getApiKey must reload from disk and return the new access token
+    // (pi's getOAuthApiKey returns credential.access when not expired — no network call)
+    const apiKey = await storage.getApiKey("anthropic");
+    expect(apiKey).toBe("access-token-NEW");
+  });
+
+  it("(b) api_key path: external rewrite between constructor and getApiKey is picked up", async () => {
+    const path = makeTempAuthJson({ "openai": { type: "api_key", key: "sk-OLD" } });
+    const storage = new BridgeAuthStorage(path);
+
+    // External writer updates the key
+    writeFileSync(path, JSON.stringify({ "openai": { type: "api_key", key: "sk-NEW" } }), "utf8");
+
+    const apiKey = await storage.getApiKey("openai");
+    expect(apiKey).toBe("sk-NEW");
   });
 });

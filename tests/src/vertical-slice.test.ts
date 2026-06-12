@@ -221,6 +221,12 @@ describe("Floe local vertical slice", () => {
       return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "idle");
     }, "agent runtime configured");
 
+    // Create a scope (required for endpoint-subscriber pulses that generate delivery contexts)
+    const { scope: pulseScope } = await post<{ scope: any }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`, {
+      title: "Test Scope"
+    });
+    const scopeId = pulseScope.scope_id;
+
     // Create a one-off pulse that fires 2 seconds from now
     const fireAt = new Date(Date.now() + 2_000).toISOString();
     const pulseId = "test-pulse-once";
@@ -228,6 +234,7 @@ describe("Floe local vertical slice", () => {
       pulse_id: pulseId,
       workspace_id: workspaceId,
       persistence: "local",
+      scope_id: scopeId,
       trigger: { type: "once", at: fireAt },
       content: { text: "Pulse test message" },
       subscribers: [{ endpoint_ref: `floe` }],
@@ -299,12 +306,19 @@ describe("Floe local vertical slice", () => {
       return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "idle");
     }, "agent runtime configured");
 
+    // Create a scope (required for endpoint-subscriber pulses that generate delivery contexts)
+    const { scope: pulseScope } = await post<{ scope: any }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`, {
+      title: "Test Scope"
+    });
+    const scopeId = pulseScope.scope_id;
+
     // Create a cron pulse that fires every 2 seconds
     const pulseId = "test-pulse-cron";
     const created = await post<{ pulse: any }>("/v1/pulses", {
       pulse_id: pulseId,
       workspace_id: workspaceId,
       persistence: "local",
+      scope_id: scopeId,
       trigger: { type: "cron", schedule: "*/2 * * * * *", timezone: "UTC" },
       content: { text: "Cron pulse test" },
       subscribers: [{ endpoint_ref: "floe" }],
