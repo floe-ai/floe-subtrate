@@ -57,10 +57,25 @@ Tests you write must never make live LLM API calls. Use mocked fetch / injected 
 
 ## Key pointers
 
+- `MISSION.md` — why the substrate exists and the redundancy test every slice must pass. Read it when scoping any new work.
 - `docs/ROADMAP.md` — working order and standing regression gates at the top. Start here for task context.
 - `docs/floe_thought_log.md` — owner's current thinking and architectural direction. Read relevant sections before making significant decisions.
 - `docs/adr/` — decision records. ADRs are immutable; read them to understand why things are shaped as they are.
 - `docs/adr/0004-scope-as-substrate-organising-boundary.md` — current organizing boundary (Scope, not Field).
+
+## Document authority
+
+`CONTEXT.md` invariants and accepted ADRs are canonical. The ROADMAP, PRDs, and plan documents express direction and working order as of when they were written, not current truth — where they conflict with CONTEXT.md or an ADR, the canonical doc governs. Worklogs, evidence folders, and closed plans are point-in-time records; never treat them as current. If you find a conflict, flag it to the operator citing both sources — never silently follow either side, and never edit a canonical doc to match a stale one.
+
+## Where new knowledge goes
+
+Knowledge routes into living documents; do not create a new Markdown file by default:
+
+- Terminology, definitions, invariants → edit `CONTEXT.md` in place. It is the single living source of truth; never start a parallel definitions file.
+- A decision with lasting consequences → a new ADR in `docs/adr/` (append-only, `NNNN-kebab-slug.md`).
+- A slice plan → one file in `docs/plans/`. Plans are disposable: once a plan is executed, propose deleting it — the worklog and commits are the durable record.
+- Retiring a term or concept → add it to the relevant `_Avoid_` list in `CONTEXT.md` AND add a rule to `floe-bus/src/docs-vocabulary.test.ts` in the same change.
+- Anything else requires explicit operator approval; the docs structure lint (`floe-bus/src/docs-structure.test.ts`) fails on unregistered standing documents.
 
 ## Communication
 

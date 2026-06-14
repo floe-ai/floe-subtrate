@@ -17,7 +17,8 @@ import {
   loadScopeProjectionLayout,
   upsertScopeProjectionLayout
 } from "./scope-projection-layout-store.js";
-import { ScopeAlreadyExistsError, ScopeNotFoundError, ScopeReservedIdError } from "./scopes/store.js";
+import { ScopeAlreadyExistsError, ScopeNotEmptyError, ScopeNotFoundError, ScopeReservedIdError } from "./scopes/store.js";
+import { encodeEventCursor, InvalidEventCursorError } from "./event-cursor.js";
 import { buildScopeProjection } from "./scopes/projection.js";
 import { listAuthModels, listAuthProfiles } from "./auth.js";
 
@@ -269,6 +270,45 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       });
     }
     return { scope };
+  });
+
+  app.delete("/v1/workspaces/:workspace_id/scopes/:scope_id", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      scope_id: z.string().min(1)
+    }).parse(request.params);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    try {
+      store.deleteScope(params.workspace_id, params.scope_id, broadcast);
+      return reply.code(204).send();
+    } catch (err) {
+      if (err instanceof ScopeNotFoundError) {
+        return reply.code(404).send({
+          error: "scope_not_found",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id
+        });
+      }
+      if (err instanceof ScopeReservedIdError) {
+        return reply.code(400).send({
+          error: "scope_id_reserved",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id
+        });
+      }
+      if (err instanceof ScopeNotEmptyError) {
+        return reply.code(409).send({
+          error: "scope_not_empty",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id,
+          context_count: err.context_count,
+          pulse_count: err.pulse_count
+        });
+      }
+      throw err;
+    }
   });
 
   function resolveWorkspaceLocator(workspaceId: string, reply: any): string | null {
@@ -646,15 +686,60 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
   });
 
-  app.get("/v1/events", async (request) => {
+  app.get("/v1/events", async (request, reply) => {
     const query = z.object({
       workspace_id: z.string().optional(),
       thread_id: z.string().optional(),
       context_id: z.string().optional(),
       scope_id: z.string().optional(),
+      since: z.string().optional(),
       limit: z.coerce.number().int().positive().optional()
     }).parse(request.query);
-    return { events: store.listEvents(query) };
+    let events;
+    try {
+      events = store.listEvents(query);
+    } catch (err) {
+      if (err instanceof InvalidEventCursorError) {
+        return reply.code(400).send({ error: "invalid_event_cursor", since: err.value });
+      }
+      throw err;
+    }
+    // The cursor of the last Event returned, for the caller to page or advance a
+    // watermark from. Null when nothing came back, so the caller holds position.
+    const last = events[events.length - 1];
+    const next_cursor = last ? encodeEventCursor({ created_at: last.created_at, event_id: last.event_id }) : null;
+    return { events, next_cursor };
+  });
+
+  app.get("/v1/workspaces/:workspace_id/endpoints/:endpoint_id/watermark", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      endpoint_id: z.string().min(1)
+    }).parse(request.params);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    return { watermark: store.getEndpointWatermark(params.workspace_id, params.endpoint_id) };
+  });
+
+  app.put("/v1/workspaces/:workspace_id/endpoints/:endpoint_id/watermark", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      endpoint_id: z.string().min(1)
+    }).parse(request.params);
+    const body = z.object({ cursor: z.string().min(1) }).parse(request.body);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    try {
+      const watermark = store.setEndpointWatermark(params.workspace_id, params.endpoint_id, body.cursor);
+      return { watermark };
+    } catch (err) {
+      if (err instanceof InvalidEventCursorError) {
+        return reply.code(400).send({ error: "invalid_event_cursor", cursor: err.value });
+      }
+      throw err;
+    }
   });
 
   // ---------------------------------------------------------------------------

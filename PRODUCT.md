@@ -33,7 +33,7 @@ Floe Web succeeds when the user understands this mental model:
 
 ## Source Of Truth
 
-`floe-init.md` is authoritative for substrate semantics.
+`CONTEXT.md` and accepted ADRs in `docs/adr/` are authoritative for substrate semantics; `docs/floe_thought_log.md` carries the owner's current direction. (`floe-init.md`, the original v58 handoff, is superseded and no longer in the repository.)
 
 Floe Web must preserve these decisions (labelled "v58" historically; v58 north-star doc is superseded, but these principles remain current — current authority is `docs/floe_thought_log.md`):
 
@@ -45,7 +45,7 @@ Floe Web must preserve these decisions (labelled "v58" historically; v58 north-s
 - Floe Web must not create a direct runtime path around `floe-bus` and `floe-bridge`.
 - The Pi coding-agent extension is later operator-shell work, not the V0 foundation.
 
-If product-layer ideas conflict with `floe-init.md`, keep `floe-init.md` unless the handoff is intentionally revised.
+If product-layer ideas conflict with those documents, keep the canonical document unless the direction is intentionally revised.
 
 ## Brand Personality
 

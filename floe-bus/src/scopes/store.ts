@@ -8,7 +8,6 @@ export type ScopeRecord = {
   workspace_id: string;
   title: string;
   description: string | null;
-  is_default: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -34,6 +33,21 @@ export class ScopeReservedIdError extends Error {
   }
 }
 
+export class ScopeNotEmptyError extends Error {
+  constructor(
+    readonly workspace_id: string,
+    readonly scope_id: string,
+    readonly context_count: number,
+    readonly pulse_count: number
+  ) {
+    super(
+      `Scope '${scope_id}' in workspace '${workspace_id}' is not empty: ` +
+      `${context_count} Context(s) and ${pulse_count} Pulse(s) still reference it.`
+    );
+    this.name = "ScopeNotEmptyError";
+  }
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -45,18 +59,16 @@ export function applyScopeSchema(db: DatabaseSync): void {
       scope_id TEXT NOT NULL,
       title TEXT NOT NULL,
       description TEXT,
-      is_default INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (workspace_id, scope_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_scopes_workspace
-      ON scopes(workspace_id, is_default DESC, created_at ASC);
+    DROP INDEX IF EXISTS idx_scopes_one_default_per_workspace;
+    DROP INDEX IF EXISTS idx_scopes_workspace;
 
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_scopes_one_default_per_workspace
-      ON scopes(workspace_id)
-      WHERE is_default = 1;
+    CREATE INDEX IF NOT EXISTS idx_scopes_workspace
+      ON scopes(workspace_id, created_at ASC);
   `);
 }
 
@@ -67,7 +79,7 @@ export class ScopeStore {
     const rows = this.db.prepare(`
       SELECT * FROM scopes
       WHERE workspace_id = ?
-      ORDER BY is_default DESC, created_at ASC, title ASC
+      ORDER BY created_at ASC, title ASC
     `).all(workspaceId) as any[];
     return rows.map((row) => this.rowToScope(row));
   }
@@ -95,9 +107,9 @@ export class ScopeStore {
     const timestamp = nowIso();
     this.db.prepare(`
       INSERT INTO scopes (
-        workspace_id, scope_id, title, description, is_default, created_at, updated_at
+        workspace_id, scope_id, title, description, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, 0, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       input.workspace_id,
       scopeId,
@@ -132,13 +144,22 @@ export class ScopeStore {
     return this.getScope(input.workspace_id, input.scope_id);
   }
 
+  /**
+   * Deletes the Scope row only. Emptiness and safety checks are the
+   * caller's responsibility (BusStore.deleteScope orchestrates them).
+   */
+  deleteScope(workspaceId: string, scopeId: string): void {
+    this.db.prepare(`
+      DELETE FROM scopes WHERE workspace_id = ? AND scope_id = ?
+    `).run(workspaceId, scopeId);
+  }
+
   private rowToScope(row: any): ScopeRecord {
     return {
       scope_id: String(row.scope_id),
       workspace_id: String(row.workspace_id),
       title: String(row.title),
       description: row.description ?? null,
-      is_default: Number(row.is_default) === 1,
       created_at: String(row.created_at),
       updated_at: String(row.updated_at)
     };

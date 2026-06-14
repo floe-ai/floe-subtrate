@@ -88,6 +88,14 @@ The universal substrate publish operation. All Endpoints use emit to create cano
 ### Delivery
 An Event made available to a specific Endpoint for processing. Context subscribers do not create deliveries.
 
+### Event Cursor
+An opaque, ordered position in a Workspace's Event stream, keyed by `(created_at, event_id)`. It is the unit the `since` parameter on Event queries speaks, and what an Endpoint Watermark stores. The `event_id` tie-break makes Events sharing a `created_at` safe to page past without skipping or repeating.
+_Avoid_: offset, page number, timestamp-only cursor.
+
+### Endpoint Watermark
+A persisted, per-Endpoint Event Cursor marking how far an Endpoint has been carried forward — the point an Actor was last brought up to date. It is generic across Actors; the operator is one ordinary Endpoint. It advances only when explicitly set, never on read, so "what changed since I was last here" persists until the Actor deliberately marks themselves caught up. Distinct from `bridges.last_seen_at`, which is bridge liveness.
+_Avoid_: read receipt, seen, unread badge, last_seen_at.
+
 ### Webhook
 An event source that ingests external input and produces canonical substrate Events. Actorless webhook streams must create or use a scoped Context; they must not fall back to a hidden Default Scope.
 

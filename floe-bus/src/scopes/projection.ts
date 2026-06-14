@@ -64,6 +64,26 @@ export type ScopeProjection = {
   unsupported: Array<{ kind: string; reason: string }>;
 };
 
+function eventRef(event: {
+  event_id: string;
+  type: string;
+  workspace_id: string;
+  scope_id: string | null;
+  context_id: string;
+  source_endpoint_id: string | null;
+  created_at: string;
+}): ScopeProjectionEventRef {
+  return {
+    event_id: event.event_id,
+    type: event.type,
+    workspace_id: event.workspace_id,
+    scope_id: String(event.scope_id),
+    context_id: event.context_id ?? null,
+    source_endpoint_id: event.source_endpoint_id,
+    created_at: event.created_at
+  };
+}
+
 function pulseRef(row: unknown): ScopeProjectionPulseRef {
   const pulse = row as Record<string, any>;
   return {
@@ -100,7 +120,7 @@ export function buildScopeProjection(store: BusStore, workspaceId: string, scope
         first_message_preview: store.contextStore.getFirstMessagePreview(context.context_id)
       })),
       pulses: (store.listPulses({ workspace_id: workspaceId, scope_id: scopeId }) as unknown[]).map(pulseRef),
-      events: [],
+      events: store.listEvents({ workspace_id: workspaceId, scope_id: scopeId, limit: 500 }).map(eventRef),
       activity: []
     },
     relationships: {

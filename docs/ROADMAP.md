@@ -82,6 +82,8 @@ Every major slice should re-check:
 * blocks do not become duplicate sources of truth
 * field/layout files do not own primitive membership
 * docs and code agree
+* vocabulary drift lint stays green (`floe-bus/src/docs-vocabulary.test.ts` — retired terms do not reappear as live concepts)
+* docs structure lint stays green (`floe-bus/src/docs-structure.test.ts` — standing docs are a closed registered set; knowledge routes into living documents)
 
 ---
 
@@ -173,6 +175,8 @@ Layout is renderer-specific metadata for a Scope rendering and must not determin
 
 ## Scope propagation
 
+> **Note (2026-06-12):** the Default Scope references in this section predate the ADR-0004 correction — there is no Default Scope and nothing falls back into one. Unscoped actor Contexts stay `scope_id: null`; actorless/operational flows (webhook, pulse delivery) require a real configured Scope. Where this section conflicts, [ADR-0004](adr/0004-scope-as-substrate-organising-boundary.md) governs.
+
 The first implementation should define one primary `scope_id` per scoped primitive and a default Scope per Workspace.
 
 Evaluate and implement propagation against current primitives:
@@ -217,6 +221,8 @@ Domain blocks should remain extensions or workspace conventions until proven oth
 ## Required next slice
 
 Status: **in progress**. Scope substrate work has landed: audited context scope assignment and workspace context discovery are in the working tree (commits `f7dd031`, `6f1e64f`). Remaining: scope deletion safety, `scope_id` on Pulse, propagation rules, FloeWeb Scope-as-Field rendering.
+
+> **Note (2026-06-12):** proof points 1 and 3 below predate the ADR-0004 correction — there is no Default Scope as a product concept. Where they conflict, [ADR-0004](adr/0004-scope-as-substrate-organising-boundary.md) governs.
 
 The focused slice should prove:
 

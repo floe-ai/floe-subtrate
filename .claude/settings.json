@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$(git status --porcelain -- '*.md')\" ] && exit 0; out=$(cd floe-bus && npx vitest run src/docs-vocabulary.test.ts src/docs-structure.test.ts 2>&1) || { echo \"$out\" | tail -30 >&2; exit 2; }",
+            "timeout": 120,
+            "statusMessage": "Doc lints: vocabulary drift + structure"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -93,8 +93,7 @@ describe("Scope HTTP routes", () => {
       scope_id: "research",
       workspace_id: workspaceId,
       title: "Research",
-      description: "Discovery work",
-      is_default: false
+      description: "Discovery work"
     });
 
     const scopes = await handle.app.inject({
@@ -167,8 +166,7 @@ describe("Scope HTTP routes", () => {
       scope_id: "research",
       workspace_id: workspaceId,
       title: "Validated Research",
-      description: null,
-      is_default: false
+      description: null
     });
   });
 
@@ -236,21 +234,190 @@ describe("Scope HTTP routes", () => {
     expect(scopes.json().scopes.filter((scope: { scope_id: string }) => scope.scope_id === "default")).toHaveLength(0);
   });
 
-  it("does not expose Scope deletion in the first Scope slice", async () => {
-    const wsLocator = join(tmp, "ws");
-    mkdirSync(wsLocator, { recursive: true });
-    const registered = await handle.app.inject({
-      method: "POST",
-      url: "/v1/workspaces/register",
-      payload: { locator: wsLocator, name: "scope-test" }
-    });
-    const workspaceId = registered.json().workspace.workspace_id;
+  describe("Scope deletion safety", () => {
+    async function registerScopedWorkspace(): Promise<string> {
+      const wsLocator = join(tmp, "ws");
+      mkdirSync(wsLocator, { recursive: true });
+      const registered = await handle.app.inject({
+        method: "POST",
+        url: "/v1/workspaces/register",
+        payload: { locator: wsLocator, name: "scope-test" }
+      });
+      expect(registered.statusCode).toBe(201);
+      return registered.json().workspace.workspace_id;
+    }
 
-    const deleted = await handle.app.inject({
-      method: "DELETE",
-      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/default`
+    async function createScope(workspaceId: string, scopeId: string): Promise<void> {
+      const created = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`,
+        payload: { scope_id: scopeId, title: scopeId }
+      });
+      expect(created.statusCode).toBe(201);
+    }
+
+    function registerEndpoint(workspaceId: string, endpointId: string): void {
+      handle.store.registerEndpoint({
+        endpoint_id: endpointId,
+        workspace_id: workspaceId,
+        name: endpointId,
+        bridge_id: "bridge:test",
+        status: "idle"
+      }, () => {});
+    }
+
+    it("deletes an empty Scope (204) and removes it from the Scope list", async () => {
+      const workspaceId = await registerScopedWorkspace();
+      await createScope(workspaceId, "research");
+
+      const deleted = await handle.app.inject({
+        method: "DELETE",
+        url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/research`
+      });
+      expect(deleted.statusCode).toBe(204);
+
+      const scopes = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`
+      });
+      expect(scopes.json()).toEqual({ scopes: [] });
     });
 
-    expect(deleted.statusCode).toBe(404);
+    it("returns 404 scope_not_found for a Scope that does not exist", async () => {
+      const workspaceId = await registerScopedWorkspace();
+
+      const deleted = await handle.app.inject({
+        method: "DELETE",
+        url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/missing`
+      });
+
+      expect(deleted.statusCode).toBe(404);
+      expect(deleted.json()).toMatchObject({
+        error: "scope_not_found",
+        workspace_id: workspaceId,
+        scope_id: "missing"
+      });
+    });
+
+    it("returns 404 for the reserved scope id 'default' (it never exists as a real Scope)", async () => {
+      const workspaceId = await registerScopedWorkspace();
+
+      const deleted = await handle.app.inject({
+        method: "DELETE",
+        url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/default`
+      });
+
+      expect(deleted.statusCode).toBe(404);
+      expect(deleted.json()).toMatchObject({
+        error: "scope_not_found",
+        scope_id: "default"
+      });
+    });
+
+    it("rejects deletion of a stale reserved 'default' Scope row with 400 scope_id_reserved", async () => {
+      const workspaceId = await registerScopedWorkspace();
+      // Simulate a stale legacy row that predates the reserved-id rule.
+      const timestamp = new Date().toISOString();
+      handle.store.db.prepare(`
+        INSERT INTO scopes (workspace_id, scope_id, title, description, created_at, updated_at)
+        VALUES (?, 'default', 'Stale Default', NULL, ?, ?)
+      `).run(workspaceId, timestamp, timestamp);
+
+      const deleted = await handle.app.inject({
+        method: "DELETE",
+        url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/default`
+      });
+
+      expect(deleted.statusCode).toBe(400);
+      expect(deleted.json()).toMatchObject({
+        error: "scope_id_reserved",
+        workspace_id: workspaceId,
+        scope_id: "default"
+      });
+    });
+
+    it("returns 409 scope_not_empty when Contexts still reference the Scope", async () => {
+      const workspaceId = await registerScopedWorkspace();
+      await createScope(workspaceId, "research");
+      const operator = `actor:${workspaceId}:operator`;
+      const floe = `actor:${workspaceId}:floe`;
+      registerEndpoint(workspaceId, operator);
+      registerEndpoint(workspaceId, floe);
+
+      const emitted = await handle.app.inject({
+        method: "POST",
+        url: "/v1/events/emit",
+        payload: {
+          type: "message",
+          workspace_id: workspaceId,
+          source_endpoint_id: operator,
+          destination: { kind: "endpoint", endpoint_id: floe },
+          scope_id: "research",
+          content: { text: "scoped work" },
+          response: { expected: false }
+        }
+      });
+      expect(emitted.statusCode).toBe(202);
+
+      const deleted = await handle.app.inject({
+        method: "DELETE",
+        url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/research`
+      });
+
+      expect(deleted.statusCode).toBe(409);
+      expect(deleted.json()).toMatchObject({
+        error: "scope_not_empty",
+        workspace_id: workspaceId,
+        scope_id: "research",
+        context_count: 1,
+        pulse_count: 0
+      });
+    });
+
+    it("returns 409 scope_not_empty when Pulses still reference the Scope", async () => {
+      const workspaceId = await registerScopedWorkspace();
+      await createScope(workspaceId, "research");
+      const floe = `actor:${workspaceId}:floe`;
+      registerEndpoint(workspaceId, floe);
+
+      const created = await handle.app.inject({
+        method: "POST",
+        url: "/v1/pulses",
+        payload: {
+          pulse_id: "research-reminder",
+          workspace_id: workspaceId,
+          persistence: "workspace",
+          scope_id: "research",
+          trigger: { type: "once", at: new Date(Date.now() + 60_000).toISOString() },
+          event: { type: "pulse.fired", content: { text: "reminder" } },
+          subscribers: [{ kind: "endpoint", endpoint_ref: floe }],
+          created_by: "test"
+        }
+      });
+      expect(created.statusCode).toBe(201);
+
+      const deleted = await handle.app.inject({
+        method: "DELETE",
+        url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/research`
+      });
+
+      expect(deleted.statusCode).toBe(409);
+      expect(deleted.json()).toMatchObject({
+        error: "scope_not_empty",
+        workspace_id: workspaceId,
+        scope_id: "research",
+        pulse_count: 1
+      });
+    });
+
+    it("returns 404 workspace_not_found for an unknown workspace", async () => {
+      const deleted = await handle.app.inject({
+        method: "DELETE",
+        url: "/v1/workspaces/workspace%3Amissing/scopes/research"
+      });
+
+      expect(deleted.statusCode).toBe(404);
+      expect(deleted.json()).toMatchObject({ error: "workspace_not_found" });
+    });
   });
 });

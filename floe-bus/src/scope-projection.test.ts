@@ -153,7 +153,7 @@ describe("Scope Projection API", () => {
     await createScope(handle, workspaceId, "ops");
 
     const researchEvent = await emitMessage(handle, { workspaceId, source: operator, target: floe, scopeId: "research", text: "research hello" });
-    await emitMessage(handle, {
+    const followUpEvent = await emitMessage(handle, {
       workspaceId,
       source: floe,
       target: operator,
@@ -161,7 +161,7 @@ describe("Scope Projection API", () => {
       contextId: researchEvent.context_id,
       text: "research follow-up"
     });
-    await emitMessage(handle, { workspaceId, source: operator, target: floe, scopeId: "ops", text: "ops hello" });
+    const opsEvent = await emitMessage(handle, { workspaceId, source: operator, target: floe, scopeId: "ops", text: "ops hello" });
 
     const res = await handle.app.inject({
       method: "GET",
@@ -182,7 +182,23 @@ describe("Scope Projection API", () => {
         first_message_preview: "research hello"
       })
     ]);
-    expect(projection.refs.events).toEqual([]);
+    expect(projection.refs.events).toEqual([
+      expect.objectContaining({
+        event_id: researchEvent.event_id,
+        type: "message",
+        workspace_id: workspaceId,
+        scope_id: "research",
+        context_id: researchEvent.context_id,
+        source_endpoint_id: operator
+      }),
+      expect.objectContaining({
+        event_id: followUpEvent.event_id,
+        scope_id: "research",
+        context_id: researchEvent.context_id,
+        source_endpoint_id: floe
+      })
+    ]);
+    expect(projection.refs.events.map((event: { event_id: string }) => event.event_id)).not.toContain(opsEvent.event_id);
     expect(projection.refs.activity).toEqual([]);
     expect(projection.relationships.context_participants).toEqual(expect.arrayContaining([
       { context_id: researchEvent.context_id, endpoint_id: operator },
@@ -346,7 +362,13 @@ describe("Scope Projection API", () => {
         created_by_endpoint_id: floe
       })
     ]);
-    expect(projection.refs.events).toEqual([]);
+    expect(projection.refs.events.length).toBeGreaterThanOrEqual(2);
+    for (const event of projection.refs.events) {
+      expect(event).toMatchObject({
+        scope_id: "research",
+        context_id: [...generatedContextIds][0]
+      });
+    }
     expect(projection.refs.activity).toEqual([]);
   });
 

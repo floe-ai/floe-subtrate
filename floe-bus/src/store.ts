@@ -11,9 +11,18 @@ import { CronExpressionParser } from "cron-parser";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 import { ContextStore, applyContextSchema, type ContextRecord } from "./contexts/store.js";
+import { decodeEventCursor } from "./event-cursor.js";
+import {
+  EndpointWatermarkStore,
+  applyEndpointWatermarkSchema,
+  type EndpointWatermark
+} from "./endpoint-watermark-store.js";
 import { resolveContext, type NotContextParticipantError } from "./contexts/resolver.js";
 import {
+  RESERVED_DEFAULT_SCOPE_ID,
+  ScopeNotEmptyError,
   ScopeNotFoundError,
+  ScopeReservedIdError,
   ScopeStore,
   applyScopeSchema,
   type ScopeRecord
@@ -240,6 +249,7 @@ export class BusStore {
   readonly db: DatabaseSync;
   readonly contextStore: ContextStore;
   readonly scopeStore: ScopeStore;
+  readonly endpointWatermarkStore: EndpointWatermarkStore;
 
   constructor(configPath: string, readonly config: LocalConfig) {
     const dataDir = resolveLocalPath(configPath, config.home, config.bus.data_dir);
@@ -250,6 +260,7 @@ export class BusStore {
     this.migrate();
     this.contextStore = new ContextStore(this.db);
     this.scopeStore = new ScopeStore(this.db);
+    this.endpointWatermarkStore = new EndpointWatermarkStore(this.db);
   }
 
   close(): void {
@@ -456,6 +467,11 @@ export class BusStore {
     `);
     applyContextSchema(this.db);
     applyScopeSchema(this.db);
+    applyEndpointWatermarkSchema(this.db);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_events_workspace_created
+        ON events(workspace_id, created_at, event_id);
+    `);
     this.backfillEventDestinationJson();
     this.backfillEventResponseJson();
     this.backfillEventScopeId();
@@ -681,6 +697,23 @@ export class BusStore {
     const scope = this.scopeStore.updateScope(input);
     if (scope) broadcast("scope_updated", { scope });
     return scope;
+  }
+
+  deleteScope(workspaceId: string, scopeId: string, broadcast: Broadcast): void {
+    const scope = this.scopeStore.getScope(workspaceId, scopeId);
+    if (!scope) {
+      throw new ScopeNotFoundError(workspaceId, scopeId);
+    }
+    if (scopeId === RESERVED_DEFAULT_SCOPE_ID) {
+      throw new ScopeReservedIdError(workspaceId, scopeId);
+    }
+    const contextCount = this.contextStore.listContextsForScope(workspaceId, scopeId).length;
+    const pulseCount = this.listPulses({ workspace_id: workspaceId, scope_id: scopeId }).length;
+    if (contextCount > 0 || pulseCount > 0) {
+      throw new ScopeNotEmptyError(workspaceId, scopeId, contextCount, pulseCount);
+    }
+    this.scopeStore.deleteScope(workspaceId, scopeId);
+    broadcast("scope_deleted", { workspace_id: workspaceId, scope_id: scopeId });
   }
 
   private validateScopeId(workspaceId: string, scopeId: string): string {
@@ -1482,55 +1515,55 @@ export class BusStore {
     return rows.reverse();
   }
 
-  listEvents(filters: { workspace_id?: string; thread_id?: string; context_id?: string; scope_id?: string; limit?: number }): EventEnvelope[] {
+  listEvents(filters: {
+    workspace_id?: string;
+    thread_id?: string;
+    context_id?: string;
+    scope_id?: string;
+    since?: string;
+    limit?: number;
+  }): EventEnvelope[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
+    const conditions: string[] = [];
+    const params: any[] = [];
     if (filters.context_id) {
-      const params: any[] = [];
-      let sql = "SELECT * FROM events WHERE context_id = ?";
+      conditions.push("context_id = ?");
       params.push(filters.context_id);
-      if (filters.workspace_id) {
-        sql += " AND workspace_id = ?";
-        params.push(filters.workspace_id);
-      }
-      if (filters.scope_id) {
-        sql += " AND scope_id = ?";
-        params.push(filters.scope_id);
-      }
-      sql += " ORDER BY created_at ASC LIMIT ?";
-      params.push(limit);
-      return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
-    }
-    if (filters.workspace_id && filters.thread_id) {
-      const params: any[] = [filters.workspace_id, filters.thread_id];
-      let sql = "SELECT * FROM events WHERE workspace_id = ? AND thread_id = ?";
-      if (filters.scope_id) {
-        sql += " AND scope_id = ?";
-        params.push(filters.scope_id);
-      }
-      sql += " ORDER BY created_at ASC LIMIT ?";
-      params.push(limit);
-      return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
     }
     if (filters.workspace_id) {
-      const params: any[] = [filters.workspace_id];
-      let sql = "SELECT * FROM events WHERE workspace_id = ?";
-      if (filters.scope_id) {
-        sql += " AND scope_id = ?";
-        params.push(filters.scope_id);
-      }
-      sql += " ORDER BY created_at ASC LIMIT ?";
-      params.push(limit);
-      return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
+      conditions.push("workspace_id = ?");
+      params.push(filters.workspace_id);
     }
-    const params: any[] = [];
-    let sql = "SELECT * FROM events";
+    if (filters.thread_id) {
+      conditions.push("thread_id = ?");
+      params.push(filters.thread_id);
+    }
     if (filters.scope_id) {
-      sql += " WHERE scope_id = ?";
+      conditions.push("scope_id = ?");
       params.push(filters.scope_id);
     }
-    sql += " ORDER BY created_at ASC LIMIT ?";
+    if (filters.since) {
+      const cursor = decodeEventCursor(filters.since);
+      // Strictly after the cursor in (created_at, event_id) order. The event_id
+      // tie-break is what makes same-instant Events safe to page past.
+      conditions.push("(created_at > ? OR (created_at = ? AND event_id > ?))");
+      params.push(cursor.created_at, cursor.created_at, cursor.event_id);
+    }
+    let sql = "SELECT * FROM events";
+    if (conditions.length > 0) {
+      sql += " WHERE " + conditions.join(" AND ");
+    }
+    sql += " ORDER BY created_at ASC, event_id ASC LIMIT ?";
     params.push(limit);
     return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
+  }
+
+  getEndpointWatermark(workspaceId: string, endpointId: string): EndpointWatermark | null {
+    return this.endpointWatermarkStore.get(workspaceId, endpointId);
+  }
+
+  setEndpointWatermark(workspaceId: string, endpointId: string, cursor: string): EndpointWatermark {
+    return this.endpointWatermarkStore.set(workspaceId, endpointId, cursor);
   }
 
   listDeliveries(filters: { workspace_id?: string; limit?: number }): unknown[] {

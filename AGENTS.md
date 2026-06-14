@@ -8,6 +8,30 @@ Avoid horizontal plumbing, broad refactors, speculative abstractions, cosmetic p
 
 ---
 
+## Project state: pre-release
+
+This repository is pre-release. Nothing depends on it yet; there are no external consumers and no production data.
+
+- **No backward compatibility.** Do not keep old code, schemas, or APIs working for their own sake. When a shape is wrong, change it outright.
+- **No migration paths.** Do not write data migrations, compatibility shims, dual-read/dual-write, or deprecation cycles. Replace the old thing and delete it.
+- **Zero tech-debt accumulation.** Leave every change at the quality you would want to inherit. If a change would add debt "to clean up later," do the clean version now or stop and flag it — "later" does not exist here.
+
+This licenses deletion and replacement. It does **not** license sloppiness: the bar is *higher*, because there is no legacy excuse for mess.
+
+---
+
+## Evaluate, don't inherit
+
+The repository records past decisions; it is not proof they were right. Existing code, conventions, patterns, and structure may be sound or may be debt.
+
+- When you touch an area, judge its existing approach against first principles, `CONTEXT.md`, and `MISSION.md` — do not adopt a pattern merely because it is present.
+- If the surrounding convention is sound, match it. If it is poor, fix it within scope or flag it explicitly — never propagate it silently.
+- Leave each area better than you found it. Consistency with a bad pattern is not a virtue.
+
+This pairs with the Source of Truth tiers: code is authoritative for *what the system currently does*, never for *what it should do*.
+
+---
+
 ## Core Principle
 
 Route before reasoning.
@@ -77,6 +101,20 @@ Resolve conflicts using this order:
 4. Repository documentation and ADRs
 5. Product requirements
 6. Prior assumptions or memory
+
+Within repository documentation, authority is tiered:
+
+1. **Canonical** — `CONTEXT.md` (terminology and invariants) and accepted ADRs in `docs/adr/`. Where a newer ADR corrects an older statement, the correction governs.
+2. **Working** — `docs/ROADMAP.md`, PRDs, and open plans in `docs/plans/`. These express direction and working order as of when they were written. Where they conflict with a canonical doc, the canonical doc wins. Never edit a canonical doc to match a working doc.
+3. **Historical** — worklogs, evidence folders, QA artifacts, and closed plans. Point-in-time records; never treat them as current.
+
+New knowledge routes into living documents; do not create new Markdown files by default:
+
+- Terminology, definitions, invariants → edit `CONTEXT.md` in place.
+- Lasting decisions → a new ADR in `docs/adr/` (append-only, `NNNN-kebab-slug.md`).
+- Slice plans → `docs/plans/`; disposable — delete once executed (worklog and commits are the record).
+- Retiring a term → `CONTEXT.md` `_Avoid_` list AND a rule in `floe-bus/src/docs-vocabulary.test.ts`, same change.
+- Anything else needs explicit operator approval; `floe-bus/src/docs-structure.test.ts` fails on unregistered standing documents.
 
 Surface conflicts immediately.
 
