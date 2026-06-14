@@ -926,9 +926,19 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   app.get("/v1/runtime/telemetry", async (request) => {
     const query = z.object({
       workspace_id: z.string().optional(),
+      delivery_id: z.string().optional(),
       limit: z.coerce.number().int().positive().max(500).optional()
     }).parse(request.query);
     return { records: store.listRuntimeTelemetry(query) };
+  });
+
+  app.get("/v1/events/:event_id/trace", async (request, reply) => {
+    const params = z.object({ event_id: z.string().min(1) }).parse(request.params);
+    const trace = store.getEventTrace(params.event_id);
+    if (!trace) {
+      return reply.code(404).send({ error: "event_not_found", event_id: params.event_id });
+    }
+    return trace;
   });
 
   app.post("/v1/endpoints/:endpoint_id/turn-end", async (request) => {

@@ -45,6 +45,8 @@ Use the provided delivery context. Do not invent refs. If you need to address an
 ### Work log
 Everything you produce during a processing cycle (visible output, tool calls, file reads, code edits, reasoning) is recorded in your work log. Only explicitly emitted events are communication.
 
+Work logs are committed files under `.floe/agents/<actor>/worklogs/`. If another actor asks to see the work behind something, retrieve the relevant work log with your file tools and emit it — work logs are not served by the bus.
+
 ### Workspace tools
 You have access to workspace tools for inspecting, understanding, and modifying the project:
 - `read` — read file contents (with optional line range)

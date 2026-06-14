@@ -1501,18 +1501,47 @@ export class BusStore {
     return telemetry;
   }
 
-  listRuntimeTelemetry(filters: { workspace_id?: string; limit?: number }): unknown[] {
+  listRuntimeTelemetry(filters: { workspace_id?: string; delivery_id?: string; limit?: number }): unknown[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
+    const conditions: string[] = [];
+    const params: any[] = [];
     if (filters.workspace_id) {
-      // Return newest records first (DESC) then reverse so caller gets chronological order
-      const rows = this.db.prepare(`
-        SELECT * FROM runtime_telemetry WHERE workspace_id = ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(filters.workspace_id, limit);
-      return rows.reverse();
+      conditions.push("workspace_id = ?");
+      params.push(filters.workspace_id);
     }
-    const rows = this.db.prepare("SELECT * FROM runtime_telemetry ORDER BY created_at DESC LIMIT ?").all(limit);
-    return rows.reverse();
+    if (filters.delivery_id) {
+      conditions.push("delivery_id = ?");
+      params.push(filters.delivery_id);
+    }
+    let sql = "SELECT * FROM runtime_telemetry";
+    if (conditions.length > 0) sql += " WHERE " + conditions.join(" AND ");
+    // Newest first for the LIMIT, then reverse so the caller gets chronological order.
+    sql += " ORDER BY created_at DESC LIMIT ?";
+    params.push(limit);
+    return (this.db.prepare(sql).all(...params)).reverse();
+  }
+
+  getEvent(eventId: string): EventEnvelope | null {
+    const row = this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(eventId) as any;
+    return row ? this.rowToEvent(row) : null;
+  }
+
+  /**
+   * The work that produced an Event: the runtime trace of the turn that emitted it.
+   * Emitted events carry their producing turn as `metadata.delivery_id`; telemetry is
+   * keyed by `delivery_id`. System-originated events (pulse.fired, webhook ingest) have
+   * no producing turn — `delivery_id` is null and the trace is empty. Returns null only
+   * when the Event itself does not exist. Work-log prose is not served here: it lives as
+   * committed files retrievable by an actor, not through the bus.
+   */
+  getEventTrace(eventId: string): { event_id: string; delivery_id: string | null; telemetry: unknown[] } | null {
+    const event = this.getEvent(eventId);
+    if (!event) return null;
+    const deliveryId = typeof event.metadata?.delivery_id === "string" ? event.metadata.delivery_id : null;
+    const telemetry = deliveryId
+      ? this.listRuntimeTelemetry({ workspace_id: event.workspace_id, delivery_id: deliveryId })
+      : [];
+    return { event_id: eventId, delivery_id: deliveryId, telemetry };
   }
 
   listEvents(filters: {
