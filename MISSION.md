@@ -26,6 +26,15 @@ Before building anything, ask: **would a 10x better model make this unnecessary?
 - If yes — do not build it. It is scaffolding compensating for model weakness, and the next release deletes it.
 - If it becomes *more* valuable as models improve — more work flowing through identity, audit, scheduling, and communication — it belongs in the substrate.
 
+## The actor-generality test
+
+Substrate features must serve actors generally, not one client. Before building anything framed as "for the UI," ask: **is this useful to an actor that never opens the UI** — an agent, a webhook processor, a headless script?
+
+- If yes, build it in the substrate.
+- If it is only meaningful to the human UI, it is UI code, not substrate — it does not belong in floe-bus. Build it in the client, or reconsider whether to build it at all.
+
+The operator is an ordinary actor; the UI is one client among many. (Example: the Endpoint Watermark serves any actor processing "events since I last ran," not just the Briefing.)
+
 ## What Floe is not
 
 - **Not a harness.** We do not compete with coding agents on driving a model well; we bind to them through the bridge.
