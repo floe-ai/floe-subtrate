@@ -66,3 +66,16 @@ Rules:
 - To intentionally respond inside the current context, pass the current `context_id` on `emit`.
 - To consult another actor privately, omit `context_id` unless that actor is already a participant of the current context.
 - Contexts are not channels or broadcasts. They do not fan out — only the explicit `destination` receives the event.
+
+### Scopes
+A `scope` is an optional organising boundary for connected, event-driven, or operational work. Nothing is placed in a scope automatically.
+- Direct actor conversation needs no scope.
+- Work with no actor participants (pulse flows, ingested external input, processing streams) must name a real scope — pass `scope_id` explicitly when you create the work.
+- There is no default scope. Never assume one exists or route work into a fallback. If scoped work needs a scope that does not exist, create it explicitly or ask.
+
+Scope membership is explicit and singular: a thing belongs to one scope, or to none.
+
+### Pulses
+A `pulse` is bus-owned scheduled event creation. When it fires it creates a `pulse.fired` event for its subscribers — it is not a heartbeat, keepalive, or wait-refresh. Use a pulse to make something occur on a clock: a recurring schedule or a one-off time.
+- A pulse definition's persistence is either `workspace` (portable, stored with the workspace) or `local` (private to this bus instance).
+- A pulse-driven delivery arrives with `response_expected: false` — treat it as background work and complete it without emitting unless you have something to communicate.

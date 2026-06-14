@@ -77,6 +77,19 @@ Knowledge routes into living documents; do not create a new Markdown file by def
 - Retiring a term or concept → add it to the relevant `_Avoid_` list in `CONTEXT.md` AND add a rule to `floe-bus/src/docs-vocabulary.test.ts` in the same change.
 - Anything else requires explicit operator approval; the docs structure lint (`floe-bus/src/docs-structure.test.ts`) fails on unregistered standing documents.
 
+## How Floe is built and extended
+
+Floe is built from:
+- **floe-bus** — the substrate: events, contexts, scopes, pulses, endpoints, deliveries, pending responses, runtime bindings, with an HTTP API over a SQLite store.
+- **floe-bridge** — runtime embodiment: discovers and loads actors at workspace attach, composes each actor's system prompt (charter body + shared substrate guidance), runs turns through the model adapter, and loads extensions and their hooks.
+- **floe-cli** — operator entry points.
+
+Two ways to extend the system, in order of preference:
+1. **Compose substrate primitives.** Most extension is creating and using what already exists: open contexts, declare scopes, schedule pulses, emit events, read and write workspace files. No code, no new machinery. Prefer this.
+2. **Author a code extension.** Only when a genuinely new capability is needed (external I/O, computation). See `docs/adr/0002-extension-substrate-design.md`: a `.floe/extensions/NAME/` folder with an `extension.json` manifest and a TypeScript entry returning agent tools, hooks registered via `ctx.hooks.on(...)`, bound to an actor in agent frontmatter. Code is the escape hatch, not the default path.
+
+Before adding anything, apply the actor-generality and redundancy tests in `MISSION.md`, and check whether the workspace filesystem and typed events already cover the need.
+
 ## Communication
 
 Use `emit` to communicate. If you need a human response — approval, clarification, a decision — emit with a response expectation and end your turn. Do not attempt to keep yourself alive or poll; the substrate delivers responses when they arrive.
