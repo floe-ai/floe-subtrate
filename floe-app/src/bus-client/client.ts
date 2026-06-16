@@ -291,6 +291,25 @@ export async function emit(event: EmitInput): Promise<EventEnvelope> {
 // Endpoints
 // ---------------------------------------------------------------------------
 
+/** POST /v1/endpoints/register — register (create or upsert) an endpoint/actor */
+export async function registerEndpoint(input: {
+  endpoint_id: string;
+  workspace_id: string;
+  name: string;
+  agent_id?: string | null;
+  bridge_id?: string | null;
+  status?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<EndpointRef> {
+  const data = await post<{ endpoint: EndpointRef }>("/v1/endpoints/register", input);
+  return data.endpoint;
+}
+
+/** DELETE /v1/endpoints/:id — delete an endpoint/actor and its pending deliveries */
+export async function deleteEndpoint(endpointId: string): Promise<{ ok: true; endpoint_id: string }> {
+  return del(`/v1/endpoints/${encodeURIComponent(endpointId)}`);
+}
+
 /** GET /v1/endpoints?workspace_id=... — list endpoints; workspace_id is optional */
 export async function listEndpointsGlobal(workspace_id?: string): Promise<EndpointRef[]> {
   const qs = workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : "";

@@ -1145,6 +1145,15 @@ export class BusStore {
     return this.db.prepare("SELECT * FROM endpoints WHERE endpoint_id = ?").get(endpointId) as any;
   }
 
+  deleteEndpoint(endpointId: string, broadcast: Broadcast): { ok: true; endpoint_id: string } {
+    const endpoint = this.getEndpoint(endpointId);
+    if (!endpoint) throw new Error(`Endpoint not found: ${endpointId}`);
+    this.db.prepare("DELETE FROM event_queue WHERE destination_endpoint_id = ?").run(endpointId);
+    this.db.prepare("DELETE FROM endpoints WHERE endpoint_id = ?").run(endpointId);
+    broadcast("endpoint_deleted", { endpoint_id: endpointId });
+    return { ok: true, endpoint_id: endpointId };
+  }
+
   updateEndpointStatus(endpointId: string, status: string, broadcast: Broadcast): unknown {
     this.db.prepare("UPDATE endpoints SET status = ?, updated_at = ? WHERE endpoint_id = ?").run(status, now(), endpointId);
     const endpoint = this.getEndpoint(endpointId);

@@ -2,12 +2,12 @@
  * Briefing module tests.
  *
  * sinceDiff — pure function, no mocks needed.
- * DecisionCard — React component tests via @testing-library/react.
+ * WaitingItem — React component tests via @testing-library/react.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { sinceDiff } from "./sinceDiff.ts";
-import type { EventEnvelope, DecisionCard as DecisionCardType } from "../bus-client/types.ts";
+import type { EventEnvelope, WaitingItem as WaitingItemType } from "../bus-client/types.ts";
 
 afterEach(() => {
   cleanup();
@@ -101,7 +101,7 @@ describe("sinceDiff", () => {
 });
 
 // ---------------------------------------------------------------------------
-// DecisionCard — rendered via @testing-library/react
+// WaitingItem — rendered via @testing-library/react
 // ---------------------------------------------------------------------------
 // We import dynamically inside the tests so that vi.mock is hoisted before
 // any module-level imports.
@@ -116,7 +116,7 @@ vi.mock("../bus-client/client.ts", () => ({
   emit: vi.fn().mockResolvedValue({}),
 }));
 
-function makeCard(impactOverride: DecisionCardType["impact"]): DecisionCardType {
+function makeItem(eventContent: Record<string, unknown>): WaitingItemType {
   return {
     source: {
       pending_id: "pd-1",
@@ -131,7 +131,7 @@ function makeCard(impactOverride: DecisionCardType["impact"]): DecisionCardType 
       created_at: "2026-06-01T10:00:00Z",
       resolved_at: null,
     },
-    impact: impactOverride,
+    eventContent,
     askingActor: {
       endpoint_id: "ep-1",
       workspace_id: "ws-1",
@@ -146,58 +146,101 @@ function makeCard(impactOverride: DecisionCardType["impact"]): DecisionCardType 
   };
 }
 
-describe("DecisionCard", () => {
-  it("renders impact block", async () => {
+describe("WaitingItem", () => {
+  it("renders actor attribution and event content block", async () => {
+    const React = await import("react");
     const { render, screen } = await import("@testing-library/react");
-    const { DecisionCard } = await import("./DecisionCard.tsx");
+    const { WaitingItem } = await import("./WaitingItem.tsx");
 
-    const card = makeCard({
-      architecture: "Adds new service boundary",
-      product: "Enables offline mode",
-      risk: "Low — reversible",
-      cost: "$200/month",
-    });
+    const item = makeItem({ reason: "Need approval to proceed", scope: "auth-service" });
 
-    render(
-      DecisionCard({ card, onAct: vi.fn() })
-    );
+    render(React.createElement(WaitingItem, { item, onReply: vi.fn(), onOpenContext: vi.fn() }));
 
-    // Impact block exists and is not the "missing" alert
-    const impactSection = document.querySelector("[data-section='impact']");
-    expect(impactSection).not.toBeNull();
-    expect(impactSection?.getAttribute("data-missing-impact")).toBeNull();
+    expect(screen.getByText(/Planner Agent/i)).toBeTruthy();
+    expect(screen.getByText(/is waiting for a response/i)).toBeTruthy();
 
-    // All four impact fields are visible
-    expect(screen.getByText(/Adds new service boundary/i)).toBeTruthy();
-    expect(screen.getByText(/Enables offline mode/i)).toBeTruthy();
-    expect(screen.getByText(/Low — reversible/i)).toBeTruthy();
-    expect(screen.getByText(/\$200\/month/i)).toBeTruthy();
-
-    // No missing-impact alert
-    expect(document.querySelector("[data-missing-impact='true']")).toBeNull();
+    const contentBlock = document.querySelector("[data-section='content']");
+    expect(contentBlock).not.toBeNull();
+    expect(contentBlock?.textContent).toContain("auth-service");
+    expect(contentBlock?.textContent).toContain("Need approval to proceed");
   });
 
-  it("surfaces missing impact loudly", async () => {
+  it("renders empty content gracefully", async () => {
+    const React = await import("react");
+    const { render } = await import("@testing-library/react");
+    const { WaitingItem } = await import("./WaitingItem.tsx");
+
+    const item = makeItem({});
+
+    render(React.createElement(WaitingItem, { item, onReply: vi.fn(), onOpenContext: vi.fn() }));
+
+    const contentBlock = document.querySelector("[data-section='content']");
+    expect(contentBlock?.textContent).toContain("(empty)");
+  });
+
+  it("calls onReply with typed text when Send is clicked", async () => {
+    const React = await import("react");
+    const { render, screen, fireEvent } = await import("@testing-library/react");
+    const { WaitingItem } = await import("./WaitingItem.tsx");
+
+    const onReply = vi.fn();
+    const item = makeItem({ question: "Can you proceed?" });
+
+    render(React.createElement(WaitingItem, { item, onReply, onOpenContext: vi.fn() }));
+
+    const textarea = screen.getByTestId("reply-textarea");
+    fireEvent.change(textarea, { target: { value: "Yes, proceeding now." } });
+
+    const sendBtn = screen.getByTestId("reply-send");
+    fireEvent.click(sendBtn);
+
+    expect(onReply).toHaveBeenCalledWith("Yes, proceeding now.");
+  });
+
+  it("calls onReply when Enter is pressed (without Shift)", async () => {
+    const React = await import("react");
+    const { render, screen, fireEvent } = await import("@testing-library/react");
+    const { WaitingItem } = await import("./WaitingItem.tsx");
+
+    const onReply = vi.fn();
+    const item = makeItem({});
+
+    render(React.createElement(WaitingItem, { item, onReply, onOpenContext: vi.fn() }));
+
+    const textarea = screen.getByTestId("reply-textarea");
+    fireEvent.change(textarea, { target: { value: "Quick reply" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+
+    expect(onReply).toHaveBeenCalledWith("Quick reply");
+  });
+
+  it("does not call onReply when Send is disabled (empty text)", async () => {
+    const React = await import("react");
     const { render, screen } = await import("@testing-library/react");
-    const { DecisionCard } = await import("./DecisionCard.tsx");
+    const { WaitingItem } = await import("./WaitingItem.tsx");
 
-    const card = makeCard(null);
+    const onReply = vi.fn();
+    const item = makeItem({});
 
-    render(
-      DecisionCard({ card, onAct: vi.fn() })
-    );
+    render(React.createElement(WaitingItem, { item, onReply, onOpenContext: vi.fn() }));
 
-    // Missing impact indicator must be present and loud
-    const missing = document.querySelector("[data-missing-impact='true']");
-    expect(missing).not.toBeNull();
+    const sendBtn = screen.getByTestId("reply-send") as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+  });
 
-    // Must attribute the omission to the asking actor by name (may appear in multiple nodes)
-    expect(screen.getAllByText(/Planner Agent/i).length).toBeGreaterThan(0);
+  it("calls onOpenContext when 'Open in context' button is clicked", async () => {
+    const React = await import("react");
+    const { render, screen, fireEvent } = await import("@testing-library/react");
+    const { WaitingItem } = await import("./WaitingItem.tsx");
 
-    // Must use role=alert (accessible loudness)
-    expect(missing?.getAttribute("role")).toBe("alert");
+    const onOpenContext = vi.fn();
+    const item = makeItem({});
 
-    // The card should NOT be blank — "No impact summary" text must appear
-    expect(screen.getByText(/No impact summary provided/i)).toBeTruthy();
+    render(React.createElement(WaitingItem, { item, onReply: vi.fn(), onOpenContext }));
+
+    const openBtn = screen.getByTestId("open-context");
+    fireEvent.click(openBtn);
+
+    expect(onOpenContext).toHaveBeenCalledTimes(1);
   });
 });

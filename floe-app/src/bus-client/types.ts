@@ -420,15 +420,8 @@ export type StreamMsg = {
 // App-level domain types
 // ---------------------------------------------------------------------------
 
-export type ImpactSummary = {
-  architecture?: string;
-  product?: string;
-  risk?: string;
-  cost?: string;
-};
-
-export type DecisionCard = {
+export type WaitingItem = {
   source: PendingResponse;
-  impact: ImpactSummary | null;
+  eventContent: Record<string, unknown>;
   askingActor: EndpointRef;
 };

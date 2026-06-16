@@ -634,6 +634,16 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return reply.code(201).send({ endpoint: store.registerEndpoint(body, broadcast) });
   });
 
+  app.delete("/v1/endpoints/:endpoint_id", async (request, reply) => {
+    const params = z.object({ endpoint_id: z.string() }).parse(request.params);
+    try {
+      const result = store.deleteEndpoint(params.endpoint_id, broadcast);
+      return reply.send(result);
+    } catch (err) {
+      return reply.code(404).send({ ok: false, error: err instanceof Error ? err.message : "Not found" });
+    }
+  });
+
   app.post("/v1/endpoints/:endpoint_id/status", async (request) => {
     const params = z.object({ endpoint_id: z.string() }).parse(request.params);
     const body = z.object({ status: z.string().min(1) }).parse(request.body);

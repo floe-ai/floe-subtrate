@@ -2,7 +2,7 @@
  * Briefing — the operator's landing / "lean back" surface.
  *
  * Sections:
- *  1. What's waiting on you — DecisionCards (pending responses + impact)
+ *  1. What's waiting on you — WaitingItems (pending responses addressed to the operator)
  *  2. What's in flight    — endpoints currently active/working
  *  3. What changed since you were here — events after the watermark
  *  4. Tide-line           — upcoming Pulse fires
@@ -12,10 +12,9 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  DecisionCard as DecisionCardType,
+  WaitingItem as WaitingItemType,
   EndpointRef,
   EventEnvelope,
-  ImpactSummary,
   PulseRef,
 } from "../bus-client/types.ts";
 import {
@@ -27,7 +26,7 @@ import {
   listPulses,
   putWatermark,
 } from "../bus-client/client.ts";
-import { DecisionCard, type DecisionCardAction } from "./DecisionCard.tsx";
+import { WaitingItem } from "./WaitingItem.tsx";
 import { InFlight } from "./InFlight.tsx";
 import { TideLine } from "./TideLine.tsx";
 import { sinceDiff } from "./sinceDiff.ts";
@@ -40,10 +39,17 @@ export type BriefingProps = {
   /** The workspace this briefing is scoped to. */
   workspaceId: string;
   /**
-   * The endpoint_id of the current operator — used for the watermark seam.
-   * When absent the watermark feature is disabled (unseen feed always empty).
+   * The endpoint_id of the current operator — used for the watermark seam
+   * and for filtering "what's waiting on you" to items addressed to the operator.
+   * When absent the watermark feature is disabled (unseen feed always empty)
+   * and all pending items are shown.
    */
   operatorEndpointId?: string;
+  /**
+   * Called when the operator clicks "Open in context →" on a waiting item.
+   * Receives the context_id (thread_id from the pending response).
+   */
+  onOpenContext?: (contextId: string) => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -51,7 +57,7 @@ export type BriefingProps = {
 // ---------------------------------------------------------------------------
 
 type BriefingData = {
-  cards: DecisionCardType[];
+  items: WaitingItemType[];
   endpoints: EndpointRef[];
   pulses: PulseRef[];
   unseenEvents: EventEnvelope[];
@@ -128,10 +134,21 @@ async function loadBriefingData(
   const eventById = new Map<string, EventEnvelope>(allEvents.map((ev) => [ev.event_id, ev]));
   const endpointById = new Map<string, EndpointRef>(endpoints.map((ep) => [ep.endpoint_id, ep]));
 
-  // Build DecisionCards
-  const cards: DecisionCardType[] = pending.flatMap((pr) => {
+  // Build WaitingItems — filtered to pending responses addressed to the operator.
+  // Filter rule: the source event's destination must be the operator (endpoint match)
+  // OR a broadcast. If operatorEndpointId is undefined, show all (fallback).
+  const items: WaitingItemType[] = pending.flatMap((pr) => {
     const sourceEvent = eventById.get(pr.source_event_id);
-    if (!sourceEvent) return []; // can't build card without source event
+    if (!sourceEvent) return []; // can't build item without source event
+
+    // Filter to events addressed to the operator
+    if (operatorEndpointId) {
+      const dest = sourceEvent.destination_json;
+      const addressedToOperator =
+        (dest.kind === "endpoint" && dest.endpoint_id === operatorEndpointId) ||
+        dest.kind === "broadcast";
+      if (!addressedToOperator) return [];
+    }
 
     const askingActor =
       sourceEvent.source_endpoint_id
@@ -139,25 +156,7 @@ async function loadBriefingData(
         : undefined;
     if (!askingActor) return []; // can't attribute without an actor
 
-    // Parse impact from event content if present
-    let impact: ImpactSummary | null = null;
-    const rawImpact = sourceEvent.content["impact"];
-    if (
-      rawImpact !== null &&
-      rawImpact !== undefined &&
-      typeof rawImpact === "object" &&
-      !Array.isArray(rawImpact)
-    ) {
-      const ri = rawImpact as Record<string, unknown>;
-      impact = {
-        architecture: typeof ri["architecture"] === "string" ? ri["architecture"] : undefined,
-        product: typeof ri["product"] === "string" ? ri["product"] : undefined,
-        risk: typeof ri["risk"] === "string" ? ri["risk"] : undefined,
-        cost: typeof ri["cost"] === "string" ? ri["cost"] : undefined,
-      };
-    }
-
-    return [{ source: pr, impact, askingActor }];
+    return [{ source: pr, eventContent: sourceEvent.content, askingActor }];
   });
 
   // Unseen events — events after the watermark boundary
@@ -176,14 +175,14 @@ async function loadBriefingData(
     nextCursor = unseenFeed.next_cursor;
   }
 
-  return { cards, endpoints, pulses, unseenEvents, seenEvents, nextCursor };
+  return { items, endpoints, pulses, unseenEvents, seenEvents, nextCursor };
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function Briefing({ workspaceId, operatorEndpointId }: BriefingProps): React.ReactElement {
+export function Briefing({ workspaceId, operatorEndpointId, onOpenContext }: BriefingProps): React.ReactElement {
   const [data, setData] = useState<BriefingData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -214,24 +213,22 @@ export function Briefing({ workspaceId, operatorEndpointId }: BriefingProps): Re
     });
   }, [data, workspaceId, operatorEndpointId]);
 
-  // Wire DecisionCard.onAct → emit
-  const handleAct = useCallback(
-    (card: DecisionCardType, action: DecisionCardAction, text?: string) => {
+  // Wire WaitingItem.onReply → emit a canonical message event
+  const handleReply = useCallback(
+    (item: WaitingItemType, text: string) => {
       if (!operatorEndpointId) return;
-      const { source } = card;
+      const { source } = item;
 
       emit({
-        type: `briefing.decision.${action}`,
+        type: "message",
         workspace_id: workspaceId,
         source_endpoint_id: operatorEndpointId,
         destination: { kind: "endpoint", endpoint_id: source.waiting_endpoint_id },
         context_id: source.thread_id ?? null,
-        correlation_id: source.correlation_id ?? null,
-        content: {
-          action,
-          pending_id: source.pending_id,
-          ...(text !== undefined ? { text } : {}),
-        },
+        ...(source.correlation_id ? { correlation_id: source.correlation_id } : {}),
+        content: { text },
+        response: { expected: true, mode: "open" },
+        metadata: { submitted_by: "floe-app" },
       }).catch(() => {
         // best-effort
       });
@@ -263,7 +260,7 @@ export function Briefing({ workspaceId, operatorEndpointId }: BriefingProps): Re
 
   if (!data) return <div data-testid="briefing" />;
 
-  const { cards, endpoints, pulses, unseenEvents } = data;
+  const { items, endpoints, pulses, unseenEvents } = data;
 
   return (
     <div data-testid="briefing" style={STYLES.root}>
@@ -274,14 +271,15 @@ export function Briefing({ workspaceId, operatorEndpointId }: BriefingProps): Re
       {/* Section 1: What's waiting on you */}
       <section style={STYLES.section} data-section="decisions" aria-label="What's waiting on you">
         <h2 style={STYLES.sectionTitle}>What&apos;s waiting on you</h2>
-        {cards.length === 0 ? (
+        {items.length === 0 ? (
           <p style={{ color: "#888", fontStyle: "italic" }}>Nothing waiting.</p>
         ) : (
-          cards.map((card) => (
-            <DecisionCard
-              key={card.source.pending_id}
-              card={card}
-              onAct={(action, text) => handleAct(card, action, text)}
+          items.map((item) => (
+            <WaitingItem
+              key={item.source.pending_id}
+              item={item}
+              onReply={(text) => handleReply(item, text)}
+              onOpenContext={() => item.source.thread_id && onOpenContext?.(item.source.thread_id)}
             />
           ))
         )}

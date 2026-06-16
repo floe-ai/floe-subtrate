@@ -11,6 +11,8 @@ import {
   listEndpoints,
   listScopes,
   createScope,
+  registerWorkspace,
+  deleteWorkspace,
 } from "./bus-client/client.ts";
 import { colors, space, font } from "./theme.ts";
 import { Briefing } from "./briefing/Briefing.tsx";
@@ -357,6 +359,13 @@ export function App(): React.ReactElement {
   const [activeView, setActiveView] = useState<ActiveView>("contexts");
   const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
 
+  // Workspace management
+  const [showAddWorkspace, setShowAddWorkspace] = useState(false);
+  const [newWsLocator, setNewWsLocator] = useState("");
+  const [newWsName, setNewWsName] = useState("");
+  const [addingWs, setAddingWs] = useState(false);
+  const [addWsErr, setAddWsErr] = useState<string | null>(null);
+
   // Notifications cleanup
   const notifUnsubRef = useRef<(() => void) | null>(null);
 
@@ -440,6 +449,71 @@ export function App(): React.ReactElement {
     [workspaces, activeWorkspace]
   );
 
+  // Register a new workspace
+  const handleAddWorkspace = useCallback(async () => {
+    const locator = newWsLocator.trim();
+    if (!locator) return;
+    setAddingWs(true);
+    setAddWsErr(null);
+    try {
+      const ws = await registerWorkspace({ locator, name: newWsName.trim() || undefined, init_authorized: true });
+      const refreshed = await listWorkspaces();
+      setWorkspaces(refreshed);
+      setNewWsLocator("");
+      setNewWsName("");
+      setShowAddWorkspace(false);
+      setNoWorkspaces(false);
+      // Load the new workspace
+      const [eps, scs] = await Promise.all([
+        listEndpoints(ws.workspace_id),
+        listScopes(ws.workspace_id),
+      ]);
+      setActiveWorkspace(ws);
+      setEndpoints(eps);
+      setActingAsEndpointId(eps[0]?.endpoint_id ?? "");
+      setScopes(scs);
+      setSelectedContextId(null);
+      setActiveView("contexts");
+    } catch (err) {
+      setAddWsErr(err instanceof Error ? err.message : "Failed to register workspace");
+    } finally {
+      setAddingWs(false);
+    }
+  }, [newWsLocator, newWsName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Delete the active workspace
+  const handleDeleteWorkspace = useCallback(async () => {
+    if (!activeWorkspace) return;
+    const name = activeWorkspace.name || activeWorkspace.workspace_id;
+    if (!window.confirm(`Delete workspace "${name}"? This cannot be undone.`)) return;
+    try {
+      await deleteWorkspace(activeWorkspace.workspace_id, { delete_locator: false });
+      const refreshed = await listWorkspaces();
+      setWorkspaces(refreshed);
+      if (refreshed.length === 0) {
+        setNoWorkspaces(true);
+        setActiveWorkspace(null);
+      } else {
+        const next = refreshed[0]!;
+        setActiveWorkspace(next);
+        setEndpoints([]);
+        setActingAsEndpointId("");
+        setScopes([]);
+        setSelectedContextId(null);
+        setActiveView("contexts");
+        const [eps, scs] = await Promise.all([
+          listEndpoints(next.workspace_id),
+          listScopes(next.workspace_id),
+        ]);
+        setEndpoints(eps);
+        setActingAsEndpointId(eps[0]?.endpoint_id ?? "");
+        setScopes(scs);
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to delete workspace");
+    }
+  }, [activeWorkspace]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Refresh scopes (e.g., after creating one)
   const refreshScopes = useCallback(async () => {
     if (!activeWorkspace) return;
@@ -460,7 +534,75 @@ export function App(): React.ReactElement {
   // ---------------------------------------------------------------------------
   if (loading) return <LoadingShell />;
   if (noWorkspaces)
-    return <EmptyState message="No workspaces found. Create a workspace to get started." />;
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100vh",
+          background: colors.canvas,
+          color: colors.text,
+          fontFamily: "system-ui, sans-serif",
+          gap: space.md,
+        }}
+      >
+        <p style={{ color: colors.muted, marginBottom: space.sm }}>No workspaces found.</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: space.sm, width: 320 }}>
+          <input
+            aria-label="Workspace locator (filesystem path)"
+            placeholder="Workspace path"
+            value={newWsLocator}
+            onChange={(e) => setNewWsLocator(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void handleAddWorkspace(); }}
+            autoFocus
+            style={{
+              background: colors.surface,
+              color: colors.text,
+              border: `1px solid ${colors.border}`,
+              borderRadius: 4,
+              padding: "6px 10px",
+              fontSize: 14,
+              fontFamily: "system-ui, sans-serif",
+            }}
+          />
+          <input
+            aria-label="Workspace name (optional)"
+            placeholder="Name (optional)"
+            value={newWsName}
+            onChange={(e) => setNewWsName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void handleAddWorkspace(); }}
+            style={{
+              background: colors.surface,
+              color: colors.text,
+              border: `1px solid ${colors.border}`,
+              borderRadius: 4,
+              padding: "6px 10px",
+              fontSize: 14,
+              fontFamily: "system-ui, sans-serif",
+            }}
+          />
+          {addWsErr && <p role="alert" style={{ color: colors.danger, fontSize: 13, margin: 0 }}>{addWsErr}</p>}
+          <button
+            onClick={() => void handleAddWorkspace()}
+            disabled={addingWs || !newWsLocator.trim()}
+            style={{
+              background: colors.accent,
+              color: colors.accentText,
+              border: "none",
+              borderRadius: 4,
+              padding: "6px 16px",
+              cursor: "pointer",
+              fontSize: 14,
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >
+            {addingWs ? "Registering…" : "Register workspace"}
+          </button>
+        </div>
+      </div>
+    );
   if (loadError)
     return <EmptyState message={`Failed to load: ${loadError}`} />;
   if (!activeWorkspace) return <LoadingShell />;
@@ -503,8 +645,8 @@ export function App(): React.ReactElement {
           Floe
         </span>
 
-        {/* Workspace selector */}
-        <div data-section="workspace-selector">
+        {/* Workspace selector + management */}
+        <div data-section="workspace-selector" style={{ display: "flex", alignItems: "center", gap: space.xs, position: "relative" }}>
           <label
             htmlFor="workspace-select"
             style={{ fontSize: font.meta, color: colors.muted, marginRight: 6 }}
@@ -524,6 +666,136 @@ export function App(): React.ReactElement {
               </option>
             ))}
           </select>
+          <button
+            onClick={() => { setShowAddWorkspace((v) => !v); setAddWsErr(null); }}
+            aria-label="Add workspace"
+            title="Add workspace"
+            style={{
+              background: showAddWorkspace ? colors.accent : "none",
+              color: showAddWorkspace ? colors.accentText : colors.muted,
+              border: `1px solid ${colors.border}`,
+              borderRadius: 4,
+              padding: "2px 7px",
+              cursor: "pointer",
+              fontSize: 14,
+              lineHeight: 1,
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >
+            +
+          </button>
+          <button
+            onClick={() => void handleDeleteWorkspace()}
+            aria-label="Delete current workspace"
+            title="Delete workspace"
+            style={{
+              background: "none",
+              color: colors.danger,
+              border: `1px solid ${colors.danger}`,
+              borderRadius: 4,
+              padding: "2px 7px",
+              cursor: "pointer",
+              fontSize: 12,
+              lineHeight: 1,
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >
+            ×
+          </button>
+
+          {/* Add workspace dropdown */}
+          {showAddWorkspace && (
+            <div
+              style={{
+                position: "absolute",
+                top: "calc(100% + 4px)",
+                left: 0,
+                zIndex: 100,
+                background: colors.surface,
+                border: `1px solid ${colors.border}`,
+                borderRadius: 6,
+                padding: space.md,
+                display: "flex",
+                flexDirection: "column",
+                gap: space.sm,
+                minWidth: 320,
+                boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: font.h, color: colors.text, marginBottom: 2 }}>
+                Register workspace
+              </div>
+              <input
+                aria-label="Workspace locator (filesystem path)"
+                placeholder="Locator (filesystem path)"
+                value={newWsLocator}
+                onChange={(e) => setNewWsLocator(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void handleAddWorkspace(); if (e.key === "Escape") setShowAddWorkspace(false); }}
+                autoFocus
+                style={{
+                  background: colors.canvas,
+                  color: colors.text,
+                  border: `1px solid ${colors.border}`,
+                  borderRadius: 4,
+                  padding: "4px 8px",
+                  fontSize: 13,
+                  fontFamily: "system-ui, sans-serif",
+                }}
+              />
+              <input
+                aria-label="Workspace name (optional)"
+                placeholder="Name (optional)"
+                value={newWsName}
+                onChange={(e) => setNewWsName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void handleAddWorkspace(); if (e.key === "Escape") setShowAddWorkspace(false); }}
+                style={{
+                  background: colors.canvas,
+                  color: colors.text,
+                  border: `1px solid ${colors.border}`,
+                  borderRadius: 4,
+                  padding: "4px 8px",
+                  fontSize: 13,
+                  fontFamily: "system-ui, sans-serif",
+                }}
+              />
+              {addWsErr && (
+                <p role="alert" style={{ color: colors.danger, fontSize: 12, margin: 0 }}>{addWsErr}</p>
+              )}
+              <div style={{ display: "flex", gap: space.xs }}>
+                <button
+                  onClick={() => void handleAddWorkspace()}
+                  disabled={addingWs || !newWsLocator.trim()}
+                  style={{
+                    background: colors.accent,
+                    color: colors.accentText,
+                    border: "none",
+                    borderRadius: 4,
+                    padding: "4px 12px",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontFamily: "system-ui, sans-serif",
+                  }}
+                >
+                  {addingWs ? "Registering…" : "Register"}
+                </button>
+                <button
+                  onClick={() => setShowAddWorkspace(false)}
+                  style={{
+                    background: "none",
+                    border: `1px solid ${colors.border}`,
+                    color: colors.text,
+                    borderRadius: 4,
+                    padding: "4px 12px",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontFamily: "system-ui, sans-serif",
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Acting as — ALL endpoints, uniform */}
@@ -654,6 +926,14 @@ export function App(): React.ReactElement {
           <ActorsDirectory
             workspaceId={workspaceId}
             onOpenContext={handleOpenContext}
+            onActorsChange={(eps) => {
+              setEndpoints(eps);
+              if (eps.length > 0 && !eps.find((e) => e.endpoint_id === actingAsEndpointId)) {
+                setActingAsEndpointId(eps[0]!.endpoint_id);
+              } else if (eps.length === 0) {
+                setActingAsEndpointId("");
+              }
+            }}
           />
         )}
 
@@ -698,6 +978,7 @@ export function App(): React.ReactElement {
             <Briefing
               workspaceId={workspaceId}
               operatorEndpointId={actingAsEndpointId || undefined}
+              onOpenContext={handleOpenContext}
             />
           </div>
         )}
