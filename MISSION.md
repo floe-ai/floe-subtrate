@@ -2,9 +2,15 @@
 
 Why this substrate exists. Read this when the work feels redundant — especially the week a new model ships.
 
-## The goal
+## The North Star
 
-A company that runs autonomously: agents and humans as peer actors, executing projects end-to-end, with the operator steering by exception instead of driving by hand.
+Anyone — any discipline, any task, any goal — can have actors work together toward an outcome, **defining and building the system they need as they go**, improving and measuring along the way.
+
+The substrate makes no assumption about the work. It provides open primitives for actors to coordinate and to model whatever their goal requires; the user shapes them into the system they need. We provide mechanism, never policy.
+
+## The near-term path
+
+Prove it by running one real autonomous operation end-to-end — this one (see dogfooding): agents and humans as peer actors, the operator steering by exception. A universal substrate earns the name by first carrying a real company, not by being designed as a platform. (See "What Floe is not".)
 
 ## The bet
 

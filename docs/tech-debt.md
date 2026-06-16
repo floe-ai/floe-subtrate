@@ -24,3 +24,15 @@ migrate them.
 
 **When:** after the three UI substrate gaps land, so the schema changes once,
 cleanly — not piecemeal before. Recorded by operator decision 2026-06-14.
+
+## Remove the `Thread` primitive (approved 2026-06-14)
+
+`thread_id` is vestigial — "legacy field retained for storage compatibility
+only; no new flow reads it." Contexts are the real stream primitive.
+
+**Action:** remove `thread_id` from the events schema, `EventCommand`,
+`submitEvent` (it currently writes the resolved `context_id` into `thread_id` to
+satisfy a NOT NULL constraint), `pending_responses`, and the `thread_affine`
+response mode. Bundle with the schema-collapse above so the events table is
+rewritten once.
+
