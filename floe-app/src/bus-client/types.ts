@@ -121,6 +121,145 @@ export type PendingResponse = {
 };
 
 // ---------------------------------------------------------------------------
+// Deliveries
+// ---------------------------------------------------------------------------
+
+/** Raw delivery_bundles row as returned by GET /v1/delivery */
+export type DeliveryRow = {
+  delivery_id: string;
+  endpoint_id: string;
+  workspace_id: string;
+  trigger_event_id: string;
+  events_json: string;
+  state: string;
+  lease_expires_at: string | null;
+  attempt_count: number;
+  last_error: string | null;
+  created_at: string;
+  claimed_at: string | null;
+};
+
+/** Hydrated delivery as returned by GET /v1/delivery/claim */
+export type DeliveryBundle = {
+  delivery_id: string;
+  endpoint_id: string;
+  workspace_id: string;
+  trigger_event_id: string;
+  events: EventEnvelope[];
+  delivered_at: string;
+};
+
+// ---------------------------------------------------------------------------
+// Runtime telemetry
+// ---------------------------------------------------------------------------
+
+/** Raw runtime_telemetry row as returned by GET /v1/runtime/telemetry */
+export type TelemetryRow = {
+  telemetry_id: string;
+  workspace_id: string;
+  endpoint_id: string;
+  delivery_id: string | null;
+  kind: string;
+  payload_json: string;
+  created_at: string;
+};
+
+// ---------------------------------------------------------------------------
+// Runtime bindings
+// ---------------------------------------------------------------------------
+
+export type RuntimeBindingScope = "agent" | "workspace_default" | "global_default";
+
+export type RuntimeBindingRecord = {
+  binding_key: string;
+  scope: RuntimeBindingScope;
+  workspace_id: string | null;
+  endpoint_id: string | null;
+  auth_profile: string;
+  model: string | null;
+  thinking_level: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RuntimeBindingResolution = {
+  endpoint_auth_profile: string | null;
+  workspace_auth_profile: string | null;
+  global_auth_profile: string | null;
+  endpoint_model: string | null;
+  workspace_model: string | null;
+  global_model: string | null;
+  endpoint_thinking_level: string | null;
+  workspace_thinking_level: string | null;
+  global_thinking_level: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+export type AuthProfileRecord = {
+  id: string;
+  provider: string;
+  model?: string;
+  label?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type AuthModelRecord = {
+  id: string;
+  name: string;
+  provider: string;
+  api: string;
+  reasoning: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  input?: string[];
+};
+
+// ---------------------------------------------------------------------------
+// Saved configs
+// ---------------------------------------------------------------------------
+
+export type SavedConfigRow = {
+  config_id: string;
+  name: string;
+  config_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+// ---------------------------------------------------------------------------
+// Runtime status
+// ---------------------------------------------------------------------------
+
+export type RuntimeStatus = {
+  bridge: {
+    online: boolean;
+    runtime_adapter: string | null;
+  };
+};
+
+export type LocalConfigStatus = {
+  ok: boolean;
+  config_path: string;
+  home: string;
+  bus: unknown;
+  web: unknown;
+  bridge: unknown;
+};
+
+// ---------------------------------------------------------------------------
+// Endpoint resolve
+// ---------------------------------------------------------------------------
+
+export type ResolvedEndpoint = {
+  endpoint_id: string;
+  found: boolean;
+};
+
+// ---------------------------------------------------------------------------
 // Projection types (mirror floe-bus/src/scopes/projection.ts)
 // ---------------------------------------------------------------------------
 
@@ -241,6 +380,30 @@ export type EmitInput = {
   response?: ResponseExpectation;
   metadata?: Record<string, unknown>;
   idempotency_key?: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Pulse subscriber (for createPulse / subscribePulse / unsubscribePulse)
+// ---------------------------------------------------------------------------
+
+export type PulseSubscriber =
+  | { kind: "context"; context_id: string }
+  | { kind?: "endpoint"; endpoint_ref: string; context_id?: string | null };
+
+export type PulseTrigger =
+  | { type: "once"; at: string }
+  | { type: "cron"; schedule: string; timezone?: string };
+
+export type CreatePulseInput = {
+  pulse_id: string;
+  workspace_id: string;
+  persistence?: "workspace" | "local";
+  scope_id?: string | null;
+  current_context_id?: string | null;
+  trigger: PulseTrigger;
+  content?: Record<string, unknown>;
+  subscribers: PulseSubscriber[];
+  created_by?: string;
 };
 
 // ---------------------------------------------------------------------------

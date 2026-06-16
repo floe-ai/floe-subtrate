@@ -3,7 +3,8 @@
  *
  * Tests cover:
  *  - TraceDrawer: structured trace display, work-log request, system-originated events
- *  - Composer: emits a reply event
+ *  - Composer: emits a "message" event with endpoint (or broadcast) destination
+ *              and source = the acting actor (new contract)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
@@ -20,7 +21,7 @@ vi.mock("../bus-client/client.ts", () => ({
 }));
 
 import { getEventTrace, emit } from "../bus-client/client.ts";
-import type { EventEnvelope, EventTrace, EmitInput } from "../bus-client/types.ts";
+import type { EventEnvelope, EventTrace, EmitInput, EndpointRef } from "../bus-client/types.ts";
 import { TraceDrawer } from "./TraceDrawer.tsx";
 import { Composer } from "./Composer.tsx";
 
@@ -38,7 +39,7 @@ function makeEvent(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
     context_id: "ctx-001",
     scope_id: null,
     correlation_id: null,
-    destination_json: { kind: "context", context_id: "ctx-001" },
+    destination_json: { kind: "endpoint", endpoint_id: "ep-other" },
     content: {},
     response: { expected: false },
     metadata: {},
@@ -55,6 +56,20 @@ function makeTrace(overrides: Partial<EventTrace> = {}): EventTrace {
       { kind: "llm_call", tokens_in: 100, tokens_out: 50, model: "claude-sonnet-4-5" },
     ],
     ...overrides,
+  };
+}
+
+function makeEndpoint(id: string, name: string): EndpointRef {
+  return {
+    endpoint_id: id,
+    workspace_id: "ws-001",
+    name,
+    agent_id: null,
+    bridge_id: null,
+    status: "idle",
+    metadata_json: "{}",
+    created_at: "2026-06-12T00:00:00Z",
+    updated_at: "2026-06-12T00:00:00Z",
   };
 }
 
@@ -151,7 +166,8 @@ describe("TraceDrawer", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Composer
+// Composer — new contract: type "message", endpoint/broadcast destination,
+// source = actingAsEndpointId
 // ---------------------------------------------------------------------------
 
 describe("Composer", () => {
@@ -163,14 +179,21 @@ describe("Composer", () => {
     cleanup();
   });
 
-  it("emits a reply event", async () => {
+  const endpoints: EndpointRef[] = [
+    makeEndpoint("ep-operator", "Operator"),
+    makeEndpoint("ep-floe", "Floe"),
+  ];
+
+  it("emits a message event with type='message' and endpoint destination", async () => {
     const onEmit = vi.fn().mockResolvedValue(undefined);
 
     const { getByTestId } = render(
       React.createElement(Composer, {
         workspaceId: "ws-001",
         contextId: "ctx-001",
-        sourceEndpointId: "ep-operator",
+        actingAsEndpointId: "ep-operator",
+        endpoints,
+        participantEndpointIds: ["ep-operator", "ep-floe"],
         onEmit,
       })
     );
@@ -178,7 +201,7 @@ describe("Composer", () => {
     const textarea = getByTestId("composer-input") as HTMLTextAreaElement;
     const sendBtn = getByTestId("composer-send") as HTMLButtonElement;
 
-    // Type a reply
+    // Type a message
     fireEvent.change(textarea, { target: { value: "Hello from the context surface" } });
     expect(textarea.value).toBe("Hello from the context surface");
 
@@ -190,12 +213,21 @@ describe("Composer", () => {
     });
 
     const emitted: EmitInput = onEmit.mock.calls[0][0];
-    expect(emitted.type).toBe("floe.context.reply");
+    // New contract: type must be "message"
+    expect(emitted.type).toBe("message");
     expect(emitted.workspace_id).toBe("ws-001");
+    // Source is the acting actor
     expect(emitted.source_endpoint_id).toBe("ep-operator");
-    expect(emitted.destination).toEqual({ kind: "context", context_id: "ctx-001" });
+    // Destination is an endpoint (the other participant)
+    expect(emitted.destination.kind).toBe("endpoint");
     expect(emitted.context_id).toBe("ctx-001");
     expect(emitted.content).toEqual({ text: "Hello from the context surface" });
+    // Response expectation is present
+    expect(emitted.response).toBeDefined();
+    expect(emitted.response?.expected).toBe(true);
+    expect(emitted.response?.mode).toBe("open");
+    // metadata must be present
+    expect(emitted.metadata).toMatchObject({ submitted_by: "floe-app" });
 
     // Input is cleared after successful send
     await waitFor(() => {
@@ -210,7 +242,9 @@ describe("Composer", () => {
       React.createElement(Composer, {
         workspaceId: "ws-001",
         contextId: "ctx-001",
-        sourceEndpointId: "ep-operator",
+        actingAsEndpointId: "ep-operator",
+        endpoints,
+        participantEndpointIds: ["ep-operator", "ep-floe"],
         onEmit,
       })
     );
@@ -226,6 +260,7 @@ describe("Composer", () => {
 
     const emitted: EmitInput = onEmit.mock.calls[0][0];
     expect(emitted.content).toEqual({ text: "Keyboard submit test" });
+    expect(emitted.type).toBe("message");
   });
 
   it("does not submit on Shift+Enter", () => {
@@ -235,7 +270,9 @@ describe("Composer", () => {
       React.createElement(Composer, {
         workspaceId: "ws-001",
         contextId: "ctx-001",
-        sourceEndpointId: "ep-operator",
+        actingAsEndpointId: "ep-operator",
+        endpoints,
+        participantEndpointIds: ["ep-operator", "ep-floe"],
         onEmit,
       })
     );
@@ -255,7 +292,9 @@ describe("Composer", () => {
       React.createElement(Composer, {
         workspaceId: "ws-001",
         contextId: "ctx-001",
-        sourceEndpointId: "ep-operator",
+        actingAsEndpointId: "ep-operator",
+        endpoints,
+        participantEndpointIds: ["ep-operator", "ep-floe"],
         onEmit,
       })
     );
@@ -277,7 +316,9 @@ describe("Composer", () => {
       React.createElement(Composer, {
         workspaceId: "ws-001",
         contextId: "ctx-001",
-        sourceEndpointId: "ep-operator",
+        actingAsEndpointId: "ep-operator",
+        endpoints,
+        participantEndpointIds: ["ep-operator", "ep-floe"],
         onEmit,
       })
     );
@@ -288,5 +329,34 @@ describe("Composer", () => {
 
     await waitFor(() => expect(onEmit).toHaveBeenCalledTimes(1));
     expect(getEventTrace).not.toHaveBeenCalled();
+  });
+
+  it("allows selecting a broadcast destination", async () => {
+    const onEmit = vi.fn().mockResolvedValue(undefined);
+
+    const { getByTestId } = render(
+      React.createElement(Composer, {
+        workspaceId: "ws-001",
+        contextId: "ctx-001",
+        actingAsEndpointId: "ep-operator",
+        endpoints,
+        participantEndpointIds: ["ep-operator", "ep-floe"],
+        onEmit,
+      })
+    );
+
+    // Change destination to broadcast:all
+    const destSelect = getByTestId("composer-dest") as HTMLSelectElement;
+    fireEvent.change(destSelect, { target: { value: "broadcast:all" } });
+
+    const textarea = getByTestId("composer-input");
+    fireEvent.change(textarea, { target: { value: "Broadcast message" } });
+    fireEvent.click(getByTestId("composer-send"));
+
+    await waitFor(() => expect(onEmit).toHaveBeenCalledTimes(1));
+
+    const emitted: EmitInput = onEmit.mock.calls[0][0];
+    expect(emitted.type).toBe("message");
+    expect(emitted.destination).toEqual({ kind: "broadcast", scope: "workspace", target: "all" });
   });
 });

@@ -1,57 +1,65 @@
 /**
- * App — shell page with lens routing and live component wiring.
+ * App — neutral visual layer over the substrate.
  *
- * Identity resolution: on mount, picks the active workspace (selected_at
- * non-null, else first) and the operator endpoint (first endpoint, switchable
- * via dropdown). All lens components receive real props from resolved identity.
+ * All actors are uniform endpoints. No special-casing Floe or the operator.
+ * "Acting as" selector sets the source of every action from ALL endpoints.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkspaceRef, EndpointRef, ScopeRef } from "./bus-client/types.ts";
-import { listWorkspaces, listEndpoints, listScopes } from "./bus-client/client.ts";
+import {
+  listWorkspaces,
+  listEndpoints,
+  listScopes,
+  createScope,
+} from "./bus-client/client.ts";
+import { colors, space, font } from "./theme.ts";
 import { Briefing } from "./briefing/Briefing.tsx";
 import { Field } from "./field/Field.tsx";
-import { ContextView } from "./context/ContextView.tsx";
 import { Timeline } from "./timeline/Timeline.tsx";
-import { FloeCommand } from "./floe/FloeCommand.tsx";
-import { FeedbackAffordance } from "./feedback/FeedbackAffordance.tsx";
+import { ContextsList } from "./context/ContextsList.tsx";
+import { ContextView } from "./context/ContextView.tsx";
+import { ActorsDirectory } from "./actors/ActorsDirectory.tsx";
+import { RecordList } from "./inspect/RecordList.tsx";
+import {
+  listDeliveries,
+  listPendingResponses,
+  listRuntimeTelemetry,
+  getRuntimeBindings,
+  listConfigs,
+  listPulses,
+} from "./bus-client/client.ts";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type Lens = "briefing" | "field" | "context" | "timeline";
-
-export type AppState = {
-  workspace: WorkspaceRef | null;
-  activeLens: Lens;
-  selectedContextId: string | null;
-  selectedEventId: string | null;
-  selectedScopeId: string | null;
-};
+export type ActiveView =
+  | "contexts"
+  | "actors"
+  | "scopes"
+  | "pulses"
+  | "events"
+  | "briefing"
+  | "deliveries"
+  | "pending"
+  | "telemetry"
+  | "bindings"
+  | "configs"
+  | "webhooks";
 
 // ---------------------------------------------------------------------------
-// Styles (shared constants)
+// Shared style helpers
 // ---------------------------------------------------------------------------
-
-const COLOR = {
-  bg: "#0f0f0f",
-  surface: "#111",
-  border: "#222",
-  text: "#e0e0e0",
-  muted: "#888",
-  active: "#4f8ef7",
-  activeText: "#fff",
-  focus: "#4f8ef7",
-} as const;
 
 const selectStyle: React.CSSProperties = {
-  background: "#1a1a1a",
-  color: COLOR.text,
-  border: `1px solid ${COLOR.border}`,
+  background: colors.surface,
+  color: colors.text,
+  border: `1px solid ${colors.border}`,
   borderRadius: 4,
-  padding: "2px 6px",
-  fontSize: "0.875rem",
+  padding: "2px 8px",
+  fontSize: font.meta,
   cursor: "pointer",
+  fontFamily: "system-ui, sans-serif",
 };
 
 // ---------------------------------------------------------------------------
@@ -69,12 +77,12 @@ function LoadingShell(): React.ReactElement {
         alignItems: "center",
         justifyContent: "center",
         height: "100vh",
-        background: COLOR.bg,
-        color: COLOR.muted,
-        fontFamily: "system-ui, sans-serif",
+        background: colors.canvas,
+        color: colors.muted,
+        font: font.body,
       }}
     >
-      Loading Floe…
+      Loading…
     </div>
   );
 }
@@ -89,9 +97,9 @@ function EmptyState({ message }: { message: string }): React.ReactElement {
         alignItems: "center",
         justifyContent: "center",
         height: "100vh",
-        background: COLOR.bg,
-        color: COLOR.muted,
-        fontFamily: "system-ui, sans-serif",
+        background: colors.canvas,
+        color: colors.muted,
+        font: font.body,
       }}
     >
       {message}
@@ -103,54 +111,228 @@ function EmptyState({ message }: { message: string }): React.ReactElement {
 // Nav item
 // ---------------------------------------------------------------------------
 
-const NAV_LENSES: { id: Lens; label: string }[] = [
-  { id: "briefing", label: "Briefing" },
-  { id: "field", label: "Field" },
-  { id: "context", label: "Context" },
-  { id: "timeline", label: "Timeline" },
+type NavGroup = {
+  label: string;
+  items: { id: ActiveView; label: string }[];
+};
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: "WORK",
+    items: [
+      { id: "contexts", label: "Contexts" },
+      { id: "actors",   label: "Actors" },
+      { id: "scopes",   label: "Scopes" },
+      { id: "pulses",   label: "Pulses" },
+      { id: "events",   label: "Events" },
+    ],
+  },
+  {
+    label: "LENS",
+    items: [{ id: "briefing", label: "Briefing" }],
+  },
+  {
+    label: "INSPECT",
+    items: [
+      { id: "deliveries", label: "Deliveries" },
+      { id: "pending",    label: "Pending" },
+      { id: "telemetry",  label: "Telemetry" },
+      { id: "bindings",   label: "Bindings" },
+      { id: "configs",    label: "Configs" },
+      { id: "webhooks",   label: "Webhooks" },
+    ],
+  },
 ];
 
+function NavButton({
+  id,
+  label,
+  isActive,
+  onClick,
+}: {
+  id: ActiveView;
+  label: string;
+  isActive: boolean;
+  onClick: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      data-view={id}
+      onClick={onClick}
+      aria-current={isActive ? "page" : undefined}
+      style={{
+        display: "block",
+        width: "100%",
+        padding: `${space.sm}px ${space.lg}px`,
+        textAlign: "left",
+        background: isActive ? colors.accent : "transparent",
+        border: "none",
+        borderLeft: isActive
+          ? `3px solid ${colors.accentText}`
+          : "3px solid transparent",
+        color: isActive ? colors.accentText : colors.text,
+        cursor: "pointer",
+        fontWeight: isActive ? font.h : 400,
+        fontSize: 14,
+        fontFamily: "system-ui, sans-serif",
+        transition: "background 0.1s",
+      }}
+      onFocus={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.accent}`;
+        (e.currentTarget as HTMLButtonElement).style.outlineOffset = "-2px";
+      }}
+      onBlur={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.outline = "none";
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Scope selector (for the Field lens)
+// Scopes view (inline — no separate file needed)
 // ---------------------------------------------------------------------------
 
-function ScopeSelector({
+function ScopesView({
+  workspaceId,
   scopes,
-  activeScopeId,
-  onSelect,
+  onRefresh,
+  onOpenContext,
 }: {
+  workspaceId: string;
   scopes: ScopeRef[];
-  activeScopeId: string | null;
-  onSelect: (id: string) => void;
+  onRefresh: () => void;
+  onOpenContext: (id: string) => void;
 }): React.ReactElement {
+  const [selectedScopeId, setSelectedScopeId] = useState<string | null>(
+    scopes[0]?.scope_id ?? null
+  );
+  const [creating, setCreating] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [createErr, setCreateErr] = useState<string | null>(null);
+
+  async function handleCreate() {
+    const title = newTitle.trim();
+    if (!title) return;
+    setCreating(true);
+    setCreateErr(null);
+    try {
+      await createScope(workspaceId, { title });
+      setNewTitle("");
+      onRefresh();
+    } catch (err) {
+      setCreateErr(err instanceof Error ? err.message : "Failed to create scope");
+    } finally {
+      setCreating(false);
+    }
+  }
+
   if (scopes.length === 0) {
     return (
-      <p style={{ color: COLOR.muted, padding: "12px 16px" }}>
-        No scopes in this workspace.
-      </p>
+      <div style={{ padding: space.xl, font: font.body, color: colors.text }}>
+        <h2 style={{ fontSize: 16, fontWeight: font.h, marginBottom: space.md }}>Scopes</h2>
+        <p style={{ color: colors.muted, marginBottom: space.lg }}>
+          Scopes are optional organizing boundaries. Direct work can live in Contexts without a scope.
+        </p>
+        <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
+          <input
+            aria-label="New scope title"
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="Scope title"
+            style={{
+              ...selectStyle,
+              padding: "4px 8px",
+              fontSize: 14,
+              minWidth: 200,
+            }}
+          />
+          <button
+            onClick={() => void handleCreate()}
+            disabled={creating || !newTitle.trim()}
+            style={{
+              background: colors.accent,
+              color: colors.accentText,
+              border: "none",
+              borderRadius: 4,
+              padding: "4px 12px",
+              cursor: "pointer",
+              fontSize: 14,
+            }}
+          >
+            {creating ? "Creating…" : "Create scope"}
+          </button>
+        </div>
+        {createErr && (
+          <p role="alert" style={{ color: colors.danger, marginTop: space.sm }}>
+            {createErr}
+          </p>
+        )}
+      </div>
     );
   }
+
   return (
-    <div style={{ padding: "8px 16px", borderBottom: `1px solid ${COLOR.border}` }}>
-      <label
-        htmlFor="scope-selector"
-        style={{ fontSize: "0.75rem", color: COLOR.muted, marginRight: 8 }}
-      >
-        Scope
-      </label>
-      <select
-        id="scope-selector"
-        style={selectStyle}
-        value={activeScopeId ?? ""}
-        onChange={(e) => onSelect(e.target.value)}
-        aria-label="Select scope"
-      >
-        {scopes.map((s) => (
-          <option key={s.scope_id} value={s.scope_id}>
-            {s.title || s.scope_id}
-          </option>
-        ))}
-      </select>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      <div style={{ padding: `${space.md}px ${space.lg}px`, borderBottom: `1px solid ${colors.border}`, display: "flex", gap: space.md, alignItems: "center", flexWrap: "wrap" }}>
+        <label htmlFor="scope-select" style={{ fontSize: font.meta, color: colors.muted }}>
+          Scope
+        </label>
+        <select
+          id="scope-select"
+          style={selectStyle}
+          value={selectedScopeId ?? ""}
+          onChange={(e) => setSelectedScopeId(e.target.value)}
+          aria-label="Select scope"
+        >
+          {scopes.map((s) => (
+            <option key={s.scope_id} value={s.scope_id}>
+              {s.title || s.scope_id}
+            </option>
+          ))}
+        </select>
+        <div style={{ marginLeft: "auto", display: "flex", gap: space.sm, alignItems: "center" }}>
+          <input
+            aria-label="New scope title"
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="New scope title"
+            style={{ ...selectStyle, padding: "4px 8px", fontSize: 14, minWidth: 160 }}
+          />
+          <button
+            onClick={() => void handleCreate()}
+            disabled={creating || !newTitle.trim()}
+            style={{
+              background: colors.accent,
+              color: colors.accentText,
+              border: "none",
+              borderRadius: 4,
+              padding: "4px 12px",
+              cursor: "pointer",
+              fontSize: 14,
+            }}
+          >
+            {creating ? "Creating…" : "Create scope"}
+          </button>
+        </div>
+      </div>
+      {createErr && (
+        <p role="alert" style={{ color: colors.danger, padding: `0 ${space.lg}px`, marginTop: space.sm }}>
+          {createErr}
+        </p>
+      )}
+      {selectedScopeId ? (
+        <div style={{ flex: 1, overflow: "hidden" }}>
+          <Field
+            workspaceId={workspaceId}
+            scopeId={selectedScopeId}
+            onOpenContext={onOpenContext}
+          />
+        </div>
+      ) : (
+        <p style={{ padding: space.lg, color: colors.muted }}>Select a scope above.</p>
+      )}
     </div>
   );
 }
@@ -160,7 +342,7 @@ function ScopeSelector({
 // ---------------------------------------------------------------------------
 
 export function App(): React.ReactElement {
-  // --- Identity state ---
+  // Identity
   const [loading, setLoading] = useState(true);
   const [noWorkspaces, setNoWorkspaces] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -168,15 +350,14 @@ export function App(): React.ReactElement {
   const [workspaces, setWorkspaces] = useState<WorkspaceRef[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceRef | null>(null);
   const [endpoints, setEndpoints] = useState<EndpointRef[]>([]);
-  const [operatorEndpointId, setOperatorEndpointId] = useState<string>("");
+  const [actingAsEndpointId, setActingAsEndpointId] = useState<string>("");
   const [scopes, setScopes] = useState<ScopeRef[]>([]);
 
-  // --- App navigation state ---
-  const [activeLens, setActiveLens] = useState<Lens>("briefing");
+  // Navigation
+  const [activeView, setActiveView] = useState<ActiveView>("contexts");
   const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
-  const [selectedScopeId, setSelectedScopeId] = useState<string | null>(null);
 
-  // --- Notifications cleanup ref ---
+  // Notifications cleanup
   const notifUnsubRef = useRef<(() => void) | null>(null);
 
   // ---------------------------------------------------------------------------
@@ -188,28 +369,22 @@ export function App(): React.ReactElement {
       try {
         const wss = await listWorkspaces();
         if (cancelled) return;
-
         if (wss.length === 0) {
           setNoWorkspaces(true);
           setLoading(false);
           return;
         }
-
         const active = wss.find((w) => w.selected_at !== null) ?? wss[0]!;
-
         const [eps, scs] = await Promise.all([
           listEndpoints(active.workspace_id),
           listScopes(active.workspace_id),
         ]);
         if (cancelled) return;
-
         setWorkspaces(wss);
         setActiveWorkspace(active);
         setEndpoints(eps);
-        setOperatorEndpointId(eps[0]?.endpoint_id ?? "");
+        setActingAsEndpointId(eps[0]?.endpoint_id ?? "");
         setScopes(scs);
-        // Default selected scope to first scope
-        setSelectedScopeId(scs[0]?.scope_id ?? null);
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
@@ -218,37 +393,24 @@ export function App(): React.ReactElement {
       }
     }
     void resolve();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // Notifications — start once we have a workspace; clean up on unmount
-  // ---------------------------------------------------------------------------
+  // Notifications
   useEffect(() => {
     if (!activeWorkspace) return;
     const workspaceId = activeWorkspace.workspace_id;
-
-    // Dynamic import to avoid crashing in test environments
     let cleanup: (() => void) | null = null;
-
     import("./shell/notifications.ts")
       .then(({ requestNotificationPermission, startDecisionNotifications }) => {
         void requestNotificationPermission();
         cleanup = startDecisionNotifications({ workspaceId });
         notifUnsubRef.current = cleanup;
       })
-      .catch(() => {
-        // Degrade silently — notifications are not critical
-      });
-
+      .catch(() => { /* degrade silently */ });
     return () => {
       if (cleanup) cleanup();
-      if (notifUnsubRef.current) {
-        notifUnsubRef.current();
-        notifUnsubRef.current = null;
-      }
+      if (notifUnsubRef.current) { notifUnsubRef.current(); notifUnsubRef.current = null; }
     };
   }, [activeWorkspace?.workspace_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -256,54 +418,42 @@ export function App(): React.ReactElement {
   // Workspace switch
   // ---------------------------------------------------------------------------
   const handleWorkspaceChange = useCallback(
-    async (workspaceId: string) => {
-      const ws = workspaces.find((w) => w.workspace_id === workspaceId);
+    async (wsId: string) => {
+      const ws = workspaces.find((w) => w.workspace_id === wsId);
       if (!ws || ws.workspace_id === activeWorkspace?.workspace_id) return;
-
       setActiveWorkspace(ws);
       setEndpoints([]);
-      setOperatorEndpointId("");
+      setActingAsEndpointId("");
       setScopes([]);
-      setSelectedScopeId(null);
       setSelectedContextId(null);
-      setActiveLens("briefing");
-
+      setActiveView("contexts");
       try {
         const [eps, scs] = await Promise.all([
           listEndpoints(ws.workspace_id),
           listScopes(ws.workspace_id),
         ]);
         setEndpoints(eps);
-        setOperatorEndpointId(eps[0]?.endpoint_id ?? "");
+        setActingAsEndpointId(eps[0]?.endpoint_id ?? "");
         setScopes(scs);
-        setSelectedScopeId(scs[0]?.scope_id ?? null);
-      } catch {
-        // best-effort; identity stays partially populated
-      }
+      } catch { /* best-effort */ }
     },
     [workspaces, activeWorkspace]
   );
 
-  // ---------------------------------------------------------------------------
-  // Open context from Field / Briefing
-  // ---------------------------------------------------------------------------
+  // Refresh scopes (e.g., after creating one)
+  const refreshScopes = useCallback(async () => {
+    if (!activeWorkspace) return;
+    try {
+      const scs = await listScopes(activeWorkspace.workspace_id);
+      setScopes(scs);
+    } catch { /* best-effort */ }
+  }, [activeWorkspace]);
+
+  // Open context
   const handleOpenContext = useCallback((contextId: string) => {
     setSelectedContextId(contextId);
-    setActiveLens("context");
+    setActiveView("contexts");
   }, []);
-
-  // ---------------------------------------------------------------------------
-  // Feedback target — derives from current selection
-  // ---------------------------------------------------------------------------
-  const feedbackTarget = (() => {
-    if (activeLens === "context" && selectedContextId) {
-      return { kind: "context", id: selectedContextId };
-    }
-    if (activeLens === "field" && selectedScopeId) {
-      return { kind: "scope", id: selectedScopeId };
-    }
-    return { kind: "lens", id: activeLens };
-  })();
 
   // ---------------------------------------------------------------------------
   // Guard states
@@ -313,8 +463,7 @@ export function App(): React.ReactElement {
     return <EmptyState message="No workspaces found. Create a workspace to get started." />;
   if (loadError)
     return <EmptyState message={`Failed to load: ${loadError}`} />;
-  if (!activeWorkspace)
-    return <LoadingShell />;
+  if (!activeWorkspace) return <LoadingShell />;
 
   const workspaceId = activeWorkspace.workspace_id;
 
@@ -327,11 +476,11 @@ export function App(): React.ReactElement {
       style={{
         display: "grid",
         gridTemplateColumns: "200px 1fr",
-        gridTemplateRows: "48px 1fr 48px",
+        gridTemplateRows: "48px 1fr",
         height: "100vh",
         fontFamily: "system-ui, sans-serif",
-        background: COLOR.bg,
-        color: COLOR.text,
+        background: colors.canvas,
+        color: colors.text,
       }}
     >
       {/* ------------------------------------------------------------------ */}
@@ -344,19 +493,21 @@ export function App(): React.ReactElement {
           gridRow: "1",
           display: "flex",
           alignItems: "center",
-          padding: "0 16px",
-          gap: 12,
-          borderBottom: `1px solid ${COLOR.border}`,
-          background: COLOR.surface,
+          padding: `0 ${space.lg}px`,
+          gap: space.md,
+          borderBottom: `1px solid ${colors.border}`,
+          background: colors.surface,
         }}
       >
-        <span style={{ fontWeight: 700, letterSpacing: "-0.01em" }}>Floe</span>
+        <span style={{ fontWeight: font.h, letterSpacing: "-0.01em", fontSize: 15 }}>
+          Floe
+        </span>
 
         {/* Workspace selector */}
         <div data-section="workspace-selector">
           <label
             htmlFor="workspace-select"
-            style={{ fontSize: "0.75rem", color: COLOR.muted, marginRight: 6 }}
+            style={{ fontSize: font.meta, color: colors.muted, marginRight: 6 }}
           >
             Workspace
           </label>
@@ -375,21 +526,21 @@ export function App(): React.ReactElement {
           </select>
         </div>
 
-        {/* Operator endpoint selector */}
+        {/* Acting as — ALL endpoints, uniform */}
         {endpoints.length > 0 && (
-          <div data-section="endpoint-selector">
+          <div data-section="acting-as-selector">
             <label
-              htmlFor="endpoint-select"
-              style={{ fontSize: "0.75rem", color: COLOR.muted, marginRight: 6 }}
+              htmlFor="acting-as-select"
+              style={{ fontSize: font.meta, color: colors.muted, marginRight: 6 }}
             >
-              As
+              Acting as
             </label>
             <select
-              id="endpoint-select"
+              id="acting-as-select"
               style={selectStyle}
-              value={operatorEndpointId}
-              onChange={(e) => setOperatorEndpointId(e.target.value)}
-              aria-label="Select operator endpoint"
+              value={actingAsEndpointId}
+              onChange={(e) => setActingAsEndpointId(e.target.value)}
+              aria-label="Select acting-as endpoint"
             >
               {endpoints.map((ep) => (
                 <option key={ep.endpoint_id} value={ep.endpoint_id}>
@@ -399,76 +550,57 @@ export function App(): React.ReactElement {
             </select>
           </div>
         )}
-
-        {/* Persistent FloeCommand */}
-        {operatorEndpointId && (
-          <div data-section="floe-command" style={{ marginLeft: "auto", flex: "0 1 420px" }}>
-            <FloeCommand
-              workspaceId={workspaceId}
-              sourceEndpointId={operatorEndpointId}
-              contextId={selectedContextId}
-              placeholder="Enter a command…"
-            />
-          </div>
-        )}
       </header>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Left nav                                                            */}
+      {/* Left nav — three groups: WORK / LENS / INSPECT                     */}
       {/* ------------------------------------------------------------------ */}
       <nav
         data-section="nav"
-        aria-label="Lens navigation"
+        aria-label="App navigation"
         style={{
           gridColumn: "1",
           gridRow: "2",
           display: "flex",
           flexDirection: "column",
-          padding: "12px 0",
-          gap: 2,
-          borderRight: `1px solid ${COLOR.border}`,
-          background: COLOR.surface,
+          padding: `${space.md}px 0`,
+          gap: 0,
+          borderRight: `1px solid ${colors.border}`,
+          background: colors.surface,
+          overflowY: "auto",
         }}
       >
-        {NAV_LENSES.map(({ id, label }) => {
-          const isActive = activeLens === id;
-          return (
-            <button
-              key={id}
-              data-lens={id}
-              onClick={() => setActiveLens(id)}
-              aria-current={isActive ? "page" : undefined}
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label} style={{ marginBottom: space.sm }}>
+            <div
               style={{
-                padding: "8px 16px",
-                textAlign: "left",
-                background: isActive ? COLOR.active : "transparent",
-                border: "none",
-                borderLeft: isActive
-                  ? `3px solid ${COLOR.activeText}`
-                  : "3px solid transparent",
-                color: isActive ? COLOR.activeText : COLOR.text,
-                cursor: "pointer",
-                fontWeight: isActive ? 600 : 400,
-                fontSize: "0.9rem",
-                outline: "none",
-                transition: "background 0.12s",
-              }}
-              onFocus={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${COLOR.focus}`;
-                (e.currentTarget as HTMLButtonElement).style.outlineOffset = "-2px";
-              }}
-              onBlur={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.outline = "none";
+                padding: `${space.xs}px ${space.lg}px`,
+                fontSize: 10,
+                fontWeight: font.h,
+                color: colors.muted,
+                letterSpacing: "0.08em",
               }}
             >
-              {label}
-            </button>
-          );
-        })}
+              {group.label}
+            </div>
+            {group.items.map(({ id, label }) => (
+              <NavButton
+                key={id}
+                id={id}
+                label={label}
+                isActive={activeView === id}
+                onClick={() => {
+                  setActiveView(id);
+                  if (id !== "contexts") setSelectedContextId(null);
+                }}
+              />
+            ))}
+          </div>
+        ))}
       </nav>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Main content area                                                   */}
+      {/* Main content                                                        */}
       {/* ------------------------------------------------------------------ */}
       <main
         data-section="main"
@@ -478,94 +610,201 @@ export function App(): React.ReactElement {
           overflow: "auto",
           display: "flex",
           flexDirection: "column",
+          background: colors.canvas,
         }}
       >
-        {/* Briefing */}
-        {activeLens === "briefing" && (
-          <div style={{ flex: 1, overflow: "auto" }}>
-            <Briefing
-              workspaceId={workspaceId}
-              operatorEndpointId={operatorEndpointId || undefined}
-            />
-          </div>
-        )}
-
-        {/* Field — with scope selector header */}
-        {activeLens === "field" && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-            <ScopeSelector
-              scopes={scopes}
-              activeScopeId={selectedScopeId}
-              onSelect={setSelectedScopeId}
-            />
-            {selectedScopeId ? (
-              <div style={{ flex: 1, overflow: "hidden" }}>
-                <Field
-                  workspaceId={workspaceId}
-                  scopeId={selectedScopeId}
-                  onOpenContext={handleOpenContext}
+        {/* Contexts — list or view */}
+        {activeView === "contexts" && (
+          selectedContextId ? (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{ padding: `${space.sm}px ${space.lg}px`, borderBottom: `1px solid ${colors.border}`, background: colors.surface }}>
+                <button
+                  onClick={() => setSelectedContextId(null)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: colors.accent,
+                    cursor: "pointer",
+                    fontSize: 13,
+                    padding: 0,
+                  }}
+                  aria-label="Back to contexts list"
+                >
+                  ← All contexts
+                </button>
+              </div>
+              <div style={{ flex: 1, overflow: "auto" }}>
+                <ContextView
+                  contextId={selectedContextId}
+                  actingAsEndpointId={actingAsEndpointId}
+                  endpoints={endpoints}
                 />
               </div>
-            ) : (
-              <p style={{ padding: "24px 16px", color: COLOR.muted }}>
-                No scopes available in this workspace.
-              </p>
-            )}
-          </div>
+            </div>
+          ) : (
+            <ContextsList
+              workspaceId={workspaceId}
+              onOpen={(id) => setSelectedContextId(id)}
+            />
+          )
         )}
 
-        {/* Context */}
-        {activeLens === "context" && (
-          <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
-            {selectedContextId && operatorEndpointId ? (
-              <ContextView
-                contextId={selectedContextId}
-                sourceEndpointId={operatorEndpointId}
-              />
-            ) : (
-              <p
-                role="status"
-                style={{ color: COLOR.muted, fontStyle: "italic" }}
-              >
-                No context selected. Open a context from the Field or Briefing.
-              </p>
-            )}
-          </div>
+        {/* Actors */}
+        {activeView === "actors" && (
+          <ActorsDirectory
+            workspaceId={workspaceId}
+            onOpenContext={handleOpenContext}
+          />
         )}
 
-        {/* Timeline */}
-        {activeLens === "timeline" && (
-          <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
+        {/* Scopes */}
+        {activeView === "scopes" && (
+          <ScopesView
+            workspaceId={workspaceId}
+            scopes={scopes}
+            onRefresh={() => void refreshScopes()}
+            onOpenContext={handleOpenContext}
+          />
+        )}
+
+        {/* Pulses */}
+        {activeView === "pulses" && (
+          <RecordList
+            title="Pulses"
+            load={() =>
+              listPulses(workspaceId).then((rows) =>
+                rows.map((r) => ({
+                  pulse_id: r.pulse_id,
+                  status: r.status,
+                  next_fire_at: r.next_fire_at ?? "",
+                  fire_count: r.fire_count,
+                }))
+              )
+            }
+            columns={["pulse_id", "status", "next_fire_at", "fire_count"]}
+          />
+        )}
+
+        {/* Events */}
+        {activeView === "events" && (
+          <div style={{ flex: 1, overflow: "auto", padding: space.lg }}>
             <Timeline workspaceId={workspaceId} />
           </div>
         )}
-      </main>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Footer — FeedbackAffordance                                         */}
-      {/* ------------------------------------------------------------------ */}
-      <footer
-        data-section="footer"
-        style={{
-          gridColumn: "1 / -1",
-          gridRow: "3",
-          display: "flex",
-          alignItems: "center",
-          padding: "0 16px",
-          borderTop: `1px solid ${COLOR.border}`,
-          background: COLOR.surface,
-        }}
-      >
-        {operatorEndpointId && (
-          <div data-section="feedback">
-            <FeedbackAffordance
+        {/* Briefing */}
+        {activeView === "briefing" && (
+          <div style={{ flex: 1, overflow: "auto" }}>
+            <Briefing
               workspaceId={workspaceId}
-              sourceEndpointId={operatorEndpointId}
-              target={feedbackTarget}
+              operatorEndpointId={actingAsEndpointId || undefined}
             />
           </div>
         )}
-      </footer>
+
+        {/* Deliveries */}
+        {activeView === "deliveries" && (
+          <RecordList
+            title="Deliveries"
+            load={() =>
+              listDeliveries({ workspace_id: workspaceId }).then((rows) =>
+                rows.map((r) => ({
+                  delivery_id: r.delivery_id,
+                  endpoint_id: r.endpoint_id,
+                  state: r.state,
+                  attempt_count: r.attempt_count,
+                  created_at: r.created_at,
+                }))
+              )
+            }
+          />
+        )}
+
+        {/* Pending responses */}
+        {activeView === "pending" && (
+          <RecordList
+            title="Pending Responses"
+            load={() =>
+              listPendingResponses(workspaceId).then((rows) =>
+                rows.map((r) => ({
+                  pending_id: r.pending_id,
+                  waiting_endpoint_id: r.waiting_endpoint_id,
+                  mode: r.mode,
+                  status: r.status,
+                  created_at: r.created_at,
+                  resolved_at: r.resolved_at ?? "",
+                }))
+              )
+            }
+          />
+        )}
+
+        {/* Telemetry */}
+        {activeView === "telemetry" && (
+          <RecordList
+            title="Runtime Telemetry"
+            load={() =>
+              listRuntimeTelemetry({ workspace_id: workspaceId }).then((rows) =>
+                rows.map((r) => ({
+                  telemetry_id: r.telemetry_id,
+                  endpoint_id: r.endpoint_id,
+                  kind: r.kind,
+                  delivery_id: r.delivery_id ?? "",
+                  created_at: r.created_at,
+                }))
+              )
+            }
+          />
+        )}
+
+        {/* Bindings */}
+        {activeView === "bindings" && (
+          <RecordList
+            title="Runtime Bindings"
+            load={() =>
+              getRuntimeBindings(workspaceId).then((rows) =>
+                rows.map((r) => ({
+                  binding_key: r.binding_key,
+                  scope: r.scope,
+                  auth_profile: r.auth_profile,
+                  model: r.model ?? "",
+                  thinking_level: r.thinking_level ?? "",
+                }))
+              )
+            }
+          />
+        )}
+
+        {/* Configs */}
+        {activeView === "configs" && (
+          <RecordList
+            title="Saved Configs"
+            load={() =>
+              listConfigs().then((rows) =>
+                rows.map((r) => ({
+                  config_id: r.config_id,
+                  name: r.name,
+                  created_at: r.created_at,
+                  updated_at: r.updated_at,
+                }))
+              )
+            }
+          />
+        )}
+
+        {/* Webhooks — no list endpoint */}
+        {activeView === "webhooks" && (
+          <div style={{ padding: space.xl, font: font.body, color: colors.text }}>
+            <h2 style={{ fontSize: 16, fontWeight: font.h, marginBottom: space.md }}>Webhooks</h2>
+            <p style={{ color: colors.muted }}>
+              Webhooks are ingest-only endpoints — they accept payloads via{" "}
+              <code>POST /v1/webhooks/:workspace_id/:route_id</code> and do not have
+              a list view. Use your external service's delivery log to inspect
+              webhook traffic.
+            </p>
+          </div>
+        )}
+      </main>
     </div>
   );
 }
