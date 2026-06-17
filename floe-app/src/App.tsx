@@ -25,6 +25,7 @@ import {
 import { ScopeDetail } from "./scope/ScopeDetail.tsx";
 import { ContextConversation } from "./scope/ContextConversation.tsx";
 import { ContextInspector } from "./scope/ContextInspector.tsx";
+import { DirectContexts } from "./scope/DirectContexts.tsx";
 import { ActorInspector } from "./actors/ActorInspector.tsx";
 import { WorkspaceSettings } from "./workspace/WorkspaceSettings.tsx";
 import { Activity } from "./activity/Activity.tsx";
@@ -88,12 +89,22 @@ function GlobalStyles(): React.ReactElement {
         height: 100%; background: ${tk.canvas}; color: ${tk.ink};
         font-family: ${tk.fontUi}; font-size: 13px; line-height: 1.5;
         -webkit-font-smoothing: antialiased;
+        color-scheme: dark;
       }
       * { scrollbar-color: rgba(255,255,255,0.10) transparent; scrollbar-width: thin; }
       *::-webkit-scrollbar { width: 8px; height: 8px; }
       *::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
       button { font-family: inherit; cursor: pointer; }
-      input, select { font-family: inherit; }
+      input, select {
+        font-family: inherit;
+        color-scheme: dark;
+        background-color: ${tk.surfaceHov};
+        color: ${tk.ink};
+      }
+      select option {
+        background-color: ${tk.surfaceHov};
+        color: ${tk.ink};
+      }
     `;
     document.head.appendChild(style);
   }, []);
@@ -316,7 +327,7 @@ function WorkspaceSwitcher({
 // Left nav
 // ---------------------------------------------------------------------------
 
-type NavView = "home" | "activity";
+type NavView = "home" | "activity" | "direct";
 
 type NavProps = {
   view: NavView;
@@ -358,6 +369,13 @@ function LeftNav({
         glyph="≋"
         isOn={view === "activity"}
         onClick={() => { onView("activity"); onSelectScope(""); /* empty string → null in handleSelectScope; also clears context/actor/settings */ }}
+      />
+      {/* Direct — contexts with no scope (v6 parity: "workspace context") */}
+      <NavRow
+        label="Direct"
+        glyph="◇"
+        isOn={view === "direct"}
+        onClick={() => { onView("direct"); onSelectScope(""); /* empty string → null in handleSelectScope; also clears context/actor/settings */ }}
       />
 
       {/* Scopes section */}
@@ -1250,6 +1268,11 @@ export function App(): React.ReactElement {
     setSelectedContextLabel(null);
     setSelectedActorId(null);
     setShowWorkspaceSettings(false);
+    // Only force the main view to "home" when an actual scope was selected.
+    // Nav rows that clear the scope (Activity/Direct) pass id="" and set
+    // their own view via onView — forcing "home" here would immediately
+    // override that (both setView calls land in the same handler).
+    if (id) setView("home");
   }, []);
 
   const handleSelectContext = useCallback((id: string | null) => {
@@ -1262,12 +1285,28 @@ export function App(): React.ReactElement {
     setSelectedContextLabel(null);
   }, []);
 
+  /**
+   * Open a context's conversation from somewhere other than its own scope's
+   * context list — an actor's "Contexts" list (Gap A) or the Direct list
+   * (Gap B). We don't reliably know the context's scope here, so we clear
+   * the scope selection; ContextInspector/ContextConversation don't require
+   * one (ContextInspector renders "— direct, no scope —" when absent).
+   */
+  const handleOpenContext = useCallback((id: string) => {
+    setSelectedActorId(null);
+    setSelectedScopeId(null);
+    setSelectedContextId(id);
+    setSelectedContextLabel(null);
+    setShowWorkspaceSettings(false);
+  }, []);
+
   const handleSelectActor = useCallback((id: string) => {
     setSelectedActorId(id);
     setSelectedScopeId(null);
     setSelectedContextId(null);
     setSelectedContextLabel(null);
     setShowWorkspaceSettings(false);
+    setView("home");
   }, []);
 
   const handleOpenWorkspaceSettings = useCallback(() => {
@@ -1276,6 +1315,7 @@ export function App(): React.ReactElement {
     setSelectedContextId(null);
     setSelectedContextLabel(null);
     setSelectedActorId(null);
+    setView("home");
   }, []);
 
   const handleActorSaved = useCallback((updated: EndpointRef) => {
@@ -1466,7 +1506,10 @@ export function App(): React.ReactElement {
           }}>
             {showWorkspaceSettings ? (
               <WorkspaceSettings workspace={activeWorkspace} />
-            ) : view === "home" && selectedScope && selectedContextId ? (
+            ) : selectedContextId ? (
+              // Conversation is scope-independent: it can be reached from a scope's
+              // context list, an actor's "Contexts" list (Gap A — may be in a
+              // different scope or no scope at all), or the Direct list (Gap B).
               <ContextConversation
                 key={selectedContextId}
                 contextId={selectedContextId}
@@ -1495,6 +1538,12 @@ export function App(): React.ReactElement {
                 workspaceId={activeWorkspace.workspace_id}
                 endpoints={actors}
                 scopes={scopes}
+              />
+            ) : view === "direct" ? (
+              <DirectContexts
+                workspaceId={activeWorkspace.workspace_id}
+                selectedContextId={selectedContextId}
+                onSelectContext={handleOpenContext}
               />
             ) : null}
           </main>
@@ -1527,8 +1576,9 @@ export function App(): React.ReactElement {
                   actor={actors.find(a => a.endpoint_id === selectedActorId)!}
                   workspaceId={activeWorkspace.workspace_id}
                   onSaved={handleActorSaved}
+                  onOpenContext={handleOpenContext}
                 />
-              ) : selectedContextId && selectedScope ? (
+              ) : selectedContextId ? (
                 <ContextInspector
                   contextId={selectedContextId}
                   scope={selectedScope}

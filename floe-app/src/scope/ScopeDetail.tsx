@@ -58,7 +58,7 @@ export function contextLabel(ctx: ContextRef): string {
   return "Conversation";
 }
 
-function relativeTime(dateStr: string | null): string {
+export function relativeTime(dateStr: string | null): string {
   if (!dateStr) return "—";
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60_000);
@@ -203,7 +203,7 @@ function DeleteScopeAction({
 // Context row
 // ---------------------------------------------------------------------------
 
-function ContextRow({
+export function ContextRow({
   ctx,
   isSelected,
   onClick,
@@ -213,8 +213,8 @@ function ContextRow({
   ctx: ContextRef;
   isSelected: boolean;
   onClick: () => void;
-  onDelete: (e: React.MouseEvent) => void;
-  isDeleting: boolean;
+  onDelete?: (e: React.MouseEvent) => void;
+  isDeleting?: boolean;
 }): React.ReactElement {
   const [hov, setHov] = useState(false);
   const label = contextLabel(ctx);
@@ -261,29 +261,31 @@ function ContextRow({
         </div>
       </div>
 
-      {/* Delete affordance */}
-      <button
-        onClick={e => { e.stopPropagation(); onDelete(e); }}
-        disabled={isDeleting}
-        aria-label={`Delete context: ${label}`}
-        title="Delete context"
-        style={{
-          background: "transparent",
-          border: `1px solid ${tk.danger}`,
-          color: tk.danger,
-          borderRadius: tk.r1,
-          padding: "2px 8px",
-          fontSize: 11,
-          cursor: "pointer",
-          fontFamily: tk.fontUi,
-          flexShrink: 0,
-          opacity: isDeleting ? 0.5 : 1,
-        }}
-        onMouseEnter={e => { if (!isDeleting) (e.currentTarget as HTMLButtonElement).style.background = "rgba(184,90,90,0.12)"; }}
-        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
-      >
-        {isDeleting ? "…" : "×"}
-      </button>
+      {/* Delete affordance (omitted when onDelete is not provided, e.g. read-only lists) */}
+      {onDelete && (
+        <button
+          onClick={e => { e.stopPropagation(); onDelete(e); }}
+          disabled={isDeleting}
+          aria-label={`Delete context: ${label}`}
+          title="Delete context"
+          style={{
+            background: "transparent",
+            border: `1px solid ${tk.danger}`,
+            color: tk.danger,
+            borderRadius: tk.r1,
+            padding: "2px 8px",
+            fontSize: 11,
+            cursor: "pointer",
+            fontFamily: tk.fontUi,
+            flexShrink: 0,
+            opacity: isDeleting ? 0.5 : 1,
+          }}
+          onMouseEnter={e => { if (!isDeleting) (e.currentTarget as HTMLButtonElement).style.background = "rgba(184,90,90,0.12)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+        >
+          {isDeleting ? "…" : "×"}
+        </button>
+      )}
     </div>
   );
 }

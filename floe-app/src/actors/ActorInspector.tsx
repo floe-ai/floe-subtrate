@@ -17,6 +17,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import type {
   AuthModelRecord,
   AuthProfileRecord,
+  ContextRef,
   EndpointRef,
   RuntimeBindingResolution,
 } from "../bus-client/types.ts";
@@ -26,8 +27,10 @@ import {
   resolveRuntimeBinding,
   upsertRuntimeBinding,
   clearRuntimeBindings,
+  listContextsByParticipant,
 } from "../bus-client/client.ts";
 import { modelsForProfile, withSelectedModelOption, providerForProfile } from "./modelsForProfile.ts";
+import { contextLabel } from "../scope/ScopeDetail.tsx";
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk)
@@ -137,6 +140,109 @@ function SaveStatus({ state }: { state: SaveState }): React.ReactElement | null 
 }
 
 // ---------------------------------------------------------------------------
+// Contexts the actor participates in (Gap A — v6 parity)
+// ---------------------------------------------------------------------------
+// v6 shows this in the inspector when an actor is selected ("Click an actor
+// to see what they participate in" — Home hero copy). We mirror that: a
+// list of contexts by human name, each clickable to open that context's
+// conversation.
+
+function ActorContexts({
+  endpointId,
+  workspaceId,
+  onOpenContext,
+}: {
+  endpointId: string;
+  workspaceId: string;
+  onOpenContext: (contextId: string) => void;
+}): React.ReactElement {
+  const [contexts, setContexts] = useState<ContextRef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    listContextsByParticipant({ participant: endpointId, workspace_id: workspaceId })
+      .then(rows => {
+        if (cancelled) return;
+        const sorted = [...rows].sort((a, b) => {
+          const ta = a.last_event_at ?? a.created_at;
+          const tb = b.last_event_at ?? b.created_at;
+          return tb.localeCompare(ta);
+        });
+        setContexts(sorted);
+        setLoading(false);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load contexts");
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [endpointId, workspaceId]);
+
+  return (
+    <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 8,
+        fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase",
+        color: tk.ink3, fontWeight: 510,
+      }}>
+        <span>Contexts</span>
+        {!loading && (
+          <span style={{ color: tk.ink4, fontWeight: 400, letterSpacing: 0, textTransform: "none", fontSize: 11 }}>
+            {contexts.length}
+          </span>
+        )}
+      </div>
+
+      {loading && <span style={{ fontSize: 12, color: tk.ink3 }}>Loading…</span>}
+
+      {error && <span role="alert" style={{ fontSize: 12, color: tk.danger }}>{error}</span>}
+
+      {!loading && !error && contexts.length === 0 && (
+        <span style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>
+          Not participating in any contexts.
+        </span>
+      )}
+
+      {!loading && !error && contexts.length > 0 && (
+        <div role="list" aria-label="Contexts this actor participates in" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {contexts.map(ctx => (
+            <button
+              key={ctx.context_id}
+              role="listitem"
+              onClick={() => onOpenContext(ctx.context_id)}
+              style={{
+                display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1,
+                width: "100%", textAlign: "left",
+                background: "transparent", border: `1px solid ${tk.border}`,
+                borderRadius: tk.r2, padding: "7px 10px", cursor: "pointer",
+                fontFamily: tk.fontUi,
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = tk.surfaceHov; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+            >
+              <span style={{
+                fontSize: 12.5, color: tk.ink, fontWeight: 510,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%",
+              }}>
+                {contextLabel(ctx)}
+              </span>
+              <span style={{ fontSize: 10.5, color: tk.ink4 }}>
+                {ctx.scope_id ? "in scope" : "direct · no scope"}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
@@ -144,13 +250,15 @@ export type ActorInspectorProps = {
   actor: EndpointRef;
   workspaceId: string;
   onSaved?: (updated: EndpointRef) => void;
+  /** Open this context's conversation (sets selected context + switches main view). */
+  onOpenContext?: (contextId: string) => void;
 };
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function ActorInspector({ actor, workspaceId, onSaved }: ActorInspectorProps): React.ReactElement {
+export function ActorInspector({ actor, workspaceId, onSaved, onOpenContext }: ActorInspectorProps): React.ReactElement {
   // Name editing
   const [name, setName] = useState(actor.name);
   const [nameSave, setNameSave] = useState<SaveState>({ phase: "idle" });
@@ -311,6 +419,15 @@ export function ActorInspector({ actor, workspaceId, onSaved }: ActorInspectorPr
         {actor.agent_id && <StatRow label="Agent" value={<code style={{ fontSize: 11 }}>{actor.agent_id}</code>} />}
         {actor.bridge_id && <StatRow label="Bridge" value={<code style={{ fontSize: 11 }}>{actor.bridge_id}</code>} />}
         <StatRow label="Created" value={new Date(actor.created_at).toLocaleString()} />
+      </div>
+
+      {/* Contexts this actor participates in (Gap A — v6 parity) */}
+      <div style={{ borderBottom: `1px solid ${tk.border2}` }}>
+        <ActorContexts
+          endpointId={actor.endpoint_id}
+          workspaceId={workspaceId}
+          onOpenContext={(contextId) => onOpenContext?.(contextId)}
+        />
       </div>
 
       {/* Profile -> Model -> Effort */}

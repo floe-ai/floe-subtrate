@@ -76,7 +76,8 @@ type DeleteState =
 
 export type ContextInspectorProps = {
   contextId: string;
-  scope: ScopeRef;
+  /** Owning scope, or null for a Direct (unscoped) context — v6 calls this "workspace context". */
+  scope: ScopeRef | null;
   workspaceId: string;
   onDeleted: () => void;
 };
@@ -195,7 +196,7 @@ export function ContextInspector({
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
         <StatRow
           label="Scope"
-          value={scope.title || scope.scope_id}
+          value={scope ? (scope.title || scope.scope_id) : <span style={{ color: tk.ink4, fontStyle: "italic" }}>— direct, no scope —</span>}
         />
         <StatRow
           label="Participants"
