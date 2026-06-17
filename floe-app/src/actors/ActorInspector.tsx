@@ -23,6 +23,7 @@ import type {
 } from "../bus-client/types.ts";
 import {
   registerEndpoint,
+  deleteEndpoint,
   getAuthProfiles,
   resolveRuntimeBinding,
   upsertRuntimeBinding,
@@ -243,6 +244,127 @@ function ActorContexts({
 }
 
 // ---------------------------------------------------------------------------
+// Delete action (mirrors ScopeInspector's delete-confirm pattern in App.tsx)
+// ---------------------------------------------------------------------------
+
+type DeleteState =
+  | { phase: "idle" }
+  | { phase: "confirming" }
+  | { phase: "deleting" }
+  | { phase: "error"; message: string };
+
+function ActorDeleteSection({
+  actor,
+  onDeleted,
+}: {
+  actor: EndpointRef;
+  onDeleted: () => void;
+}): React.ReactElement {
+  const [deleteState, setDeleteState] = useState<DeleteState>({ phase: "idle" });
+  const [confirmName, setConfirmName] = useState("");
+  const actorLabel = actor.name || actor.endpoint_id;
+
+  // Reset the confirm/error state whenever the selected actor changes.
+  useEffect(() => {
+    setDeleteState({ phase: "idle" });
+    setConfirmName("");
+  }, [actor.endpoint_id]);
+
+  async function handleDelete() {
+    setDeleteState({ phase: "deleting" });
+    try {
+      await deleteEndpoint(actor.endpoint_id);
+      onDeleted();
+    } catch (err) {
+      // Treat "already gone" as success — the desired end state is reached.
+      if (err instanceof Error && /(404|not.?found)/i.test(err.message)) {
+        onDeleted();
+        return;
+      }
+      setDeleteState({ phase: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return (
+    <div style={{ padding: "12px 16px" }}>
+      {deleteState.phase === "idle" && (
+        <button
+          onClick={() => { setDeleteState({ phase: "confirming" }); setConfirmName(""); }}
+          style={{
+            background: "transparent", border: `1px solid ${tk.danger}`,
+            color: tk.danger, borderRadius: tk.r2, padding: "5px 12px",
+            fontSize: 12, cursor: "pointer", fontWeight: 510, fontFamily: tk.fontUi,
+          }}
+        >
+          Delete actor
+        </button>
+      )}
+
+      {deleteState.phase === "confirming" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <p style={{ fontSize: 12, color: tk.ink2, lineHeight: 1.45, margin: 0 }}>
+            Type "{actorLabel}" to confirm deletion. This cannot be undone.
+          </p>
+          <input
+            aria-label="Confirm actor name"
+            value={confirmName}
+            onChange={(e) => setConfirmName(e.target.value)}
+            placeholder={actorLabel}
+            autoFocus
+            style={{ ...inputStyle }}
+          />
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={() => void handleDelete()}
+              disabled={confirmName !== actorLabel}
+              style={{
+                background: confirmName === actorLabel ? tk.danger : "rgba(184,90,90,0.35)",
+                color: "#fff", border: "none",
+                borderRadius: tk.r2, padding: "5px 12px", fontSize: 12,
+                cursor: confirmName === actorLabel ? "pointer" : "not-allowed",
+                fontFamily: tk.fontUi,
+              }}
+            >
+              Confirm delete
+            </button>
+            <button
+              onClick={() => { setDeleteState({ phase: "idle" }); setConfirmName(""); }}
+              style={{
+                background: "transparent", border: `1px solid ${tk.border}`,
+                color: tk.ink3, borderRadius: tk.r2, padding: "5px 12px", fontSize: 12,
+                fontFamily: tk.fontUi, cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deleteState.phase === "deleting" && (
+        <p style={{ fontSize: 12, color: tk.ink3 }}>Deleting…</p>
+      )}
+
+      {deleteState.phase === "error" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <p role="alert" style={{ fontSize: 12, color: tk.danger, margin: 0 }}>{deleteState.message}</p>
+          <button
+            onClick={() => setDeleteState({ phase: "idle" })}
+            style={{
+              background: "transparent", border: `1px solid ${tk.border}`,
+              color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 12,
+              alignSelf: "flex-start", fontFamily: tk.fontUi, cursor: "pointer",
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
@@ -252,13 +374,15 @@ export type ActorInspectorProps = {
   onSaved?: (updated: EndpointRef) => void;
   /** Open this context's conversation (sets selected context + switches main view). */
   onOpenContext?: (contextId: string) => void;
+  /** Actor was deleted — caller should remove it from the Actors nav and clear selection. */
+  onDeleted?: (endpointId: string) => void;
 };
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function ActorInspector({ actor, workspaceId, onSaved, onOpenContext }: ActorInspectorProps): React.ReactElement {
+export function ActorInspector({ actor, workspaceId, onSaved, onOpenContext, onDeleted }: ActorInspectorProps): React.ReactElement {
   // Name editing
   const [name, setName] = useState(actor.name);
   const [nameSave, setNameSave] = useState<SaveState>({ phase: "idle" });
@@ -529,6 +653,11 @@ export function ActorInspector({ actor, workspaceId, onSaved, onOpenContext }: A
         ) : (
           <span style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>Unavailable</span>
         )}
+      </div>
+
+      {/* Delete action */}
+      <div style={{ borderTop: `1px solid ${tk.border2}` }}>
+        <ActorDeleteSection actor={actor} onDeleted={() => onDeleted?.(actor.endpoint_id)} />
       </div>
     </div>
   );

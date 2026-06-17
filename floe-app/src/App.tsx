@@ -1323,6 +1323,12 @@ export function App(): React.ReactElement {
     void refreshActors();
   }, [refreshActors]);
 
+  const handleActorDeleted = useCallback((endpointId: string) => {
+    setActors(prev => prev.filter(a => a.endpoint_id !== endpointId));
+    setSelectedActorId(prev => (prev === endpointId ? null : prev));
+    void refreshActors();
+  }, [refreshActors]);
+
   const inspResizeRef = useInspectorResize(setInspWidth);
 
   // ---------------------------------------------------------------------------
@@ -1577,6 +1583,7 @@ export function App(): React.ReactElement {
                   workspaceId={activeWorkspace.workspace_id}
                   onSaved={handleActorSaved}
                   onOpenContext={handleOpenContext}
+                  onDeleted={handleActorDeleted}
                 />
               ) : selectedContextId ? (
                 <ContextInspector
