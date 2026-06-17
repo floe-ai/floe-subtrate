@@ -9,9 +9,13 @@
     "preview": "vite preview --host 127.0.0.1 --port 5379",
     "test": "vitest run",
     "test:unit": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
     "@vitejs/plugin-react": "^6.0.2",
     "@xyflow/react": "^12.10.2",
     "lucide-react": "^0.468.0",
@@ -21,6 +25,7 @@
     "vite": "^8.0.10"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^18.3.0",
