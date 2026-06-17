@@ -180,9 +180,33 @@ export async function updateScope(
   return data.scope;
 }
 
-/** DELETE /v1/workspaces/:ws/scopes/:scope — delete an empty scope */
+/** Structured error thrown when deleteScope fails because scope is non-empty */
+export class ScopeNotEmptyError extends Error {
+  readonly context_count: number;
+  readonly pulse_count: number;
+  constructor(context_count: number, pulse_count: number) {
+    super(`scope_not_empty: ${context_count} context(s), ${pulse_count} pulse(s)`);
+    this.name = "ScopeNotEmptyError";
+    this.context_count = context_count;
+    this.pulse_count = pulse_count;
+  }
+}
+
+/** DELETE /v1/workspaces/:ws/scopes/:scope — delete an empty scope.
+ *  Throws ScopeNotEmptyError on HTTP 409 scope_not_empty. */
 export async function deleteScope(ws: string, scope: string): Promise<void> {
-  await del(`/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}`);
+  const res = await fetch(
+    `${BUS_BASE}/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}`,
+    { method: "DELETE" }
+  );
+  if (res.status === 409) {
+    const body = await res.json() as { error?: string; context_count?: number; pulse_count?: number };
+    if (body.error === "scope_not_empty") {
+      throw new ScopeNotEmptyError(body.context_count ?? 0, body.pulse_count ?? 0);
+    }
+    throw new Error(`Bus DELETE scopes/${scope} → 409: ${JSON.stringify(body)}`);
+  }
+  if (!res.ok) throw new Error(`Bus DELETE scopes/${scope} → ${res.status}`);
 }
 
 // ---------------------------------------------------------------------------

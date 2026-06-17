@@ -59,6 +59,8 @@ export type PulseRef = {
   persistence: "workspace" | "local";
   status: string;
   trigger: unknown;
+  content?: unknown;
+  subscribers?: PulseSubscriber[];
   next_fire_at: string | null;
   last_fired_at: string | null;
   fire_count: number;

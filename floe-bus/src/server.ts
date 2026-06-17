@@ -825,7 +825,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       parent_context_id: ctx.parent_context_id,
       created_by_endpoint_id: ctx.created_by_endpoint_id,
       created_at: ctx.created_at,
-      participants: store.contextStore.getContextParticipants(ctx.context_id)
+      participants: store.contextStore.getContextParticipants(ctx.context_id),
+      first_message_preview: store.contextStore.getFirstMessagePreview(ctx.context_id)
     };
   });
 

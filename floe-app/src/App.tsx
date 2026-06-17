@@ -1,341 +1,1062 @@
 /**
- * App — neutral visual layer over the substrate.
+ * App — v6 shell: topbar + 240px left nav + resizable right inspector.
  *
- * All actors are uniform endpoints. No special-casing Floe or the operator.
- * "Acting as" selector sets the source of every action from ALL endpoints.
+ * Slice 1: scope-centric Home. Later slices will fill in contexts, actors,
+ * activity, etc. in the main column and inspector.
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { WorkspaceRef, EndpointRef, ScopeRef } from "./bus-client/types.ts";
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import type { WorkspaceRef, ScopeRef, EndpointRef } from "./bus-client/types.ts";
 import {
   listWorkspaces,
-  listEndpoints,
   listScopes,
   createScope,
+  deleteScope,
   registerWorkspace,
   deleteWorkspace,
+  getScopeProjection,
+  listEndpoints,
+  ScopeNotEmptyError,
 } from "./bus-client/client.ts";
-import { colors, space, font } from "./theme.ts";
-import { Briefing } from "./briefing/Briefing.tsx";
-import { Field } from "./field/Field.tsx";
-import { Timeline } from "./timeline/Timeline.tsx";
-import { ContextsList } from "./context/ContextsList.tsx";
-import { ContextView } from "./context/ContextView.tsx";
-import { ActorsDirectory } from "./actors/ActorsDirectory.tsx";
-import { RecordList } from "./inspect/RecordList.tsx";
-import {
-  listDeliveries,
-  listPendingResponses,
-  listRuntimeTelemetry,
-  getRuntimeBindings,
-  listConfigs,
-  listPulses,
-} from "./bus-client/client.ts";
+import { ScopeDetail } from "./scope/ScopeDetail.tsx";
+import { ContextConversation } from "./scope/ContextConversation.tsx";
+import { ContextInspector } from "./scope/ContextInspector.tsx";
+import { ActorInspector } from "./actors/ActorInspector.tsx";
+import { WorkspaceSettings } from "./workspace/WorkspaceSettings.tsx";
+import { Activity } from "./activity/Activity.tsx";
 
 // ---------------------------------------------------------------------------
-// Types
+// V6 design tokens — dark-mode-first, calm sage-slate accent
 // ---------------------------------------------------------------------------
 
-export type ActiveView =
-  | "contexts"
-  | "actors"
-  | "scopes"
-  | "pulses"
-  | "events"
-  | "briefing"
-  | "deliveries"
-  | "pending"
-  | "telemetry"
-  | "bindings"
-  | "configs"
-  | "webhooks";
+const tk = {
+  canvas:       "#08090a",
+  surface:      "#0f1011",
+  surfaceHov:   "#191a1b",
+  surfaceSunk:  "#0b0c0d",
+  border:       "rgba(255,255,255,0.08)",
+  border2:      "rgba(255,255,255,0.05)",
+  ink:          "#f7f8f8",
+  ink2:         "#d0d6e0",
+  ink3:         "#8a8f98",
+  ink4:         "#62666d",
+  accent:       "#8aa89c",
+  accentHov:    "#a1bcb1",
+  accentSoft:   "#16201d",
+  accentSoft2:  "#1f2c28",
+  accentRing:   "rgba(138,168,156,0.28)",
+  ok:           "#87b894",
+  danger:       "#b85a5a",
+  fontUi:       '"Inter Variable","Inter",-apple-system,BlinkMacSystemFont,system-ui,sans-serif',
+  r1: 3, r2: 5, r3: 8,
+} as const;
 
 // ---------------------------------------------------------------------------
-// Shared style helpers
+// Inspector width — persisted to localStorage
 // ---------------------------------------------------------------------------
 
-const selectStyle: React.CSSProperties = {
-  background: colors.surface,
-  color: colors.text,
-  border: `1px solid ${colors.border}`,
-  borderRadius: 4,
-  padding: "2px 8px",
-  fontSize: font.meta,
-  cursor: "pointer",
-  fontFamily: "system-ui, sans-serif",
-};
+const RINSP_KEY = "floe.rinspW";
+const RINSP_MIN = 260;
+const RINSP_MAX = 720;
+const RINSP_DEFAULT = 320;
+
+function readRinspWidth(): number {
+  try {
+    const v = parseInt(localStorage.getItem(RINSP_KEY) ?? "", 10);
+    if (Number.isFinite(v) && v >= RINSP_MIN && v <= RINSP_MAX) return v;
+  } catch { /* ignore */ }
+  return RINSP_DEFAULT;
+}
 
 // ---------------------------------------------------------------------------
-// Loading / empty states
+// Global style injection (scrollbars, html/body reset, focus ring)
 // ---------------------------------------------------------------------------
 
-function LoadingShell(): React.ReactElement {
+function GlobalStyles(): React.ReactElement {
+  useEffect(() => {
+    const id = "floe-global";
+    if (document.getElementById(id)) return;
+    const style = document.createElement("style");
+    style.id = id;
+    style.textContent = `
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body, #root {
+        height: 100%; background: ${tk.canvas}; color: ${tk.ink};
+        font-family: ${tk.fontUi}; font-size: 13px; line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      * { scrollbar-color: rgba(255,255,255,0.10) transparent; scrollbar-width: thin; }
+      *::-webkit-scrollbar { width: 8px; height: 8px; }
+      *::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+      button { font-family: inherit; cursor: pointer; }
+      input, select { font-family: inherit; }
+    `;
+    document.head.appendChild(style);
+  }, []);
+  return <></>;
+}
+
+// ---------------------------------------------------------------------------
+// Loading / error guards
+// ---------------------------------------------------------------------------
+
+function FullPageCenter({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
-    <div
-      data-testid="app-loading"
-      role="status"
-      aria-live="polite"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100vh",
-        background: colors.canvas,
-        color: colors.muted,
-        font: font.body,
-      }}
-    >
-      Loading…
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "center",
+      height: "100vh", background: tk.canvas, color: tk.ink3,
+      fontFamily: tk.fontUi, fontSize: 13,
+    }}>
+      {children}
     </div>
   );
 }
 
-function EmptyState({ message }: { message: string }): React.ReactElement {
+// ---------------------------------------------------------------------------
+// Workspace switcher dropdown
+// ---------------------------------------------------------------------------
+
+type WsSwitcherProps = {
+  workspaces: WorkspaceRef[];
+  active: WorkspaceRef;
+  onSwitch: (id: string) => void;
+  onAdd: (locator: string, name: string) => Promise<void>;
+  onDelete: () => void;
+  addErr: string | null;
+};
+
+function WorkspaceSwitcher({
+  workspaces, active, onSwitch, onAdd, onDelete, addErr,
+}: WsSwitcherProps): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [locator, setLocator] = useState("");
+  const [name, setName] = useState("");
+  const [adding, setAdding] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setShowAdd(false);
+      }
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  async function handleAdd() {
+    if (!locator.trim()) return;
+    setAdding(true);
+    try {
+      await onAdd(locator.trim(), name.trim());
+      setLocator("");
+      setName("");
+      setShowAdd(false);
+      setOpen(false);
+    } finally {
+      setAdding(false);
+    }
+  }
+
   return (
-    <div
-      data-testid="app-empty"
-      role="status"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100vh",
-        background: colors.canvas,
-        color: colors.muted,
-        font: font.body,
-      }}
-    >
-      {message}
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => { setOpen(v => !v); setShowAdd(false); }}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          background: "transparent", border: `1px solid transparent`,
+          padding: "4px 8px", borderRadius: tk.r2,
+          fontFamily: tk.fontUi, fontWeight: 510, fontSize: 13,
+          color: tk.ink, cursor: "pointer",
+        }}
+        onMouseEnter={e => {
+          (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.04)";
+          (e.currentTarget as HTMLButtonElement).style.borderColor = tk.border;
+        }}
+        onMouseLeave={e => {
+          (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+          (e.currentTarget as HTMLButtonElement).style.borderColor = "transparent";
+        }}
+        aria-label="Switch workspace"
+        aria-expanded={open}
+      >
+        <span>{active.name || active.workspace_id}</span>
+        <span style={{ color: tk.ink4, fontSize: 9 }}>▾</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", left: 0,
+          minWidth: 260, background: tk.surfaceHov,
+          border: `1px solid ${tk.border}`,
+          borderRadius: tk.r3,
+          boxShadow: "0 0 0 1px rgba(255,255,255,0.08), 0 16px 48px rgba(0,0,0,0.6)",
+          padding: 4, zIndex: 60,
+        }}>
+          {workspaces.map(ws => (
+            <button
+              key={ws.workspace_id}
+              onClick={() => { onSwitch(ws.workspace_id); setOpen(false); }}
+              style={{
+                display: "grid", gridTemplateColumns: "18px 1fr auto",
+                gap: 8, alignItems: "center",
+                width: "100%", padding: "8px 10px", borderRadius: tk.r2,
+                background: "transparent", border: "none",
+                textAlign: "left", fontSize: 13, color: tk.ink, cursor: "pointer",
+              }}
+              onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.05)"}
+              onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = "transparent"}
+            >
+              <span style={{ color: ws.workspace_id === active.workspace_id ? tk.accent : tk.ink4, fontSize: 11 }}>
+                {ws.workspace_id === active.workspace_id ? "✓" : ""}
+              </span>
+              <span>{ws.name || ws.workspace_id}</span>
+              <span style={{ color: tk.ink4, fontSize: 11, fontFamily: "monospace" }}>
+                {ws.workspace_id.slice(0, 8)}
+              </span>
+            </button>
+          ))}
+
+          <div style={{ height: 1, background: tk.border2, margin: "4px 6px" }} />
+
+          {/* Delete current workspace */}
+          <button
+            onClick={() => { onDelete(); setOpen(false); }}
+            style={{
+              display: "flex", alignItems: "center", gap: 8,
+              width: "100%", padding: "8px 10px", borderRadius: tk.r2,
+              background: "transparent", border: "none",
+              textAlign: "left", fontSize: 12, color: tk.danger, cursor: "pointer",
+            }}
+            onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.04)"}
+            onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = "transparent"}
+          >
+            <span style={{ width: 18, textAlign: "center" }}>×</span>
+            <span>Remove "{active.name || active.workspace_id}"</span>
+          </button>
+
+          <div style={{ height: 1, background: tk.border2, margin: "4px 6px" }} />
+
+          {/* Add workspace */}
+          {!showAdd ? (
+            <button
+              onClick={() => setShowAdd(true)}
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                width: "100%", padding: "8px 10px", borderRadius: tk.r2,
+                background: "transparent", border: "none",
+                textAlign: "left", fontSize: 13, color: tk.accentHov, cursor: "pointer",
+              }}
+              onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.04)"}
+              onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = "transparent"}
+            >
+              <span style={{ width: 18, textAlign: "center", color: tk.accentHov }}>+</span>
+              <span>Register workspace…</span>
+            </button>
+          ) : (
+            <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6 }}>
+              <input
+                autoFocus
+                placeholder="Workspace path"
+                value={locator}
+                onChange={e => setLocator(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") void handleAdd(); if (e.key === "Escape") setShowAdd(false); }}
+                style={{
+                  background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+                  borderRadius: tk.r2, padding: "5px 8px", fontSize: 12, color: tk.ink,
+                }}
+              />
+              <input
+                placeholder="Name (optional)"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") void handleAdd(); if (e.key === "Escape") setShowAdd(false); }}
+                style={{
+                  background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+                  borderRadius: tk.r2, padding: "5px 8px", fontSize: 12, color: tk.ink,
+                }}
+              />
+              {addErr && <p style={{ color: tk.danger, fontSize: 11, margin: 0 }}>{addErr}</p>}
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={() => void handleAdd()}
+                  disabled={adding || !locator.trim()}
+                  style={{
+                    background: tk.accent, color: "#0c1714", border: "none",
+                    borderRadius: tk.r2, padding: "4px 10px", fontSize: 12, cursor: "pointer",
+                  }}
+                >
+                  {adding ? "Registering…" : "Register"}
+                </button>
+                <button
+                  onClick={() => setShowAdd(false)}
+                  style={{
+                    background: "transparent", border: `1px solid ${tk.border}`,
+                    color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 12,
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Nav item
+// Left nav
 // ---------------------------------------------------------------------------
 
-type NavGroup = {
-  label: string;
-  items: { id: ActiveView; label: string }[];
+type NavView = "home" | "activity";
+
+type NavProps = {
+  view: NavView;
+  scopes: ScopeRef[];
+  selectedScopeId: string | null;
+  actors: EndpointRef[];
+  selectedActorId: string | null;
+  onView: (v: NavView) => void;
+  onSelectScope: (id: string) => void;
+  onSelectActor: (id: string) => void;
+  onNewScope: () => void;
 };
 
-const NAV_GROUPS: NavGroup[] = [
-  {
-    label: "WORK",
-    items: [
-      { id: "contexts", label: "Contexts" },
-      { id: "actors",   label: "Actors" },
-      { id: "scopes",   label: "Scopes" },
-      { id: "pulses",   label: "Pulses" },
-      { id: "events",   label: "Events" },
-    ],
-  },
-  {
-    label: "LENS",
-    items: [{ id: "briefing", label: "Briefing" }],
-  },
-  {
-    label: "INSPECT",
-    items: [
-      { id: "deliveries", label: "Deliveries" },
-      { id: "pending",    label: "Pending" },
-      { id: "telemetry",  label: "Telemetry" },
-      { id: "bindings",   label: "Bindings" },
-      { id: "configs",    label: "Configs" },
-      { id: "webhooks",   label: "Webhooks" },
-    ],
-  },
-];
+function LeftNav({
+  view, scopes, selectedScopeId, actors, selectedActorId,
+  onView, onSelectScope, onSelectActor, onNewScope,
+}: NavProps): React.ReactElement {
+  return (
+    <aside style={{
+      flex: "0 0 240px",
+      width: 240,
+      height: "100%",
+      background: tk.surface,
+      borderRight: `1px solid ${tk.border}`,
+      overflowY: "auto",
+      padding: "8px 0",
+      display: "flex", flexDirection: "column",
+    }}>
+      {/* Home */}
+      <NavRow
+        label="Home"
+        glyph="⌂"
+        isOn={view === "home" && selectedScopeId === null}
+        onClick={() => { onView("home"); onSelectScope(""); /* empty string → null in handleSelectScope */ }}
+      />
+      {/* Activity */}
+      <NavRow
+        label="Activity"
+        glyph="≋"
+        isOn={view === "activity"}
+        onClick={() => { onView("activity"); onSelectScope(""); /* empty string → null in handleSelectScope; also clears context/actor/settings */ }}
+      />
 
-function NavButton({
-  id,
-  label,
-  isActive,
-  onClick,
+      {/* Scopes section */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "16px 14px 6px",
+        fontWeight: 510, fontSize: 10.5, letterSpacing: "0.10em",
+        textTransform: "uppercase", color: tk.ink3,
+      }}>
+        <span>Scopes</span>
+        <span style={{ marginLeft: "auto", color: tk.ink4, fontWeight: 400, letterSpacing: 0, textTransform: "none", fontVariantNumeric: "tabular-nums", fontSize: 11 }}>
+          {scopes.length}
+        </span>
+      </div>
+
+      {scopes.map(s => (
+        <NavRow
+          key={s.scope_id}
+          label={s.title || s.scope_id}
+          glyph={(s.title || s.scope_id).charAt(0).toUpperCase()}
+          isOn={selectedScopeId === s.scope_id}
+          onClick={() => onSelectScope(s.scope_id)}
+        />
+      ))}
+
+      <NavRow
+        label="New scope"
+        glyph="+"
+        isOn={false}
+        onClick={onNewScope}
+        faint
+      />
+
+      {/* Actors section */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "16px 14px 6px",
+        fontWeight: 510, fontSize: 10.5, letterSpacing: "0.10em",
+        textTransform: "uppercase", color: tk.ink3,
+      }}>
+        <span>Actors</span>
+        <span style={{ marginLeft: "auto", color: tk.ink4, fontWeight: 400, letterSpacing: 0, textTransform: "none", fontVariantNumeric: "tabular-nums", fontSize: 11 }}>
+          {actors.length}
+        </span>
+      </div>
+
+      {actors.map(a => (
+        <NavRow
+          key={a.endpoint_id}
+          label={a.name || a.endpoint_id}
+          glyph={(a.name || a.endpoint_id).charAt(0).toUpperCase()}
+          isOn={selectedActorId === a.endpoint_id}
+          onClick={() => onSelectActor(a.endpoint_id)}
+        />
+      ))}
+
+      {actors.length === 0 && (
+        <div style={{ padding: "4px 14px", fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>
+          No actors registered
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function NavRow({
+  label, glyph, isOn, onClick, faint, disabled, title,
 }: {
-  id: ActiveView;
   label: string;
-  isActive: boolean;
+  glyph: string;
+  isOn: boolean;
   onClick: () => void;
+  faint?: boolean;
+  disabled?: boolean;
+  title?: string;
 }): React.ReactElement {
+  const [hov, setHov] = useState(false);
   return (
     <button
-      data-view={id}
-      onClick={onClick}
-      aria-current={isActive ? "page" : undefined}
+      onClick={disabled ? undefined : onClick}
+      title={title}
+      disabled={disabled}
       style={{
-        display: "block",
-        width: "100%",
-        padding: `${space.sm}px ${space.lg}px`,
-        textAlign: "left",
-        background: isActive ? colors.accent : "transparent",
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "5px 14px",
+        background: isOn ? "rgba(255,255,255,0.04)" : hov ? "rgba(255,255,255,0.03)" : "transparent",
         border: "none",
-        borderLeft: isActive
-          ? `3px solid ${colors.accentText}`
-          : "3px solid transparent",
-        color: isActive ? colors.accentText : colors.text,
-        cursor: "pointer",
-        fontWeight: isActive ? font.h : 400,
-        fontSize: 14,
-        fontFamily: "system-ui, sans-serif",
-        transition: "background 0.1s",
+        borderLeft: isOn ? `2px solid ${tk.accent}` : "2px solid transparent",
+        color: faint ? tk.ink4 : isOn ? tk.ink : hov ? tk.ink : tk.ink2,
+        fontSize: 13, cursor: disabled ? "not-allowed" : "pointer",
+        textAlign: "left", width: "100%",
+        opacity: disabled ? 0.4 : 1,
+        transition: "background 120ms ease, color 120ms ease",
       }}
-      onFocus={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.accent}`;
-        (e.currentTarget as HTMLButtonElement).style.outlineOffset = "-2px";
-      }}
-      onBlur={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.outline = "none";
-      }}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
     >
-      {label}
+      <span style={{
+        width: 16, display: "inline-flex", alignItems: "center", justifyContent: "center",
+        color: isOn ? tk.accent : faint ? tk.ink4 : tk.ink4, fontSize: 12, flexShrink: 0,
+      }}>{glyph}</span>
+      <span>{label}</span>
     </button>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Scopes view (inline — no separate file needed)
+// Scope card stats — fetched lazily via getScopeProjection
 // ---------------------------------------------------------------------------
 
-function ScopesView({
+type ScopeStats = { contexts: number; pulses: number } | null;
+
+function useScopeStats(workspaceId: string, scopeId: string): ScopeStats {
+  const [stats, setStats] = useState<ScopeStats>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getScopeProjection(workspaceId, scopeId)
+      .then(p => {
+        if (cancelled) return;
+        setStats({ contexts: p.refs.contexts.length, pulses: p.refs.pulses.length });
+      })
+      .catch(() => {
+        if (!cancelled) setStats({ contexts: 0, pulses: 0 });
+      });
+    return () => { cancelled = true; };
+  }, [workspaceId, scopeId]);
+  return stats;
+}
+
+function ScopeCard({
+  scope,
   workspaceId,
-  scopes,
-  onRefresh,
-  onOpenContext,
+  isSelected,
+  onClick,
 }: {
+  scope: ScopeRef;
   workspaceId: string;
-  scopes: ScopeRef[];
-  onRefresh: () => void;
-  onOpenContext: (id: string) => void;
+  isSelected: boolean;
+  onClick: () => void;
 }): React.ReactElement {
-  const [selectedScopeId, setSelectedScopeId] = useState<string | null>(
-    scopes[0]?.scope_id ?? null
+  const [hov, setHov] = useState(false);
+  const stats = useScopeStats(workspaceId, scope.scope_id);
+  const glyph = (scope.title || scope.scope_id).charAt(0).toUpperCase();
+
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        display: "flex", flexDirection: "column", gap: 8,
+        padding: 14, textAlign: "left",
+        background: isSelected ? tk.accentSoft : hov ? "#1f2022" : tk.surfaceHov,
+        border: `1px solid ${isSelected ? "rgba(138,168,156,0.35)" : hov ? "rgba(255,255,255,0.12)" : tk.border}`,
+        borderRadius: tk.r3, cursor: "pointer",
+        transition: "border-color 120ms ease, background 120ms ease",
+      }}
+    >
+      {/* Head row: glyph + name */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{
+          width: 26, height: 26, borderRadius: 5,
+          background: tk.accentSoft2, color: tk.accentHov,
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          fontWeight: 590, fontSize: 12, flexShrink: 0,
+        }}>
+          {glyph}
+        </span>
+        <span style={{ fontWeight: 510, color: tk.ink, fontSize: 13.5 }}>
+          {scope.title || scope.scope_id}
+        </span>
+      </div>
+
+      {/* Description */}
+      {scope.description ? (
+        <p style={{ color: tk.ink3, fontSize: 12.5, lineHeight: 1.45, margin: 0 }}>
+          {scope.description}
+        </p>
+      ) : (
+        <p style={{ color: tk.ink4, fontSize: 12, margin: 0, fontStyle: "italic" }}>No description</p>
+      )}
+
+      {/* Stats footer */}
+      <div style={{
+        display: "flex", gap: 14, paddingTop: 6, marginTop: 2,
+        borderTop: `1px solid ${tk.border2}`,
+        color: tk.ink3, fontSize: 11,
+        fontVariantNumeric: "tabular-nums",
+      }}>
+        {stats ? (
+          <>
+            <span><b style={{ color: tk.ink, fontWeight: 510 }}>{stats.contexts}</b> contexts</span>
+            <span><b style={{ color: tk.ink, fontWeight: 510 }}>{stats.pulses}</b> pulses</span>
+          </>
+        ) : (
+          <span style={{ color: tk.ink4 }}>Loading…</span>
+        )}
+      </div>
+    </button>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Create scope inline tile
+// ---------------------------------------------------------------------------
+
+function CreateScopeTile({ onCreated }: { onCreated: (title: string, description: string) => Promise<void> }): React.ReactElement {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [creating, setCreating] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
-  const [createErr, setCreateErr] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [hov, setHov] = useState(false);
 
   async function handleCreate() {
-    const title = newTitle.trim();
-    if (!title) return;
+    const t = title.trim();
+    if (!t) return;
     setCreating(true);
-    setCreateErr(null);
+    setErr(null);
     try {
-      await createScope(workspaceId, { title });
-      setNewTitle("");
-      onRefresh();
-    } catch (err) {
-      setCreateErr(err instanceof Error ? err.message : "Failed to create scope");
+      await onCreated(t, description.trim());
+      setTitle("");
+      setDescription("");
+      setEditing(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to create scope");
     } finally {
       setCreating(false);
     }
   }
 
-  if (scopes.length === 0) {
+  if (!editing) {
     return (
-      <div style={{ padding: space.xl, font: font.body, color: colors.text }}>
-        <h2 style={{ fontSize: 16, fontWeight: font.h, marginBottom: space.md }}>Scopes</h2>
-        <p style={{ color: colors.muted, marginBottom: space.lg }}>
-          Scopes are optional organizing boundaries. Direct work can live in Contexts without a scope.
-        </p>
-        <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
-          <input
-            aria-label="New scope title"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="Scope title"
-            style={{
-              ...selectStyle,
-              padding: "4px 8px",
-              fontSize: 14,
-              minWidth: 200,
-            }}
-          />
-          <button
-            onClick={() => void handleCreate()}
-            disabled={creating || !newTitle.trim()}
-            style={{
-              background: colors.accent,
-              color: colors.accentText,
-              border: "none",
-              borderRadius: 4,
-              padding: "4px 12px",
-              cursor: "pointer",
-              fontSize: 14,
-            }}
-          >
-            {creating ? "Creating…" : "Create scope"}
-          </button>
-        </div>
-        {createErr && (
-          <p role="alert" style={{ color: colors.danger, marginTop: space.sm }}>
-            {createErr}
-          </p>
-        )}
-      </div>
+      <button
+        onClick={() => setEditing(true)}
+        onMouseEnter={() => setHov(true)}
+        onMouseLeave={() => setHov(false)}
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+          padding: 14,
+          border: `1px dashed ${hov ? tk.accent : tk.border}`,
+          borderRadius: tk.r3, background: "transparent",
+          color: hov ? tk.accentHov : tk.ink3, fontSize: 13,
+          cursor: "pointer",
+          transition: "border-color 120ms ease, color 120ms ease",
+        }}
+      >
+        <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+        <span>New scope</span>
+      </button>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      <div style={{ padding: `${space.md}px ${space.lg}px`, borderBottom: `1px solid ${colors.border}`, display: "flex", gap: space.md, alignItems: "center", flexWrap: "wrap" }}>
-        <label htmlFor="scope-select" style={{ fontSize: font.meta, color: colors.muted }}>
-          Scope
-        </label>
-        <select
-          id="scope-select"
-          style={selectStyle}
-          value={selectedScopeId ?? ""}
-          onChange={(e) => setSelectedScopeId(e.target.value)}
-          aria-label="Select scope"
+    <div style={{
+      display: "flex", flexDirection: "column", gap: 8, padding: 14,
+      border: `1px solid ${tk.accent}`,
+      borderRadius: tk.r3, background: tk.surfaceHov,
+    }}>
+      <input
+        autoFocus
+        placeholder="Scope title"
+        value={title}
+        onChange={e => setTitle(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter") void handleCreate(); if (e.key === "Escape") setEditing(false); }}
+        style={{
+          background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+          borderRadius: tk.r2, padding: "6px 8px", fontSize: 13, color: tk.ink,
+          outline: "none",
+        }}
+      />
+      <input
+        placeholder="Description (optional)"
+        value={description}
+        onChange={e => setDescription(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter") void handleCreate(); if (e.key === "Escape") setEditing(false); }}
+        style={{
+          background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+          borderRadius: tk.r2, padding: "6px 8px", fontSize: 13, color: tk.ink,
+          outline: "none",
+        }}
+      />
+      {err && <p style={{ color: tk.danger, fontSize: 12, margin: 0 }}>{err}</p>}
+      <div style={{ display: "flex", gap: 6 }}>
+        <button
+          onClick={() => void handleCreate()}
+          disabled={creating || !title.trim()}
+          style={{
+            background: tk.accent, color: "#0c1714", border: "none",
+            borderRadius: tk.r2, padding: "5px 12px", fontSize: 12, cursor: "pointer",
+            fontWeight: 510,
+          }}
         >
-          {scopes.map((s) => (
-            <option key={s.scope_id} value={s.scope_id}>
-              {s.title || s.scope_id}
-            </option>
-          ))}
-        </select>
-        <div style={{ marginLeft: "auto", display: "flex", gap: space.sm, alignItems: "center" }}>
-          <input
-            aria-label="New scope title"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="New scope title"
-            style={{ ...selectStyle, padding: "4px 8px", fontSize: 14, minWidth: 160 }}
+          {creating ? "Creating…" : "Create"}
+        </button>
+        <button
+          onClick={() => { setEditing(false); setErr(null); }}
+          style={{
+            background: "transparent", border: `1px solid ${tk.border}`,
+            color: tk.ink3, borderRadius: tk.r2, padding: "5px 12px", fontSize: 12,
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Home view — scope card grid
+// ---------------------------------------------------------------------------
+
+function HomeView({
+  workspaceId,
+  scopes,
+  selectedScopeId,
+  onSelectScope,
+  onScopeCreated,
+}: {
+  workspaceId: string;
+  scopes: ScopeRef[];
+  selectedScopeId: string | null;
+  onSelectScope: (id: string | null) => void;
+  onScopeCreated: (title: string, description: string) => Promise<void>;
+}): React.ReactElement {
+  return (
+    <div style={{ padding: "24px 32px 40px", overflow: "auto", flex: 1 }}>
+      {/* Hero */}
+      <section style={{ marginBottom: 24 }}>
+        <div style={{
+          fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase",
+          color: tk.ink3, fontWeight: 510, marginBottom: 8,
+        }}>
+          Workspace
+        </div>
+        <h1 style={{
+          fontWeight: 510, fontSize: 36, lineHeight: 1.08,
+          letterSpacing: "-0.025em", color: tk.ink, margin: "0 0 8px",
+        }}>
+          {/* workspace name rendered in App, passed via context — here just "Home" */}
+          Scopes
+        </h1>
+        <p style={{ color: tk.ink3, fontSize: 14, lineHeight: 1.55, maxWidth: "64ch" }}>
+          Scopes are optional organizing boundaries. Open a scope to see its contexts.
+          Direct work can live in contexts without a scope.
+        </p>
+      </section>
+
+      {/* Section header */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 10,
+        margin: "0 0 12px",
+        fontWeight: 510, fontSize: 11, letterSpacing: "0.08em",
+        textTransform: "uppercase", color: tk.ink3,
+      }}>
+        <span>Scopes</span>
+        <span style={{ color: tk.ink4, fontWeight: 400, letterSpacing: 0, textTransform: "none", fontSize: 11 }}>
+          {scopes.length}
+        </span>
+      </div>
+
+      {/* Grid */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+        gap: 10,
+      }}>
+        {scopes.map(s => (
+          <ScopeCard
+            key={s.scope_id}
+            scope={s}
+            workspaceId={workspaceId}
+            isSelected={selectedScopeId === s.scope_id}
+            onClick={() => onSelectScope(s.scope_id)}
           />
+        ))}
+        <CreateScopeTile onCreated={onScopeCreated} />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scope inspector panel content
+// ---------------------------------------------------------------------------
+
+type DeleteState =
+  | { phase: "idle" }
+  | { phase: "confirming" }
+  | { phase: "deleting" }
+  | { phase: "error"; message: string }
+  | { phase: "notEmpty"; context_count: number; pulse_count: number };
+
+function ScopeInspector({
+  scope,
+  workspaceId,
+  onDeleted,
+}: {
+  scope: ScopeRef;
+  workspaceId: string;
+  onDeleted: () => void;
+}): React.ReactElement {
+  const [deleteState, setDeleteState] = useState<DeleteState>({ phase: "idle" });
+  const stats = useScopeStats(workspaceId, scope.scope_id);
+
+  async function handleDelete() {
+    setDeleteState({ phase: "deleting" });
+    try {
+      await deleteScope(workspaceId, scope.scope_id);
+      onDeleted();
+    } catch (err) {
+      if (err instanceof ScopeNotEmptyError) {
+        setDeleteState({ phase: "notEmpty", context_count: err.context_count, pulse_count: err.pulse_count });
+      } else {
+        setDeleteState({ phase: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "auto" }}>
+      {/* Head */}
+      <div style={{ padding: "14px 16px 12px", borderBottom: `1px solid ${tk.border}` }}>
+        <div style={{ fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510 }}>
+          Scope
+        </div>
+        <div style={{ fontSize: 17, fontWeight: 510, color: tk.ink, marginTop: 4, letterSpacing: "-0.01em" }}>
+          {scope.title || scope.scope_id}
+        </div>
+        {scope.description && (
+          <div style={{ fontSize: 12, color: tk.ink3, marginTop: 4, lineHeight: 1.45 }}>
+            {scope.description}
+          </div>
+        )}
+      </div>
+
+      {/* Stats */}
+      {stats && (
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
+          <StatRow label="Contexts" value={stats.contexts} />
+          <StatRow label="Pulses" value={stats.pulses} />
+        </div>
+      )}
+
+      {/* Delete action */}
+      <div style={{ padding: "12px 16px" }}>
+        {deleteState.phase === "idle" && (
           <button
-            onClick={() => void handleCreate()}
-            disabled={creating || !newTitle.trim()}
+            onClick={() => setDeleteState({ phase: "confirming" })}
             style={{
-              background: colors.accent,
-              color: colors.accentText,
-              border: "none",
-              borderRadius: 4,
-              padding: "4px 12px",
-              cursor: "pointer",
-              fontSize: 14,
+              background: "transparent", border: `1px solid ${tk.danger}`,
+              color: tk.danger, borderRadius: tk.r2, padding: "5px 12px",
+              fontSize: 12, cursor: "pointer", fontWeight: 510,
             }}
           >
-            {creating ? "Creating…" : "Create scope"}
+            Delete scope
           </button>
-        </div>
+        )}
+
+        {deleteState.phase === "confirming" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <p style={{ fontSize: 12, color: tk.ink2, lineHeight: 1.45 }}>
+              Delete "{scope.title || scope.scope_id}"? This cannot be undone.
+            </p>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                onClick={() => void handleDelete()}
+                style={{
+                  background: tk.danger, color: "#fff", border: "none",
+                  borderRadius: tk.r2, padding: "5px 12px", fontSize: 12, cursor: "pointer",
+                }}
+              >
+                Confirm delete
+              </button>
+              <button
+                onClick={() => setDeleteState({ phase: "idle" })}
+                style={{
+                  background: "transparent", border: `1px solid ${tk.border}`,
+                  color: tk.ink3, borderRadius: tk.r2, padding: "5px 12px", fontSize: 12,
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {deleteState.phase === "deleting" && (
+          <p style={{ fontSize: 12, color: tk.ink3 }}>Deleting…</p>
+        )}
+
+        {deleteState.phase === "error" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <p role="alert" style={{ fontSize: 12, color: tk.danger }}>{deleteState.message}</p>
+            <button
+              onClick={() => setDeleteState({ phase: "idle" })}
+              style={{
+                background: "transparent", border: `1px solid ${tk.border}`,
+                color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 12,
+                alignSelf: "flex-start",
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {deleteState.phase === "notEmpty" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <p role="alert" style={{ fontSize: 12, color: tk.ink2, lineHeight: 1.5 }}>
+              Can't delete — scope has{" "}
+              <strong style={{ color: tk.ink }}>{deleteState.context_count} context{deleteState.context_count !== 1 ? "s" : ""}</strong>
+              {deleteState.pulse_count > 0 && (
+                <> and{" "}
+                  <strong style={{ color: tk.ink }}>{deleteState.pulse_count} pulse{deleteState.pulse_count !== 1 ? "s" : ""}</strong>
+                </>
+              )}.
+              {" "}Remove them first.
+            </p>
+            <button
+              onClick={() => setDeleteState({ phase: "idle" })}
+              style={{
+                background: "transparent", border: `1px solid ${tk.border}`,
+                color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 12,
+                alignSelf: "flex-start",
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       </div>
-      {createErr && (
-        <p role="alert" style={{ color: colors.danger, padding: `0 ${space.lg}px`, marginTop: space.sm }}>
-          {createErr}
-        </p>
-      )}
-      {selectedScopeId ? (
-        <div style={{ flex: 1, overflow: "hidden" }}>
-          <Field
-            workspaceId={workspaceId}
-            scopeId={selectedScopeId}
-            onOpenContext={onOpenContext}
-          />
-        </div>
-      ) : (
-        <p style={{ padding: space.lg, color: colors.muted }}>Select a scope above.</p>
-      )}
     </div>
+  );
+}
+
+/** Shown in the inspector when a scope is selected but no context row has been clicked. */
+function ScopeInspectorEmpty({ scope }: { scope: ScopeRef }): React.ReactElement {
+  return (
+    <div style={{ padding: "14px 16px" }}>
+      <div style={{ fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510 }}>
+        Scope
+      </div>
+      <div style={{ fontSize: 17, fontWeight: 510, color: tk.ink, marginTop: 4, letterSpacing: "-0.01em" }}>
+        {scope.title || scope.scope_id}
+      </div>
+      <p style={{ marginTop: 14, fontSize: 12.5, color: tk.ink3, lineHeight: 1.5 }}>
+        Click a context row to see its details.
+      </p>
+    </div>
+  );
+}
+
+function StatRow({ label, value }: { label: string; value: number | string }): React.ReactElement {
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between",
+      padding: "4px 0", fontSize: 13, borderBottom: `1px solid ${tk.border2}`,
+    }}>
+      <span style={{ color: tk.ink3 }}>{label}</span>
+      <span style={{ color: tk.ink, fontVariantNumeric: "tabular-nums", fontWeight: 510 }}>{value}</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inspector default (nothing selected)
+// ---------------------------------------------------------------------------
+
+function DefaultInspector({ workspace }: { workspace: WorkspaceRef }): React.ReactElement {
+  return (
+    <div style={{ padding: "14px 16px" }}>
+      <div style={{ fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510 }}>
+        Workspace
+      </div>
+      <div style={{ fontSize: 17, fontWeight: 510, color: tk.ink, marginTop: 4, letterSpacing: "-0.01em" }}>
+        {workspace.name || workspace.workspace_id}
+      </div>
+      <div style={{ fontSize: 12, color: tk.ink4, marginTop: 2 }}>
+        {workspace.locator}
+      </div>
+      <p style={{ marginTop: 14, fontSize: 12.5, color: tk.ink3, lineHeight: 1.5 }}>
+        Select a scope card to see its details and actions.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inspector resize handle (pointer-based drag)
+// ---------------------------------------------------------------------------
+
+function useInspectorResize(
+  onWidthChange: (w: number) => void
+): React.RefCallback<HTMLDivElement> {
+  return useCallback((handle: HTMLDivElement | null) => {
+    if (!handle) return;
+    let dragging = false;
+
+    function setWidth(clientX: number) {
+      const next = Math.max(RINSP_MIN, Math.min(RINSP_MAX, window.innerWidth - clientX));
+      onWidthChange(next);
+      try { localStorage.setItem(RINSP_KEY, String(next)); } catch { /* ignore */ }
+    }
+
+    handle.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      dragging = true;
+      try { handle.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    });
+
+    handle.addEventListener("pointermove", (ev) => {
+      if (!dragging) return;
+      setWidth(ev.clientX);
+    });
+
+    function end(ev: PointerEvent) {
+      if (!dragging) return;
+      dragging = false;
+      try { (handle as HTMLDivElement).releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+    handle.addEventListener("lostpointercapture", end);
+  }, [onWidthChange]);
+}
+
+// ---------------------------------------------------------------------------
+// No-workspaces screen
+// ---------------------------------------------------------------------------
+
+function RegisterWorkspaceScreen({
+  onRegistered,
+}: {
+  onRegistered: (ws: WorkspaceRef) => void;
+}): React.ReactElement {
+  const [locator, setLocator] = useState("");
+  const [name, setName] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleRegister() {
+    if (!locator.trim()) return;
+    setAdding(true);
+    setErr(null);
+    try {
+      const ws = await registerWorkspace({ locator: locator.trim(), name: name.trim() || undefined, init_authorized: true });
+      onRegistered(ws);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to register workspace");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  return (
+    <FullPageCenter>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, width: 340 }}>
+        <p style={{ color: tk.ink3, marginBottom: 4 }}>No workspaces. Register one to get started.</p>
+        <input
+          autoFocus
+          placeholder="Workspace path"
+          value={locator}
+          onChange={e => setLocator(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") void handleRegister(); }}
+          style={{
+            background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+            borderRadius: tk.r2, padding: "7px 10px", fontSize: 13, color: tk.ink, outline: "none",
+          }}
+        />
+        <input
+          placeholder="Name (optional)"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") void handleRegister(); }}
+          style={{
+            background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+            borderRadius: tk.r2, padding: "7px 10px", fontSize: 13, color: tk.ink, outline: "none",
+          }}
+        />
+        {err && <p style={{ color: tk.danger, fontSize: 12 }}>{err}</p>}
+        <button
+          onClick={() => void handleRegister()}
+          disabled={adding || !locator.trim()}
+          style={{
+            background: tk.accent, color: "#0c1714", border: "none",
+            borderRadius: tk.r2, padding: "7px 16px", fontSize: 13, cursor: "pointer", fontWeight: 510,
+          }}
+        >
+          {adding ? "Registering…" : "Register workspace"}
+        </button>
+      </div>
+    </FullPageCenter>
   );
 }
 
@@ -344,68 +1065,59 @@ function ScopesView({
 // ---------------------------------------------------------------------------
 
 export function App(): React.ReactElement {
-  // Identity
-  const [loading, setLoading] = useState(true);
-  const [noWorkspaces, setNoWorkspaces] = useState(false);
+  const [appState, setAppState] = useState<"loading" | "no-workspaces" | "error" | "ready">("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [workspaces, setWorkspaces] = useState<WorkspaceRef[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceRef | null>(null);
-  const [endpoints, setEndpoints] = useState<EndpointRef[]>([]);
-  const [actingAsEndpointId, setActingAsEndpointId] = useState<string>("");
   const [scopes, setScopes] = useState<ScopeRef[]>([]);
+  const [actors, setActors] = useState<EndpointRef[]>([]);
 
-  // Navigation
-  const [activeView, setActiveView] = useState<ActiveView>("contexts");
+  const [selectedScopeId, setSelectedScopeId] = useState<string | null>(null);
   const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
+  const [selectedContextLabel, setSelectedContextLabel] = useState<string | null>(null);
+  const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
+  const [showWorkspaceSettings, setShowWorkspaceSettings] = useState(false);
+  const [view, setView] = useState<NavView>("home");
 
-  // Workspace management
-  const [showAddWorkspace, setShowAddWorkspace] = useState(false);
-  const [newWsLocator, setNewWsLocator] = useState("");
-  const [newWsName, setNewWsName] = useState("");
-  const [addingWs, setAddingWs] = useState(false);
+  const [inspWidth, setInspWidth] = useState<number>(readRinspWidth);
   const [addWsErr, setAddWsErr] = useState<string | null>(null);
 
-  // Notifications cleanup
+  // Notification cleanup ref
   const notifUnsubRef = useRef<(() => void) | null>(null);
 
   // ---------------------------------------------------------------------------
-  // Identity resolution on mount
+  // Bootstrap
   // ---------------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
-    async function resolve() {
+    async function boot() {
       try {
         const wss = await listWorkspaces();
         if (cancelled) return;
-        if (wss.length === 0) {
-          setNoWorkspaces(true);
-          setLoading(false);
-          return;
-        }
-        const active = wss.find((w) => w.selected_at !== null) ?? wss[0]!;
-        const [eps, scs] = await Promise.all([
-          listEndpoints(active.workspace_id),
+        if (wss.length === 0) { setAppState("no-workspaces"); return; }
+        const active = wss.find(w => w.selected_at !== null) ?? wss[0]!;
+        const [scs, eps] = await Promise.all([
           listScopes(active.workspace_id),
+          listEndpoints(active.workspace_id).catch(() => [] as EndpointRef[]),
         ]);
         if (cancelled) return;
         setWorkspaces(wss);
         setActiveWorkspace(active);
-        setEndpoints(eps);
-        setActingAsEndpointId(eps[0]?.endpoint_id ?? "");
         setScopes(scs);
-        setLoading(false);
+        setActors(eps);
+        setAppState("ready");
       } catch (err) {
         if (cancelled) return;
         setLoadError(err instanceof Error ? err.message : String(err));
-        setLoading(false);
+        setAppState("error");
       }
     }
-    void resolve();
+    void boot();
     return () => { cancelled = true; };
   }, []);
 
-  // Notifications
+  // Notification subscription
   useEffect(() => {
     if (!activeWorkspace) return;
     const workspaceId = activeWorkspace.workspace_id;
@@ -424,97 +1136,84 @@ export function App(): React.ReactElement {
   }, [activeWorkspace?.workspace_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------------------------------------------------------------------------
-  // Workspace switch
+  // Handlers
   // ---------------------------------------------------------------------------
-  const handleWorkspaceChange = useCallback(
-    async (wsId: string) => {
-      const ws = workspaces.find((w) => w.workspace_id === wsId);
-      if (!ws || ws.workspace_id === activeWorkspace?.workspace_id) return;
-      setActiveWorkspace(ws);
-      setEndpoints([]);
-      setActingAsEndpointId("");
-      setScopes([]);
-      setSelectedContextId(null);
-      setActiveView("contexts");
-      try {
-        const [eps, scs] = await Promise.all([
-          listEndpoints(ws.workspace_id),
-          listScopes(ws.workspace_id),
-        ]);
-        setEndpoints(eps);
-        setActingAsEndpointId(eps[0]?.endpoint_id ?? "");
-        setScopes(scs);
-      } catch { /* best-effort */ }
-    },
-    [workspaces, activeWorkspace]
-  );
+  const switchWorkspace = useCallback(async (wsId: string) => {
+    const ws = workspaces.find(w => w.workspace_id === wsId);
+    if (!ws || ws.workspace_id === activeWorkspace?.workspace_id) return;
+    setSelectedScopeId(null);
+    setSelectedContextId(null);
+    setSelectedContextLabel(null);
+    setSelectedActorId(null);
+    setShowWorkspaceSettings(false);
+    setScopes([]);
+    setActors([]);
+    setActiveWorkspace(ws);
+    try {
+      const [scs, eps] = await Promise.all([
+        listScopes(ws.workspace_id),
+        listEndpoints(ws.workspace_id).catch(() => [] as EndpointRef[]),
+      ]);
+      setScopes(scs);
+      setActors(eps);
+    } catch { /* best-effort */ }
+  }, [workspaces, activeWorkspace]);
 
-  // Register a new workspace
-  const handleAddWorkspace = useCallback(async () => {
-    const locator = newWsLocator.trim();
-    if (!locator) return;
-    setAddingWs(true);
+  const addWorkspace = useCallback(async (locator: string, name: string) => {
     setAddWsErr(null);
     try {
-      const ws = await registerWorkspace({ locator, name: newWsName.trim() || undefined, init_authorized: true });
+      const ws = await registerWorkspace({ locator, name: name || undefined, init_authorized: true });
       const refreshed = await listWorkspaces();
       setWorkspaces(refreshed);
-      setNewWsLocator("");
-      setNewWsName("");
-      setShowAddWorkspace(false);
-      setNoWorkspaces(false);
-      // Load the new workspace
-      const [eps, scs] = await Promise.all([
-        listEndpoints(ws.workspace_id),
+      const [scs, eps] = await Promise.all([
         listScopes(ws.workspace_id),
+        listEndpoints(ws.workspace_id).catch(() => [] as EndpointRef[]),
       ]);
       setActiveWorkspace(ws);
-      setEndpoints(eps);
-      setActingAsEndpointId(eps[0]?.endpoint_id ?? "");
       setScopes(scs);
-      setSelectedContextId(null);
-      setActiveView("contexts");
+      setActors(eps);
+      setSelectedScopeId(null);
+      setSelectedActorId(null);
+      setShowWorkspaceSettings(false);
+      setAppState("ready");
     } catch (err) {
-      setAddWsErr(err instanceof Error ? err.message : "Failed to register workspace");
-    } finally {
-      setAddingWs(false);
+      const msg = err instanceof Error ? err.message : "Failed to register workspace";
+      setAddWsErr(msg);
+      throw new Error(msg);
     }
-  }, [newWsLocator, newWsName]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Delete the active workspace
-  const handleDeleteWorkspace = useCallback(async () => {
+  const removeWorkspace = useCallback(async () => {
     if (!activeWorkspace) return;
     const name = activeWorkspace.name || activeWorkspace.workspace_id;
-    if (!window.confirm(`Delete workspace "${name}"? This cannot be undone.`)) return;
+    if (!window.confirm(`Remove workspace "${name}"? This cannot be undone.`)) return;
     try {
       await deleteWorkspace(activeWorkspace.workspace_id, { delete_locator: false });
       const refreshed = await listWorkspaces();
       setWorkspaces(refreshed);
       if (refreshed.length === 0) {
-        setNoWorkspaces(true);
+        setAppState("no-workspaces");
         setActiveWorkspace(null);
       } else {
         const next = refreshed[0]!;
         setActiveWorkspace(next);
-        setEndpoints([]);
-        setActingAsEndpointId("");
         setScopes([]);
-        setSelectedContextId(null);
-        setActiveView("contexts");
-        const [eps, scs] = await Promise.all([
-          listEndpoints(next.workspace_id),
+        setActors([]);
+        setSelectedScopeId(null);
+        setSelectedActorId(null);
+        setShowWorkspaceSettings(false);
+        const [scs, eps] = await Promise.all([
           listScopes(next.workspace_id),
+          listEndpoints(next.workspace_id).catch(() => [] as EndpointRef[]),
         ]);
-        setEndpoints(eps);
-        setActingAsEndpointId(eps[0]?.endpoint_id ?? "");
         setScopes(scs);
+        setActors(eps);
       }
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to delete workspace");
+      alert(err instanceof Error ? err.message : "Failed to remove workspace");
     }
-  }, [activeWorkspace]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeWorkspace]);
 
-  // Refresh scopes (e.g., after creating one)
   const refreshScopes = useCallback(async () => {
     if (!activeWorkspace) return;
     try {
@@ -523,569 +1222,328 @@ export function App(): React.ReactElement {
     } catch { /* best-effort */ }
   }, [activeWorkspace]);
 
-  // Open context
-  const handleOpenContext = useCallback((contextId: string) => {
-    setSelectedContextId(contextId);
-    setActiveView("contexts");
+  const refreshActors = useCallback(async () => {
+    if (!activeWorkspace) return;
+    try {
+      const eps = await listEndpoints(activeWorkspace.workspace_id);
+      setActors(eps);
+    } catch { /* best-effort */ }
+  }, [activeWorkspace]);
+
+  const handleScopeCreated = useCallback(async (title: string, description: string) => {
+    if (!activeWorkspace) return;
+    const scope = await createScope(activeWorkspace.workspace_id, { title, description: description || null });
+    await refreshScopes();
+    setSelectedScopeId(scope.scope_id);
+  }, [activeWorkspace, refreshScopes]);
+
+  const handleScopeDeleted = useCallback(async () => {
+    setSelectedScopeId(null);
+    setSelectedContextId(null);
+    setSelectedContextLabel(null);
+    await refreshScopes();
+  }, [refreshScopes]);
+
+  const handleSelectScope = useCallback((id: string) => {
+    setSelectedScopeId(id || null);
+    setSelectedContextId(null);
+    setSelectedContextLabel(null);
+    setSelectedActorId(null);
+    setShowWorkspaceSettings(false);
   }, []);
+
+  const handleSelectContext = useCallback((id: string | null) => {
+    setSelectedContextId(id);
+    if (id === null) setSelectedContextLabel(null);
+  }, []);
+
+  const handleContextDeleted = useCallback(() => {
+    setSelectedContextId(null);
+    setSelectedContextLabel(null);
+  }, []);
+
+  const handleSelectActor = useCallback((id: string) => {
+    setSelectedActorId(id);
+    setSelectedScopeId(null);
+    setSelectedContextId(null);
+    setSelectedContextLabel(null);
+    setShowWorkspaceSettings(false);
+  }, []);
+
+  const handleOpenWorkspaceSettings = useCallback(() => {
+    setShowWorkspaceSettings(true);
+    setSelectedScopeId(null);
+    setSelectedContextId(null);
+    setSelectedContextLabel(null);
+    setSelectedActorId(null);
+  }, []);
+
+  const handleActorSaved = useCallback((updated: EndpointRef) => {
+    setActors(prev => prev.map(a => a.endpoint_id === updated.endpoint_id ? updated : a));
+    void refreshActors();
+  }, [refreshActors]);
+
+  const inspResizeRef = useInspectorResize(setInspWidth);
 
   // ---------------------------------------------------------------------------
   // Guard states
   // ---------------------------------------------------------------------------
-  if (loading) return <LoadingShell />;
-  if (noWorkspaces)
+  if (appState === "loading") {
     return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100vh",
-          background: colors.canvas,
-          color: colors.text,
-          fontFamily: "system-ui, sans-serif",
-          gap: space.md,
-        }}
-      >
-        <p style={{ color: colors.muted, marginBottom: space.sm }}>No workspaces found.</p>
-        <div style={{ display: "flex", flexDirection: "column", gap: space.sm, width: 320 }}>
-          <input
-            aria-label="Workspace locator (filesystem path)"
-            placeholder="Workspace path"
-            value={newWsLocator}
-            onChange={(e) => setNewWsLocator(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void handleAddWorkspace(); }}
-            autoFocus
-            style={{
-              background: colors.surface,
-              color: colors.text,
-              border: `1px solid ${colors.border}`,
-              borderRadius: 4,
-              padding: "6px 10px",
-              fontSize: 14,
-              fontFamily: "system-ui, sans-serif",
-            }}
-          />
-          <input
-            aria-label="Workspace name (optional)"
-            placeholder="Name (optional)"
-            value={newWsName}
-            onChange={(e) => setNewWsName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void handleAddWorkspace(); }}
-            style={{
-              background: colors.surface,
-              color: colors.text,
-              border: `1px solid ${colors.border}`,
-              borderRadius: 4,
-              padding: "6px 10px",
-              fontSize: 14,
-              fontFamily: "system-ui, sans-serif",
-            }}
-          />
-          {addWsErr && <p role="alert" style={{ color: colors.danger, fontSize: 13, margin: 0 }}>{addWsErr}</p>}
-          <button
-            onClick={() => void handleAddWorkspace()}
-            disabled={addingWs || !newWsLocator.trim()}
-            style={{
-              background: colors.accent,
-              color: colors.accentText,
-              border: "none",
-              borderRadius: 4,
-              padding: "6px 16px",
-              cursor: "pointer",
-              fontSize: 14,
-              fontFamily: "system-ui, sans-serif",
-            }}
-          >
-            {addingWs ? "Registering…" : "Register workspace"}
-          </button>
-        </div>
-      </div>
+      <>
+        <GlobalStyles />
+        <FullPageCenter><span>Loading…</span></FullPageCenter>
+      </>
     );
-  if (loadError)
-    return <EmptyState message={`Failed to load: ${loadError}`} />;
-  if (!activeWorkspace) return <LoadingShell />;
+  }
 
-  const workspaceId = activeWorkspace.workspace_id;
+  if (appState === "error") {
+    return (
+      <>
+        <GlobalStyles />
+        <FullPageCenter>
+          <span style={{ color: tk.danger }}>Failed to load: {loadError}</span>
+        </FullPageCenter>
+      </>
+    );
+  }
+
+  if (appState === "no-workspaces") {
+    return (
+      <>
+        <GlobalStyles />
+        <RegisterWorkspaceScreen
+          onRegistered={ws => {
+            setWorkspaces([ws]);
+            setActiveWorkspace(ws);
+            setScopes([]);
+            setAppState("ready");
+          }}
+        />
+      </>
+    );
+  }
+
+  if (!activeWorkspace) return <></>;
+
+  const selectedScope = scopes.find(s => s.scope_id === selectedScopeId) ?? null;
 
   // ---------------------------------------------------------------------------
-  // Render
+  // Render shell
   // ---------------------------------------------------------------------------
   return (
-    <div
-      data-testid="app"
-      style={{
-        display: "grid",
-        gridTemplateColumns: "200px 1fr",
-        gridTemplateRows: "48px 1fr",
-        height: "100vh",
-        fontFamily: "system-ui, sans-serif",
-        background: colors.canvas,
-        color: colors.text,
-      }}
-    >
-      {/* ------------------------------------------------------------------ */}
-      {/* Top bar                                                             */}
-      {/* ------------------------------------------------------------------ */}
-      <header
-        data-section="topbar"
+    <>
+      <GlobalStyles />
+      <div
+        data-testid="app"
         style={{
-          gridColumn: "1 / -1",
-          gridRow: "1",
           display: "flex",
-          alignItems: "center",
-          padding: `0 ${space.lg}px`,
-          gap: space.md,
-          borderBottom: `1px solid ${colors.border}`,
-          background: colors.surface,
+          flexDirection: "column",
+          height: "100vh",
+          background: tk.canvas,
+          color: tk.ink,
+          fontFamily: tk.fontUi,
+          overflow: "hidden",
         }}
       >
-        <span style={{ fontWeight: font.h, letterSpacing: "-0.01em", fontSize: 15 }}>
-          Floe
-        </span>
+        {/* ---------------------------------------------------------------- */}
+        {/* Topbar                                                           */}
+        {/* ---------------------------------------------------------------- */}
+        <header style={{
+          flex: "0 0 auto",
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "0 16px",
+          height: 52,
+          background: "rgba(15,16,17,0.9)",
+          backdropFilter: "saturate(160%) blur(10px)",
+          borderBottom: `1px solid ${tk.border}`,
+          zIndex: 10,
+        }}>
+          {/* Brand */}
+          <a href="#" style={{ display: "inline-flex", alignItems: "center", gap: 8, textDecoration: "none", color: tk.ink2 }}
+            onClick={e => { e.preventDefault(); setSelectedScopeId(null); setSelectedContextId(null); setSelectedContextLabel(null); setSelectedActorId(null); setShowWorkspaceSettings(false); setView("home"); }}
+          >
+            <span style={{
+              width: 22, height: 22, borderRadius: 6,
+              background: tk.accent, color: "#0c1714",
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              fontSize: 11, fontWeight: 590,
+            }}>F</span>
+            <span style={{ fontWeight: 510, fontSize: 13 }}>Floe</span>
+          </a>
 
-        {/* Workspace selector + management */}
-        <div data-section="workspace-selector" style={{ display: "flex", alignItems: "center", gap: space.xs, position: "relative" }}>
-          <label
-            htmlFor="workspace-select"
-            style={{ fontSize: font.meta, color: colors.muted, marginRight: 6 }}
-          >
-            Workspace
-          </label>
-          <select
-            id="workspace-select"
-            style={selectStyle}
-            value={workspaceId}
-            onChange={(e) => void handleWorkspaceChange(e.target.value)}
-            aria-label="Select workspace"
-          >
-            {workspaces.map((ws) => (
-              <option key={ws.workspace_id} value={ws.workspace_id}>
-                {ws.name || ws.workspace_id}
-              </option>
-            ))}
-          </select>
+          {/* Sep + workspace switcher */}
+          <span style={{ color: tk.ink4, fontSize: 12 }}>/</span>
+          <WorkspaceSwitcher
+            workspaces={workspaces}
+            active={activeWorkspace}
+            onSwitch={id => void switchWorkspace(id)}
+            onAdd={addWorkspace}
+            onDelete={() => void removeWorkspace()}
+            addErr={addWsErr}
+          />
+
+          {/* Settings affordance */}
           <button
-            onClick={() => { setShowAddWorkspace((v) => !v); setAddWsErr(null); }}
-            aria-label="Add workspace"
-            title="Add workspace"
+            onClick={handleOpenWorkspaceSettings}
+            title="Workspace settings"
+            aria-label="Workspace settings"
             style={{
-              background: showAddWorkspace ? colors.accent : "none",
-              color: showAddWorkspace ? colors.accentText : colors.muted,
-              border: `1px solid ${colors.border}`,
-              borderRadius: 4,
-              padding: "2px 7px",
-              cursor: "pointer",
-              fontSize: 14,
-              lineHeight: 1,
-              fontFamily: "system-ui, sans-serif",
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              width: 26, height: 26, borderRadius: tk.r2,
+              background: showWorkspaceSettings ? "rgba(255,255,255,0.06)" : "transparent",
+              border: `1px solid ${showWorkspaceSettings ? tk.border : "transparent"}`,
+              color: showWorkspaceSettings ? tk.accent : tk.ink3,
+              fontSize: 14, cursor: "pointer",
             }}
+            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.06)"; }}
+            onMouseLeave={e => { if (!showWorkspaceSettings) (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
           >
-            +
-          </button>
-          <button
-            onClick={() => void handleDeleteWorkspace()}
-            aria-label="Delete current workspace"
-            title="Delete workspace"
-            style={{
-              background: "none",
-              color: colors.danger,
-              border: `1px solid ${colors.danger}`,
-              borderRadius: 4,
-              padding: "2px 7px",
-              cursor: "pointer",
-              fontSize: 12,
-              lineHeight: 1,
-              fontFamily: "system-ui, sans-serif",
-            }}
-          >
-            ×
+            ⚙
           </button>
 
-          {/* Add workspace dropdown */}
-          {showAddWorkspace && (
-            <div
-              style={{
-                position: "absolute",
-                top: "calc(100% + 4px)",
-                left: 0,
-                zIndex: 100,
-                background: colors.surface,
-                border: `1px solid ${colors.border}`,
-                borderRadius: 6,
-                padding: space.md,
-                display: "flex",
-                flexDirection: "column",
-                gap: space.sm,
-                minWidth: 320,
-                boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-              }}
-            >
-              <div style={{ fontSize: 13, fontWeight: font.h, color: colors.text, marginBottom: 2 }}>
-                Register workspace
-              </div>
-              <input
-                aria-label="Workspace locator (filesystem path)"
-                placeholder="Locator (filesystem path)"
-                value={newWsLocator}
-                onChange={(e) => setNewWsLocator(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") void handleAddWorkspace(); if (e.key === "Escape") setShowAddWorkspace(false); }}
-                autoFocus
-                style={{
-                  background: colors.canvas,
-                  color: colors.text,
-                  border: `1px solid ${colors.border}`,
-                  borderRadius: 4,
-                  padding: "4px 8px",
-                  fontSize: 13,
-                  fontFamily: "system-ui, sans-serif",
-                }}
-              />
-              <input
-                aria-label="Workspace name (optional)"
-                placeholder="Name (optional)"
-                value={newWsName}
-                onChange={(e) => setNewWsName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") void handleAddWorkspace(); if (e.key === "Escape") setShowAddWorkspace(false); }}
-                style={{
-                  background: colors.canvas,
-                  color: colors.text,
-                  border: `1px solid ${colors.border}`,
-                  borderRadius: 4,
-                  padding: "4px 8px",
-                  fontSize: 13,
-                  fontFamily: "system-ui, sans-serif",
-                }}
-              />
-              {addWsErr && (
-                <p role="alert" style={{ color: colors.danger, fontSize: 12, margin: 0 }}>{addWsErr}</p>
-              )}
-              <div style={{ display: "flex", gap: space.xs }}>
-                <button
-                  onClick={() => void handleAddWorkspace()}
-                  disabled={addingWs || !newWsLocator.trim()}
-                  style={{
-                    background: colors.accent,
-                    color: colors.accentText,
-                    border: "none",
-                    borderRadius: 4,
-                    padding: "4px 12px",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontFamily: "system-ui, sans-serif",
-                  }}
-                >
-                  {addingWs ? "Registering…" : "Register"}
-                </button>
-                <button
-                  onClick={() => setShowAddWorkspace(false)}
-                  style={{
-                    background: "none",
-                    border: `1px solid ${colors.border}`,
-                    color: colors.text,
-                    borderRadius: 4,
-                    padding: "4px 12px",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontFamily: "system-ui, sans-serif",
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
+          {/* Breadcrumb for selected scope */}
+          {selectedScope && (
+            <>
+              <span style={{ color: tk.ink4, fontSize: 12 }}>/</span>
+              <span style={{ color: tk.ink, fontSize: 13, fontWeight: 510, padding: "3px 6px", borderRadius: 4 }}>
+                {selectedScope.title || selectedScope.scope_id}
+              </span>
+            </>
           )}
-        </div>
 
-        {/* Acting as — ALL endpoints, uniform */}
-        {endpoints.length > 0 && (
-          <div data-section="acting-as-selector">
-            <label
-              htmlFor="acting-as-select"
-              style={{ fontSize: font.meta, color: colors.muted, marginRight: 6 }}
-            >
-              Acting as
-            </label>
-            <select
-              id="acting-as-select"
-              style={selectStyle}
-              value={actingAsEndpointId}
-              onChange={(e) => setActingAsEndpointId(e.target.value)}
-              aria-label="Select acting-as endpoint"
-            >
-              {endpoints.map((ep) => (
-                <option key={ep.endpoint_id} value={ep.endpoint_id}>
-                  {ep.name || ep.endpoint_id}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-      </header>
+          {/* Breadcrumb for selected context (within a scope) */}
+          {selectedScope && selectedContextId && selectedContextLabel && (
+            <>
+              <span style={{ color: tk.ink4, fontSize: 12 }}>/</span>
+              <span style={{
+                color: tk.ink2, fontSize: 13, fontWeight: 510, padding: "3px 6px", borderRadius: 4,
+                maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>
+                {selectedContextLabel}
+              </span>
+            </>
+          )}
+        </header>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Left nav — three groups: WORK / LENS / INSPECT                     */}
-      {/* ------------------------------------------------------------------ */}
-      <nav
-        data-section="nav"
-        aria-label="App navigation"
-        style={{
-          gridColumn: "1",
-          gridRow: "2",
+        {/* ---------------------------------------------------------------- */}
+        {/* Body: left nav + main + inspector                                */}
+        {/* ---------------------------------------------------------------- */}
+        <div style={{
+          flex: "1 1 auto",
           display: "flex",
-          flexDirection: "column",
-          padding: `${space.md}px 0`,
-          gap: 0,
-          borderRight: `1px solid ${colors.border}`,
-          background: colors.surface,
-          overflowY: "auto",
-        }}
-      >
-        {NAV_GROUPS.map((group) => (
-          <div key={group.label} style={{ marginBottom: space.sm }}>
-            <div
-              style={{
-                padding: `${space.xs}px ${space.lg}px`,
-                fontSize: 10,
-                fontWeight: font.h,
-                color: colors.muted,
-                letterSpacing: "0.08em",
-              }}
-            >
-              {group.label}
-            </div>
-            {group.items.map(({ id, label }) => (
-              <NavButton
-                key={id}
-                id={id}
-                label={label}
-                isActive={activeView === id}
-                onClick={() => {
-                  setActiveView(id);
-                  if (id !== "contexts") setSelectedContextId(null);
-                }}
-              />
-            ))}
-          </div>
-        ))}
-      </nav>
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Main content                                                        */}
-      {/* ------------------------------------------------------------------ */}
-      <main
-        data-section="main"
-        style={{
-          gridColumn: "2",
-          gridRow: "2",
-          overflow: "auto",
-          display: "flex",
-          flexDirection: "column",
-          background: colors.canvas,
-        }}
-      >
-        {/* Contexts — list or view */}
-        {activeView === "contexts" && (
-          selectedContextId ? (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-              <div style={{ padding: `${space.sm}px ${space.lg}px`, borderBottom: `1px solid ${colors.border}`, background: colors.surface }}>
-                <button
-                  onClick={() => setSelectedContextId(null)}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: colors.accent,
-                    cursor: "pointer",
-                    fontSize: 13,
-                    padding: 0,
-                  }}
-                  aria-label="Back to contexts list"
-                >
-                  ← All contexts
-                </button>
-              </div>
-              <div style={{ flex: 1, overflow: "auto" }}>
-                <ContextView
-                  contextId={selectedContextId}
-                  actingAsEndpointId={actingAsEndpointId}
-                  endpoints={endpoints}
-                />
-              </div>
-            </div>
-          ) : (
-            <ContextsList
-              workspaceId={workspaceId}
-              onOpen={(id) => setSelectedContextId(id)}
-            />
-          )
-        )}
-
-        {/* Actors */}
-        {activeView === "actors" && (
-          <ActorsDirectory
-            workspaceId={workspaceId}
-            onOpenContext={handleOpenContext}
-            onActorsChange={(eps) => {
-              setEndpoints(eps);
-              if (eps.length > 0 && !eps.find((e) => e.endpoint_id === actingAsEndpointId)) {
-                setActingAsEndpointId(eps[0]!.endpoint_id);
-              } else if (eps.length === 0) {
-                setActingAsEndpointId("");
-              }
+          flexDirection: "row",
+          minHeight: 0,
+          overflow: "hidden",
+        }}>
+          {/* Left nav */}
+          <LeftNav
+            view={view}
+            scopes={scopes}
+            selectedScopeId={selectedScopeId}
+            actors={actors}
+            selectedActorId={selectedActorId}
+            onView={setView}
+            onSelectScope={handleSelectScope}
+            onSelectActor={handleSelectActor}
+            onNewScope={() => {
+              setSelectedScopeId(null); // focus back on home so create tile is visible
+              setSelectedActorId(null);
+              setShowWorkspaceSettings(false);
+              setView("home");
             }}
           />
-        )}
 
-        {/* Scopes */}
-        {activeView === "scopes" && (
-          <ScopesView
-            workspaceId={workspaceId}
-            scopes={scopes}
-            onRefresh={() => void refreshScopes()}
-            onOpenContext={handleOpenContext}
-          />
-        )}
+          {/* Main column */}
+          <main style={{
+            flex: "1 1 auto",
+            minWidth: 0,
+            height: "100%",
+            overflow: "auto",
+            background: tk.canvas,
+            display: "flex",
+            flexDirection: "column",
+          }}>
+            {showWorkspaceSettings ? (
+              <WorkspaceSettings workspace={activeWorkspace} />
+            ) : view === "home" && selectedScope && selectedContextId ? (
+              <ContextConversation
+                key={selectedContextId}
+                contextId={selectedContextId}
+                workspaceId={activeWorkspace.workspace_id}
+                endpoints={actors}
+                onLabelResolved={setSelectedContextLabel}
+              />
+            ) : view === "home" && selectedScope ? (
+              <ScopeDetail
+                scope={selectedScope}
+                workspaceId={activeWorkspace.workspace_id}
+                selectedContextId={selectedContextId}
+                onSelectContext={handleSelectContext}
+                onScopeDeleted={() => void handleScopeDeleted()}
+              />
+            ) : view === "home" && !selectedActorId ? (
+              <HomeView
+                workspaceId={activeWorkspace.workspace_id}
+                scopes={scopes}
+                selectedScopeId={selectedScopeId}
+                onSelectScope={id => setSelectedScopeId(id)}
+                onScopeCreated={handleScopeCreated}
+              />
+            ) : view === "activity" ? (
+              <Activity
+                workspaceId={activeWorkspace.workspace_id}
+                endpoints={actors}
+                scopes={scopes}
+              />
+            ) : null}
+          </main>
 
-        {/* Pulses */}
-        {activeView === "pulses" && (
-          <RecordList
-            title="Pulses"
-            load={() =>
-              listPulses(workspaceId).then((rows) =>
-                rows.map((r) => ({
-                  pulse_id: r.pulse_id,
-                  status: r.status,
-                  next_fire_at: r.next_fire_at ?? "",
-                  fire_count: r.fire_count,
-                }))
-              )
-            }
-            columns={["pulse_id", "status", "next_fire_at", "fire_count"]}
-          />
-        )}
-
-        {/* Events */}
-        {activeView === "events" && (
-          <div style={{ flex: 1, overflow: "auto", padding: space.lg }}>
-            <Timeline workspaceId={workspaceId} />
-          </div>
-        )}
-
-        {/* Briefing */}
-        {activeView === "briefing" && (
-          <div style={{ flex: 1, overflow: "auto" }}>
-            <Briefing
-              workspaceId={workspaceId}
-              operatorEndpointId={actingAsEndpointId || undefined}
-              onOpenContext={handleOpenContext}
+          {/* Right inspector */}
+          <aside style={{
+            flex: `0 0 ${inspWidth}px`,
+            width: inspWidth,
+            height: "100%",
+            position: "relative",
+            background: tk.surface,
+            borderLeft: `1px solid ${tk.border}`,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}>
+            {/* Resize handle */}
+            <div
+              ref={inspResizeRef}
+              style={{
+                position: "absolute", left: -3, top: 0, bottom: 0, width: 6,
+                cursor: "col-resize", zIndex: 10, background: "transparent",
+              }}
+              title="Drag to resize"
             />
-          </div>
-        )}
-
-        {/* Deliveries */}
-        {activeView === "deliveries" && (
-          <RecordList
-            title="Deliveries"
-            load={() =>
-              listDeliveries({ workspace_id: workspaceId }).then((rows) =>
-                rows.map((r) => ({
-                  delivery_id: r.delivery_id,
-                  endpoint_id: r.endpoint_id,
-                  state: r.state,
-                  attempt_count: r.attempt_count,
-                  created_at: r.created_at,
-                }))
-              )
-            }
-          />
-        )}
-
-        {/* Pending responses */}
-        {activeView === "pending" && (
-          <RecordList
-            title="Pending Responses"
-            load={() =>
-              listPendingResponses(workspaceId).then((rows) =>
-                rows.map((r) => ({
-                  pending_id: r.pending_id,
-                  waiting_endpoint_id: r.waiting_endpoint_id,
-                  mode: r.mode,
-                  status: r.status,
-                  created_at: r.created_at,
-                  resolved_at: r.resolved_at ?? "",
-                }))
-              )
-            }
-          />
-        )}
-
-        {/* Telemetry */}
-        {activeView === "telemetry" && (
-          <RecordList
-            title="Runtime Telemetry"
-            load={() =>
-              listRuntimeTelemetry({ workspace_id: workspaceId }).then((rows) =>
-                rows.map((r) => ({
-                  telemetry_id: r.telemetry_id,
-                  endpoint_id: r.endpoint_id,
-                  kind: r.kind,
-                  delivery_id: r.delivery_id ?? "",
-                  created_at: r.created_at,
-                }))
-              )
-            }
-          />
-        )}
-
-        {/* Bindings */}
-        {activeView === "bindings" && (
-          <RecordList
-            title="Runtime Bindings"
-            load={() =>
-              getRuntimeBindings(workspaceId).then((rows) =>
-                rows.map((r) => ({
-                  binding_key: r.binding_key,
-                  scope: r.scope,
-                  auth_profile: r.auth_profile,
-                  model: r.model ?? "",
-                  thinking_level: r.thinking_level ?? "",
-                }))
-              )
-            }
-          />
-        )}
-
-        {/* Configs */}
-        {activeView === "configs" && (
-          <RecordList
-            title="Saved Configs"
-            load={() =>
-              listConfigs().then((rows) =>
-                rows.map((r) => ({
-                  config_id: r.config_id,
-                  name: r.name,
-                  created_at: r.created_at,
-                  updated_at: r.updated_at,
-                }))
-              )
-            }
-          />
-        )}
-
-        {/* Webhooks — no list endpoint */}
-        {activeView === "webhooks" && (
-          <div style={{ padding: space.xl, font: font.body, color: colors.text }}>
-            <h2 style={{ fontSize: 16, fontWeight: font.h, marginBottom: space.md }}>Webhooks</h2>
-            <p style={{ color: colors.muted }}>
-              Webhooks are ingest-only endpoints — they accept payloads via{" "}
-              <code>POST /v1/webhooks/:workspace_id/:route_id</code> and do not have
-              a list view. Use your external service's delivery log to inspect
-              webhook traffic.
-            </p>
-          </div>
-        )}
-      </main>
-    </div>
+            {/* Inspector body */}
+            <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: (selectedContextId || selectedActorId) ? 0 : "18px 16px 24px" }}>
+              {selectedActorId && actors.find(a => a.endpoint_id === selectedActorId) ? (
+                <ActorInspector
+                  actor={actors.find(a => a.endpoint_id === selectedActorId)!}
+                  workspaceId={activeWorkspace.workspace_id}
+                  onSaved={handleActorSaved}
+                />
+              ) : selectedContextId && selectedScope ? (
+                <ContextInspector
+                  contextId={selectedContextId}
+                  scope={selectedScope}
+                  workspaceId={activeWorkspace.workspace_id}
+                  onDeleted={handleContextDeleted}
+                />
+              ) : selectedScope ? (
+                <ScopeInspectorEmpty scope={selectedScope} />
+              ) : (
+                <DefaultInspector workspace={activeWorkspace} />
+              )}
+            </div>
+          </aside>
+        </div>
+      </div>
+    </>
   );
 }
