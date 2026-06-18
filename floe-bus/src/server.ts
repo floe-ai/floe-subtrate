@@ -6,8 +6,8 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
-import { existsSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { parseListen } from "./config.js";
@@ -21,6 +21,9 @@ import { ScopeAlreadyExistsError, ScopeNotEmptyError, ScopeNotFoundError, ScopeR
 import { encodeEventCursor, InvalidEventCursorError } from "./event-cursor.js";
 import { buildScopeProjection } from "./scopes/projection.js";
 import { listAuthModels, listAuthProfiles } from "./auth.js";
+import { browseDir } from "./fs/browseDir.js";
+import { listAgentFiles } from "./fs/agentFiles.js";
+import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs/resolveWithinRoot.js";
 
 const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const BRIDGE_LIVENESS_MS = 90_000;
@@ -432,6 +435,96 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
     const workspace = store.registerWorkspace(input, broadcast);
     return reply.code(201).send({ workspace });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Workspace filesystem surface
+  // ---------------------------------------------------------------------------
+  // Plain HTTP direct disk I/O on the box that runs the bus — the same shape
+  // as /v1/workspaces/register above. Exists because the console (floe-app)
+  // is usually NOT co-located with workspace files (e.g. a Windows console
+  // tunneled into a Linux substrate), so a Tauri/browser-local FS read can't
+  // see `.floe/agents/`. Gated on workspace_access.local_paths; everything
+  // here is additive and does not change any existing route's behavior.
+
+  function fsAccessEnabled(): boolean {
+    return config.bridge.workspace_access.local_paths === true;
+  }
+
+  function sendFsDisabled(reply: any) {
+    return reply.code(403).send({ error: "fs_disabled", message: "workspace_access.local_paths is disabled" });
+  }
+
+  function mapFsError(err: unknown, reply: any): { error: string; message: string } {
+    if (err instanceof PathEscapesRootError) {
+      reply.code(400);
+      return { error: "path_escapes_root", message: err.message };
+    }
+    if (err instanceof RootNotFoundError) {
+      reply.code(404);
+      return { error: "workspace_root_not_found", message: err.message };
+    }
+    const code = (err as { code?: string } | null)?.code;
+    if (code === "ENOENT") {
+      reply.code(404);
+      return { error: "file_not_found", message: err instanceof Error ? err.message : "Not found" };
+    }
+    reply.code(500);
+    return { error: "fs_error", message: err instanceof Error ? err.message : String(err) };
+  }
+
+  /** GET /v1/fs/capability — cheap probe so floe-app can decide whether to show file-editing UI. */
+  app.get("/v1/fs/capability", async () => ({
+    local_paths: fsAccessEnabled()
+  }));
+
+  /** GET /v1/fs/browse?path=<abs> — directory browser for the register-workspace folder picker. */
+  app.get("/v1/fs/browse", async (request, reply) => {
+    if (!fsAccessEnabled()) return sendFsDisabled(reply);
+    const query = z.object({ path: z.string().optional() }).parse(request.query);
+    return browseDir(query.path);
+  });
+
+  app.get("/v1/workspaces/:workspace_id/fs/agents", async (request, reply) => {
+    if (!fsAccessEnabled()) return sendFsDisabled(reply);
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    return { files: listAgentFiles(locator) };
+  });
+
+  app.get("/v1/workspaces/:workspace_id/fs/file", async (request, reply) => {
+    if (!fsAccessEnabled()) return sendFsDisabled(reply);
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const query = z.object({ path: z.string().min(1) }).parse(request.query);
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      const resolved = resolveWithinRoot(locator, query.path);
+      const contents = readFileSync(resolved, "utf8");
+      return { contents };
+    } catch (err) {
+      return reply.send(mapFsError(err, reply));
+    }
+  });
+
+  app.put("/v1/workspaces/:workspace_id/fs/file", async (request, reply) => {
+    if (!fsAccessEnabled()) return sendFsDisabled(reply);
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const body = z.object({
+      path: z.string().min(1),
+      contents: z.string()
+    }).parse(request.body);
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      const resolved = resolveWithinRoot(locator, body.path);
+      mkdirSync(dirname(resolved), { recursive: true });
+      writeFileSync(resolved, body.contents, "utf8");
+      return { ok: true };
+    } catch (err) {
+      return reply.send(mapFsError(err, reply));
+    }
   });
 
   app.post("/v1/workspaces/:workspace_id/select", async (request) => {

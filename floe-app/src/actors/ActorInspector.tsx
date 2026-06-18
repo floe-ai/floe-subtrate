@@ -32,6 +32,9 @@ import {
 } from "../bus-client/client.ts";
 import { modelsForProfile, withSelectedModelOption, providerForProfile } from "./modelsForProfile.ts";
 import { contextLabel } from "../scope/ScopeDetail.tsx";
+import { fileAccessAvailable, readWorkspaceFile, writeWorkspaceFile, type WorkspaceFsRef } from "../fs/workspaceFs.ts";
+import { parseAgentFile, serializeAgentFile, type AgentFrontmatter } from "./agentFile.ts";
+import { ActorBodyEditor } from "./ActorBodyEditor.tsx";
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk)
@@ -365,12 +368,235 @@ function ActorDeleteSection({
 }
 
 // ---------------------------------------------------------------------------
+// File-backed definition (frontmatter + body) for bridge-registered actors
+// ---------------------------------------------------------------------------
+// The actor's `.floe/agents/<id>.md` file is the source of truth for its
+// frontmatter + instructions. Path = ".floe/" + JSON.parse(metadata_json).file
+// (set by floe-bridge's daemon.ts reconcileFromBus, ~line 257-258). Editing
+// here writes the file directly via the Tauri FS bridge; we do NOT call
+// registerEndpoint — the bridge's disk-drift sync (every ~30s) re-reads the
+// file and updates the endpoint.
+
+type FileLoadState =
+  | { phase: "unavailable" } // no FS backend, or actor has no on-disk file
+  | { phase: "loading" }
+  | { phase: "loaded"; relPath: string; frontmatter: AgentFrontmatter; body: string }
+  | { phase: "error"; message: string };
+
+function actorFileRelPath(actor: EndpointRef): string | null {
+  if (!actor.metadata_json) return null;
+  try {
+    const meta = JSON.parse(actor.metadata_json) as { file?: unknown };
+    if (typeof meta.file !== "string" || !meta.file) return null;
+    return `.floe/${meta.file}`;
+  } catch {
+    return null;
+  }
+}
+
+function ActorFileSection({
+  actor,
+  workspace,
+}: {
+  actor: EndpointRef;
+  workspace: WorkspaceFsRef | null;
+}): React.ReactElement | null {
+  const [state, setState] = useState<FileLoadState>({ phase: "unavailable" });
+  const [frontmatter, setFrontmatter] = useState<AgentFrontmatter | null>(null);
+  const [body, setBody] = useState("");
+  const [scopePaths, setScopePaths] = useState("");
+  const [skills, setSkills] = useState("");
+  const [extensions, setExtensions] = useState("");
+  const [mcp, setMcp] = useState("");
+  const [engine, setEngine] = useState("pi");
+  const [saveState, setSaveState] = useState<SaveState>({ phase: "idle" });
+  const [fsAvailable, setFsAvailable] = useState<boolean | null>(null);
+  const relPath = actorFileRelPath(actor);
+
+  useEffect(() => {
+    let cancelled = false;
+    fileAccessAvailable().then((available) => { if (!cancelled) setFsAvailable(available); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    setSaveState({ phase: "idle" });
+    if (!fsAvailable || !workspace || !relPath) {
+      setState({ phase: "unavailable" });
+      return;
+    }
+    let cancelled = false;
+    setState({ phase: "loading" });
+    readWorkspaceFile(workspace, relPath)
+      .then((contents) => {
+        if (cancelled) return;
+        const parsed = parseAgentFile(contents);
+        setFrontmatter(parsed.frontmatter);
+        setBody(parsed.body);
+        setScopePaths((parsed.frontmatter.scope?.paths ?? []).join(", "));
+        setSkills((parsed.frontmatter.skills ?? []).join(", "));
+        setExtensions((parsed.frontmatter.extensions ?? []).join(", "));
+        setMcp((parsed.frontmatter.mcp ?? []).join(", "));
+        setEngine(parsed.frontmatter.runtime?.engine ?? "pi");
+        setState({ phase: "loaded", relPath, frontmatter: parsed.frontmatter, body: parsed.body });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setState({ phase: "error", message: err instanceof Error ? err.message : "Failed to read actor file" });
+      });
+    return () => { cancelled = true; };
+  }, [actor.endpoint_id, workspace, relPath, fsAvailable]);
+
+  if (fsAvailable === null) {
+    return (
+      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
+        <span style={{ fontSize: 12, color: tk.ink3 }}>Loading…</span>
+      </div>
+    );
+  }
+
+  if (!fsAvailable) {
+    return (
+      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
+        <p style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic", margin: 0 }}>
+          File editing is unavailable: the bus has no local filesystem access configured
+          (workspace_access.local_paths is off) and this isn't the desktop app.
+        </p>
+      </div>
+    );
+  }
+
+  if (!relPath) {
+    return null; // no on-disk file to edit (e.g. actor registered without metadata.file)
+  }
+
+  if (state.phase === "loading") {
+    return (
+      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
+        <span style={{ fontSize: 12, color: tk.ink3 }}>Loading definition…</span>
+      </div>
+    );
+  }
+
+  if (state.phase === "error") {
+    return (
+      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
+        <p role="alert" style={{ fontSize: 12, color: tk.danger, margin: 0 }}>{state.message}</p>
+      </div>
+    );
+  }
+
+  if (state.phase !== "loaded" || !frontmatter) return null;
+  const loadedFrontmatter = frontmatter;
+
+  async function handleSave() {
+    if (!workspace || !relPath) return;
+    setSaveState({ phase: "saving" });
+    try {
+      // Spread preserves every existing field verbatim (including `label`
+      // on legacy files, and `name` only if the file already had one — see
+      // agentFile.ts's AgentFrontmatter.name comment); we only override
+      // runtime.engine and the list fields below.
+      const nextFrontmatter: AgentFrontmatter = {
+        ...loadedFrontmatter,
+        schema: loadedFrontmatter.schema,
+        agent_id: loadedFrontmatter.agent_id,
+        runtime: { engine: engine.trim() || "pi" },
+      };
+      const scopeList = scopePaths.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+      const skillsList = skills.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+      const extensionsList = extensions.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+      const mcpList = mcp.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+      if (scopeList.length > 0) nextFrontmatter.scope = { paths: scopeList };
+      else delete nextFrontmatter.scope;
+      if (skillsList.length > 0) nextFrontmatter.skills = skillsList;
+      else delete nextFrontmatter.skills;
+      if (extensionsList.length > 0) nextFrontmatter.extensions = extensionsList;
+      else delete nextFrontmatter.extensions;
+      if (mcpList.length > 0) nextFrontmatter.mcp = mcpList;
+      else delete nextFrontmatter.mcp;
+
+      const contents = serializeAgentFile(nextFrontmatter, body);
+      await writeWorkspaceFile(workspace, relPath, contents);
+      setSaveState({ phase: "saved" });
+    } catch (err) {
+      setSaveState({ phase: "error", message: err instanceof Error ? err.message : "Failed to save actor file" });
+    }
+  }
+
+  return (
+    <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}`, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510 }}>
+        Definition (file)
+      </div>
+      <StatRow label="File" value={<code style={{ fontSize: 11 }}>{relPath}</code>} />
+
+      <FieldLabel>
+        Runtime engine
+        <input
+          aria-label="Runtime engine"
+          value={engine}
+          onChange={(e) => setEngine(e.target.value)}
+          style={inputStyle}
+        />
+      </FieldLabel>
+
+      <FieldLabel>
+        Scope paths (comma separated)
+        <input aria-label="Scope paths" value={scopePaths} onChange={(e) => setScopePaths(e.target.value)} style={inputStyle} />
+      </FieldLabel>
+
+      <FieldLabel>
+        Skills (comma separated)
+        <input aria-label="Skills" value={skills} onChange={(e) => setSkills(e.target.value)} style={inputStyle} />
+      </FieldLabel>
+
+      <FieldLabel>
+        Extensions (comma separated)
+        <input aria-label="Extensions" value={extensions} onChange={(e) => setExtensions(e.target.value)} style={inputStyle} />
+      </FieldLabel>
+
+      <FieldLabel>
+        MCP servers (comma separated)
+        <input aria-label="MCP servers" value={mcp} onChange={(e) => setMcp(e.target.value)} style={inputStyle} />
+      </FieldLabel>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={{ fontSize: 11, color: tk.ink3 }}>Instructions (markdown body)</span>
+        <ActorBodyEditor value={body} onChange={setBody} minHeight={160} />
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button
+          onClick={() => void handleSave()}
+          disabled={saveState.phase === "saving"}
+          style={{
+            background: tk.accent, color: "#0c1714", border: "none",
+            borderRadius: tk.r2, padding: "6px 14px", fontSize: 12.5, fontWeight: 510,
+            cursor: saveState.phase === "saving" ? "not-allowed" : "pointer",
+            fontFamily: tk.fontUi,
+          }}
+        >
+          {saveState.phase === "saving" ? "Saving…" : "Save definition"}
+        </button>
+        <SaveStatus state={saveState} />
+        {saveState.phase === "saved" && (
+          <span style={{ fontSize: 11, color: tk.ink4 }}>Bridge picks up changes within ~30s.</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
 export type ActorInspectorProps = {
   actor: EndpointRef;
   workspaceId: string;
+  /** Selected workspace's identity (workspace_id + locator) — required for file-backed actor editing. */
+  workspace?: WorkspaceFsRef | null;
   onSaved?: (updated: EndpointRef) => void;
   /** Open this context's conversation (sets selected context + switches main view). */
   onOpenContext?: (contextId: string) => void;
@@ -382,7 +608,7 @@ export type ActorInspectorProps = {
 // Component
 // ---------------------------------------------------------------------------
 
-export function ActorInspector({ actor, workspaceId, onSaved, onOpenContext, onDeleted }: ActorInspectorProps): React.ReactElement {
+export function ActorInspector({ actor, workspaceId, workspace, onSaved, onOpenContext, onDeleted }: ActorInspectorProps): React.ReactElement {
   // Name editing
   const [name, setName] = useState(actor.name);
   const [nameSave, setNameSave] = useState<SaveState>({ phase: "idle" });
@@ -553,6 +779,9 @@ export function ActorInspector({ actor, workspaceId, onSaved, onOpenContext, onD
           onOpenContext={(contextId) => onOpenContext?.(contextId)}
         />
       </div>
+
+      {/* File-backed definition (frontmatter + body) — Tauri only */}
+      <ActorFileSection actor={actor} workspace={workspace ?? null} />
 
       {/* Profile -> Model -> Effort */}
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}`, display: "flex", flexDirection: "column", gap: 10 }}>

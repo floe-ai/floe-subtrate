@@ -27,7 +27,9 @@ import { ContextConversation } from "./scope/ContextConversation.tsx";
 import { ContextInspector } from "./scope/ContextInspector.tsx";
 import { DirectContexts } from "./scope/DirectContexts.tsx";
 import { ActorInspector } from "./actors/ActorInspector.tsx";
+import { NewActorForm } from "./actors/NewActorForm.tsx";
 import { WorkspaceSettings } from "./workspace/WorkspaceSettings.tsx";
+import { FolderPicker } from "./workspace/FolderPicker.tsx";
 import { Activity } from "./activity/Activity.tsx";
 
 // ---------------------------------------------------------------------------
@@ -145,6 +147,7 @@ function WorkspaceSwitcher({
 }: WsSwitcherProps): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
   const [locator, setLocator] = useState("");
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
@@ -283,6 +286,24 @@ function WorkspaceSwitcher({
                   borderRadius: tk.r2, padding: "5px 8px", fontSize: 12, color: tk.ink,
                 }}
               />
+              {!showPicker ? (
+                <button
+                  onClick={() => setShowPicker(true)}
+                  style={{
+                    alignSelf: "flex-start",
+                    background: "transparent", border: `1px solid ${tk.border}`,
+                    color: tk.accentHov, borderRadius: tk.r2, padding: "4px 10px", fontSize: 11.5,
+                    cursor: "pointer",
+                  }}
+                >
+                  Browse…
+                </button>
+              ) : (
+                <FolderPicker
+                  onSelect={(path) => { setLocator(path); setShowPicker(false); }}
+                  onCancel={() => setShowPicker(false)}
+                />
+              )}
               <input
                 placeholder="Name (optional)"
                 value={name}
@@ -339,11 +360,13 @@ type NavProps = {
   onSelectScope: (id: string) => void;
   onSelectActor: (id: string) => void;
   onNewScope: () => void;
+  onNewActor: () => void;
+  showNewActor: boolean;
 };
 
 function LeftNav({
   view, scopes, selectedScopeId, actors, selectedActorId,
-  onView, onSelectScope, onSelectActor, onNewScope,
+  onView, onSelectScope, onSelectActor, onNewScope, onNewActor, showNewActor,
 }: NavProps): React.ReactElement {
   return (
     <aside style={{
@@ -437,6 +460,14 @@ function LeftNav({
           No actors registered
         </div>
       )}
+
+      <NavRow
+        label="New actor"
+        glyph="+"
+        isOn={showNewActor}
+        onClick={onNewActor}
+        faint
+      />
     </aside>
   );
 }
@@ -1022,6 +1053,7 @@ function RegisterWorkspaceScreen({
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
 
   async function handleRegister() {
     if (!locator.trim()) return;
@@ -1052,6 +1084,24 @@ function RegisterWorkspaceScreen({
             borderRadius: tk.r2, padding: "7px 10px", fontSize: 13, color: tk.ink, outline: "none",
           }}
         />
+        {!showPicker ? (
+          <button
+            onClick={() => setShowPicker(true)}
+            style={{
+              alignSelf: "flex-start",
+              background: "transparent", border: `1px solid ${tk.border}`,
+              color: tk.accentHov, borderRadius: tk.r2, padding: "5px 10px", fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            Browse…
+          </button>
+        ) : (
+          <FolderPicker
+            onSelect={(path) => { setLocator(path); setShowPicker(false); }}
+            onCancel={() => setShowPicker(false)}
+          />
+        )}
         <input
           placeholder="Name (optional)"
           value={name}
@@ -1096,6 +1146,7 @@ export function App(): React.ReactElement {
   const [selectedContextLabel, setSelectedContextLabel] = useState<string | null>(null);
   const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
   const [showWorkspaceSettings, setShowWorkspaceSettings] = useState(false);
+  const [showNewActor, setShowNewActor] = useState(false);
   const [view, setView] = useState<NavView>("home");
 
   const [inspWidth, setInspWidth] = useState<number>(readRinspWidth);
@@ -1164,6 +1215,7 @@ export function App(): React.ReactElement {
     setSelectedContextLabel(null);
     setSelectedActorId(null);
     setShowWorkspaceSettings(false);
+    setShowNewActor(false);
     setScopes([]);
     setActors([]);
     setActiveWorkspace(ws);
@@ -1193,6 +1245,7 @@ export function App(): React.ReactElement {
       setSelectedScopeId(null);
       setSelectedActorId(null);
       setShowWorkspaceSettings(false);
+      setShowNewActor(false);
       setAppState("ready");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to register workspace";
@@ -1220,6 +1273,7 @@ export function App(): React.ReactElement {
         setSelectedScopeId(null);
         setSelectedActorId(null);
         setShowWorkspaceSettings(false);
+        setShowNewActor(false);
         const [scs, eps] = await Promise.all([
           listScopes(next.workspace_id),
           listEndpoints(next.workspace_id).catch(() => [] as EndpointRef[]),
@@ -1268,6 +1322,7 @@ export function App(): React.ReactElement {
     setSelectedContextLabel(null);
     setSelectedActorId(null);
     setShowWorkspaceSettings(false);
+    setShowNewActor(false);
     // Only force the main view to "home" when an actual scope was selected.
     // Nav rows that clear the scope (Activity/Direct) pass id="" and set
     // their own view via onView — forcing "home" here would immediately
@@ -1298,6 +1353,7 @@ export function App(): React.ReactElement {
     setSelectedContextId(id);
     setSelectedContextLabel(null);
     setShowWorkspaceSettings(false);
+    setShowNewActor(false);
   }, []);
 
   const handleSelectActor = useCallback((id: string) => {
@@ -1306,17 +1362,34 @@ export function App(): React.ReactElement {
     setSelectedContextId(null);
     setSelectedContextLabel(null);
     setShowWorkspaceSettings(false);
+    setShowNewActor(false);
     setView("home");
   }, []);
 
   const handleOpenWorkspaceSettings = useCallback(() => {
     setShowWorkspaceSettings(true);
+    setShowNewActor(false);
     setSelectedScopeId(null);
     setSelectedContextId(null);
     setSelectedContextLabel(null);
     setSelectedActorId(null);
     setView("home");
   }, []);
+
+  const handleOpenNewActor = useCallback(() => {
+    setShowNewActor(true);
+    setShowWorkspaceSettings(false);
+    setSelectedScopeId(null);
+    setSelectedContextId(null);
+    setSelectedContextLabel(null);
+    setSelectedActorId(null);
+    setView("home");
+  }, []);
+
+  const handleActorCreated = useCallback(() => {
+    setShowNewActor(false);
+    void refreshActors();
+  }, [refreshActors]);
 
   const handleActorSaved = useCallback((updated: EndpointRef) => {
     setActors(prev => prev.map(a => a.endpoint_id === updated.endpoint_id ? updated : a));
@@ -1407,7 +1480,7 @@ export function App(): React.ReactElement {
         }}>
           {/* Brand */}
           <a href="#" style={{ display: "inline-flex", alignItems: "center", gap: 8, textDecoration: "none", color: tk.ink2 }}
-            onClick={e => { e.preventDefault(); setSelectedScopeId(null); setSelectedContextId(null); setSelectedContextLabel(null); setSelectedActorId(null); setShowWorkspaceSettings(false); setView("home"); }}
+            onClick={e => { e.preventDefault(); setSelectedScopeId(null); setSelectedContextId(null); setSelectedContextLabel(null); setSelectedActorId(null); setShowWorkspaceSettings(false); setShowNewActor(false); setView("home"); }}
           >
             <span style={{
               width: 22, height: 22, borderRadius: 6,
@@ -1496,8 +1569,11 @@ export function App(): React.ReactElement {
               setSelectedScopeId(null); // focus back on home so create tile is visible
               setSelectedActorId(null);
               setShowWorkspaceSettings(false);
+              setShowNewActor(false);
               setView("home");
             }}
+            onNewActor={handleOpenNewActor}
+            showNewActor={showNewActor}
           />
 
           {/* Main column */}
@@ -1512,6 +1588,13 @@ export function App(): React.ReactElement {
           }}>
             {showWorkspaceSettings ? (
               <WorkspaceSettings workspace={activeWorkspace} />
+            ) : showNewActor ? (
+              <NewActorForm
+                workspaceId={activeWorkspace.workspace_id}
+                workspace={activeWorkspace}
+                existingAgentIds={actors.map(a => a.agent_id).filter((id): id is string => !!id)}
+                onCreated={handleActorCreated}
+              />
             ) : selectedContextId ? (
               // Conversation is scope-independent: it can be reached from a scope's
               // context list, an actor's "Contexts" list (Gap A — may be in a
@@ -1581,6 +1664,7 @@ export function App(): React.ReactElement {
                 <ActorInspector
                   actor={actors.find(a => a.endpoint_id === selectedActorId)!}
                   workspaceId={activeWorkspace.workspace_id}
+                  workspace={activeWorkspace}
                   onSaved={handleActorSaved}
                   onOpenContext={handleOpenContext}
                   onDeleted={handleActorDeleted}

@@ -129,6 +129,47 @@ export async function getWorkspaceConfigStatus(ws: string): Promise<WorkspaceRef
 }
 
 // ---------------------------------------------------------------------------
+// Workspace filesystem (remote/bus-backed — see floe-app/src/fs/workspaceFs.ts)
+// ---------------------------------------------------------------------------
+// Plain HTTP direct disk I/O served by the bus on the box, for when the
+// console is not co-located with workspace files (e.g. console tunneled
+// into a remote substrate). Gated server-side on workspace_access.local_paths.
+
+/** GET /v1/fs/capability — cheap probe for whether the bus can serve workspace files. */
+export async function busFsCapability(): Promise<{ local_paths: boolean }> {
+  return get("/v1/fs/capability");
+}
+
+/** GET /v1/fs/browse?path=... — directory browser for the register-workspace folder picker. */
+export async function busBrowseDir(path?: string): Promise<{
+  path: string;
+  parent: string | null;
+  entries: { name: string; is_dir: boolean }[];
+}> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  return get(`/v1/fs/browse${qs}`);
+}
+
+/** GET /v1/workspaces/:id/fs/agents — list `.floe/agents/**\/*.md` files, workspace-root-relative. */
+export async function busListAgentFiles(workspaceId: string): Promise<string[]> {
+  const data = await get<{ files: string[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/fs/agents`);
+  return data.files;
+}
+
+/** GET /v1/workspaces/:id/fs/file?path=... — read a UTF-8 text file under the workspace root. */
+export async function busReadFile(workspaceId: string, relPath: string): Promise<string> {
+  const data = await get<{ contents: string }>(
+    `/v1/workspaces/${encodeURIComponent(workspaceId)}/fs/file?path=${encodeURIComponent(relPath)}`
+  );
+  return data.contents;
+}
+
+/** PUT /v1/workspaces/:id/fs/file — write a file under the workspace root, creating parent dirs as needed. */
+export async function busWriteFile(workspaceId: string, relPath: string, contents: string): Promise<void> {
+  await put(`/v1/workspaces/${encodeURIComponent(workspaceId)}/fs/file`, { path: relPath, contents });
+}
+
+// ---------------------------------------------------------------------------
 // Scopes
 // ---------------------------------------------------------------------------
 
