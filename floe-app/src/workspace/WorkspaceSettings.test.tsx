@@ -40,7 +40,7 @@ const mockWorkspace = {
 describe("WorkspaceSettings - Effort reset behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(client.getAuthProfiles).mockResolvedValue({ profiles: mockProfiles });
+    vi.mocked(client.getAuthProfiles).mockResolvedValue({ profiles: mockProfiles, default_auth_profile: null });
     vi.mocked(client.getRuntimeBindings).mockResolvedValue([
       {
         binding_key: "ws-1:workspace_default",

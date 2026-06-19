@@ -151,7 +151,7 @@ function SaveStatus({ state }: { state: SaveState }): React.ReactElement | null 
 // list of contexts by human name, each clickable to open that context's
 // conversation.
 
-function ActorContexts({
+export function ActorContexts({
   endpointId,
   workspaceId,
   onOpenContext,
@@ -256,7 +256,7 @@ type DeleteState =
   | { phase: "deleting" }
   | { phase: "error"; message: string };
 
-function ActorDeleteSection({
+export function ActorDeleteSection({
   actor,
   onDeleted,
 }: {
@@ -394,7 +394,7 @@ function actorFileRelPath(actor: EndpointRef): string | null {
   }
 }
 
-function ActorFileSection({
+export function ActorFileSection({
   actor,
   workspace,
 }: {
@@ -602,13 +602,22 @@ export type ActorInspectorProps = {
   onOpenContext?: (contextId: string) => void;
   /** Actor was deleted — caller should remove it from the Actors nav and clear selection. */
   onDeleted?: (endpointId: string) => void;
+  hideContexts?: boolean;
 };
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function ActorInspector({ actor, workspaceId, workspace, onSaved, onOpenContext, onDeleted }: ActorInspectorProps): React.ReactElement {
+export function ActorInspector({
+  actor,
+  workspaceId,
+  workspace,
+  onSaved,
+  onOpenContext,
+  onDeleted,
+  hideContexts,
+}: ActorInspectorProps): React.ReactElement {
   // Name editing
   const [name, setName] = useState(actor.name);
   const [nameSave, setNameSave] = useState<SaveState>({ phase: "idle" });
@@ -776,18 +785,6 @@ export function ActorInspector({ actor, workspaceId, workspace, onSaved, onOpenC
         <StatRow label="Created" value={new Date(actor.created_at).toLocaleString()} />
       </div>
 
-      {/* Contexts this actor participates in (Gap A — v6 parity) */}
-      <div style={{ borderBottom: `1px solid ${tk.border2}` }}>
-        <ActorContexts
-          endpointId={actor.endpoint_id}
-          workspaceId={workspaceId}
-          onOpenContext={(contextId) => onOpenContext?.(contextId)}
-        />
-      </div>
-
-      {/* File-backed definition (frontmatter + body) — Tauri only */}
-      <ActorFileSection actor={actor} workspace={workspace ?? null} />
-
       {/* Profile -> Model -> Effort */}
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}`, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510 }}>
@@ -857,7 +854,7 @@ export function ActorInspector({ actor, workspaceId, workspace, onSaved, onOpenC
       </div>
 
       {/* Effective resolved binding */}
-      <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}`, display: "flex", flexDirection: "column", gap: 6 }}>
         <div style={{ fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510, marginBottom: 4 }}>
           Effective binding (resolved)
         </div>
@@ -888,6 +885,20 @@ export function ActorInspector({ actor, workspaceId, workspace, onSaved, onOpenC
           <span style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>Unavailable</span>
         )}
       </div>
+
+      {/* Contexts this actor participates in (Gap A — v6 parity) */}
+      {!hideContexts && (
+        <div style={{ borderBottom: `1px solid ${tk.border2}` }}>
+          <ActorContexts
+            endpointId={actor.endpoint_id}
+            workspaceId={workspaceId}
+            onOpenContext={(contextId) => onOpenContext?.(contextId)}
+          />
+        </div>
+      )}
+
+      {/* File-backed definition (frontmatter + body) — Tauri only */}
+      <ActorFileSection actor={actor} workspace={workspace ?? null} />
 
       {/* Delete action */}
       <div style={{ borderTop: `1px solid ${tk.border2}` }}>
