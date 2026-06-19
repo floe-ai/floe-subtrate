@@ -724,12 +724,17 @@ export function ActorInspector({ actor, workspaceId, workspace, onSaved, onOpenC
   function handleProfileChange(value: string) {
     setProfileId(value);
     setModelId("");
+    setEffort("off");
     void saveBinding({ profileId: value, modelId: "", effort: "off" });
   }
 
   function handleModelChange(value: string) {
+    const nextModel = modelOptions.find((m) => m.id === value);
+    const nextReasoningSupported = !!nextModel?.reasoning;
+    const nextEffort = nextReasoningSupported ? effort : "off";
     setModelId(value);
-    void saveBinding({ profileId, modelId: value, effort });
+    setEffort(nextEffort);
+    void saveBinding({ profileId, modelId: value, effort: nextEffort });
   }
 
   function handleEffortChange(value: string) {

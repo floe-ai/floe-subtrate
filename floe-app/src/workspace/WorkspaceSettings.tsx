@@ -62,9 +62,10 @@ function SaveStatus({ state }: { state: SaveState }): React.ReactElement | null 
 
 export type WorkspaceSettingsProps = {
   workspace: WorkspaceRef;
+  onRemove: (deleteLocator?: boolean) => Promise<void>;
 };
 
-export function WorkspaceSettings({ workspace }: WorkspaceSettingsProps): React.ReactElement {
+export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProps): React.ReactElement {
   const [profiles, setProfiles] = useState<AuthProfileRecord[]>([]);
   const [models, setModels] = useState<AuthModelRecord[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -153,12 +154,17 @@ export function WorkspaceSettings({ workspace }: WorkspaceSettingsProps): React.
   function handleProfileChange(value: string) {
     setProfileId(value);
     setModelId("");
+    setEffort("off");
     void saveBinding({ profileId: value, modelId: "", effort: "off" });
   }
 
   function handleModelChange(value: string) {
+    const nextModel = modelOptions.find((m) => m.id === value);
+    const nextReasoningSupported = !!nextModel?.reasoning;
+    const nextEffort = nextReasoningSupported ? effort : "off";
     setModelId(value);
-    void saveBinding({ profileId, modelId: value, effort });
+    setEffort(nextEffort);
+    void saveBinding({ profileId, modelId: value, effort: nextEffort });
   }
 
   function handleEffortChange(value: string) {
@@ -270,6 +276,62 @@ export function WorkspaceSettings({ workspace }: WorkspaceSettingsProps): React.
             <span><code>{workspaceBinding?.thinking_level ?? globalBinding?.thinking_level ?? "(inherit)"}</code></span>
           </div>
         )}
+      </section>
+
+      {/* ---- Danger zone ---- */}
+      <section style={{
+        marginTop: 32, maxWidth: 480,
+        background: tk.surface, border: `1px solid rgba(184,90,90,0.25)`, borderRadius: tk.r3,
+        padding: 20,
+      }}>
+        <h2 style={{ fontSize: 14, fontWeight: 510, color: tk.danger, margin: "0 0 4px" }}>
+          Danger zone
+        </h2>
+        <p style={{ fontSize: 12.5, color: tk.ink3, lineHeight: 1.5, margin: "0 0 16px" }}>
+          Remove this workspace from Floe, or permanently delete all project files.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <button
+            onClick={() => void onRemove(false)}
+            style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "9px 14px", borderRadius: tk.r2,
+              background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+              color: tk.ink, fontSize: 13, fontFamily: tk.fontUi, cursor: "pointer",
+              textAlign: "left",
+            }}
+            onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.07)"}
+            onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.04)"}
+          >
+            <span style={{ flex: "0 0 auto", fontSize: 15 }}>🗂</span>
+            <span style={{ flex: 1 }}>
+              <span style={{ display: "block", fontWeight: 510 }}>Remove from Floe</span>
+              <span style={{ display: "block", fontSize: 11, color: tk.ink3, marginTop: 2 }}>
+                Deregister this workspace. Project files remain on disk.
+              </span>
+            </span>
+          </button>
+          <button
+            onClick={() => void onRemove(true)}
+            style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "9px 14px", borderRadius: tk.r2,
+              background: "rgba(184,90,90,0.08)", border: `1px solid rgba(184,90,90,0.25)`,
+              color: tk.danger, fontSize: 13, fontFamily: tk.fontUi, cursor: "pointer",
+              textAlign: "left",
+            }}
+            onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = "rgba(184,90,90,0.15)"}
+            onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = "rgba(184,90,90,0.08)"}
+          >
+            <span style={{ flex: "0 0 auto", fontSize: 15 }}>🗑</span>
+            <span style={{ flex: 1 }}>
+              <span style={{ display: "block", fontWeight: 510 }}>Delete workspace and files</span>
+              <span style={{ display: "block", fontSize: 11, color: tk.ink3, marginTop: 2 }}>
+                Permanently remove this workspace and delete all project files from disk.
+              </span>
+            </span>
+          </button>
+        </div>
       </section>
     </div>
   );

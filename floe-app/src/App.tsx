@@ -21,6 +21,8 @@ import {
   getScopeProjection,
   listEndpoints,
   ScopeNotEmptyError,
+  DirectoryNotFoundError,
+  subscribeEvents,
 } from "./bus-client/client.ts";
 import { ScopeDetail } from "./scope/ScopeDetail.tsx";
 import { ContextConversation } from "./scope/ContextConversation.tsx";
@@ -138,12 +140,11 @@ type WsSwitcherProps = {
   active: WorkspaceRef;
   onSwitch: (id: string) => void;
   onAdd: (locator: string, name: string) => Promise<void>;
-  onDelete: () => void;
   addErr: string | null;
 };
 
 function WorkspaceSwitcher({
-  workspaces, active, onSwitch, onAdd, onDelete, addErr,
+  workspaces, active, onSwitch, onAdd, addErr,
 }: WsSwitcherProps): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -237,25 +238,7 @@ function WorkspaceSwitcher({
             </button>
           ))}
 
-          <div style={{ height: 1, background: tk.border2, margin: "4px 6px" }} />
 
-          {/* Delete current workspace */}
-          <button
-            onClick={() => { onDelete(); setOpen(false); }}
-            style={{
-              display: "flex", alignItems: "center", gap: 8,
-              width: "100%", padding: "8px 10px", borderRadius: tk.r2,
-              background: "transparent", border: "none",
-              textAlign: "left", fontSize: 12, color: tk.danger, cursor: "pointer",
-            }}
-            onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.04)"}
-            onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.background = "transparent"}
-          >
-            <span style={{ width: 18, textAlign: "center" }}>×</span>
-            <span>Remove "{active.name || active.workspace_id}"</span>
-          </button>
-
-          <div style={{ height: 1, background: tk.border2, margin: "4px 6px" }} />
 
           {/* Add workspace */}
           {!showAdd ? (
@@ -1063,6 +1046,20 @@ function RegisterWorkspaceScreen({
       const ws = await registerWorkspace({ locator: locator.trim(), name: name.trim() || undefined, init_authorized: true });
       onRegistered(ws);
     } catch (e) {
+      if (e instanceof DirectoryNotFoundError) {
+        if (window.confirm(`Directory does not exist: ${locator.trim()}\nWould you like to create it?`)) {
+          try {
+            const ws = await registerWorkspace({ locator: locator.trim(), name: name.trim() || undefined, init_authorized: true, create_directory: true });
+            onRegistered(ws);
+            return;
+          } catch (e2) {
+             setErr(e2 instanceof Error ? e2.message : "Failed to register workspace");
+          }
+        } else {
+          setErr(e.message);
+        }
+        return;
+      }
       setErr(e instanceof Error ? e.message : "Failed to register workspace");
     } finally {
       setAdding(false);
@@ -1198,6 +1195,7 @@ export function App(): React.ReactElement {
         notifUnsubRef.current = cleanup;
       })
       .catch(() => { /* degrade silently */ });
+      
     return () => {
       if (cleanup) cleanup();
       if (notifUnsubRef.current) { notifUnsubRef.current(); notifUnsubRef.current = null; }
@@ -1229,10 +1227,10 @@ export function App(): React.ReactElement {
     } catch { /* best-effort */ }
   }, [workspaces, activeWorkspace]);
 
-  const addWorkspace = useCallback(async (locator: string, name: string) => {
+  const addWorkspace = useCallback(async (locator: string, name: string, create_directory?: boolean) => {
     setAddWsErr(null);
     try {
-      const ws = await registerWorkspace({ locator, name: name || undefined, init_authorized: true });
+      const ws = await registerWorkspace({ locator, name: name || undefined, init_authorized: true, create_directory });
       const refreshed = await listWorkspaces();
       setWorkspaces(refreshed);
       const [scs, eps] = await Promise.all([
@@ -1248,18 +1246,30 @@ export function App(): React.ReactElement {
       setShowNewActor(false);
       setAppState("ready");
     } catch (err) {
+      if (err instanceof DirectoryNotFoundError && !create_directory) {
+        if (window.confirm(`Directory does not exist: ${locator}\nWould you like to create it?`)) {
+          return addWorkspace(locator, name, true);
+        } else {
+          setAddWsErr(err.message);
+          throw err;
+        }
+      }
       const msg = err instanceof Error ? err.message : "Failed to register workspace";
       setAddWsErr(msg);
       throw new Error(msg);
     }
   }, []);
 
-  const removeWorkspace = useCallback(async () => {
+  const removeWorkspace = useCallback(async (deleteLocator?: boolean) => {
     if (!activeWorkspace) return;
     const name = activeWorkspace.name || activeWorkspace.workspace_id;
-    if (!window.confirm(`Remove workspace "${name}"? This cannot be undone.`)) return;
+    if (deleteLocator) {
+      if (!window.confirm(`Permanently delete workspace "${name}" and all its project files from disk? This cannot be undone.`)) return;
+    } else {
+      if (!window.confirm(`Remove workspace "${name}" from Floe? The files will remain on disk.`)) return;
+    }
     try {
-      await deleteWorkspace(activeWorkspace.workspace_id, { delete_locator: false });
+      await deleteWorkspace(activeWorkspace.workspace_id, { delete_locator: !!deleteLocator });
       const refreshed = await listWorkspaces();
       setWorkspaces(refreshed);
       if (refreshed.length === 0) {
@@ -1404,6 +1414,21 @@ export function App(): React.ReactElement {
 
   const inspResizeRef = useInspectorResize(setInspWidth);
 
+  // Auto-refresh actors when registered by bridge
+  useEffect(() => {
+    if (!activeWorkspace) return;
+    const workspaceId = activeWorkspace.workspace_id;
+    const unsub = subscribeEvents((msg) => {
+      if (msg.type === "endpoint_registered" || msg.type === "endpoint_updated" || msg.type === "endpoint_deleted") {
+        const epWsId = (msg.payload?.endpoint as any)?.workspace_id;
+        if (msg.payload?.workspace_id === workspaceId || epWsId === workspaceId) {
+          void refreshActors();
+        }
+      }
+    });
+    return unsub;
+  }, [activeWorkspace?.workspace_id, refreshActors]);
+
   // ---------------------------------------------------------------------------
   // Guard states
   // ---------------------------------------------------------------------------
@@ -1498,7 +1523,6 @@ export function App(): React.ReactElement {
             active={activeWorkspace}
             onSwitch={id => void switchWorkspace(id)}
             onAdd={addWorkspace}
-            onDelete={() => void removeWorkspace()}
             addErr={addWsErr}
           />
 
@@ -1587,7 +1611,7 @@ export function App(): React.ReactElement {
             flexDirection: "column",
           }}>
             {showWorkspaceSettings ? (
-              <WorkspaceSettings workspace={activeWorkspace} />
+              <WorkspaceSettings workspace={activeWorkspace} onRemove={removeWorkspace} />
             ) : showNewActor ? (
               <NewActorForm
                 workspaceId={activeWorkspace.workspace_id}

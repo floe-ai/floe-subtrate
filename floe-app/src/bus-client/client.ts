@@ -89,6 +89,13 @@ export async function listWorkspaces(): Promise<WorkspaceRef[]> {
   return data.workspaces;
 }
 
+export class DirectoryNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DirectoryNotFoundError";
+  }
+}
+
 /** POST /v1/workspaces/register — register a new workspace by filesystem locator */
 export async function registerWorkspace(input: {
   locator: string;
@@ -96,7 +103,20 @@ export async function registerWorkspace(input: {
   init_authorized?: boolean;
   create_directory?: boolean;
 }): Promise<WorkspaceRef> {
-  const data = await post<{ workspace: WorkspaceRef }>("/v1/workspaces/register", input);
+  const res = await fetch(`${BUS_BASE}/v1/workspaces/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (res.status === 400) {
+    const body = await res.json() as { error?: string; message?: string };
+    if (body.error === "directory_not_found") {
+      throw new DirectoryNotFoundError(body.message || "Directory not found");
+    }
+    throw new Error(`Bus POST /v1/workspaces/register → 400: ${JSON.stringify(body)}`);
+  }
+  if (!res.ok) throw new Error(`Bus POST /v1/workspaces/register → ${res.status}`);
+  const data = await res.json() as { workspace: WorkspaceRef };
   return data.workspace;
 }
 
