@@ -6,7 +6,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
 import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./config.js";
-import type { OAuthProviderId } from "@mariozechner/pi-ai";
+import type { OAuthProviderId } from "@earendil-works/pi-ai";
 import {
   createAuthRuntime,
   findProfile,
@@ -359,6 +359,11 @@ async function loginWithOAuth(runtime: ReturnType<typeof createAuthRuntime>, pro
         if (info.instructions) console.log(info.instructions);
         openUrl(info.url);
       },
+      onDeviceCode: (info) => {
+        console.log(`Device code: ${info.userCode}`);
+        console.log(`Verify at: ${info.verificationUri}`);
+        openUrl(info.verificationUri);
+      },
       onPrompt: async (prompt) => {
         const hint = prompt.placeholder ? ` (${prompt.placeholder})` : "";
         return rl.question(`${prompt.message}${hint}: `);
@@ -366,7 +371,14 @@ async function loginWithOAuth(runtime: ReturnType<typeof createAuthRuntime>, pro
       onProgress: (message) => {
         console.log(message);
       },
-      onManualCodeInput: async () => rl.question("Paste redirect URL or auth code: ")
+      onManualCodeInput: async () => rl.question("Paste redirect URL or auth code: "),
+      onSelect: async (prompt) => {
+        console.log(prompt.message);
+        prompt.options.forEach((opt, i) => console.log(`  ${i + 1}. ${opt.label}`));
+        const answer = (await rl.question("Select option number: ")).trim();
+        const idx = parseInt(answer, 10) - 1;
+        return prompt.options[idx]?.id;
+      }
     });
   } finally {
     rl.close();

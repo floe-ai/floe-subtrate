@@ -23,5 +23,8 @@
     "@types/node": "^24.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.0"
+  },
+  "overrides": {
+    "node-domexception": "npm:domexception@4.0.0"
   }
 }

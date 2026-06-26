@@ -6,8 +6,8 @@
 import { execSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getEnvApiKey, getModels, getProviders, type Model } from "@mariozechner/pi-ai";
-import { getOAuthApiKey, type OAuthCredentials } from "@mariozechner/pi-ai/oauth";
+import { getEnvApiKey, getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
+import { getOAuthApiKey, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";

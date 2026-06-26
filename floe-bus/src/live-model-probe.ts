@@ -48,7 +48,7 @@ function cacheKey(provider: string, credentialToken: string): string {
  * Probe Anthropic for live model IDs.
  * OAuth tokens (sk-ant-oat prefix) use Authorization: Bearer + anthropic-beta containing
  * "oauth-2025-04-20" — mirroring pi-ai's createClient() at
- * node_modules/@mariozechner/pi-ai/dist/providers/anthropic.js lines 629-643.
+ * node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js lines 629-643.
  * Plain API keys use x-api-key only.
  * Paginates via limit=1000 + after_id/has_more.
  */
@@ -174,7 +174,7 @@ function isOpenAIResponse(body: unknown): body is { data: Array<{ id: string }> 
  * The endpoint is undocumented — fail open on anything unexpected.
  *
  * Headers replicated from pi-ai source:
- *   node_modules/@mariozechner/pi-ai/dist/utils/oauth/github-copilot.js (COPILOT_HEADERS constant)
+ *   node_modules/@earendil-works/pi-ai/dist/utils/oauth/github-copilot.js (COPILOT_HEADERS constant)
  * We import getGitHubCopilotBaseUrl from pi's oauth module to derive the correct base URL
  * from the token's embedded proxy-ep field (enterprise Copilot support).
  */
@@ -192,7 +192,7 @@ async function probeCopilot(
       headers: {
         Authorization: `Bearer ${credential}`,
         // Static Copilot headers — replicated from pi-ai COPILOT_HEADERS constant
-        // Source: node_modules/@mariozechner/pi-ai/dist/utils/oauth/github-copilot.js
+        // Source: node_modules/@earendil-works/pi-ai/dist/utils/oauth/github-copilot.js
         "User-Agent": "GitHubCopilotChat/0.35.0",
         "Editor-Version": "vscode/1.107.0",
         "Editor-Plugin-Version": "copilot-chat/0.35.0",
@@ -305,7 +305,7 @@ function globalFetch(url: string, init?: RequestInit): Promise<Response> {
 }
 
 // Lazy import of pi's getGitHubCopilotBaseUrl to avoid circular issues at module load.
-// Source: @mariozechner/pi-ai/oauth → getGitHubCopilotBaseUrl(token, enterpriseDomain?)
+// Source: @earendil-works/pi-ai/oauth → getGitHubCopilotBaseUrl(token, enterpriseDomain?)
 let _piCopilotBaseUrl: ((token?: string, domain?: string) => string) | undefined;
 function defaultCopilotBaseUrl(token: string): string {
   if (!_piCopilotBaseUrl) {
@@ -313,7 +313,7 @@ function defaultCopilotBaseUrl(token: string): string {
     // synchronously loadable for tests. The import resolves to the already-loaded pi-ai bundle.
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const mod = require("@mariozechner/pi-ai/oauth") as { getGitHubCopilotBaseUrl: (t?: string, d?: string) => string };
+      const mod = require("@earendil-works/pi-ai/oauth") as { getGitHubCopilotBaseUrl: (t?: string, d?: string) => string };
       _piCopilotBaseUrl = mod.getGitHubCopilotBaseUrl;
     } catch {
       return "https://api.individual.githubcopilot.com";
