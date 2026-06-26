@@ -145,6 +145,7 @@ export function ActorView({
                   endpointId={actor.endpoint_id}
                   workspaceId={workspaceId}
                   onOpenContext={(contextId) => setSelectedSubContextId(contextId)}
+                  endpoints={endpoints}
                 />
               </div>
             </div>

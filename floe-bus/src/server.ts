@@ -934,6 +934,39 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { events: store.listEvents({ context_id: params.id, limit: query.limit }) };
   });
 
+  app.post("/v1/workspaces/:workspace_id/contexts", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string().min(1) }).parse(request.params);
+    const bodySchema = z.object({
+      participants: z.array(z.string().min(1)).min(1, "participants must be a non-empty array"),
+      context_id: z.string().min(1).optional(),
+      created_by_endpoint_id: z.string().min(1).nullable().optional(),
+    });
+    const parsed = bodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "invalid_request", issues: parsed.error.issues });
+    }
+    const body = parsed.data;
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    const contextId = store.contextStore.createContext({
+      workspace_id: params.workspace_id,
+      scope_id: null,
+      participants: body.participants,
+      created_by_endpoint_id: body.created_by_endpoint_id ?? null,
+      context_id: body.context_id,
+    });
+    const ctx = store.contextStore.getContext(contextId)!;
+    const participants = store.contextStore.getContextParticipants(contextId);
+    const serialized = serializeContextListRow({
+      ...ctx,
+      last_event_at: null,
+      participants,
+    });
+    broadcast("context_created", { context: serialized });
+    return reply.code(201).send({ context: serialized });
+  });
+
   app.post("/v1/workspaces/:workspace_id/contexts/:context_id/assign-scope", async (request, reply) => {
     const params = z.object({
       workspace_id: z.string().min(1),

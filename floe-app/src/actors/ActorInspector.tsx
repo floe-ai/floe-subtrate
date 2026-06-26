@@ -29,6 +29,7 @@ import {
   upsertRuntimeBinding,
   clearRuntimeBindings,
   listContextsByParticipant,
+  createDirectContext,
 } from "../bus-client/client.ts";
 import { modelsForProfile, withSelectedModelOption, providerForProfile } from "./modelsForProfile.ts";
 import { contextLabel } from "../scope/ScopeDetail.tsx";
@@ -155,14 +156,42 @@ export function ActorContexts({
   endpointId,
   workspaceId,
   onOpenContext,
+  endpoints = [],
 }: {
   endpointId: string;
   workspaceId: string;
   onOpenContext: (contextId: string) => void;
+  endpoints?: EndpointRef[];
 }): React.ReactElement {
   const [contexts, setContexts] = useState<ContextRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Participant picker state
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [selectedParticipant, setSelectedParticipant] = useState("");
+  const [createState, setCreateState] = useState<SaveState>({ phase: "idle" });
+
+  const otherEndpoints = endpoints.filter((e) => e.endpoint_id !== endpointId);
+
+  function fetchContexts() {
+    setLoading(true);
+    setError(null);
+    listContextsByParticipant({ participant: endpointId, workspace_id: workspaceId })
+      .then(rows => {
+        const sorted = [...rows].sort((a, b) => {
+          const ta = a.last_event_at ?? a.created_at;
+          const tb = b.last_event_at ?? b.created_at;
+          return tb.localeCompare(ta);
+        });
+        setContexts(sorted);
+        setLoading(false);
+      })
+      .catch(err => {
+        setError(err instanceof Error ? err.message : "Failed to load contexts");
+        setLoading(false);
+      });
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -187,6 +216,24 @@ export function ActorContexts({
     return () => { cancelled = true; };
   }, [endpointId, workspaceId]);
 
+  async function handleCreate() {
+    if (!selectedParticipant) return;
+    setCreateState({ phase: "saving" });
+    try {
+      const newCtx = await createDirectContext(workspaceId, {
+        participants: [endpointId, selectedParticipant],
+        created_by_endpoint_id: endpointId,
+      });
+      setCreateState({ phase: "saved" });
+      setPickerOpen(false);
+      setSelectedParticipant("");
+      onOpenContext(newCtx.context_id);
+      fetchContexts();
+    } catch (err) {
+      setCreateState({ phase: "error", message: err instanceof Error ? err.message : "Failed to create context" });
+    }
+  }
+
   return (
     <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{
@@ -194,13 +241,71 @@ export function ActorContexts({
         fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase",
         color: tk.ink3, fontWeight: 510,
       }}>
-        <span>Contexts</span>
+        <span>Conversations</span>
         {!loading && (
           <span style={{ color: tk.ink4, fontWeight: 400, letterSpacing: 0, textTransform: "none", fontSize: 11 }}>
             {contexts.length}
           </span>
         )}
+        <button
+          onClick={() => { setPickerOpen(true); setCreateState({ phase: "idle" }); setSelectedParticipant(otherEndpoints[0]?.endpoint_id ?? ""); }}
+          aria-label="New context"
+          style={{
+            marginLeft: "auto", background: "transparent",
+            border: `1px solid ${tk.border}`, color: tk.ink3,
+            borderRadius: tk.r1, padding: "2px 8px", fontSize: 10.5,
+            cursor: "pointer", fontFamily: tk.fontUi, textTransform: "none", letterSpacing: 0,
+          }}
+        >
+          + New
+        </button>
       </div>
+
+      {pickerOpen && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px", background: "rgba(255,255,255,0.03)", borderRadius: tk.r2, border: `1px solid ${tk.border}` }}>
+          {otherEndpoints.length === 0 ? (
+            <span style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>No other actors in workspace.</span>
+          ) : (
+            <select
+              aria-label="Select participant"
+              value={selectedParticipant}
+              onChange={(e) => setSelectedParticipant(e.target.value)}
+              style={{ ...selectStyle, fontSize: 12 }}
+            >
+              {otherEndpoints.map((e) => (
+                <option key={e.endpoint_id} value={e.endpoint_id}>{e.name || e.endpoint_id}</option>
+              ))}
+            </select>
+          )}
+          {createState.phase === "error" && (
+            <span role="alert" style={{ fontSize: 11, color: tk.danger }}>{createState.message}</span>
+          )}
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={() => void handleCreate()}
+              disabled={createState.phase === "saving" || !selectedParticipant}
+              style={{
+                background: tk.accent, color: "#0c1714", border: "none",
+                borderRadius: tk.r2, padding: "4px 10px", fontSize: 11.5, fontWeight: 510,
+                cursor: createState.phase === "saving" || !selectedParticipant ? "not-allowed" : "pointer",
+                fontFamily: tk.fontUi,
+              }}
+            >
+              {createState.phase === "saving" ? "Creating…" : "Confirm"}
+            </button>
+            <button
+              onClick={() => { setPickerOpen(false); setSelectedParticipant(""); setCreateState({ phase: "idle" }); }}
+              style={{
+                background: "transparent", border: `1px solid ${tk.border}`,
+                color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 11.5,
+                fontFamily: tk.fontUi, cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {loading && <span style={{ fontSize: 12, color: tk.ink3 }}>Loading…</span>}
 
