@@ -1,4 +1,5 @@
 mod fs_commands;
+mod substrate_commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,6 +18,9 @@ pub fn run() {
       fs_commands::list_agent_files,
       fs_commands::read_file,
       fs_commands::write_file,
+      substrate_commands::get_substrate_auth_profiles,
+      substrate_commands::save_substrate_auth_profile,
+      substrate_commands::delete_substrate_auth_profile,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

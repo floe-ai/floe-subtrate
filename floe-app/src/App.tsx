@@ -30,6 +30,7 @@ import { Activity } from "./activity/Activity.tsx";
 import { LeftNav } from "./app/layout/LeftNav.tsx";
 import { HomeView } from "./features/home/HomeView.tsx";
 import { ActorView } from "./features/actor/ActorView.tsx";
+import { SubstrateSettingsView } from "./features/substrate/SubstrateSettingsView.tsx";
 import { useNavigation } from "./hooks/useNavigation.ts";
 import { WorkspaceSwitcher, RegisterWorkspaceScreen } from "./workspace/WorkspaceSwitcher.tsx";
 import { ScopeInspectorEmpty, DefaultInspector, useInspectorResize, readRinspWidth } from "./scope/ScopeInspector.tsx";
@@ -504,6 +505,8 @@ export function App(): React.ReactElement {
             }}
             onNewActor={handleOpenNewActor}
             showNewActor={nav.showNewActor}
+            appMode={nav.appMode}
+            onViewSystem={nav.navigateToSystem}
           />
 
           {/* Main column */}
@@ -516,7 +519,9 @@ export function App(): React.ReactElement {
             display: "flex",
             flexDirection: "column",
           }}>
-            {nav.showWorkspaceSettings ? (
+            {nav.appMode === "system" ? (
+              <SubstrateSettingsView />
+            ) : nav.showWorkspaceSettings ? (
               <WorkspaceSettings workspace={activeWorkspace} onRemove={removeWorkspace} />
             ) : nav.showNewActor ? (
               <NewActorForm
@@ -572,7 +577,7 @@ export function App(): React.ReactElement {
           </main>
 
           {/* Right inspector */}
-          {(!nav.selectedActorId || nav.selectedContextId) && (
+          {nav.appMode !== "system" && (!nav.selectedActorId || nav.selectedContextId) && (
             <aside style={{
               flex: `0 0 ${inspWidth}px`,
               width: inspWidth,

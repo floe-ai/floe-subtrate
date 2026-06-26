@@ -16,12 +16,17 @@ export type NavProps = {
   onNewScope: () => void;
   onNewActor: () => void;
   showNewActor: boolean;
+  appMode: "workspace" | "system";
+  onViewSystem: () => void;
 };
 
 export function LeftNav({
   view, scopes, selectedScopeId, actors, selectedActorId,
   onView, onSelectScope, onSelectActor, onNewScope, onNewActor, showNewActor,
+  appMode, onViewSystem,
 }: NavProps): React.ReactElement {
+  const isSystemActive = appMode === "system";
+
   return (
     <aside style={{
       flex: "0 0 240px",
@@ -37,17 +42,16 @@ export function LeftNav({
       <NavRow
         label="Home"
         glyph="⌂"
-        isOn={view === "home" && selectedScopeId === null}
+        isOn={!isSystemActive && view === "home" && selectedScopeId === null}
         onClick={() => { onView("home"); onSelectScope(""); /* empty string → null in handleSelectScope */ }}
       />
       {/* Activity */}
       <NavRow
         label="Activity"
         glyph="≋"
-        isOn={view === "activity"}
+        isOn={!isSystemActive && view === "activity"}
         onClick={() => { onView("activity"); onSelectScope(""); /* empty string → null in handleSelectScope; also clears context/actor/settings */ }}
       />
-
 
       {/* Scopes section */}
       <div style={{
@@ -67,7 +71,7 @@ export function LeftNav({
           key={s.scope_id}
           label={s.title || s.scope_id}
           glyph={(s.title || s.scope_id).charAt(0).toUpperCase()}
-          isOn={selectedScopeId === s.scope_id}
+          isOn={!isSystemActive && selectedScopeId === s.scope_id}
           onClick={() => onSelectScope(s.scope_id)}
         />
       ))}
@@ -98,7 +102,7 @@ export function LeftNav({
           key={a.endpoint_id}
           label={a.name || a.endpoint_id}
           glyph={(a.name || a.endpoint_id).charAt(0).toUpperCase()}
-          isOn={selectedActorId === a.endpoint_id}
+          isOn={!isSystemActive && selectedActorId === a.endpoint_id}
           onClick={() => onSelectActor(a.endpoint_id)}
         />
       ))}
@@ -112,9 +116,21 @@ export function LeftNav({
       <NavRow
         label="New actor"
         glyph="+"
-        isOn={showNewActor}
+        isOn={!isSystemActive && showNewActor}
         onClick={onNewActor}
         faint
+      />
+
+      {/* Flexible Spacer to push settings to bottom */}
+      <div style={{ flex: "1 1 auto", minHeight: 16 }} />
+
+      {/* Substrate / System Settings Rule and Option */}
+      <hr style={{ border: "none", borderTop: `1px solid ${tk.border2}`, margin: "8px 0" }} />
+      <NavRow
+        label="Substrate Settings"
+        glyph="⚙"
+        isOn={isSystemActive}
+        onClick={onViewSystem}
       />
     </aside>
   );
@@ -150,6 +166,7 @@ export function NavRow({
         textAlign: "left", width: "100%",
         opacity: disabled ? 0.4 : 1,
         transition: "background 120ms ease, color 120ms ease",
+        flexShrink: 0,
       }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}

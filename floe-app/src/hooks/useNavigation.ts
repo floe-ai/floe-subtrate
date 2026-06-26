@@ -3,6 +3,7 @@ import { useState, useCallback } from "react";
 export type NavView = "home" | "activity";
 
 export type NavigationState = {
+  appMode: "workspace" | "system";
   view: NavView;
   selectedScopeId: string | null;
   selectedActorId: string | null;
@@ -14,6 +15,7 @@ export type NavigationState = {
 
 export function useNavigation() {
   const [state, setState] = useState<NavigationState>({
+    appMode: "workspace",
     view: "home",
     selectedScopeId: null,
     selectedActorId: null,
@@ -25,6 +27,7 @@ export function useNavigation() {
 
   const navigateToHome = useCallback(() => {
     setState({
+      appMode: "workspace",
       view: "home",
       selectedScopeId: null,
       selectedActorId: null,
@@ -37,6 +40,7 @@ export function useNavigation() {
 
   const navigateToActivity = useCallback(() => {
     setState({
+      appMode: "workspace",
       view: "activity",
       selectedScopeId: null,
       selectedActorId: null,
@@ -49,6 +53,7 @@ export function useNavigation() {
 
   const navigateToScope = useCallback((scopeId: string | null) => {
     setState({
+      appMode: "workspace",
       view: "home",
       selectedScopeId: scopeId || null,
       selectedActorId: null,
@@ -61,6 +66,7 @@ export function useNavigation() {
 
   const navigateToActor = useCallback((actorId: string | null) => {
     setState({
+      appMode: "workspace",
       view: "home",
       selectedScopeId: null,
       selectedActorId: actorId || null,
@@ -73,6 +79,7 @@ export function useNavigation() {
 
   const navigateToContext = useCallback((contextId: string | null, scopeId: string | null = null, actorId: string | null = null) => {
     setState({
+      appMode: "workspace",
       view: "home",
       selectedScopeId: scopeId,
       selectedActorId: actorId,
@@ -85,6 +92,7 @@ export function useNavigation() {
 
   const navigateToWorkspaceSettings = useCallback(() => {
     setState({
+      appMode: "workspace",
       view: "home",
       selectedScopeId: null,
       selectedActorId: null,
@@ -97,6 +105,7 @@ export function useNavigation() {
 
   const navigateToNewActor = useCallback(() => {
     setState({
+      appMode: "workspace",
       view: "home",
       selectedScopeId: null,
       selectedActorId: null,
@@ -104,6 +113,19 @@ export function useNavigation() {
       selectedContextLabel: null,
       showWorkspaceSettings: false,
       showNewActor: true,
+    });
+  }, []);
+
+  const navigateToSystem = useCallback(() => {
+    setState({
+      appMode: "system",
+      view: "home",
+      selectedScopeId: null,
+      selectedActorId: null,
+      selectedContextId: null,
+      selectedContextLabel: null,
+      showWorkspaceSettings: false,
+      showNewActor: false,
     });
   }, []);
 
@@ -136,6 +158,7 @@ export function useNavigation() {
     navigateToContext,
     navigateToWorkspaceSettings,
     navigateToNewActor,
+    navigateToSystem,
     setContextLabel,
     clearActorSelection,
     clearScopeSelection,
