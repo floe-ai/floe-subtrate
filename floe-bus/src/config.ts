@@ -111,6 +111,19 @@ export function resolveLocalPath(configPath: string, home: string, pathValue: st
   return resolve(base, expanded);
 }
 
+function migrateWebToApp(raw: Record<string, unknown> | null): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  if (!("web" in raw) || "app" in raw) return false;
+  raw["app"] = raw["web"];
+  delete raw["web"];
+  const services = raw["services"] as Record<string, unknown> | undefined;
+  if (services && "start_web" in services && !("start_app" in services)) {
+    services["start_app"] = services["start_web"];
+    delete services["start_web"];
+  }
+  return true;
+}
+
 export function ensureConfig(explicitPath?: string): { configPath: string; config: LocalConfig } {
   const configPath = resolveConfigPath(explicitPath);
   if (!existsSync(configPath)) {
@@ -118,8 +131,11 @@ export function ensureConfig(explicitPath?: string): { configPath: string; confi
     mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(configPath, YAML.stringify(config), "utf8");
   }
-  const raw = readFileSync(configPath, "utf8");
-  const parsed = LocalConfigSchema.parse(YAML.parse(raw));
+  const raw = YAML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown> | null;
+  if (migrateWebToApp(raw)) {
+    writeFileSync(configPath, YAML.stringify(raw), "utf8");
+  }
+  const parsed = LocalConfigSchema.parse(raw);
   mkdirSync(resolveLocalPath(configPath, parsed.home, parsed.bus.data_dir), { recursive: true });
   mkdirSync(resolveLocalPath(configPath, parsed.home, parsed.bus.log_dir), { recursive: true });
   mkdirSync(resolveLocalPath(configPath, parsed.home, parsed.library.configs_dir), { recursive: true });
