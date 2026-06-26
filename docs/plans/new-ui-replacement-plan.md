@@ -89,7 +89,7 @@ built against a real API and not mocked. Findings are from the current `floe-bus
 - Events query — `GET /v1/events` (by workspace/scope/context).
 - Pulses — `GET /v1/pulses` → the tide-line.
 - Scope Projection — `GET /v1/workspaces/:w/scopes/:s/projection` → the Field.
-- Contexts — `GET /v1/contexts` with `last_event_at`, `participants`, `first_message_preview`.
+- Contexts — `GET /v1/contexts` with `last_event_at`, `participants`, `first_message_preview`; `POST /v1/workspaces/:ws/contexts` to create a workspace-level (scope_id: null) Context with given participants (201 / 400 on empty participants / 404 on unknown workspace).
 - Generic runtime telemetry — `POST/GET /v1/runtime/telemetry` (raw substrate for momentum later).
 - Live stream — `GET /v1/events/stream` (WebSocket).
 
