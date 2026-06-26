@@ -25,7 +25,7 @@ describe("Floe local vertical slice", () => {
     projectPath = join(temp, "project");
     mkdirSync(projectPath, { recursive: true });
     const busPort = await freePort();
-    const webPort = await freePort();
+    const appPort = await freePort();
     busUrl = `http://127.0.0.1:${busPort}`;
     wsUrl = `ws://127.0.0.1:${busPort}`;
     configPath = join(temp, "config.yaml");
@@ -36,7 +36,7 @@ describe("Floe local vertical slice", () => {
       services: {
         autostart: false,
         manager: "auto",
-        start_web: false
+        start_app: false
       },
       bus: {
         listen: `127.0.0.1:${busPort}`,
@@ -53,12 +53,12 @@ describe("Floe local vertical slice", () => {
           local_paths: true
         }
       },
-      web: {
-        listen: `127.0.0.1:${webPort}`,
+      app: {
+        listen: `127.0.0.1:${appPort}`,
         bus_http_url: busUrl,
         bus_ws_url: wsUrl,
-        data_dir: "./web",
-        log_dir: "./logs/web"
+        data_dir: "./app",
+        log_dir: "./logs/app"
       },
       library: {
         configs_dir: "./configs",

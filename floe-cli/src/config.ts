@@ -11,7 +11,7 @@ const LocalConfigSchema = z.object({
   services: z.object({
     autostart: z.boolean(),
     manager: z.string(),
-    start_web: z.boolean()
+    start_app: z.boolean()
   }),
   bus: z.object({
     listen: z.string(),
@@ -27,7 +27,7 @@ const LocalConfigSchema = z.object({
     workspace_access: z.object({ local_paths: z.boolean() }),
     runtime_adapter: z.string().optional()
   }),
-  web: z.object({
+  app: z.object({
     listen: z.string(),
     bus_http_url: z.string(),
     bus_ws_url: z.string(),
@@ -53,7 +53,7 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
     schema: "floe.local.v1",
     version: 1,
     home,
-    services: { autostart: true, manager: "auto", start_web: true },
+    services: { autostart: true, manager: "auto", start_app: true },
     bus: {
       listen: "127.0.0.1:5377",
       http_base_url: "http://127.0.0.1:5377",
@@ -67,12 +67,12 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
       bus_url: "ws://127.0.0.1:5377",
       workspace_access: { local_paths: true }
     },
-    web: {
-      listen: "127.0.0.1:5378",
+    app: {
+      listen: "127.0.0.1:5379",
       bus_http_url: "http://127.0.0.1:5377",
       bus_ws_url: "ws://127.0.0.1:5377",
-      data_dir: "./web",
-      log_dir: "./logs/web"
+      data_dir: "./app",
+      log_dir: "./logs/app"
     },
     library: {
       configs_dir: "./configs",
@@ -125,8 +125,8 @@ export function ensureLocalDirs(configPath: string, config: LocalConfig): void {
     config.bus.log_dir,
     config.bridge.data_dir,
     config.bridge.log_dir,
-    config.web.data_dir,
-    config.web.log_dir,
+    config.app.data_dir,
+    config.app.log_dir,
     config.library.configs_dir,
     config.library.skills_dir,
     config.library.extensions_dir,

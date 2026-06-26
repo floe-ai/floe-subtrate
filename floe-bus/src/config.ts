@@ -11,7 +11,7 @@ const LocalConfigSchema = z.object({
   services: z.object({
     autostart: z.boolean(),
     manager: z.string(),
-    start_web: z.boolean()
+    start_app: z.boolean()
   }),
   bus: z.object({
     listen: z.string(),
@@ -28,7 +28,7 @@ const LocalConfigSchema = z.object({
       local_paths: z.boolean()
     })
   }),
-  web: z.object({
+  app: z.object({
     listen: z.string(),
     bus_http_url: z.string(),
     bus_ws_url: z.string(),
@@ -57,7 +57,7 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
     services: {
       autostart: true,
       manager: "auto",
-      start_web: true
+      start_app: true
     },
     bus: {
       listen: "127.0.0.1:5377",
@@ -74,12 +74,12 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
         local_paths: true
       }
     },
-    web: {
-      listen: "127.0.0.1:5378",
+    app: {
+      listen: "127.0.0.1:5379",
       bus_http_url: "http://127.0.0.1:5377",
       bus_ws_url: "ws://127.0.0.1:5377",
-      data_dir: "./web",
-      log_dir: "./logs/web"
+      data_dir: "./app",
+      log_dir: "./logs/app"
     },
     library: {
       configs_dir: "./configs",

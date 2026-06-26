@@ -141,7 +141,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     config_path: configPath,
     home: config.home,
     bus: config.bus,
-    web: config.web,
+    app: config.app,
     bridge: config.bridge
   }));
 
