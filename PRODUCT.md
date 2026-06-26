@@ -38,7 +38,7 @@ Floe Web succeeds when the user understands this mental model:
 Floe Web must preserve these decisions (labelled "v58" historically; v58 north-star doc is superseded, but these principles remain current — current authority is `docs/floe_thought_log.md`):
 
 - `floe-bus` owns events, endpoints, deliveries, pending responses, broadcasts, pulse, workspaces, and observability.
-- `floe-web` talks to `floe-bus`; browser code does not read or write workspace files directly.
+- `floe-app` talks to `floe-bus`; browser code does not read or write workspace files directly.
 - `floe-bridge` owns runtime embodiment and `.floe/` template initialization.
 - V0 uses Pi lower layers through the bridge where feasible.
 - `emit` is the required runtime primitive; V0 must not reintroduce held `yield` or runtime keepalive semantics.

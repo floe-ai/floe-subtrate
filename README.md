@@ -4,7 +4,7 @@ Floe is a local daemon-driven substrate with three independent services:
 
 - `floe-bus`: durable event, queue, wait, workspace, and endpoint daemon
 - `floe-bridge`: runtime boundary and project `.floe/` loader
-- `floe-web`: local operator console
+- `floe-app`: local operator console
 
 The local development and CI runtime adapter is deterministic fake runtime, so
 the core substrate can be tested without spending Copilot premium requests. It
@@ -21,7 +21,7 @@ npm run floe -- setup -- --no-autostart --no-open
 Open:
 
 ```text
-http://127.0.0.1:5378
+http://127.0.0.1:5379
 ```
 
 Useful commands:
