@@ -100,7 +100,8 @@ export function resolveLocalPath(configPath: string, home: string, pathValue: st
   return resolve(home ? expandHome(home) : dirname(configPath), expanded);
 }
 
-function migrateWebToApp(raw: Record<string, unknown>): boolean {
+function migrateWebToApp(raw: Record<string, unknown> | null): boolean {
+  if (!raw || typeof raw !== "object") return false;
   if (!("web" in raw) || "app" in raw) return false;
   raw["app"] = raw["web"];
   delete raw["web"];
@@ -121,7 +122,7 @@ export function ensureConfig(explicitPath?: string): { configPath: string; confi
     writeFileSync(configPath, YAML.stringify(config), "utf8");
     created = true;
   }
-  const raw = YAML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  const raw = YAML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown> | null;
   if (migrateWebToApp(raw)) {
     writeFileSync(configPath, YAML.stringify(raw), "utf8");
   }
