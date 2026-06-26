@@ -100,6 +100,18 @@ export function resolveLocalPath(configPath: string, home: string, pathValue: st
   return resolve(home ? expandHome(home) : dirname(configPath), expanded);
 }
 
+function migrateWebToApp(raw: Record<string, unknown>): boolean {
+  if (!("web" in raw) || "app" in raw) return false;
+  raw["app"] = raw["web"];
+  delete raw["web"];
+  const services = raw["services"] as Record<string, unknown> | undefined;
+  if (services && "start_web" in services && !("start_app" in services)) {
+    services["start_app"] = services["start_web"];
+    delete services["start_web"];
+  }
+  return true;
+}
+
 export function ensureConfig(explicitPath?: string): { configPath: string; config: LocalConfig; created: boolean } {
   const configPath = resolveConfigPath(explicitPath);
   let created = false;
@@ -109,7 +121,11 @@ export function ensureConfig(explicitPath?: string): { configPath: string; confi
     writeFileSync(configPath, YAML.stringify(config), "utf8");
     created = true;
   }
-  const config = LocalConfigSchema.parse(YAML.parse(readFileSync(configPath, "utf8")));
+  const raw = YAML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  if (migrateWebToApp(raw)) {
+    writeFileSync(configPath, YAML.stringify(raw), "utf8");
+  }
+  const config = LocalConfigSchema.parse(raw);
   ensureLocalDirs(configPath, config);
   return { configPath, config, created };
 }
