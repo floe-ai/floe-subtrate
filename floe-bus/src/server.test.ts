@@ -268,6 +268,56 @@ describe("Slice 2 — Context API HTTP routes", () => {
       expect(res.json()).toMatchObject({ error: "context_not_found", context_id: "ctx_unknown" });
     });
   });
+
+  describe("POST /v1/workspaces/:workspace_id/contexts", () => {
+    function ensureWorkspace(h: ServerHandle) {
+      h.store.db.prepare(`
+        INSERT OR IGNORE INTO workspaces (workspace_id, name, locator, status, init_authorized, created_at, updated_at)
+        VALUES (?, ?, ?, 'registered', 0, datetime('now'), datetime('now'))
+      `).run(WS, "Test WS", WS);
+    }
+
+    it("creates a workspace-level context with scope_id null and returns 201", async () => {
+      ensureWorkspace(handle);
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ participants: [E1, E2], created_by_endpoint_id: E1 }),
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json() as { context: any };
+      expect(body.context).toMatchObject({
+        workspace_id: WS,
+        scope_id: null,
+        participants: expect.arrayContaining([E1, E2]),
+        created_by_endpoint_id: E1,
+      });
+      expect(typeof body.context.context_id).toBe("string");
+    });
+
+    it("returns 404 on unknown workspace", async () => {
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/no-such-ws/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ participants: [E1, E2] }),
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ error: "workspace_not_found" });
+    });
+
+    it("returns 400 when participants is empty", async () => {
+      ensureWorkspace(handle);
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ participants: [] }),
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
 });
 
 describe("Trigger ingress Scope API routes", () => {

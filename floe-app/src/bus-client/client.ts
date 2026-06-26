@@ -315,6 +315,18 @@ export async function listContextEvents(id: string, options?: { limit?: number }
   return data.events;
 }
 
+/** POST /v1/workspaces/:ws/contexts — create a workspace-level context with the given participants */
+export async function createDirectContext(
+  ws: string,
+  input: { participants: string[]; context_id?: string; created_by_endpoint_id?: string | null }
+): Promise<ContextRef> {
+  const data = await post<{ context: ContextRef }>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/contexts`,
+    input
+  );
+  return data.context;
+}
+
 /** POST /v1/workspaces/:ws/contexts/:id/assign-scope */
 export async function assignContextScope(
   ws: string,
