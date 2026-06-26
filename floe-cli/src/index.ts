@@ -6,7 +6,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
 import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./config.js";
-import type { OAuthProviderId } from "@earendil-works/pi-ai";
+import type { OAuthProviderId } from "@earendil-works/pi-ai/oauth";
 import {
   createAuthRuntime,
   findProfile,
