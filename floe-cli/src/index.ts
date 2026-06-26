@@ -51,8 +51,8 @@ program
     }
     await startAll(configPath, config);
     await verifyHealth(config);
-    if (options.open) openUrl(config.web.bus_http_url ? webUrl(config) : "http://127.0.0.1:5378");
-    console.log(`Floe is running: ${webUrl(config)}`);
+    if (options.open) openUrl(config.app.bus_http_url ? appUrl(config) : "http://127.0.0.1:5379");
+    console.log(`Floe is running: ${appUrl(config)}`);
   });
 
 program
@@ -65,8 +65,8 @@ program
 
 program.command("open").description("Open the Floe web UI").action(async () => {
   const { config } = ensureConfig(program.opts().config);
-  openUrl(webUrl(config));
-  console.log(webUrl(config));
+  openUrl(appUrl(config));
+  console.log(appUrl(config));
 });
 
 program.command("start").description("Start local Floe services").action(async () => {
@@ -77,24 +77,24 @@ program.command("start").description("Start local Floe services").action(async (
 
 program.command("stop").description("Stop local Floe services").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
-  for (const service of ["web", "bridge", "bus"] as ServiceName[]) stopService(configPath, config, service);
+  for (const service of ["app", "bridge", "bus"] as ServiceName[]) stopService(configPath, config, service);
   console.log("Stopped Floe services.");
 });
 
 program.command("restart").description("Restart local Floe services").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
-  for (const service of ["web", "bridge", "bus"] as ServiceName[]) stopService(configPath, config, service);
+  for (const service of ["app", "bridge", "bus"] as ServiceName[]) stopService(configPath, config, service);
   await startAll(configPath, config);
   console.log("Restarted Floe services.");
 });
 
 program
   .command("logs")
-  .argument("[service]", "bus, bridge, or web")
+  .argument("[service]", "bus, bridge, or app")
   .description("Print service logs")
   .action((service?: ServiceName) => {
     const { configPath, config } = ensureConfig(program.opts().config);
-    const services = service ? [service] : ["bus", "bridge", "web"] as ServiceName[];
+    const services = service ? [service] : ["bus", "bridge", "app"] as ServiceName[];
     for (const item of services) {
       const path = serviceLogPath(configPath, config, item);
       console.log(`\n== ${item}: ${path} ==`);
@@ -285,7 +285,7 @@ autostart.command("off").description("Disable user-level autostart").action(() =
 
 program.command("uninstall").description("Remove autostart entries and stop services; preserve ~/.floe data").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
-  for (const service of ["web", "bridge", "bus"] as ServiceName[]) stopService(configPath, config, service);
+  for (const service of ["app", "bridge", "bus"] as ServiceName[]) stopService(configPath, config, service);
   uninstallAutostart();
   console.log("Removed Floe service entries. Local data is preserved.");
 });
@@ -300,9 +300,9 @@ program.action(async () => {
   const currentWorkspace = findAncestorWithFloe(process.cwd());
   if (currentWorkspace) {
     await registerCurrentWorkspace(config, currentWorkspace, true);
-    openUrl(`${webUrl(config)}?workspace=${encodeURIComponent(currentWorkspace)}`);
+    openUrl(`${appUrl(config)}?workspace=${encodeURIComponent(currentWorkspace)}`);
   } else {
-    openUrl(`${webUrl(config)}?candidate=${encodeURIComponent(process.cwd())}`);
+    openUrl(`${appUrl(config)}?candidate=${encodeURIComponent(process.cwd())}`);
   }
 });
 
@@ -408,13 +408,13 @@ async function startAll(configPath: string, config: LocalConfig): Promise<void> 
   if (!(await isHealthy(config.bus.http_base_url))) await startService(configPath, config, "bus");
   await waitForHealth(config.bus.http_base_url, "floe-bus");
   await startService(configPath, config, "bridge");
-  if (config.services.start_web && !(await isHealthy(webUrl(config)))) await startService(configPath, config, "web");
-  if (config.services.start_web) await waitForHealth(webUrl(config), "floe-web");
+  if (config.services.start_app && !(await isHealthy(appUrl(config)))) await startService(configPath, config, "app");
+  if (config.services.start_app) await waitForHealth(appUrl(config), "floe-app");
 }
 
 async function verifyHealth(config: LocalConfig): Promise<void> {
   await waitForHealth(config.bus.http_base_url, "floe-bus");
-  await waitForHealth(webUrl(config), "floe-web");
+  await waitForHealth(appUrl(config), "floe-app");
 }
 
 async function waitForHealth(baseUrl: string, label: string): Promise<void> {
@@ -437,17 +437,17 @@ async function isHealthy(baseUrl: string): Promise<boolean> {
 
 async function printStatus(configPath: string, config: LocalConfig): Promise<void> {
   const records = readRecords(configPath, config);
-  for (const service of ["bus", "bridge", "web"] as ServiceName[]) {
+  for (const service of ["bus", "bridge", "app"] as ServiceName[]) {
     const record = records[service];
     const running = record ? isPidRunning(record.pid) : false;
     console.log(`${service}: ${running ? "running" : "not running"}${record ? ` pid=${record.pid}` : ""}`);
   }
   console.log(`bus: ${config.bus.http_base_url} ${await isHealthy(config.bus.http_base_url) ? "healthy" : "unreachable"}`);
-  console.log(`web: ${webUrl(config)} ${await isHealthy(webUrl(config)) ? "healthy" : "unreachable"}`);
+  console.log(`app: ${appUrl(config)} ${await isHealthy(appUrl(config)) ? "healthy" : "unreachable"}`);
 }
 
-function webUrl(config: LocalConfig): string {
-  const listen = config.web.listen;
+function appUrl(config: LocalConfig): string {
+  const listen = config.app.listen;
   return `http://${listen}`;
 }
 

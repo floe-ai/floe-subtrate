@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 
-export type ServiceName = "bus" | "bridge" | "web";
+export type ServiceName = "bus" | "bridge" | "app";
 
 type ServiceRecord = {
   pid: number;
@@ -42,7 +42,7 @@ export function serviceLogPath(configPath: string, config: LocalConfig, service:
     ? config.bus.log_dir
     : service === "bridge"
       ? config.bridge.log_dir
-      : config.web.log_dir;
+      : config.app.log_dir;
   return join(resolveLocalPath(configPath, config.home, dir), `${service}.log`);
 }
 
@@ -78,10 +78,10 @@ export async function startService(configPath: string, config: LocalConfig, serv
   if (existing && isPidRunning(existing.pid)) return existing;
 
   const root = repoRoot();
-  const workspace = service === "bus" ? "floe-bus" : service === "bridge" ? "floe-bridge" : "floe-web";
-  const webListen = parseListen(config.web.listen);
-  const args = service === "web"
-    ? ["run", "dev", "--workspace", workspace, "--", "--host", webListen.host, "--port", String(webListen.port)]
+  const workspace = service === "bus" ? "floe-bus" : service === "bridge" ? "floe-bridge" : "floe-app";
+  const appListen = parseListen(config.app.listen);
+  const args = service === "app"
+    ? ["run", "dev", "--workspace", workspace, "--", "--host", appListen.host, "--port", String(appListen.port)]
     : ["run", "dev", "--workspace", workspace, "--", "--config", configPath];
   const commandLine = commandForNpm(args);
   const defaultLogFile = serviceLogPath(configPath, config, service);
