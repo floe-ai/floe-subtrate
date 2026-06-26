@@ -4,9 +4,9 @@
  * thinking changes rebuild the session before processing the next delivery.
  */
 import { randomUUID } from "node:crypto";
-import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@mariozechner/pi-ai";
-import { getGitHubCopilotBaseUrl } from "@mariozechner/pi-ai/oauth";
+import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import { getGitHubCopilotBaseUrl } from "@earendil-works/pi-ai/oauth";
 import type { AgentRuntimeConfig, BridgeAuthRuntime, ModelThinkingCapability, RuntimeAuthResolved } from "../auth.js";
 import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle } from "../bus-client.js";

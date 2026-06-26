@@ -6,7 +6,7 @@
  * alongside emit and list_endpoints in the Pi adapter.
  */
 
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { createReadTool } from "./read.js";
 import { createLsTool } from "./ls.js";
 import { createGrepTool } from "./grep.js";

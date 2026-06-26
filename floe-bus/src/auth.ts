@@ -7,9 +7,9 @@
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getModels, getProviders, type Model } from "@mariozechner/pi-ai";
-import { getOAuthApiKey } from "@mariozechner/pi-ai/oauth";
-import type { OAuthCredentials } from "@mariozechner/pi-ai/oauth";
+import { getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
+import { getOAuthApiKey } from "@earendil-works/pi-ai/oauth";
+import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";

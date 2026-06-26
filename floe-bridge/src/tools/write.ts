@@ -6,8 +6,8 @@
  * Workspace-scoped: all paths are resolved and validated within the workspace root.
  */
 
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import { safeWorkspacePath } from "./path-scoping.js";
