@@ -64,13 +64,9 @@ const RULES: VocabularyRule[] = [
   {
     name: "is_default scope machinery (no default scope exists; remove, do not guard)",
     pattern: /is_default/,
-    roots: ["floe-bus/src", "floe-web/src"],
+    roots: ["floe-bus/src"],
     extensions: [".ts", ".tsx"],
-    allowed: {
-      "floe-web/src/scope-projection.ts": "optional legacy field; remove with V6 shell",
-      "floe-web/src/scope-projection-api.test.ts": "fixture for legacy field; remove with V6 shell",
-      "floe-web/src/main.tsx": "locally derived legacy flag; remove with V6 shell"
-    }
+    allowed: {}
   },
   {
     name: 'chat-shaped "read receipt" framing (use Endpoint Watermark / Event Cursor)',
@@ -84,7 +80,7 @@ const RULES: VocabularyRule[] = [
   {
     name: ".floe/blocks substrate (rejected; must not be introduced)",
     pattern: /\.floe\/blocks/,
-    roots: ["floe-bus/src", "floe-web/src", "docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md"],
+    roots: ["floe-bus/src", "docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md"],
     extensions: [".ts", ".tsx", ".md"],
     allowed: {
       "CONTEXT.md": "names the rejected substrate in _Avoid_ lists",

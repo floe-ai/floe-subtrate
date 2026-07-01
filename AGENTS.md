@@ -14,6 +14,12 @@ This repository is pre-release. Nothing depends on it yet; there are no external
 
 - **No backward compatibility.** Do not keep old code, schemas, or APIs working for their own sake. When a shape is wrong, change it outright.
 - **No migration paths.** Do not write data migrations, compatibility shims, dual-read/dual-write, or deprecation cycles. Replace the old thing and delete it.
+- **Config is not migrated.** `~/.floe/config.yaml` follows the current schema only. Breaking schema changes are expected in early development, and there is deliberately no config migration. An incompatible on-disk config fails fast with a reset instruction — never migrate it. The fix is always to reset and re-run setup:
+
+  ```bash
+  rm -rf ~/.floe        # or: rm ~/.floe/config.yaml
+  floe setup
+  ```
 - **Zero tech-debt accumulation.** Leave every change at the quality you would want to inherit. If a change would add debt "to clean up later," do the clean version now or stop and flag it — "later" does not exist here.
 
 This licenses deletion and replacement. It does **not** license sloppiness: the bar is *higher*, because there is no legacy excuse for mess.
