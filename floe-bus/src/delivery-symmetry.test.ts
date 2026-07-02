@@ -259,6 +259,36 @@ describe("Delivery symmetry", () => {
     expect(ep.status).toBe("runtime_unconfigured");
   });
 
+  it("surfaces a visible runtime_unconfigured signal when messaging an unconfigured endpoint", () => {
+    store.registerEndpoint({
+      endpoint_id: PROCESSOR_EP,
+      workspace_id: WS,
+      name: "Processor",
+      bridge_id: BRIDGE,
+      status: "runtime_unconfigured"
+    }, noop);
+
+    store.submitEvent({
+      type: "message",
+      workspace_id: WS,
+      source_endpoint_id: OBSERVER_EP,
+      destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
+      content: { body: "hello into the void" },
+      response: { expected: false }
+    }, noop);
+
+    // No delivery is created for an unconfigured endpoint...
+    expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
+
+    // ...but the message must not vanish silently: a visible telemetry signal is emitted.
+    const telemetry = store.listRuntimeTelemetry({ workspace_id: WS }) as any[];
+    const signal = telemetry.find((row) => row.kind === "runtime_unconfigured");
+    expect(signal, "expected a runtime_unconfigured telemetry signal").toBeTruthy();
+    expect(signal.endpoint_id).toBe(PROCESSOR_EP);
+    const payload = typeof signal.payload_json === "string" ? JSON.parse(signal.payload_json) : signal.payload;
+    expect(String(payload.message)).toMatch(/auth profile/i);
+  });
+
   it("makes queued work deliverable at normal turn end for an active delivery processor", () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,

@@ -1356,9 +1356,32 @@ export class BusStore {
     });
     for (const row of resolved) {
       broadcast("delivery_created", { event_id: event.event_id, destination_endpoint_id: row.destination_endpoint_id });
-      this.tryCreateDeliveryForEndpoint(row.destination_endpoint_id, broadcast);
+      const delivery = this.tryCreateDeliveryForEndpoint(row.destination_endpoint_id, broadcast);
+      if (!delivery) this.signalIfRuntimeUnconfigured(event, row.destination_endpoint_id, broadcast);
     }
     return { event, deliveries_created: resolved.length };
+  }
+
+  /**
+   * A message routed to an endpoint with no bound auth profile produces no delivery
+   * (see tryCreateDeliveryForEndpoint). Without a signal the message vanishes silently.
+   * Emit visible runtime telemetry so the operator sees that a profile must be selected.
+   */
+  private signalIfRuntimeUnconfigured(event: EventEnvelope, endpointId: string, broadcast: Broadcast): void {
+    const endpoint = this.getEndpoint(endpointId);
+    if (!endpoint || String(endpoint.status) !== "runtime_unconfigured") return;
+    this.appendRuntimeTelemetry({
+      workspace_id: endpoint.workspace_id,
+      endpoint_id: endpointId,
+      kind: "runtime_unconfigured",
+      payload: {
+        code: "runtime_unconfigured",
+        trigger_event_id: event.event_id,
+        message:
+          "No auth profile is bound to this agent/workspace, so the message was accepted but not delivered. " +
+          "Select an auth profile for this workspace (or run 'floe login') to enable replies."
+      }
+    }, broadcast);
   }
 
   reportTurnEnd(endpointId: string, broadcast: Broadcast): unknown {

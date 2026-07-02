@@ -38,6 +38,22 @@ When passing CLI flags through `npm run floe`, put `--` before the flags, as in
 `npm run floe -- setup -- --no-autostart --no-open`. A packaged `floe` binary
 does not need the extra separator.
 
+## Config & breaking changes (early development)
+
+Floe is in early development. Breaking schema changes to `~/.floe/config.yaml`
+are expected, and there is **deliberately no config migration**. If your on-disk
+config is incompatible with the current version, `floe` fails fast with a clear
+message instead of migrating or crashing. The correct response is always to
+reset the config and re-run setup:
+
+```bash
+rm -rf ~/.floe        # or: rm ~/.floe/config.yaml
+npm run floe -- setup
+```
+
+If a service fails to start with a stale-dependency error, your `node_modules`
+is out of date after a version bump — reinstall with `npm install`.
+
 ## Validation
 
 ```bash

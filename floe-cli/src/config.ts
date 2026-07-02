@@ -100,17 +100,20 @@ export function resolveLocalPath(configPath: string, home: string, pathValue: st
   return resolve(home ? expandHome(home) : dirname(configPath), expanded);
 }
 
-function migrateWebToApp(raw: Record<string, unknown> | null): boolean {
-  if (!raw || typeof raw !== "object") return false;
-  if (!("web" in raw) || "app" in raw) return false;
-  raw["app"] = raw["web"];
-  delete raw["web"];
-  const services = raw["services"] as Record<string, unknown> | undefined;
-  if (services && "start_web" in services && !("start_app" in services)) {
-    services["start_app"] = services["start_web"];
-    delete services["start_web"];
-  }
-  return true;
+function parseLocalConfig(raw: unknown, configPath: string): LocalConfig {
+  const result = LocalConfigSchema.safeParse(raw);
+  if (result.success) return result.data;
+  const details = result.error.issues
+    .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("; ");
+  throw new Error(
+    `Floe config at ${configPath} is incompatible with this version of Floe.\n` +
+      `Floe is in early development, so breaking config changes are expected and there is no automatic migration.\n` +
+      `Reset your local config and re-run setup:\n` +
+      `  rm -rf ~/.floe            # or: rm ${configPath}\n` +
+      `  floe setup\n` +
+      `Details: ${details}`
+  );
 }
 
 export function ensureConfig(explicitPath?: string): { configPath: string; config: LocalConfig; created: boolean } {
@@ -123,10 +126,7 @@ export function ensureConfig(explicitPath?: string): { configPath: string; confi
     created = true;
   }
   const raw = YAML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown> | null;
-  if (migrateWebToApp(raw)) {
-    writeFileSync(configPath, YAML.stringify(raw), "utf8");
-  }
-  const config = LocalConfigSchema.parse(raw);
+  const config = parseLocalConfig(raw, configPath);
   ensureLocalDirs(configPath, config);
   return { configPath, config, created };
 }

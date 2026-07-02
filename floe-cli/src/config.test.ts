@@ -1,0 +1,87 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import YAML from "yaml";
+import { ensureConfig } from "./config.js";
+
+function makeTmp(): string {
+  return mkdtempSync(join(tmpdir(), "floe-cli-cfg-"));
+}
+
+// An old config carrying the retired `web` / `start_web` keys. There is deliberately
+// no migration; this must be rejected fast with an actionable reset instruction.
+const OLD_CONFIG_WEB = {
+  schema: "floe.local.v1",
+  version: 1,
+  home: "/tmp/floe",
+  services: { autostart: true, manager: "auto", start_web: true },
+  bus: {
+    listen: "127.0.0.1:5377",
+    http_base_url: "http://127.0.0.1:5377",
+    ws_base_url: "ws://127.0.0.1:5377",
+    data_dir: "./bus",
+    log_dir: "./logs/bus"
+  },
+  bridge: {
+    data_dir: "./bridge",
+    log_dir: "./logs/bridge",
+    bus_url: "ws://127.0.0.1:5377",
+    workspace_access: { local_paths: true }
+  },
+  web: {
+    listen: "127.0.0.1:5378",
+    bus_http_url: "http://127.0.0.1:5377",
+    bus_ws_url: "ws://127.0.0.1:5377",
+    data_dir: "./web",
+    log_dir: "./logs/web"
+  },
+  library: {
+    configs_dir: "./configs",
+    skills_dir: "./skills",
+    extensions_dir: "./extensions",
+    mcp_dir: "./mcp",
+    templates_dir: "./templates"
+  }
+};
+
+describe("incompatible config rejection (no migration)", () => {
+  it("fails fast with an actionable reset instruction for an old web-keyed config", () => {
+    const tmp = makeTmp();
+    try {
+      const cfgPath = join(tmp, "config.yaml");
+      writeFileSync(cfgPath, YAML.stringify(OLD_CONFIG_WEB), "utf8");
+
+      let thrown: Error | undefined;
+      try {
+        ensureConfig(cfgPath);
+      } catch (error) {
+        thrown = error as Error;
+      }
+
+      expect(thrown, "expected ensureConfig to reject an incompatible config").toBeDefined();
+      const message = thrown!.message;
+      expect(message).toContain("incompatible with this version of Floe");
+      expect(message).toContain("early development");
+      expect(message).toContain("floe setup");
+      expect(message).toContain(cfgPath);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not rewrite or migrate the incompatible config on disk", () => {
+    const tmp = makeTmp();
+    try {
+      const cfgPath = join(tmp, "config.yaml");
+      const original = YAML.stringify(OLD_CONFIG_WEB);
+      writeFileSync(cfgPath, original, "utf8");
+
+      expect(() => ensureConfig(cfgPath)).toThrow();
+
+      expect(readFileSync(cfgPath, "utf8")).toBe(original);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
