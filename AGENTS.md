@@ -316,3 +316,45 @@ Every completed slice must provide:
 * no fake-only success paths
 * no leaked secrets, credentials, or tokens
 
+
+---
+
+## Build Tool (developer / dogfooding only)
+
+`npm run build` at the repo root is a **selectable build** — a dev workshop tool, not a product feature. It is never part of the `floe` CLI.
+
+Entry point: `scripts/build.mjs`
+
+### Targets
+
+| ID | Workspace | Build command |
+|----|-----------|---------------|
+| `bus` | `floe-bus` | `tsc -p tsconfig.json` |
+| `bridge` | `floe-bridge` | `tsc -p tsconfig.json` |
+| `cli` | `floe-cli` | `tsc -p tsconfig.json` |
+| `app` | `floe-app` | `tsc -b && vite build` |
+
+> The Tauri / exe build (`tauri:build`) is intentionally excluded. Run it manually inside `floe-app` when needed.
+
+### Usage
+
+```bash
+# Interactive multi-select (TTY) — all pre-ticked, Space to toggle, Enter to confirm
+npm run build
+
+# Build all targets (non-interactive)
+npm run build -- --all
+
+# Build specific targets
+npm run build -- bus app
+
+# Help
+npm run build -- --help
+```
+
+**Non-TTY (agent / CI):** when stdin is not a TTY and no targets are given, all four targets are built automatically — the script never hangs waiting for input.
+
+### Rules
+- Do NOT add a `build` command to the `floe` CLI (`floe-cli/src/**`).
+- Do NOT include the Tauri desktop build in this picker.
+- Keep the script zero-dep (no new `npm` dependencies).
