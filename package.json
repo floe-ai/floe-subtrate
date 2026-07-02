@@ -10,7 +10,7 @@
     "tests"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "node scripts/build.mjs",
     "test": "npm run test --workspace tests",
     "dev:bus": "npm run dev --workspace floe-bus",
     "dev:bridge": "npm run dev --workspace floe-bridge",
