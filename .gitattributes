@@ -1,0 +1,19 @@
+# Normalise line endings to LF in the repository; check out LF on all platforms.
+# This eliminates CRLF/LF churn on Windows where git.core.autocrlf may differ.
+* text=auto eol=lf
+
+# Binary files — never mangle
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
