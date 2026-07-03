@@ -12,3 +12,7 @@ mempalace.yaml
 entities.json
 
 test-results/
+
+# Runtime-generated floe state (never commit; regenerated on each run)
+.floe/agents/*/worklogs/
+.floe/state/
