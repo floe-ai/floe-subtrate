@@ -18,6 +18,7 @@ import {
   ScopeNotEmptyError,
 } from "../bus-client/client.ts";
 import { Ops } from "./Ops.tsx";
+import { SnowballBoard } from "floe-ext-snowball/BoardView";
 
 // ---------------------------------------------------------------------------
 // Extension view registry
@@ -47,23 +48,31 @@ export interface ExtensionViewEntry {
   component: React.ComponentType<ExtensionViewProps>;
 }
 
-// Built-in placeholder stub — validates the registry mechanism without
-// importing the (not-yet-existing) extension package.
+// Fallback placeholder for any extension whose component identifier is not
+// statically mapped below (unknown or future extensions).
 function PlaceholderExtensionView({ extensionName, scopeId }: ExtensionViewProps): React.ReactElement {
   return (
     <div style={{ padding: 28, color: "#8a8f98", fontSize: 13, fontFamily: '"Inter Variable","Inter",-apple-system,system-ui,sans-serif' }}>
       <strong style={{ color: "#d0d6e0" }}>{extensionName}</strong> view — {scopeId}
       <br />
       <span style={{ fontSize: 11, color: "#62666d", marginTop: 8, display: "block" }}>
-        (Placeholder: wiring to real extension component pending integration-join.)
+        Extension view not registered in the app build.
       </span>
     </div>
   );
 }
 
-// In-memory view registry. The app fetches from GET /v1/extensions at mount
-// and populates this with extension views for the scope-detail-tab slot.
-// For the integration join, import the real component and replace Placeholder.
+/**
+ * Static component registry: maps extension manifest `component` identifiers
+ * to their React components (build-time bundle model per contract §1.5).
+ *
+ * TODO(Phase-3): replace with runtime registry when external (out-of-monorepo)
+ * extensions are needed.
+ */
+const COMPONENT_REGISTRY: Record<string, React.ComponentType<ExtensionViewProps>> = {
+  "@floe/ext-snowball/BoardView": SnowballBoard as React.ComponentType<ExtensionViewProps>,
+};
+
 const BUS_BASE = "http://127.0.0.1:5377";
 
 type ExtensionApiEntry = {
@@ -91,8 +100,7 @@ function useFetchedExtensionViews(workspaceId: string): ExtensionViewEntry[] {
                 id: ext.name,
                 label: v.label,
                 extensionName: ext.name,
-                // TODO(integration-join): map v.component to real imported component
-                component: PlaceholderExtensionView
+                component: COMPONENT_REGISTRY[v.component] ?? PlaceholderExtensionView,
               });
             }
           }

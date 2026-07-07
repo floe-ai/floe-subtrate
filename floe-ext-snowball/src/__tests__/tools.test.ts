@@ -29,6 +29,7 @@ function makeCtx(tmpDir: string, bus: StubBusClient): ExtensionContext {
     workspaceId: "ws:test",
     extensionName: "snowball",
     hooks: { on: () => {} },
+    registerHttpHandler: () => {},
   };
 }
 

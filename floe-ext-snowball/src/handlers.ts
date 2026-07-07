@@ -23,22 +23,23 @@ import {
 import { asBusClient } from "./stub/bus-client.js";
 
 // ---------------------------------------------------------------------------
-// Request / response helpers (generic — works with any HTTP framework)
+// Request / response types — matches the real ExtensionContext.registerHttpHandler
+// interface from floe-bridge/src/extension-loader.ts
 // ---------------------------------------------------------------------------
 
-interface SimpleRequest {
-  url?: string;
-  method?: string;
-  body?: unknown;
-  json?: () => Promise<unknown>;
+interface RelayRequest {
+  method: string;
+  path: string;
+  query: Record<string, string>;
+  body: unknown;
 }
 
-interface SimpleResponse {
+interface RelayResponse {
   status: number;
   body: unknown;
 }
 
-function jsonResponse(status: number, body: unknown): SimpleResponse {
+function jsonResponse(status: number, body: unknown): RelayResponse {
   return { status, body };
 }
 
@@ -48,11 +49,9 @@ function jsonResponse(status: number, body: unknown): SimpleResponse {
 
 function handleGetBoard(
   workspacePath: string
-): (req: SimpleRequest) => Promise<SimpleResponse> {
+): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
-    const rawUrl = req.url ?? "";
-    const url = new URL(rawUrl, "http://localhost");
-    const scope_id = url.searchParams.get("scope_id");
+    const scope_id = req.query["scope_id"];
 
     if (!scope_id) {
       return jsonResponse(400, { error: "scope_id query parameter required" });
@@ -74,14 +73,11 @@ function handleGetBoard(
 
 function handlePostMove(
   ctx: ExtensionContext
-): (req: SimpleRequest) => Promise<SimpleResponse> {
+): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
     let body: Record<string, unknown>;
     try {
-      body =
-        typeof req.json === "function"
-          ? (await req.json()) as Record<string, unknown>
-          : (req.body as Record<string, unknown>);
+      body = (req.body ?? {}) as Record<string, unknown>;
     } catch {
       return jsonResponse(400, { error: "Invalid JSON body" });
     }
@@ -224,15 +220,7 @@ function handlePostMove(
 // ---------------------------------------------------------------------------
 
 export function registerHttpHandlers(ctx: ExtensionContext): void {
-  if (!ctx.registerHttpHandler) {
-    // Pre-Track-S: relay not yet available; skip gracefully
-    console.info(
-      "[snowball] registerHttpHandler not available — HTTP relay skipped (pre-Track-S)"
-    );
-    return;
-  }
-
-  ctx.registerHttpHandler("GET", "/board", handleGetBoard(ctx.workspacePath) as any);
-  ctx.registerHttpHandler("POST", "/move", handlePostMove(ctx) as any);
+  ctx.registerHttpHandler("GET", "/board", handleGetBoard(ctx.workspacePath));
+  ctx.registerHttpHandler("POST", "/move", handlePostMove(ctx));
   console.info("[snowball] HTTP handlers registered: GET /board, POST /move");
 }
