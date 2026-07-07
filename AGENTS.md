@@ -395,3 +395,26 @@ npm run build -- --help
 
 - When writing test fixtures that need `.floe/` structure, use a **separate** workspace dir from the extensions dir (e.g. `join(tempDir, "workspace")` for the workspace and `join(tempDir, "extensions")` for extensions). Mixing them causes `loadExtensions` to treat `.floe/` as an extension directory.
 
+---
+
+## floe-ext-snowball (extension package)
+
+New workspace package added in `fm/snowball-ext-x2` (PR #72).
+
+**Location:** `floe-ext-snowball/` (workspace entry in root `package.json`)
+
+**What it is:** The Snowball Kanban extension — exit-criteria-gated cards, column ownership, and agent routing — implemented as a floe extension that builds against the substrate contract (contract-w7).
+
+**Key invariants:**
+- Sidecar schema: `floe.ext.snowball.board.v1` at `.floe/extensions/snowball/boards/<slug>.yaml`
+- `slugify(scope_id)` replaces `:`, `/`, `\` with `_` for Windows-safe filenames (R8)
+- Column owner uses `agent_id` (not free-form `role`) matching `.floe/agents/<id>.md` (R5)
+- Participants are FROZEN — agents connect via `snowball.card.entered_column` routing events, not participant mutation (R1)
+- AI `move_card` gate: HARD block when exit criteria unchecked; human `force=true` is soft-warn
+- WIP limit: hard block for both human and AI
+
+**Stub seam (§6):** `src/stub/bus-client.ts` provides `BusClient` interface + `StubBusClient` for isolated testing. Integration join: swap when Track S (ext-substrate-s3) exports a real typed client.
+
+**Tests:** `npm test --workspace floe-ext-snowball` — 30 unit tests (sidecar + gate enforcement).
+
+**Board UI entry point:** `floe-ext-snowball/src/ui/BoardView.tsx` exported at `package.json exports['./BoardView']` for Track S's static import into `ScopeDetail.tsx`.
