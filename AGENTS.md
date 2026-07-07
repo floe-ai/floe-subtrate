@@ -358,3 +358,40 @@ npm run build -- --help
 - Do NOT add a `build` command to the `floe` CLI (`floe-cli/src/**`).
 - Do NOT include the Tauri desktop build in this picker.
 - Keep the script zero-dep (no new `npm` dependencies).
+
+---
+
+## Extension Substrate (Track S — ext-substrate-s3)
+
+### Context `title` field
+
+- `ContextRecord` and `ContextListRow` have `title: string | null`.
+- SQLite: added via `addColumnIfMissing` AFTER `relaxContextAnchorColumns` (the rebuild otherwise drops it).
+- `POST /v1/workspaces/:ws/contexts` accepts optional `title` and `scope_id`. When `scope_id` is present, `participants` may be empty.
+- `GET /v1/workspaces/:ws/contexts?scope_id=X` uses the indexed `listContextsForScope` path.
+
+### Extension manifest `views` and `agents`
+
+- `ExtensionManifest` gains optional `views?: ExtensionViewConfig[]` and `agents?: BundledAgentConfig[]`.
+- `LoadedExtension` gains `views`, `bundledAgents`, `httpHandlers` (all empty arrays when absent).
+- `registerHttpHandler` on `ExtensionContext` stores handlers locally in the bridge; the relay requires `relay_url` reported to the bus.
+
+### Extension HTTP relay
+
+- Bus exposes `POST /v1/extensions/report` (bridge calls after each workspace attach).
+- Bus exposes `GET /v1/extensions` (app fetches to discover extension views).
+- Bus exposes `GET/POST /v1/extensions/:name/*` — proxies to `relay_url` if registered; returns 503 if not.
+- Bridge does NOT expose its own HTTP server in this release. `relay_url` is `null` until a bridge HTTP relay server is implemented.
+
+### ScopeDetail dynamic tabs
+
+- `contextLabel` prefers `title` over `first_message_preview`.
+- Tabs are dynamic: built-in `["Contexts", "Ops"]` + extension views from `GET /v1/extensions`.
+- Contexts list now calls `listContextsForScope` (server-side index) instead of client-side filter.
+- Placeholder stub view validates registry without importing the extension package.
+- TODO(integration-join): Replace `PlaceholderExtensionView` with `import { SnowballBoard } from "@floe/ext-snowball/BoardView"` once `snowball-ext-x2` lands.
+
+### Extension loader test isolation
+
+- When writing test fixtures that need `.floe/` structure, use a **separate** workspace dir from the extensions dir (e.g. `join(tempDir, "workspace")` for the workspace and `join(tempDir, "extensions")` for extensions). Mixing them causes `loadExtensions` to treat `.floe/` as an extension directory.
+

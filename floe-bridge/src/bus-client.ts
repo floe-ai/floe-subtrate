@@ -226,6 +226,59 @@ export class BusClient {
     return this.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/config-snapshot`, {});
   }
 
+  /**
+   * Create a new context in the bus.
+   * Supports optional scope_id (for card-as-context) and title.
+   */
+  async createContext(input: {
+    workspace_id: string;
+    scope_id?: string | null;
+    participants?: string[];
+    created_by_endpoint_id?: string | null;
+    title?: string | null;
+  }): Promise<string> {
+    const result = await this.post(
+      `/v1/workspaces/${encodeURIComponent(input.workspace_id)}/contexts`,
+      {
+        participants: input.participants ?? [],
+        scope_id: input.scope_id ?? null,
+        created_by_endpoint_id: input.created_by_endpoint_id ?? null,
+        title: input.title ?? null,
+      }
+    ) as { context: { context_id: string } };
+    return result.context.context_id;
+  }
+
+  /**
+   * List all contexts for a specific scope in a workspace.
+   * Uses the server-side indexed query (idx_contexts_workspace_scope).
+   */
+  async listContextsForScope(workspaceId: string, scopeId: string): Promise<Array<{
+    context_id: string;
+    workspace_id: string;
+    scope_id: string | null;
+    created_at: string;
+    title: string | null;
+    participants: string[];
+  }>> {
+    const url = `/v1/workspaces/${encodeURIComponent(workspaceId)}/contexts?scope_id=${encodeURIComponent(scopeId)}`;
+    const result = await this.get(url) as { contexts: any[] };
+    return result.contexts;
+  }
+
+  /**
+   * Report loaded extension metadata to the bus so `GET /v1/extensions` can
+   * return them to the app. Called by the bridge after each workspace attach.
+   */
+  async reportExtensions(workspaceId: string, extensions: Array<{
+    name: string;
+    views: Array<{ slot: string; label: string; component: string }>;
+    errors: string[];
+    relay_url?: string | null;
+  }>): Promise<void> {
+    await this.post("/v1/extensions/report", { workspace_id: workspaceId, extensions });
+  }
+
   private async get(path: string): Promise<unknown> {
     const response = await fetch(`${this.baseUrl}${path}`);
     if (!response.ok) throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);

@@ -307,6 +307,83 @@ describe("Slice 2 — Context API HTTP routes", () => {
       expect(res.json()).toMatchObject({ error: "workspace_not_found" });
     });
 
+    it("creates a scoped context with title (card-as-context) and returns 201", async () => {
+      ensureWorkspace(handle);
+      // Create a scope first
+      handle.store.db.prepare(
+        `INSERT OR IGNORE INTO scopes (scope_id, workspace_id, title, description, created_at, updated_at)
+         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))`
+      ).run("scope:test:board", WS, "Board", null);
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          participants: [],
+          scope_id: "scope:test:board",
+          title: "Fix auth token refresh",
+          created_by_endpoint_id: E1,
+        }),
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json() as { context: any };
+      expect(body.context).toMatchObject({
+        workspace_id: WS,
+        scope_id: "scope:test:board",
+        title: "Fix auth token refresh",
+      });
+    });
+
+    it("GET /v1/workspaces/:workspace_id/contexts?scope_id=X returns only contexts for that scope", async () => {
+      ensureWorkspace(handle);
+      handle.store.db.prepare(
+        `INSERT OR IGNORE INTO scopes (scope_id, workspace_id, title, description, created_at, updated_at)
+         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))`
+      ).run("scope:test:alpha", WS, "Alpha", null);
+      // Create a context in the scope (with scope_id only, no participants)
+      handle.store.contextStore.createContext({
+        workspace_id: WS,
+        scope_id: "scope:test:alpha",
+        participants: [],
+        created_by_endpoint_id: null,
+        title: "Task A",
+      });
+      // Create a context NOT in the scope
+      handle.store.contextStore.createContext({
+        workspace_id: WS,
+        scope_id: null,
+        participants: [E1],
+        created_by_endpoint_id: null,
+      });
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts?scope_id=scope:test:alpha`,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { contexts: any[] };
+      expect(body.contexts).toHaveLength(1);
+      expect(body.contexts[0].scope_id).toBe("scope:test:alpha");
+      expect(body.contexts[0].title).toBe("Task A");
+    });
+
+    it("GET /v1/contexts/:id includes title field", async () => {
+      ensureWorkspace(handle);
+      const contextId = handle.store.contextStore.createContext({
+        workspace_id: WS,
+        scope_id: null,
+        participants: [E1],
+        created_by_endpoint_id: E1,
+        title: "My titled context",
+      });
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/contexts/${contextId}`,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as any;
+      expect(body.title).toBe("My titled context");
+    });
+
     it("returns 400 when participants is empty", async () => {
       ensureWorkspace(handle);
       const res = await handle.app.inject({
@@ -316,6 +393,72 @@ describe("Slice 2 — Context API HTTP routes", () => {
         payload: JSON.stringify({ participants: [] }),
       });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe("Extension registry (GET /v1/extensions + POST /v1/extensions/report)", () => {
+    it("GET /v1/extensions returns empty list initially", async () => {
+      const res = await handle.app.inject({ method: "GET", url: "/v1/extensions" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ extensions: [] });
+    });
+
+    it("POST /v1/extensions/report registers extensions and GET returns them", async () => {
+      const reportRes = await handle.app.inject({
+        method: "POST",
+        url: "/v1/extensions/report",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          workspace_id: WS,
+          extensions: [
+            {
+              name: "snowball",
+              views: [{ slot: "scope-detail-tab", label: "Board", component: "@floe/ext-snowball/BoardView" }],
+              errors: [],
+              relay_url: null
+            }
+          ]
+        }),
+      });
+      expect(reportRes.statusCode).toBe(201);
+
+      const getRes = await handle.app.inject({
+        method: "GET",
+        url: `/v1/extensions?workspace_id=${encodeURIComponent(WS)}`,
+      });
+      expect(getRes.statusCode).toBe(200);
+      const body = getRes.json() as { extensions: any[] };
+      expect(body.extensions).toHaveLength(1);
+      expect(body.extensions[0].name).toBe("snowball");
+      expect(body.extensions[0].views).toHaveLength(1);
+      expect(body.extensions[0].views[0].slot).toBe("scope-detail-tab");
+      expect(body.extensions[0].views[0].label).toBe("Board");
+    });
+
+    it("GET /v1/extensions/:name/* returns 404 for unknown extension", async () => {
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/extensions/unknown-ext/board?workspace_id=${encodeURIComponent(WS)}`,
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("GET /v1/extensions/:name/* returns 503 when relay_url is null", async () => {
+      await handle.app.inject({
+        method: "POST",
+        url: "/v1/extensions/report",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          workspace_id: WS,
+          extensions: [{ name: "no-relay", views: [], errors: [], relay_url: null }]
+        }),
+      });
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/extensions/no-relay/board?workspace_id=${encodeURIComponent(WS)}`,
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.json()).toMatchObject({ error: "extension_relay_not_available" });
     });
   });
 });

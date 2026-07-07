@@ -327,6 +327,38 @@ export async function createDirectContext(
   return data.context;
 }
 
+/**
+ * POST /v1/workspaces/:ws/contexts — create a scoped context (card-as-context).
+ * Accepts scope_id and optional title; participants may be empty when scope_id is set.
+ */
+export async function createContext(
+  ws: string,
+  input: {
+    participants?: string[];
+    scope_id?: string | null;
+    context_id?: string;
+    created_by_endpoint_id?: string | null;
+    title?: string | null;
+  }
+): Promise<ContextRef> {
+  const data = await post<{ context: ContextRef }>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/contexts`,
+    input
+  );
+  return data.context;
+}
+
+/**
+ * GET /v1/workspaces/:ws/contexts?scope_id=... — list contexts belonging to a specific scope.
+ * Uses the server-side indexed query (no client-side filtering required).
+ */
+export async function listContextsForScope(ws: string, scopeId: string): Promise<ContextRef[]> {
+  const data = await get<{ contexts: ContextRef[] }>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/contexts?scope_id=${encodeURIComponent(scopeId)}`
+  );
+  return data.contexts;
+}
+
 /** POST /v1/workspaces/:ws/contexts/:id/assign-scope */
 export async function assignContextScope(
   ws: string,

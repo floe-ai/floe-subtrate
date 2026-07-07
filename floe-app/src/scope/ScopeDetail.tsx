@@ -12,12 +12,99 @@
 import React, { useEffect, useState, useCallback } from "react";
 import type { ScopeRef, ContextRef } from "../bus-client/types.ts";
 import {
-  listContexts,
+  listContextsForScope,
   deleteScope,
   deleteContext,
   ScopeNotEmptyError,
 } from "../bus-client/client.ts";
 import { Ops } from "./Ops.tsx";
+
+// ---------------------------------------------------------------------------
+// Extension view registry
+// ---------------------------------------------------------------------------
+
+export interface ExtensionViewProps {
+  workspaceId: string;
+  scopeId: string;
+  busBaseUrl: string;
+  extensionName: string;
+}
+
+/** A registered extension view (one tab slot: "scope-detail-tab") */
+export interface ExtensionViewEntry {
+  id: string;         // unique key: extension name (e.g. "snowball")
+  label: string;      // tab label (e.g. "Board")
+  extensionName: string;
+  /**
+   * Component to render. For the stub/test placeholder this is a simple
+   * functional component. The real extension component (SnowballBoard) is
+   * wired here at integration-join time (see PR description).
+   *
+   * TODO(integration-join): replace placeholder with:
+   *   import { SnowballBoard } from "@floe/ext-snowball/BoardView";
+   * once snowball-ext-x2 track lands.
+   */
+  component: React.ComponentType<ExtensionViewProps>;
+}
+
+// Built-in placeholder stub — validates the registry mechanism without
+// importing the (not-yet-existing) extension package.
+function PlaceholderExtensionView({ extensionName, scopeId }: ExtensionViewProps): React.ReactElement {
+  return (
+    <div style={{ padding: 28, color: "#8a8f98", fontSize: 13, fontFamily: '"Inter Variable","Inter",-apple-system,system-ui,sans-serif' }}>
+      <strong style={{ color: "#d0d6e0" }}>{extensionName}</strong> view — {scopeId}
+      <br />
+      <span style={{ fontSize: 11, color: "#62666d", marginTop: 8, display: "block" }}>
+        (Placeholder: wiring to real extension component pending integration-join.)
+      </span>
+    </div>
+  );
+}
+
+// In-memory view registry. The app fetches from GET /v1/extensions at mount
+// and populates this with extension views for the scope-detail-tab slot.
+// For the integration join, import the real component and replace Placeholder.
+const BUS_BASE = "http://127.0.0.1:5377";
+
+type ExtensionApiEntry = {
+  name: string;
+  workspace_id: string;
+  views: Array<{ slot: string; label: string; component: string }>;
+  errors: string[];
+};
+
+function useFetchedExtensionViews(workspaceId: string): ExtensionViewEntry[] {
+  const [views, setViews] = useState<ExtensionViewEntry[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 5000);
+    fetch(`${BUS_BASE}/v1/extensions?workspace_id=${encodeURIComponent(workspaceId)}`, { signal: ctrl.signal })
+      .then(r => r.ok ? r.json() as Promise<{ extensions: ExtensionApiEntry[] }> : null)
+      .then(data => {
+        if (cancelled || !data) return;
+        const entries: ExtensionViewEntry[] = [];
+        for (const ext of data.extensions) {
+          for (const v of ext.views) {
+            if (v.slot === "scope-detail-tab") {
+              entries.push({
+                id: ext.name,
+                label: v.label,
+                extensionName: ext.name,
+                // TODO(integration-join): map v.component to real imported component
+                component: PlaceholderExtensionView
+              });
+            }
+          }
+        }
+        setViews(entries);
+      })
+      .catch(() => { /* extension views unavailable — degrade gracefully */ })
+      .finally(() => clearTimeout(timeout));
+    return () => { cancelled = true; ctrl.abort(); };
+  }, [workspaceId]);
+  return views;
+}
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk object)
@@ -48,8 +135,12 @@ const tk = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Derive a human-readable label for a context. */
+/** Derive a human-readable label for a context.
+ * Prefers `title` (extension-owned card title) over `first_message_preview`.
+ */
 export function contextLabel(ctx: ContextRef): string {
+  const title = ctx.title?.trim();
+  if (title) return title;
   const preview = ctx.first_message_preview?.trim();
   if (preview) return preview;
   if (ctx.participants.length > 0) {
@@ -306,7 +397,14 @@ export type ScopeDetailProps = {
 // ScopeDetail
 // ---------------------------------------------------------------------------
 
-type ScopeDetailView = "contexts" | "ops";
+/** Built-in views (always present) */
+const BUILTIN_VIEWS = [
+  { id: "contexts", label: "Contexts" },
+  { id: "ops",      label: "Ops" },
+] as const;
+
+type BuiltinViewId = (typeof BUILTIN_VIEWS)[number]["id"];
+type ScopeDetailView = BuiltinViewId | string; // string for extension views
 
 export function ScopeDetail({
   scope,
@@ -321,15 +419,16 @@ export function ScopeDetail({
   const [deletingContextId, setDeletingContextId] = useState<string | null>(null);
   const [view, setView] = useState<ScopeDetailView>("contexts");
 
+  // Fetch extension views for this workspace
+  const extensionViews = useFetchedExtensionViews(workspaceId);
+
   const loadContexts = useCallback(() => {
     setLoading(true);
     setError(null);
-    listContexts(workspaceId, { scope: "scoped" })
+    listContextsForScope(workspaceId, scope.scope_id)
       .then(rows => {
-        // Filter to this scope only (API doesn't support scope_id filter)
-        const filtered = rows.filter(c => c.scope_id === scope.scope_id);
         // Sort newest first
-        const sorted = [...filtered].sort((a, b) => {
+        const sorted = [...rows].sort((a, b) => {
           const ta = a.last_event_at ?? a.created_at;
           const tb = b.last_event_at ?? b.created_at;
           return tb.localeCompare(ta);
@@ -429,37 +528,71 @@ export function ScopeDetail({
       </div>
 
       {/* ------------------------------------------------------------------ */}
-      {/* View toggle: Contexts / Ops                                          */}
+      {/* View toggle: Contexts / Ops / extension tabs                         */}
       {/* ------------------------------------------------------------------ */}
       <div style={{
         display: "flex", gap: 4, padding: "10px 28px 0",
         borderBottom: `1px solid ${tk.border}`, background: tk.surface, flexShrink: 0,
       }}>
-        {(["contexts", "ops"] as const).map(v => (
+        {BUILTIN_VIEWS.map(v => (
           <button
-            key={v}
-            onClick={() => setView(v)}
-            aria-pressed={view === v}
+            key={v.id}
+            onClick={() => setView(v.id)}
+            aria-pressed={view === v.id}
             style={{
               background: "transparent", border: "none",
-              borderBottom: `2px solid ${view === v ? tk.accent : "transparent"}`,
-              color: view === v ? tk.ink : tk.ink3,
+              borderBottom: `2px solid ${view === v.id ? tk.accent : "transparent"}`,
+              color: view === v.id ? tk.ink : tk.ink3,
               padding: "6px 10px 8px",
               fontSize: 12.5, fontWeight: 510, cursor: "pointer",
               fontFamily: tk.fontUi, textTransform: "capitalize",
             }}
           >
-            {v === "contexts" ? "Contexts" : "Ops"}
+            {v.label}
+          </button>
+        ))}
+        {extensionViews.map(ev => (
+          <button
+            key={ev.id}
+            onClick={() => setView(ev.id)}
+            aria-pressed={view === ev.id}
+            style={{
+              background: "transparent", border: "none",
+              borderBottom: `2px solid ${view === ev.id ? tk.accent : "transparent"}`,
+              color: view === ev.id ? tk.ink : tk.ink3,
+              padding: "6px 10px 8px",
+              fontSize: 12.5, fontWeight: 510, cursor: "pointer",
+              fontFamily: tk.fontUi,
+            }}
+          >
+            {ev.label}
           </button>
         ))}
       </div>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Body: Contexts list or Ops (events & pulses)                        */}
+      {/* Body: Contexts list or Ops (events & pulses) or extension view       */}
       {/* ------------------------------------------------------------------ */}
       {view === "ops" ? (
         <Ops workspaceId={workspaceId} scopeId={scope.scope_id} />
-      ) : (
+      ) : (() => {
+        // Check if current view is an extension view
+        const extView = extensionViews.find(ev => ev.id === view);
+        if (extView) {
+          const ExtComponent = extView.component;
+          return (
+            <div style={{ flex: 1, overflow: "auto" }}>
+              <ExtComponent
+                workspaceId={workspaceId}
+                scopeId={scope.scope_id}
+                busBaseUrl={BUS_BASE}
+                extensionName={extView.extensionName}
+              />
+            </div>
+          );
+        }
+        // Default: Contexts view
+        return (
       <div style={{ flex: 1, overflow: "auto" }}>
         {/* Section header */}
         <div style={{
@@ -509,7 +642,9 @@ export function ScopeDetail({
           </div>
         )}
       </div>
-      )}
+      );
+      })()
+      }
     </div>
   );
 }

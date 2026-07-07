@@ -22,7 +22,8 @@ function makeReader(contexts: Record<string, { participants: string[]; topic?: s
         scope_id: null,
         parent_context_id: null,
         created_by_endpoint_id: contexts[id].participants[0],
-        created_at: "2026-01-01T00:00:00.000Z"
+        created_at: "2026-01-01T00:00:00.000Z",
+        title: null
       };
     },
     getContextParticipants(id) {
@@ -43,6 +44,7 @@ function makeReader(contexts: Record<string, { participants: string[]; topic?: s
           created_at: "2026-01-01T00:00:00.000Z",
           last_event_at: null,
           topic: v.topic ?? null,
+          title: null,
           participants: v.participants.slice()
         }));
     }
