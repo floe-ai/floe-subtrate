@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useDroppable } from "@dnd-kit/core";
-import { BotIcon, Settings2Icon } from "lucide-react";
+import { BotIcon, Settings2Icon, PlusIcon } from "lucide-react";
 import type { UiCard, UiColumn } from "./types.ts";
 import { Card } from "./Card.tsx";
 
@@ -9,6 +9,8 @@ interface ColumnProps {
   cards: UiCard[];
   onSelectCard: (card: UiCard) => void;
   onConfigColumn: (column: UiColumn) => void;
+  onAddCard: (columnId: string, title: string) => Promise<void>;
+  addingCard?: boolean;
 }
 
 export function Column({
@@ -16,11 +18,50 @@ export function Column({
   cards,
   onSelectCard,
   onConfigColumn,
+  onAddCard,
+  addingCard = false,
 }: ColumnProps) {
   const atLimit =
     column.wipLimit !== null && cards.length >= column.wipLimit;
 
   const { setNodeRef, isOver } = useDroppable({ id: column.id });
+
+  const [addMode, setAddMode] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Focus the input when entering add mode
+  useEffect(() => {
+    if (addMode && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [addMode]);
+
+  async function handleSubmitCard(e?: React.FormEvent) {
+    e?.preventDefault();
+    const title = draftTitle.trim();
+    if (!title) {
+      setAddMode(false);
+      setDraftTitle("");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onAddCard(column.id, title);
+      setDraftTitle("");
+      setAddMode(false);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Escape") {
+      setAddMode(false);
+      setDraftTitle("");
+    }
+  }
 
   const borderColor = atLimit
     ? "#b85a5a"
@@ -32,6 +73,8 @@ export function Column({
     : isOver
     ? "rgba(138,168,156,0.05)"
     : "#0f1011";
+
+  const wipBlocked = atLimit;
 
   return (
     <section
@@ -145,7 +188,7 @@ export function Column({
             onSelect={onSelectCard}
           />
         ))}
-        {cards.length === 0 && (
+        {cards.length === 0 && !addMode && (
           <p
             style={{
               margin: "8px 0",
@@ -159,6 +202,99 @@ export function Column({
           </p>
         )}
       </div>
+
+      {/* Add Card inline form */}
+      {addMode ? (
+        <form
+          onSubmit={handleSubmitCard}
+          style={{ marginTop: 8 }}
+        >
+          <input
+            ref={inputRef}
+            value={draftTitle}
+            onChange={(e) => setDraftTitle(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Card title…"
+            disabled={submitting}
+            style={{
+              width: "100%",
+              background: "#1a1c1e",
+              border: "1px solid rgba(138,168,156,0.4)",
+              borderRadius: 6,
+              color: "#f7f8f8",
+              fontSize: 12,
+              padding: "6px 8px",
+              outline: "none",
+              boxSizing: "border-box",
+              marginBottom: 6,
+            }}
+          />
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              type="submit"
+              disabled={submitting || !draftTitle.trim()}
+              style={{
+                flex: 1,
+                padding: "5px 0",
+                fontSize: 12,
+                fontWeight: 500,
+                borderRadius: 5,
+                border: "1px solid rgba(138,168,156,0.4)",
+                background: "rgba(138,168,156,0.15)",
+                color: "#8aa89c",
+                cursor: submitting || !draftTitle.trim() ? "not-allowed" : "pointer",
+                opacity: submitting || !draftTitle.trim() ? 0.5 : 1,
+              }}
+            >
+              {submitting ? "Adding…" : "Add"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAddMode(false); setDraftTitle(""); }}
+              style={{
+                padding: "5px 10px",
+                fontSize: 12,
+                borderRadius: 5,
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "transparent",
+                color: "#8a8f98",
+                cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            if (!wipBlocked) setAddMode(true);
+          }}
+          disabled={wipBlocked || addingCard}
+          style={{
+            marginTop: 8,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 4,
+            padding: "5px 0",
+            fontSize: 11,
+            borderRadius: 5,
+            border: "1px dashed rgba(255,255,255,0.1)",
+            background: "transparent",
+            color: wipBlocked ? "#3a3d42" : "#62666d",
+            cursor: wipBlocked ? "not-allowed" : "pointer",
+            width: "100%",
+            transition: "color 0.12s, border-color 0.12s",
+          }}
+          aria-label={`Add card to ${column.name}`}
+          title={wipBlocked ? `WIP limit reached (${column.wipLimit})` : "Add card"}
+        >
+          <PlusIcon size={11} />
+          Add card
+        </button>
+      )}
     </section>
   );
 }

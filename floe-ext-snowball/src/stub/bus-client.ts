@@ -20,6 +20,7 @@ export interface ContextRef {
   workspace_id: string;
   scope_id: string | null;
   created_at: string;
+  title: string | null;
   first_message_preview: string | null;
   participants: string[];
 }
@@ -37,6 +38,7 @@ export interface CreateContextInput {
   scope_id?: string | null;
   participants?: string[];
   created_by_endpoint_id?: string | null;
+  title?: string | null;
 }
 
 export interface EmitInput {
@@ -123,7 +125,8 @@ export class StubBusClient implements BusClient {
       workspace_id: input.workspace_id,
       scope_id: input.scope_id ?? null,
       created_at: new Date().toISOString(),
-      first_message_preview: null,
+      title: input.title ?? null,
+      first_message_preview: input.title ?? null,
       participants: input.participants ?? [],
     });
     return id;

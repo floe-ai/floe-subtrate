@@ -121,6 +121,7 @@ describe("reconcileSidecar", () => {
       workspace_id: "ws:test",
       scope_id: "scope:ws:test",
       created_at: new Date().toISOString(),
+      title: null,
       first_message_preview: "New card",
       participants: [],
     });
@@ -178,6 +179,7 @@ describe("reconcileSidecar", () => {
       workspace_id: "ws:test",
       scope_id: "scope:ws:test",
       created_at: new Date().toISOString(),
+      title: null,
       first_message_preview: null,
       participants: [],
     });
@@ -214,6 +216,7 @@ describe("reconcileSidecar", () => {
       workspace_id: "ws:test",
       scope_id: "scope:ws:test",
       created_at: new Date().toISOString(),
+      title: null,
       first_message_preview: "All good",
       participants: [],
     });
