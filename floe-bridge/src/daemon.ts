@@ -319,6 +319,18 @@ export class BridgeDaemon {
             }
           }
         }
+
+        // Report extension metadata to the bus so GET /v1/extensions can serve it
+        try {
+          await this.bus.reportExtensions(workspace.workspace_id, loaded.map(ext => ({
+            name: ext.name,
+            views: ext.views,
+            errors: ext.errors,
+            relay_url: null // bridge does not expose an HTTP relay server in this release
+          })));
+        } catch (error) {
+          console.error("[bridge] extension metadata report failed", error);
+        }
       } catch (error) {
         console.error("[bridge] extension loading failed", error);
       }

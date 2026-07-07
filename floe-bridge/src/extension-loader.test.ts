@@ -19,14 +19,11 @@ afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-function baseContext(): Omit<ExtensionContext, "extensionName"> {
+function baseContext(): Omit<ExtensionContext, "extensionName" | "hooks" | "registerHttpHandler"> {
   return {
     workspacePath: tempDir,
     busClient: {},
     workspaceId: "test-workspace",
-    hooks: {
-      on() {}
-    }
   };
 }
 
@@ -175,6 +172,116 @@ describe("loadExtensions", () => {
     expect(result[0].pulses[0].id).toBe("daily-review");
     expect(result[0].pulses[0].trigger.type).toBe("cron");
     expect(result[0].pulses[0].subscribers).toEqual(["floe"]);
+  });
+
+  it("extracts views declarations from manifest", async () => {
+    const manifest = {
+      ...VALID_MANIFEST,
+      views: [
+        { slot: "scope-detail-tab", label: "Board", component: "@floe/ext-snowball/BoardView" }
+      ]
+    };
+    writeExtension("todo", manifest, VALID_ENTRY);
+    const result = await loadExtensions(tempDir, baseContext());
+    expect(result[0].views).toHaveLength(1);
+    expect(result[0].views[0].slot).toBe("scope-detail-tab");
+    expect(result[0].views[0].label).toBe("Board");
+    expect(result[0].views[0].component).toBe("@floe/ext-snowball/BoardView");
+  });
+
+  it("returns empty views array when manifest has no views", async () => {
+    writeExtension("todo", VALID_MANIFEST, VALID_ENTRY);
+    const result = await loadExtensions(tempDir, baseContext());
+    expect(result[0].views).toEqual([]);
+  });
+
+  it("extracts bundledAgents from manifest", async () => {
+    const manifest = {
+      ...VALID_MANIFEST,
+      agents: [
+        { agent_id: "overseer", label: "Overseer", instructions_path: "./overseer.md" }
+      ]
+    };
+    // Use a nested structure: extensions dir separate from workspace dir
+    const extRoot = join(tempDir, "extensions");
+    const workspaceDir = join(tempDir, "workspace");
+    mkdirSync(extRoot, { recursive: true });
+    mkdirSync(join(workspaceDir, ".floe", "agents"), { recursive: true });
+    // Write the extension into the extensions root
+    const extDir = join(extRoot, "todo");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(join(extDir, "extension.json"), JSON.stringify(manifest, null, 2));
+    writeFileSync(join(extDir, typeof manifest.entry === "string" ? manifest.entry.replace(/^\.\//,"") : "index.ts"), VALID_ENTRY);
+    writeFileSync(join(extDir, "overseer.md"), "# Overseer\nYou oversee.", "utf-8");
+    // Write floe.yaml
+    const { stringify } = await import("yaml");
+    writeFileSync(
+      join(workspaceDir, ".floe", "floe.yaml"),
+      stringify({ schema: "floe.workspace.v1", version: 1, agents: [] }),
+      "utf-8"
+    );
+    const ctx = { workspacePath: workspaceDir, busClient: {}, workspaceId: "test-workspace" };
+    const result = await loadExtensions(extRoot, ctx);
+    const todoExt = result.find(e => e.name === "todo")!;
+    expect(todoExt).toBeDefined();
+    expect(todoExt.bundledAgents).toHaveLength(1);
+    expect(todoExt.bundledAgents[0].agent_id).toBe("overseer");
+    expect(todoExt.bundledAgents[0].label).toBe("Overseer");
+  });
+
+  it("provisions bundled agent files idempotently", async () => {
+    const manifest = {
+      ...VALID_MANIFEST,
+      agents: [
+        { agent_id: "test-agent", label: "Test Agent", instructions_path: "./instructions.md" }
+      ]
+    };
+    const extRoot = join(tempDir, "extensions");
+    const workspaceDir = join(tempDir, "workspace");
+    mkdirSync(extRoot, { recursive: true });
+    mkdirSync(join(workspaceDir, ".floe", "agents"), { recursive: true });
+    const extDir = join(extRoot, "todo");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(join(extDir, "extension.json"), JSON.stringify(manifest, null, 2));
+    writeFileSync(join(extDir, typeof manifest.entry === "string" ? manifest.entry.replace(/^\.\//,"") : "index.ts"), VALID_ENTRY);
+    writeFileSync(join(extDir, "instructions.md"), "You are a test agent.", "utf-8");
+    const { stringify } = await import("yaml");
+    writeFileSync(
+      join(workspaceDir, ".floe", "floe.yaml"),
+      stringify({ schema: "floe.workspace.v1", version: 1, agents: [] }),
+      "utf-8"
+    );
+    const ctx = { workspacePath: workspaceDir, busClient: {}, workspaceId: "test-workspace" };
+    // First load: should provision the agent
+    await loadExtensions(extRoot, ctx);
+    const agentPath = join(workspaceDir, ".floe", "agents", "test-agent.md");
+    const { existsSync, readFileSync: readFs } = await import("node:fs");
+    expect(existsSync(agentPath)).toBe(true);
+    const content = readFs(agentPath, "utf-8");
+    expect(content).toContain("agent_id: test-agent");
+    expect(content).toContain("You are a test agent.");
+    // Second load: should NOT overwrite existing file
+    const firstContent = content;
+    await loadExtensions(extRoot, ctx);
+    expect(readFs(agentPath, "utf-8")).toBe(firstContent);
+  });
+
+  it("extension factory can call registerHttpHandler and it stores the handler", async () => {
+    const entryWithHandler = `
+export default function(ctx) {
+  ctx.registerHttpHandler("GET", "/board", async (req) => {
+    return { status: 200, body: { columns: [] } };
+  });
+  return [];
+}
+`;
+    writeExtension("my-ext", { ...VALID_MANIFEST, name: "my-ext" }, entryWithHandler);
+    const result = await loadExtensions(tempDir, baseContext());
+    expect(result[0].httpHandlers).toHaveLength(1);
+    expect(result[0].httpHandlers[0].method).toBe("GET");
+    expect(result[0].httpHandlers[0].path).toBe("/board");
+    const handlerResult = await result[0].httpHandlers[0].handler({ method: "GET", path: "/board", query: {}, body: null });
+    expect(handlerResult).toMatchObject({ status: 200, body: { columns: [] } });
   });
 
   it("returns error when extension.json is missing", async () => {

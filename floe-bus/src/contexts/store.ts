@@ -8,6 +8,7 @@ export type ContextRecord = {
   parent_context_id: string | null;
   created_by_endpoint_id: string | null;
   created_at: string;
+  title: string | null;
 };
 
 export type ContextListRow = ContextRecord & {
@@ -107,6 +108,7 @@ export function applyContextSchema(db: DatabaseSync): void {
   `);
   addColumnIfMissing(db, "contexts", "scope_id", "TEXT");
   relaxContextAnchorColumns(db);
+  addColumnIfMissing(db, "contexts", "title", "TEXT");
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_contexts_workspace_scope
       ON contexts(workspace_id, scope_id, created_at);
@@ -123,6 +125,7 @@ export class ContextStore implements ContextStoreReader {
     participants: readonly string[];
     parent_context_id?: string | null;
     context_id?: string;
+    title?: string | null;
   }): string {
     const id = input.context_id ?? `ctx_${randomUUID()}`;
     const ts = nowIso();
@@ -131,14 +134,14 @@ export class ContextStore implements ContextStoreReader {
       throw new Error("Context requires at least one actor participant or Scope");
     }
     const insertContext = this.db.prepare(`
-      INSERT INTO contexts (context_id, workspace_id, scope_id, parent_context_id, created_by_endpoint_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO contexts (context_id, workspace_id, scope_id, parent_context_id, created_by_endpoint_id, created_at, title)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     const insertParticipant = this.db.prepare(`
       INSERT OR IGNORE INTO context_participants (context_id, endpoint_id, joined_at)
       VALUES (?, ?, ?)
     `);
-    insertContext.run(id, input.workspace_id, input.scope_id ?? null, input.parent_context_id ?? null, input.created_by_endpoint_id, ts);
+    insertContext.run(id, input.workspace_id, input.scope_id ?? null, input.parent_context_id ?? null, input.created_by_endpoint_id, ts, input.title ?? null);
     for (const ep of participants) {
       insertParticipant.run(id, ep, ts);
     }
@@ -154,7 +157,8 @@ export class ContextStore implements ContextStoreReader {
       scope_id: row.scope_id ?? null,
       parent_context_id: row.parent_context_id ?? null,
       created_by_endpoint_id: row.created_by_endpoint_id ?? null,
-      created_at: row.created_at
+      created_at: row.created_at,
+      title: (row.title as string | null) ?? null
     };
   }
 
@@ -211,6 +215,7 @@ export class ContextStore implements ContextStoreReader {
       parent_context_id: row.parent_context_id ?? null,
       created_by_endpoint_id: row.created_by_endpoint_id ?? null,
       created_at: row.created_at,
+      title: (row.title as string | null) ?? null,
       last_event_at: (row.last_event_at as string | null) ?? null,
       topic: null,
       participants: this.getContextParticipants(row.context_id)

@@ -858,6 +858,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     created_at: string;
     last_event_at: string | null;
     participants: string[];
+    title?: string | null;
   }) {
     return {
       context_id: r.context_id,
@@ -868,6 +869,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       created_at: r.created_at,
       last_event_at: r.last_event_at,
       participants: r.participants,
+      title: (r.title as string | null | undefined) ?? null,
       first_message_preview: store.contextStore.getFirstMessagePreview(r.context_id)
     };
   }
@@ -876,10 +878,16 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const query = z.object({
       scope: z.enum(["all", "scoped", "unscoped"]).optional().default("all"),
+      scope_id: z.string().min(1).optional(),
       limit: z.coerce.number().int().positive().max(200).optional().default(50)
     }).parse(request.query);
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    // Scope-filtered query uses the indexed listContextsForScope path
+    if (query.scope_id) {
+      const rows = store.contextStore.listContextsForScope(params.workspace_id, query.scope_id);
+      return { contexts: rows.map(serializeContextListRow) };
     }
     const rows = store.contextStore.listContextsForWorkspace(params.workspace_id, {
       scope: query.scope,
@@ -918,6 +926,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       parent_context_id: ctx.parent_context_id,
       created_by_endpoint_id: ctx.created_by_endpoint_id,
       created_at: ctx.created_at,
+      title: ctx.title,
       participants: store.contextStore.getContextParticipants(ctx.context_id),
       first_message_preview: store.contextStore.getFirstMessagePreview(ctx.context_id)
     };
@@ -937,24 +946,31 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   app.post("/v1/workspaces/:workspace_id/contexts", async (request, reply) => {
     const params = z.object({ workspace_id: z.string().min(1) }).parse(request.params);
     const bodySchema = z.object({
-      participants: z.array(z.string().min(1)).min(1, "participants must be a non-empty array"),
+      participants: z.array(z.string().min(1)).optional().default([]),
+      scope_id: z.string().min(1).nullable().optional(),
       context_id: z.string().min(1).optional(),
       created_by_endpoint_id: z.string().min(1).nullable().optional(),
+      title: z.string().min(1).nullable().optional(),
     });
     const parsed = bodySchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ ok: false, error: "invalid_request", issues: parsed.error.issues });
     }
     const body = parsed.data;
+    // Require at least participants OR scope_id
+    if (body.participants.length === 0 && !body.scope_id) {
+      return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "participants must be non-empty when scope_id is absent" }] });
+    }
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
     const contextId = store.contextStore.createContext({
       workspace_id: params.workspace_id,
-      scope_id: null,
+      scope_id: body.scope_id ?? null,
       participants: body.participants,
       created_by_endpoint_id: body.created_by_endpoint_id ?? null,
       context_id: body.context_id,
+      title: body.title ?? null,
     });
     const ctx = store.contextStore.getContext(contextId)!;
     const participants = store.contextStore.getContextParticipants(contextId);
@@ -1117,6 +1133,119 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       }
       throw err;
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Extension registry (Track S — runtime state, not persisted to SQLite)
+  // The bridge reports loaded extension metadata here after each workspace attach.
+  // `GET /v1/extensions` lets the app discover registered views.
+  // `GET|POST /v1/extensions/:name/*` relays to the extension's registered handler.
+  // ---------------------------------------------------------------------------
+
+  /** in-memory registry: extension name → metadata */
+  const extensionRegistry = new Map<string, {
+    name: string;
+    workspace_id: string;
+    views: Array<{ slot: string; label: string; component: string }>;
+    errors: string[];
+    relay_url: string | null;
+    reported_at: string;
+  }>();
+
+  app.post("/v1/extensions/report", async (request, reply) => {
+    const body = z.object({
+      workspace_id: z.string().min(1),
+      extensions: z.array(z.object({
+        name: z.string().min(1),
+        views: z.array(z.object({
+          slot: z.string(),
+          label: z.string(),
+          component: z.string()
+        })).optional().default([]),
+        errors: z.array(z.string()).optional().default([]),
+        relay_url: z.string().url().nullable().optional()
+      }))
+    }).parse(request.body);
+    for (const ext of body.extensions) {
+      extensionRegistry.set(`${body.workspace_id}:${ext.name}`, {
+        name: ext.name,
+        workspace_id: body.workspace_id,
+        views: ext.views,
+        errors: ext.errors,
+        relay_url: ext.relay_url ?? null,
+        reported_at: new Date().toISOString()
+      });
+    }
+    return reply.code(201).send({ ok: true, registered: body.extensions.length });
+  });
+
+  app.get("/v1/extensions", async (request) => {
+    const query = z.object({
+      workspace_id: z.string().optional()
+    }).parse(request.query);
+    const all = Array.from(extensionRegistry.values());
+    const filtered = query.workspace_id
+      ? all.filter(e => e.workspace_id === query.workspace_id)
+      : all;
+    return { extensions: filtered };
+  });
+
+  /** Generic relay: proxies GET/POST /v1/extensions/:name/* to the extension's relay_url */
+  async function handleExtensionRelay(
+    request: any,
+    reply: any,
+    method: "GET" | "POST"
+  ): Promise<unknown> {
+    const params = z.object({ name: z.string().min(1), "*": z.string().optional() }).parse(request.params);
+    const workspaceId = (request.query as any)?.workspace_id as string | undefined;
+
+    // Find the extension entry (prefer workspace-scoped match)
+    let entry = workspaceId
+      ? extensionRegistry.get(`${workspaceId}:${params.name}`)
+      : undefined;
+    if (!entry) {
+      // fallback: any entry with this name
+      for (const [, v] of extensionRegistry) {
+        if (v.name === params.name) { entry = v; break; }
+      }
+    }
+    if (!entry) {
+      return reply.code(404).send({ error: "extension_not_found", name: params.name });
+    }
+    if (!entry.relay_url) {
+      return reply.code(503).send({
+        error: "extension_relay_not_available",
+        name: params.name,
+        message: "Extension has not registered an HTTP relay URL. The bridge must start an extension HTTP relay server and report relay_url via POST /v1/extensions/report."
+      });
+    }
+    // Forward the request
+    const subPath = params["*"] ? `/${params["*"]}` : "/";
+    const qs = new URLSearchParams(request.query as Record<string, string>);
+    qs.delete("workspace_id"); // already handled by registry lookup
+    const targetUrl = `${entry.relay_url}${subPath}${qs.toString() ? `?${qs}` : ""}`;
+    try {
+      const fetchOpts: RequestInit = { method };
+      if (method === "POST" && request.body) {
+        fetchOpts.headers = { "content-type": "application/json" };
+        fetchOpts.body = JSON.stringify(request.body);
+      }
+      const upstream = await fetch(targetUrl, fetchOpts);
+      const upstreamBody = await upstream.text();
+      reply.code(upstream.status);
+      reply.header("content-type", upstream.headers.get("content-type") ?? "application/json");
+      return reply.send(upstreamBody);
+    } catch (err) {
+      return reply.code(502).send({ error: "extension_relay_error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  app.get("/v1/extensions/:name/*", async (request, reply) => {
+    return handleExtensionRelay(request, reply, "GET");
+  });
+
+  app.post("/v1/extensions/:name/*", async (request, reply) => {
+    return handleExtensionRelay(request, reply, "POST");
   });
 
   // ---------------------------------------------------------------------------
