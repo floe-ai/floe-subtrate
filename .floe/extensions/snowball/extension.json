@@ -1,0 +1,31 @@
+{
+  "schema": "floe.extension.v1",
+  "name": "snowball",
+  "description": "Kanban lens for floe Scopes — exit-criteria-gated cards, column ownership, and agent routing",
+  "entry": "../../../floe-ext-snowball/src/index.ts",
+  "views": [
+    {
+      "slot": "scope-detail-tab",
+      "label": "Board",
+      "component": "@floe/ext-snowball/BoardView"
+    }
+  ],
+  "agents": [
+    {
+      "agent_id": "snowball-overseer",
+      "label": "Snowball Overseer",
+      "instructions_path": "../../../floe-ext-snowball/overseer-instructions.md",
+      "runtime": { "engine": "pi" },
+      "extensions": ["snowball"],
+      "pulse": { "inherit": true }
+    }
+  ],
+  "pulses": [
+    {
+      "id": "snowball-board-heartbeat",
+      "persistence": "workspace",
+      "trigger": { "type": "cron", "schedule": "*/10 * * * *" },
+      "subscribers": ["snowball-overseer"]
+    }
+  ]
+}

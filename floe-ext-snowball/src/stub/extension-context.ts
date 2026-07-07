@@ -32,7 +32,7 @@ export type HookHandler = (
 ) => void | HookResult | Promise<HookResult | void>;
 
 export interface RegisterHttpHandler {
-  (method: "GET" | "POST", path: string, handler: (req: unknown) => Promise<unknown>): void;
+  (method: "GET" | "POST", path: string, handler: (req: { method: string; path: string; query: Record<string, string>; body: unknown }) => Promise<{ status: number; body: unknown }>): void;
 }
 
 export interface ExtensionContext {
@@ -45,8 +45,9 @@ export interface ExtensionContext {
     on(hook: HookName, handler: HookHandler): void;
   };
   /**
-   * Optional HTTP handler registration — provided by Track S extension relay.
-   * If absent (pre-Track-S integration), handler registration is skipped.
+   * Register an HTTP handler for this extension.
+   * Provided by the bridge's extension relay (Track S).
+   * Handler receives a typed request object and returns { status, body }.
    */
-  registerHttpHandler?: RegisterHttpHandler;
+  registerHttpHandler: RegisterHttpHandler;
 }

@@ -383,13 +383,21 @@ npm run build -- --help
 - Bus exposes `GET/POST /v1/extensions/:name/*` — proxies to `relay_url` if registered; returns 503 if not.
 - Bridge does NOT expose its own HTTP server in this release. `relay_url` is `null` until a bridge HTTP relay server is implemented.
 
+### Extension HTTP relay — IMPLEMENTED (fm/integrate-board-i4)
+
+- `floe-bridge/src/extension-relay.ts` provides a Node.js HTTP relay server started at workspace attach time.
+- The relay listens on port 5378 (falls back to OS-assigned if taken).
+- Per-extension relay URL includes extension name as path prefix: `http://127.0.0.1:5378/{extName}`. This ensures the bus proxy correctly routes `GET /v1/extensions/{name}/{path}` → `http://127.0.0.1:5378/{name}/{path}`.
+- Handler signature (real interface): `(req: { method, path, query, body }) => Promise<{ status, body }>`. Handlers must NOT use `req.url` (legacy pattern); use `req.query` instead.
+- `relay_url` is `null` when an extension has no HTTP handlers.
+
 ### ScopeDetail dynamic tabs
 
 - `contextLabel` prefers `title` over `first_message_preview`.
 - Tabs are dynamic: built-in `["Contexts", "Ops"]` + extension views from `GET /v1/extensions`.
 - Contexts list now calls `listContextsForScope` (server-side index) instead of client-side filter.
 - Placeholder stub view validates registry without importing the extension package.
-- TODO(integration-join): Replace `PlaceholderExtensionView` with `import { SnowballBoard } from "@floe/ext-snowball/BoardView"` once `snowball-ext-x2` lands.
+- Integration join COMPLETE (fm/integrate-board-i4): `PlaceholderExtensionView` replaced by `SnowballBoard` from `"floe-ext-snowball/BoardView"` via `COMPONENT_REGISTRY` keyed on `v.component`. Fallback to `PlaceholderExtensionView` for unknown extension components.
 
 ### Extension loader test isolation
 
@@ -413,8 +421,22 @@ New workspace package added in `fm/snowball-ext-x2` (PR #72).
 - AI `move_card` gate: HARD block when exit criteria unchecked; human `force=true` is soft-warn
 - WIP limit: hard block for both human and AI
 
-**Stub seam (§6):** `src/stub/bus-client.ts` provides `BusClient` interface + `StubBusClient` for isolated testing. Integration join: swap when Track S (ext-substrate-s3) exports a real typed client.
+**Stub seam (§6) — CLOSED (fm/integrate-board-i4):** `src/stub/bus-client.ts` provides `BusClient` interface + `StubBusClient` for isolated testing. The real `BusClient` from `floe-bridge` has all required methods (`createContext`, `listContextsForScope`, `emit`, `listEndpoints`). The cast `asBusClient(ctx.busClient)` bridges the `any`-typed runtime object to the typed interface. The stub extension-context type now has `registerHttpHandler` as **required** (non-optional); test fixtures must provide a no-op `() => {}` implementation.
 
 **Tests:** `npm test --workspace floe-ext-snowball` — 30 unit tests (sidecar + gate enforcement).
 
 **Board UI entry point:** `floe-ext-snowball/src/ui/BoardView.tsx` exported at `package.json exports['./BoardView']` for Track S's static import into `ScopeDetail.tsx`.
+
+### Snowball extension installation (dogfooding in this repo)
+
+The extension is pre-installed for this workspace at `.floe/extensions/snowball/extension.json`.
+The entry path (`../../../floe-ext-snowball/src/index.ts`) resolves to the source package when this repo IS the workspace.
+
+When bridge loads: `snowball-overseer` agent is auto-provisioned into `.floe/agents/snowball-overseer.md` (gitignored).
+Board sidecars live at `.floe/extensions/snowball/boards/<slug>.yaml` (gitignored, created on first use or manually).
+
+**To run live:**
+```bash
+npm run floe -- setup -- --no-autostart --no-open
+# open http://127.0.0.1:5379 and select the workspace; create a Scope; the Board tab appears
+```

@@ -17,6 +17,7 @@ import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
 import { PiAgentCoreAdapter, TurnFailedError } from "./adapters/pi-agent-core-adapter.js";
 import { loadExtensions, type LoadedExtension } from "./extension-loader.js";
 import { HookRegistry } from "./hooks.js";
+import { startExtensionRelayServer } from "./extension-relay.js";
 
 type Timer = ReturnType<typeof setInterval>;
 const WEBHOOK_DEDUPE_MAX_EVENTS = 10_000;
@@ -320,13 +321,31 @@ export class BridgeDaemon {
           }
         }
 
+        // Start extension HTTP relay server (if any extensions have HTTP handlers)
+        const extensionsWithHandlers = loaded.filter(ext => ext.httpHandlers.length > 0);
+        let relayBaseUrl: string | null = null;
+        if (extensionsWithHandlers.length > 0) {
+          try {
+            const relay = await startExtensionRelayServer(
+              extensionsWithHandlers.map(ext => ({ name: ext.name, handlers: ext.httpHandlers }))
+            );
+            relayBaseUrl = relay.baseUrl;
+            // Close the relay server on process exit
+            process.once("exit", () => relay.server.close());
+          } catch (relayErr) {
+            console.error("[bridge] extension relay server failed to start", relayErr);
+          }
+        }
+
         // Report extension metadata to the bus so GET /v1/extensions can serve it
         try {
           await this.bus.reportExtensions(workspace.workspace_id, loaded.map(ext => ({
             name: ext.name,
             views: ext.views,
             errors: ext.errors,
-            relay_url: null // bridge does not expose an HTTP relay server in this release
+            // relay_url includes extension name as path prefix so the bus proxy
+            // constructs: {relay_url}/{handlerPath} = http://host/extName/path
+            relay_url: (relayBaseUrl && ext.httpHandlers.length > 0) ? `${relayBaseUrl}/${ext.name}` : null
           })));
         } catch (error) {
           console.error("[bridge] extension metadata report failed", error);
