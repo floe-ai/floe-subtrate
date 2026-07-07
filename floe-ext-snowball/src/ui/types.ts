@@ -43,6 +43,8 @@ export interface UiCard {
 export interface UiBoardState {
   scope_id: string;
   workspace_id: string;
+  /** True when the sidecar file exists on disk (first mutation creates it). */
+  initialized: boolean;
   columns: Array<{
     id: string;
     name: string;

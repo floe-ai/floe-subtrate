@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   DndContext,
   PointerSensor,
@@ -15,6 +15,7 @@ interface BoardProps {
   onMove: (cardId: string, toColumnId: string, force: boolean) => Promise<boolean>;
   onSelectCard: (card: UiCard) => void;
   onConfigColumn: (column: UiColumn) => void;
+  onAddCard: (columnId: string, title: string) => Promise<void>;
 }
 
 interface PendingMove {
@@ -23,7 +24,7 @@ interface PendingMove {
   toColumnId: string;
 }
 
-export function Board({ board, onMove, onSelectCard, onConfigColumn }: BoardProps) {
+export function Board({ board, onMove, onSelectCard, onConfigColumn, onAddCard }: BoardProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
   );
@@ -86,12 +87,11 @@ export function Board({ board, onMove, onSelectCard, onConfigColumn }: BoardProp
   }
 
   async function handleGateConfirm(
-    checks: UiCriterionCheck[],
+    _checks: UiCriterionCheck[],
     force: boolean
   ) {
     if (!pendingMove) return;
     const { cardId, toColumnId } = pendingMove;
-    // Move with force=true for human override
     await onMove(cardId, toColumnId, force);
     setPendingMove(null);
   }
@@ -123,24 +123,19 @@ export function Board({ board, onMove, onSelectCard, onConfigColumn }: BoardProp
             boxSizing: "border-box",
           }}
         >
-          {board.columns
-            .slice()
-            .sort((a, b) => {
-              // Use index order from the sidecar
-              return board.columns.indexOf(a) - board.columns.indexOf(b);
-            })
-            .map((colData) => {
-              const uiCol = toUiColumn(colData);
-              return (
-                <Column
-                  key={colData.id}
-                  column={uiCol}
-                  cards={cardsForColumn(colData.id)}
-                  onSelectCard={onSelectCard}
-                  onConfigColumn={onConfigColumn}
-                />
-              );
-            })}
+          {board.columns.map((colData) => {
+            const uiCol = toUiColumn(colData);
+            return (
+              <Column
+                key={colData.id}
+                column={uiCol}
+                cards={cardsForColumn(colData.id)}
+                onSelectCard={onSelectCard}
+                onConfigColumn={onConfigColumn}
+                onAddCard={onAddCard}
+              />
+            );
+          })}
         </div>
       </DndContext>
 

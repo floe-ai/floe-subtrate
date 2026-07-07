@@ -101,6 +101,16 @@ export function loadSidecar(
 }
 
 /**
+ * Check if a sidecar file exists on disk for this scope.
+ */
+export function sidecarExists(
+  workspacePath: string,
+  scopeId: string
+): boolean {
+  return existsSync(sidecarPath(workspacePath, scopeId));
+}
+
+/**
  * Persist the sidecar to disk.  Creates parent directories as needed.
  */
 export function saveSidecar(
