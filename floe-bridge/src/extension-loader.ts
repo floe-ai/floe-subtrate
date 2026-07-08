@@ -10,7 +10,7 @@
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { HookRegistry, HookName, HookHandler } from "./hooks.js";
 
@@ -218,16 +218,43 @@ async function loadSingleExtension(
   const result: LoadedExtension = { name: dirName, tools: [], pulses: [], views: [], bundledAgents: [], httpHandlers, errors };
 
   // 1. Read manifest
+  //    An installed extension.json may be a lightweight pointer:
+  //      { "manifest_source": "../../../some-pkg/extension.json" }
+  //    In that case the canonical manifest is read from the source path, and all
+  //    relative paths inside it (entry, instructions_path) resolve from the
+  //    source directory — never from the installed extension dir.  This eliminates
+  //    the committed-duplicate-that-drifts problem: editing the package manifest
+  //    alone is sufficient, and the running system can never load a stale copy.
   const manifestPath = join(extDir, "extension.json");
   let manifest: ExtensionManifest;
+  let manifestBaseDir = extDir; // dir used for resolving manifest-relative paths
   try {
-    const raw = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    const validation = validateManifest(raw);
-    if (!validation.ok) {
-      errors.push(validation.error);
-      return result;
+    const raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>;
+    if (raw !== null && typeof raw === "object" && typeof raw.manifest_source === "string") {
+      // Pointer: follow manifest_source to the canonical package manifest
+      const sourcePath = resolve(extDir, raw.manifest_source);
+      manifestBaseDir = dirname(sourcePath);
+      let sourceRaw: unknown;
+      try {
+        sourceRaw = JSON.parse(readFileSync(sourcePath, "utf-8"));
+      } catch (srcErr: any) {
+        errors.push(`Failed to read manifest_source "${raw.manifest_source}": ${srcErr.message}`);
+        return result;
+      }
+      const validation = validateManifest(sourceRaw);
+      if (!validation.ok) {
+        errors.push(`[manifest_source] ${validation.error}`);
+        return result;
+      }
+      manifest = validation.manifest;
+    } else {
+      const validation = validateManifest(raw);
+      if (!validation.ok) {
+        errors.push(validation.error);
+        return result;
+      }
+      manifest = validation.manifest;
     }
-    manifest = validation.manifest;
   } catch (err: any) {
     errors.push(`Failed to read extension.json: ${err.message}`);
     return result;
@@ -246,11 +273,11 @@ async function loadSingleExtension(
 
   // 4. Load bundled agent instructions into memory (no disk writes to the workspace)
   if (manifest.agents && manifest.agents.length > 0) {
-    result.bundledAgents = await loadBundledAgentsInMemory(manifest, extDir, errors);
+    result.bundledAgents = await loadBundledAgentsInMemory(manifest, manifestBaseDir, errors);
   }
 
   // 5. Resolve and import entry point
-  const entryPath = resolve(extDir, manifest.entry);
+  const entryPath = resolve(manifestBaseDir, manifest.entry);
   let factory: (ctx: ExtensionContext) => any[];
   try {
     const entryUrl = pathToFileURL(entryPath).href;

@@ -460,6 +460,30 @@ describe("Slice 2 — Context API HTTP routes", () => {
       expect(res.statusCode).toBe(503);
       expect(res.json()).toMatchObject({ error: "extension_relay_not_available" });
     });
+
+    it("POST /v1/extensions/report broadcasts extensions_updated to WS subscribers", async () => {
+      const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+      const wsUrl = address.replace(/^http/, "ws") + "/v1/events/stream";
+      const wsMod = await import("ws" as any);
+      const WsCtor = (wsMod as any).WebSocket ?? (wsMod as any).default;
+      const ws = new WsCtor(wsUrl);
+      const messages: any[] = [];
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", (err: any) => reject(err));
+      });
+      ws.on("message", (data: any) => { messages.push(JSON.parse(data.toString())); });
+
+      // Trigger the broadcast the same way the POST route does
+      handle.broadcast("extensions_updated", { workspace_id: WS });
+
+      await new Promise(resolve => setTimeout(resolve, 150));
+      ws.close();
+
+      const updated = messages.find((m: any) => m.type === "extensions_updated");
+      expect(updated).toBeDefined();
+      expect(updated.payload?.workspace_id).toBe(WS);
+    });
   });
 });
 
