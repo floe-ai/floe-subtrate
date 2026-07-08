@@ -448,3 +448,30 @@ When bridge loads: `snowball-overseer` agent is registered **in memory only** (n
 npm run floe -- setup -- --no-autostart --no-open
 # open http://127.0.0.1:5379 and select the workspace; create a Scope; the Board tab appears
 ```
+
+---
+
+## Web + Desktop architecture (fm/web-desktop-w3)
+
+### One-server, one-UI model
+- Architecture: single bus (port 5377) + single UI surface (port 5379 served by vite, browser-accessible AND wrapped by Tauri desktop shell).
+- `floe-app` is NOT desktop-only — the same 5379 UI surface works in a plain browser.
+- Auth WRITE is desktop/CLI-only per ADR-0005. The bus does not expose auth-write endpoints.
+
+### Service commands
+- **`floe start`** = services only (bus + bridge + frontend/vite on 5379). No browser opened, no window. Safe for autostart.
+- **`floe desktop`** = start services if needed, wait for 5379 health, then open the Tauri desktop window ATTACHED to the already-running 5379 frontend (never spawns its own vite).
+
+### No-second-vite mechanism
+`tauri.conf.json` has `beforeDevCommand: "npm run dev"`. Running `tauri dev` naively would start a second vite → port 5379 collision.
+Solution: `floe-app/package.json` has a `tauri:attach` script (`tauri dev --no-dev-server`) that uses the Tauri v2 CLI `--no-dev-server` flag to skip `beforeDevCommand` and attach directly to the already-running `devUrl` (5379).
+`floe desktop` invokes `npm run tauri:attach --workspace floe-app`.
+
+### Cargo preflight
+`floe desktop` calls `checkCargoAvailable()` (in `floe-cli/src/desktop.ts`) before attempting to launch Tauri. If cargo is not on PATH, it fails fast with a `rustup.rs` install link. First launch compiles Rust (~2–5 min); output is shown in the terminal (stdio: inherit).
+
+### Browser settings view
+`SubstrateSettingsView.tsx` uses `isTauri()` from `floe-app/src/fs/workspaceFs.ts` to branch:
+- **Browser**: `BrowserAuthPillar` — fetches profiles from bus (`GET /v1/auth/profiles` via `getAuthProfiles()`), shows read-only list with a note to use CLI/desktop for writes.
+- **Desktop**: `TauriAuthPillar` — full read/write via Tauri `invoke`. No Tauri calls in the browser path.
+The nav "Substrate Settings" item is always visible (useful in both modes).

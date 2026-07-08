@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:attach": "tauri dev --no-dev-server",
     "tauri:build": "tauri build"
   },
   "dependencies": {

@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from "react";
 import type { AuthProfileRecord } from "../../bus-client/types.ts";
+import { getAuthProfiles } from "../../bus-client/client.ts";
+import { isTauri } from "../../fs/workspaceFs.ts";
 import { tk } from "../../theme.ts";
-
-type ActiveTab = "auth" | "models" | "mcp" | "workspaces" | "diagnostics";
 
 async function invokeTauri<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -11,6 +11,7 @@ async function invokeTauri<T>(cmd: string, args: Record<string, unknown> = {}): 
 
 export function SubstrateSettingsView(): React.ReactElement {
   const [activeTab, setActiveTab] = useState<ActiveTab>("auth");
+  const desktop = isTauri();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: tk.canvas }}>
@@ -26,7 +27,7 @@ export function SubstrateSettingsView(): React.ReactElement {
             fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase",
             color: tk.ink3, fontWeight: 510, marginBottom: 2,
           }}>
-            Global System (Tauri-Native)
+            Global System {desktop ? "(Desktop)" : "(Browser — read-only)"}
           </div>
           <h1 style={{
             fontWeight: 510, fontSize: 24, lineHeight: 1.1,
@@ -35,7 +36,9 @@ export function SubstrateSettingsView(): React.ReactElement {
             Substrate Settings
           </h1>
           <p style={{ color: tk.ink3, fontSize: 13, margin: 0 }}>
-            Configure global daemon services, model definitions, and API authentication credentials natively from your host.
+            {desktop
+              ? "Configure global daemon services, model definitions, and API authentication credentials natively from your host."
+              : "View configured credentials. To add or edit credentials, use the Floe CLI or the desktop app."}
           </p>
         </div>
       </header>
@@ -63,7 +66,7 @@ export function SubstrateSettingsView(): React.ReactElement {
         {/* Right Settings Content */}
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "24px 32px 48px" }}>
           {activeTab === "auth" ? (
-            <AuthenticationPillar />
+            <AuthenticationPillar desktop={desktop} />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyItems: "center", padding: 40, color: tk.ink3, textAlign: "center" }}>
               <span style={{ fontSize: 28, marginBottom: 12 }}>⚡</span>
@@ -82,6 +85,8 @@ export function SubstrateSettingsView(): React.ReactElement {
 // ---------------------------------------------------------------------------
 // Sidebar Tab Button Helper
 // ---------------------------------------------------------------------------
+
+type ActiveTab = "auth" | "models" | "mcp" | "workspaces" | "diagnostics";
 
 type TabButtonProps = {
   id: ActiveTab;
@@ -124,10 +129,112 @@ function TabButton({ id, label, active, onClick, isStub }: TabButtonProps): Reac
 }
 
 // ---------------------------------------------------------------------------
-// Authentication & Credentials Pillar — Tauri Native
+// Authentication & Credentials Pillar — branches on isTauri()
 // ---------------------------------------------------------------------------
 
-function AuthenticationPillar(): React.ReactElement {
+function AuthenticationPillar({ desktop }: { desktop: boolean }): React.ReactElement {
+  return desktop ? <TauriAuthPillar /> : <BrowserAuthPillar />;
+}
+
+// ---------------------------------------------------------------------------
+// Browser read-only auth pillar — fetches profiles via the bus
+// ---------------------------------------------------------------------------
+
+function BrowserAuthPillar(): React.ReactElement {
+  const [profiles, setProfiles] = useState<AuthProfileRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getAuthProfiles()
+      .then((res) => {
+        setProfiles(res.profiles);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
+  }, []);
+
+  return (
+    <div style={{ maxWidth: 800, display: "flex", flexDirection: "column", gap: 28 }}>
+      {/* Intro */}
+      <section>
+        <h2 style={{ fontSize: 16, fontWeight: 510, color: tk.ink, margin: "0 0 6px" }}>Authentication Profiles</h2>
+        <p style={{ fontSize: 13, color: tk.ink3, margin: 0, lineHeight: 1.5 }}>
+          Credentials are managed by the Floe CLI or the desktop app and stored securely on the host machine.
+          This browser view is read-only. To add or edit credentials, use the Floe CLI (<code>floe login</code>) or the desktop app.
+        </p>
+      </section>
+
+      {/* Profiles list */}
+      <section style={{ background: tk.surface, border: `1px solid ${tk.border}`, borderRadius: tk.r3, overflow: "hidden" }}>
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${tk.border2}`, display: "flex", alignItems: "center" }}>
+          <h3 style={{ fontSize: 13, fontWeight: 510, margin: 0, color: tk.ink }}>Registered Profiles</h3>
+          <span style={{
+            marginLeft: "auto", fontSize: 11, color: tk.ink4,
+            background: "rgba(255,255,255,0.03)", border: `1px solid ${tk.border}`,
+            padding: "2px 8px", borderRadius: tk.r2,
+          }}>
+            Read-only
+          </span>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 24, textAlign: "center", color: tk.ink3 }}>Loading profiles…</div>
+        ) : error ? (
+          <div role="alert" style={{ padding: 24, color: tk.danger }}>{error}</div>
+        ) : profiles.length === 0 ? (
+          <div style={{ padding: 32, textAlign: "center", color: tk.ink4, fontStyle: "italic" }}>
+            No auth profiles configured. Use <code>floe login</code> on the host or open the desktop app to add credentials.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {profiles.map((p) => (
+              <div
+                key={p.id}
+                style={{
+                  display: "flex", alignItems: "center", padding: "14px 20px",
+                  borderBottom: `1px solid ${tk.border2}`, gap: 16,
+                }}
+              >
+                <div>
+                  <code style={{ fontSize: 13, fontWeight: 550, color: tk.ink }}>{p.id}</code>
+                  <span style={{ fontSize: 11, color: tk.ink4, marginLeft: 12 }}>Provider:</span>
+                  <span style={{ fontSize: 12, color: tk.ink2, marginLeft: 4, textTransform: "capitalize" }}>{p.provider}</span>
+                  {p.model && (
+                    <>
+                      <span style={{ fontSize: 11, color: tk.ink4, marginLeft: 12 }}>Default Model:</span>
+                      <code style={{ fontSize: 11, color: tk.accentHov, marginLeft: 4 }}>{p.model}</code>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Browser note */}
+      <section style={{
+        background: "rgba(255,200,80,0.05)", border: `1px solid rgba(255,200,80,0.2)`,
+        borderRadius: tk.r3, padding: "14px 18px",
+      }}>
+        <p style={{ fontSize: 12.5, color: tk.ink3, margin: 0, lineHeight: 1.6 }}>
+          <strong style={{ color: tk.ink2 }}>Note:</strong> Credential write operations are desktop/CLI-only (ADR-0005).
+          Use <code>floe login</code> or <code>floe logout</code> from the CLI, or open the Floe desktop app to manage credentials.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Desktop (Tauri) full read/write auth pillar
+// ---------------------------------------------------------------------------
+
+function TauriAuthPillar(): React.ReactElement {
   const [profiles, setProfiles] = useState<AuthProfileRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -211,9 +318,9 @@ function AuthenticationPillar(): React.ReactElement {
     <div style={{ maxWidth: 800, display: "flex", flexDirection: "column", gap: 28 }}>
       {/* Intro */}
       <section>
-        <h2 style={{ fontSize: 16, fontWeight: 510, color: tk.ink, margin: "0 0 6px" }}>Authentication Profiles (Tauri-Native)</h2>
+        <h2 style={{ fontSize: 16, fontWeight: 510, color: tk.ink, margin: "0 0 6px" }}>Authentication Profiles</h2>
         <p style={{ fontSize: 13, color: tk.ink3, margin: 0, lineHeight: 1.5 }}>
-          Create and manage host credentials and API profiles. This desktop app writes natively and securely directly to your machine's YAML/JSON configurations, bypass-routing the daemon entirely for maximum security.
+          Create and manage host credentials and API profiles. The desktop app writes natively and securely directly to your machine's YAML/JSON configurations.
         </p>
       </section>
 

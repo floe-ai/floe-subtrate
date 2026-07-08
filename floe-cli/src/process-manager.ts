@@ -59,7 +59,7 @@ export function npmCommand(): string {
   return "npm";
 }
 
-function commandForNpm(args: string[]): { command: string; args: string[] } {
+export function commandForNpm(args: string[]): { command: string; args: string[] } {
   if (process.platform !== "win32") return { command: "npm", args };
   return {
     command: process.env.ComSpec ?? "cmd.exe",
