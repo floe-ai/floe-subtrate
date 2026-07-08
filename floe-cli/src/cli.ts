@@ -5,6 +5,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
 import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./config.js";
+import { buildResetPlan, executeReset } from "./reset.js";
 import type { OAuthProviderId } from "@earendil-works/pi-ai/oauth";
 import {
   createAuthRuntime,
@@ -288,6 +289,49 @@ program.command("uninstall").description("Remove autostart entries and stop serv
   uninstallAutostart();
   console.log("Removed Floe service entries. Local data is preserved.");
 });
+
+program
+  .command("reset")
+  .description("Factory reset: wipe all Floe state (workspaces, contexts, boards, agents) while preserving provider credentials and service config")
+  .option("--yes", "skip confirmation prompt")
+  .action(async (options) => {
+    const { configPath, config } = ensureConfig(program.opts().config);
+
+    // Stop running services before wiping their databases
+    for (const service of ["app", "bridge", "bus"] as ServiceName[]) stopService(configPath, config, service);
+
+    const plan = buildResetPlan(configPath, config);
+
+    console.log("\nFloe Factory Reset");
+    console.log("==================");
+    console.log("\nWILL WIPE:");
+    for (const target of plan.wipe) {
+      console.log(`  - ${target.label}`);
+      console.log(`    ${target.path}`);
+    }
+    console.log("\nWILL PRESERVE:");
+    for (const target of plan.preserve) {
+      console.log(`  + ${target.label}`);
+      console.log(`    ${target.path}`);
+    }
+    console.log("");
+
+    if (!options.yes) {
+      const rl = createInterface({ input, output });
+      try {
+        const answer = (await rl.question("This is destructive and cannot be undone. Continue? [y/N] ")).trim().toLowerCase();
+        if (answer !== "y" && answer !== "yes") {
+          console.log("Reset cancelled.");
+          process.exit(0);
+        }
+      } finally {
+        rl.close();
+      }
+    }
+
+    executeReset(configPath, config);
+    console.log("\nReset complete. Run \`floe setup\` or \`floe start\` to start fresh.");
+  });
 
 program.action(async () => {
   const { configPath, config, created } = ensureConfig(program.opts().config);
