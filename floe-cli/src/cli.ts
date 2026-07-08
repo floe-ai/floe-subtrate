@@ -22,13 +22,16 @@ import {
 } from "./auth.js";
 import {
   clearRecords,
+  commandForNpm,
   isPidRunning,
   readRecords,
+  repoRoot,
   serviceLogPath,
   startService,
   stopService,
   type ServiceName
 } from "./process-manager.js";
+import { checkCargoAvailable, missingCargoMessage } from "./desktop.js";
 
 const program = new Command();
 
@@ -79,6 +82,47 @@ program.command("start").description("Start local Floe services").action(async (
   await startAll(configPath, config);
   console.log("Started Floe services.");
 });
+
+program
+  .command("desktop")
+  .description("Open the Floe desktop window (start services if needed, attach Tauri to running 5379 frontend)")
+  .action(async () => {
+    const { configPath, config } = ensureConfig(program.opts().config);
+
+    // Preflight: fail fast if Rust/cargo is not installed
+    const toolchain = checkCargoAvailable();
+    if (!toolchain.available) {
+      console.error(missingCargoMessage());
+      process.exit(1);
+    }
+
+    // Ensure services (bus, bridge, app/vite on 5379) are running
+    await startAll(configPath, config);
+
+    console.log(
+      `Launching Floe desktop window attached to http://127.0.0.1:5379\n` +
+      `(first run compiles Rust — this may take a few minutes)\n`
+    );
+
+    // Launch Tauri with --no-dev-server so it skips `beforeDevCommand` (npm run dev)
+    // and attaches directly to the already-running vite at devUrl (5379).
+    // This is the Tauri v2 mechanism for attaching to an externally-managed dev server.
+    const root = repoRoot();
+    const { command, args } = commandForNpm(["run", "tauri:attach", "--workspace", "floe-app"]);
+    const child = spawn(command, args, {
+      cwd: root,
+      stdio: "inherit", // surface Rust compilation output so user is not left hanging
+      env: { ...process.env },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      child.on("close", (code) => {
+        if (code === 0 || code === null) resolve();
+        else reject(new Error(`Tauri window closed with exit code ${code}`));
+      });
+      child.on("error", reject);
+    });
+  });
 
 program.command("stop").description("Stop local Floe services").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);

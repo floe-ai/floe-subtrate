@@ -6,11 +6,11 @@ system:
   clusters:
     - id: floe-app
       name: Floe App
-      intent: "Tauri desktop shell and operator contexts"
+      intent: "Single UI surface served to plain browsers and wrapped by the Tauri desktop shell; one-server architecture (bus 5377, frontend 5379)"
       cells:
         - id: tauri-shell
           name: Tauri Shell
-          intent: "Owns the desktop boundary, local file commands, and rust interop"
+          intent: "Owns the desktop boundary, local file commands, and rust interop; wraps the shared 5379 frontend without managing its own vite server"
           paths:
             - floe-app/src-tauri/**
           writeAuthority:
