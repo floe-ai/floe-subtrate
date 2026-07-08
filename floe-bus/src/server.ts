@@ -1176,6 +1176,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
         reported_at: new Date().toISOString()
       });
     }
+    // Notify connected app clients so they re-fetch without polling or page refresh
+    broadcast("extensions_updated", { workspace_id: body.workspace_id });
     return reply.code(201).send({ ok: true, registered: body.extensions.length });
   });
 

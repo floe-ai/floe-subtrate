@@ -17,6 +17,7 @@ import {
   deleteContext,
   ScopeNotEmptyError,
 } from "../bus-client/client.ts";
+import { subscribeEvents } from "../bus-client/stream.ts";
 import { Ops } from "./Ops.tsx";
 import { SnowballBoard } from "floe-ext-snowball/BoardView";
 
@@ -86,30 +87,50 @@ function useFetchedExtensionViews(workspaceId: string): ExtensionViewEntry[] {
   const [views, setViews] = useState<ExtensionViewEntry[]>([]);
   useEffect(() => {
     let cancelled = false;
-    const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 5000);
-    fetch(`${BUS_BASE}/v1/extensions?workspace_id=${encodeURIComponent(workspaceId)}`, { signal: ctrl.signal })
-      .then(r => r.ok ? r.json() as Promise<{ extensions: ExtensionApiEntry[] }> : null)
-      .then(data => {
-        if (cancelled || !data) return;
-        const entries: ExtensionViewEntry[] = [];
-        for (const ext of data.extensions) {
-          for (const v of ext.views) {
-            if (v.slot === "scope-detail-tab") {
-              entries.push({
-                id: ext.name,
-                label: v.label,
-                extensionName: ext.name,
-                component: COMPONENT_REGISTRY[v.component] ?? PlaceholderExtensionView,
-              });
+
+    function doFetch() {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      fetch(`${BUS_BASE}/v1/extensions?workspace_id=${encodeURIComponent(workspaceId)}`, { signal: ctrl.signal })
+        .then(r => r.ok ? r.json() as Promise<{ extensions: ExtensionApiEntry[] }> : null)
+        .then(data => {
+          if (cancelled || !data) return;
+          const entries: ExtensionViewEntry[] = [];
+          for (const ext of data.extensions) {
+            for (const v of ext.views) {
+              if (v.slot === "scope-detail-tab") {
+                entries.push({
+                  id: ext.name,
+                  label: v.label,
+                  extensionName: ext.name,
+                  component: COMPONENT_REGISTRY[v.component] ?? PlaceholderExtensionView,
+                });
+              }
             }
           }
-        }
-        setViews(entries);
-      })
-      .catch(() => { /* extension views unavailable — degrade gracefully */ })
-      .finally(() => clearTimeout(timeout));
-    return () => { cancelled = true; ctrl.abort(); };
+          setViews(entries);
+        })
+        .catch(() => { /* extension views unavailable — degrade gracefully */ })
+        .finally(() => clearTimeout(timeout));
+    }
+
+    // Initial fetch (bridge may not be attached yet — that's OK; the WS push fixes it)
+    doFetch();
+
+    // Re-fetch when the bridge finishes attaching and reports extensions to the bus.
+    // This closes the boot-race: if the app opens before the bridge is ready, the
+    // push causes a second fetch without any manual refresh.
+    const unsubscribe = subscribeEvents((msg) => {
+      if (msg.type === "extensions_updated" &&
+          (!msg.payload?.workspace_id || msg.payload.workspace_id === workspaceId)) {
+        doFetch();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [workspaceId]);
   return views;
 }

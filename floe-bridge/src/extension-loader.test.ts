@@ -390,3 +390,95 @@ export default function(ctx) {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// manifest_source pointer tests (Problem 1 / drift-elimination)
+// ---------------------------------------------------------------------------
+
+describe("loadExtensions — manifest_source pointer", () => {
+  it("pointer file delegates to source manifest: tools load correctly", async () => {
+    // Simulate the monorepo layout:
+    //   <pkgDir>/extension.json     — canonical source manifest
+    //   <pkgDir>/src/index.ts       — entry
+    //   <extDir>/extension.json     — installed pointer (manifest_source -> pkgDir)
+    const pkgDir = join(tempDir, "floe-ext-snowball");
+    const extRoot = join(tempDir, "extensions");
+    const extDir = join(extRoot, "snowball");
+    mkdirSync(join(pkgDir, "src"), { recursive: true });
+    mkdirSync(extDir, { recursive: true });
+
+    // Package source manifest
+    writeFileSync(
+      join(pkgDir, "extension.json"),
+      JSON.stringify({
+        schema: "floe.extension.v1",
+        name: "snowball",
+        entry: "./src/index.ts",
+        pulses: [],
+      }, null, 2)
+    );
+    writeFileSync(join(pkgDir, "src", "index.ts"), VALID_ENTRY);
+
+    // Installed pointer (relative path from extDir to pkgDir)
+    writeFileSync(
+      join(extDir, "extension.json"),
+      JSON.stringify({ manifest_source: "../../floe-ext-snowball/extension.json" }, null, 2)
+    );
+
+    const result = await loadExtensions(extRoot, baseContext());
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("snowball");
+    expect(result[0].tools).toHaveLength(1);
+    expect(result[0].tools[0].name).toBe("snowball_add");
+    expect(result[0].errors).toHaveLength(0);
+    expect(result[0].pulses).toHaveLength(0); // pulses:[] in source, not the stale copy
+  });
+
+  it("pointer with broken manifest_source path records an error gracefully", async () => {
+    const extRoot = join(tempDir, "extensions");
+    const extDir = join(extRoot, "bad-ptr");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(
+      join(extDir, "extension.json"),
+      JSON.stringify({ manifest_source: "../../does-not-exist/extension.json" })
+    );
+
+    const result = await loadExtensions(extRoot, baseContext());
+    expect(result).toHaveLength(1);
+    expect(result[0].errors.length).toBeGreaterThan(0);
+    expect(result[0].errors[0]).toMatch(/manifest_source/);
+  });
+
+  it("pointer loads bundled agents from the source package directory", async () => {
+    const pkgDir = join(tempDir, "pkg");
+    const extRoot = join(tempDir, "extensions");
+    const extDir = join(extRoot, "mypkg");
+    mkdirSync(join(pkgDir, "src"), { recursive: true });
+    mkdirSync(extDir, { recursive: true });
+
+    writeFileSync(
+      join(pkgDir, "extension.json"),
+      JSON.stringify({
+        schema: "floe.extension.v1",
+        name: "mypkg",
+        entry: "./src/index.ts",
+        agents: [{ agent_id: "mypkg-agent", label: "MyPkg Agent", instructions_path: "./agent.md" }],
+        pulses: [],
+      }, null, 2)
+    );
+    writeFileSync(join(pkgDir, "src", "index.ts"), EMPTY_TOOLS_ENTRY);
+    writeFileSync(join(pkgDir, "agent.md"), "# MyPkg Agent\nYou are helpful.");
+
+    writeFileSync(
+      join(extDir, "extension.json"),
+      JSON.stringify({ manifest_source: "../../pkg/extension.json" }, null, 2)
+    );
+
+    const result = await loadExtensions(extRoot, baseContext());
+    expect(result).toHaveLength(1);
+    expect(result[0].errors).toHaveLength(0);
+    expect(result[0].bundledAgents).toHaveLength(1);
+    expect(result[0].bundledAgents[0].agent_id).toBe("mypkg-agent");
+    expect(result[0].bundledAgents[0].body).toContain("# MyPkg Agent");
+  });
+});
