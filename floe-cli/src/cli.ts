@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { Command } from "commander";
 import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./config.js";
 import { buildResetPlan, executeReset } from "./reset.js";
+import { seedDefaultActor } from "./actor-seed.js";
 import type { OAuthProviderId } from "@earendil-works/pi-ai/oauth";
 import {
   createAuthRuntime,
@@ -51,6 +52,10 @@ program
     }
     await startAll(configPath, config);
     await verifyHealth(config);
+    const currentWorkspace = findAncestorWithFloe(process.cwd());
+    if (currentWorkspace) {
+      await registerCurrentWorkspace(config, currentWorkspace, true);
+    }
     if (options.open) openUrl(config.app.bus_http_url ? appUrl(config) : "http://127.0.0.1:5379");
     console.log(`Floe is running: ${appUrl(config)}`);
   });
@@ -524,9 +529,16 @@ async function registerCurrentWorkspace(config: LocalConfig, locator: string, in
   });
   if (!response.ok) throw new Error(`Workspace registration failed: ${response.status} ${await response.text()}`);
   const result = await response.json() as any;
-  await fetch(`${config.bus.http_base_url}/v1/workspaces/${encodeURIComponent(result.workspace.workspace_id)}/select`, {
+  const workspaceId: string = result.workspace.workspace_id;
+  await fetch(`${config.bus.http_base_url}/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {
     method: "POST"
   });
+  // Seed a default human operator actor if none exists yet.
+  // Stored bus-DB-only (no workspace file written) so git status stays clean.
+  const seedResult = await seedDefaultActor(config.bus.http_base_url, workspaceId);
+  if (seedResult.seeded) {
+    console.log(`Seeded default actor: ${seedResult.endpoint_id}`);
+  }
 }
 
 function findAncestorWithFloe(start: string): string | null {
