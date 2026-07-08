@@ -11,6 +11,25 @@ export class FakeRuntimeAdapter implements RuntimeAdapter {
     const text = firstText(trigger);
     const threadId = trigger.thread_id || `thr:${bundle.workspace_id}:fake`;
 
+    // Fire Pulse hooks for pulse.fired events (same as pi-agent-core-adapter)
+    // This enables the deterministic overseer driver to run on heartbeat pulses
+    // without a real LLM being configured.
+    const pulseEvents = bundle.events.filter((e) => e.type === "pulse.fired");
+    if (pulseEvents.length > 0 && context.hooks?.hasHandlers("Pulse")) {
+      for (const pulseEvent of pulseEvents) {
+        await context.hooks.fire("Pulse", {
+          endpoint_id: bundle.endpoint_id,
+          workspace_id: bundle.workspace_id,
+          delivery_id: bundle.delivery_id,
+          trigger_event_id: bundle.trigger_event_id,
+          pulse_id: (pulseEvent.content as any)?.pulse_id ?? (pulseEvent.metadata as any)?.pulse_id,
+          event_id: pulseEvent.event_id,
+          thread_id: pulseEvent.thread_id,
+          content: pulseEvent.content,
+        });
+      }
+    }
+
     await context.bus.appendRuntimeTelemetry({
       workspace_id: bundle.workspace_id,
       endpoint_id: bundle.endpoint_id,

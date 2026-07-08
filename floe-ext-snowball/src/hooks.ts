@@ -11,7 +11,8 @@
  */
 
 import type { ExtensionContext, HookResult } from "./stub/extension-context.js";
-import { loadSidecar, buildBoardSnapshot, renderCompactBoardSnapshot } from "./sidecar.js";
+import { loadSidecar, saveSidecar, buildBoardSnapshot, renderCompactBoardSnapshot, getUncheckedCriteria } from "./sidecar.js";
+import { asBusClient } from "./stub/bus-client.js";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { slugify } from "./sidecar.js";
@@ -158,13 +159,149 @@ export function registerHooks(ctx: ExtensionContext): void {
   // ── Pulse ────────────────────────────────────────────────────────────
   ctx.hooks.on("Pulse", async (payload): Promise<void> => {
     const pulseId = payload.pulse_id as string | undefined;
-    if (pulseId !== "snowball-board-heartbeat") return;
+    // Match both bare id (legacy) and the scoped form: `snowball:snowball-board-heartbeat:<slug>`
+    if (!pulseId?.includes("snowball-board-heartbeat")) return;
 
-    // On heartbeat: nothing to do in the hook itself — the overseer agent
-    // handles machine criteria evaluation in its turn (it calls
-    // snowball_check_criteria and snowball_move_card tools directly).
-    // The board state is already injected via BeforeTurn.
-    // We log for observability only.
-    console.info("[snowball] Board heartbeat pulse received — overseer will evaluate");
+    // The scope_id is injected into the pulse content by the per-scope registration
+    const scopeId = (payload.content as Record<string, unknown> | undefined)?.scope_id as string | undefined;
+    if (!scopeId) {
+      console.warn("[snowball:overseer] heartbeat pulse missing scope_id in content — skipping");
+      return;
+    }
+
+    console.info("[snowball:overseer] heartbeat cycle starting", { scope_id: scopeId });
+
+    const sidecar = loadSidecar(workspacePath, scopeId);
+    const bus = asBusClient(ctx.busClient);
+
+    // Iterate agent-owned columns only (R7: overseer operates on full board)
+    for (const col of sidecar.columns) {
+      if (col.owner.kind !== "agent") continue;
+
+      const colCards = Object.entries(sidecar.cards).filter(
+        ([, c]) => c.column_id === col.id
+      );
+
+      for (const [cardId, card] of colCards) {
+        // Hard gate: all exit criteria must be satisfied
+        const unchecked = getUncheckedCriteria(card, col.id, col.exit_criteria);
+        if (unchecked.length > 0) {
+          console.info("[snowball:overseer] card held — unmet exit criteria", {
+            card_id: cardId,
+            card_title: card.title,
+            column: col.name,
+            unmet_criteria: unchecked.map((c) => c.id),
+          });
+          continue;
+        }
+
+        // Find next column (next in array order)
+        const colIdx = sidecar.columns.indexOf(col);
+        const nextCol = sidecar.columns[colIdx + 1];
+        if (!nextCol) {
+          console.info("[snowball:overseer] card is in the last column — no advance", {
+            card_id: cardId,
+            card_title: card.title,
+          });
+          continue;
+        }
+
+        // WIP limit on destination (hard block for agent too)
+        if (nextCol.wip_limit !== null) {
+          const currentCount = Object.values(sidecar.cards).filter(
+            (c) => c.column_id === nextCol.id
+          ).length;
+          if (currentCount >= nextCol.wip_limit) {
+            console.info("[snowball:overseer] card held — destination WIP limit", {
+              card_id: cardId,
+              card_title: card.title,
+              to_column: nextCol.name,
+              current: currentCount,
+              limit: nextCol.wip_limit,
+            });
+            continue;
+          }
+        }
+
+        // Advance the card
+        const fromColumnId = card.column_id;
+        const newOrder = Object.values(sidecar.cards).filter(
+          (c) => c.column_id === nextCol.id
+        ).length;
+        card.column_id = nextCol.id;
+        card.order = newOrder;
+        saveSidecar(workspacePath, scopeId, sidecar);
+
+        console.info("[snowball:overseer] card advanced", {
+          card_id: cardId,
+          card_title: card.title,
+          from_column: col.name,
+          to_column: nextCol.name,
+          scope_id: scopeId,
+        });
+
+        // Emit move event (best-effort)
+        try {
+          await bus.emit({
+            type: "snowball.card.moved",
+            workspace_id: workspaceId,
+            content: {
+              text: `[overseer] Card "${card.title}" advanced from "${col.name}" to "${nextCol.name}" (all exit criteria satisfied)`,
+              data: {
+                card_context_id: cardId,
+                card_title: card.title,
+                from_column_id: fromColumnId,
+                to_column_id: nextCol.id,
+                board_scope_id: scopeId,
+                source: "overseer",
+                forced: false,
+              },
+            },
+            metadata: { source: "snowball-overseer" },
+          });
+        } catch (err) {
+          console.warn("[snowball:overseer] failed to emit card moved event", { error: String(err) });
+        }
+
+        // If the next column is also agent-owned, emit routing event
+        if (nextCol.owner.kind === "agent" && nextCol.owner.agent_id) {
+          try {
+            const endpoints = await bus.listEndpoints(workspaceId);
+            const agentEndpoint = endpoints.find(
+              (ep) =>
+                ep.endpoint_id.endsWith(`:${nextCol.owner.agent_id}`) ||
+                ep.agent_id === nextCol.owner.agent_id
+            );
+            if (agentEndpoint) {
+              await bus.emit({
+                type: "snowball.card.entered_column",
+                workspace_id: workspaceId,
+                destination: {
+                  kind: "endpoint",
+                  endpoint_id: agentEndpoint.endpoint_id,
+                },
+                content: {
+                  text: `Card "${card.title}" has entered column "${nextCol.name}" (overseer advance)`,
+                  data: {
+                    card_context_id: cardId,
+                    card_title: card.title,
+                    column_id: nextCol.id,
+                    column_name: nextCol.name,
+                    from_column_id: fromColumnId,
+                    board_scope_id: scopeId,
+                  },
+                },
+                response: { expected: true },
+                metadata: { source: "snowball-overseer" },
+              });
+            }
+          } catch (err) {
+            console.warn("[snowball:overseer] failed to emit routing event", { error: String(err) });
+          }
+        }
+      }
+    }
+
+    console.info("[snowball:overseer] heartbeat cycle complete", { scope_id: scopeId });
   });
 }
