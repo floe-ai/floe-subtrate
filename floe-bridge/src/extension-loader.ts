@@ -9,10 +9,9 @@
  * loader continues with the next extension.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import YAML from "yaml";
 import type { HookRegistry, HookName, HookHandler } from "./hooks.js";
 
 // ---------------------------------------------------------------------------
@@ -87,14 +86,24 @@ export interface ExtensionContext {
   ): void;
 }
 
+/**
+ * A bundled agent with its instruction body loaded into memory.
+ * The body is read from `instructions_path` relative to the extension directory
+ * at load time — it is never written to the workspace's committed `.floe/` tree.
+ */
+export interface LoadedBundledAgent extends BundledAgentConfig {
+  /** Instructions body loaded from instructions_path (in-memory only, no disk write) */
+  body: string;
+}
+
 export interface LoadedExtension {
   name: string;
   tools: any[];
   pulses: ExtensionPulseConfig[];
   /** Declared views from manifest (empty array when none declared) */
   views: ExtensionViewConfig[];
-  /** Bundled agents declared in manifest (empty array when none declared) */
-  bundledAgents: BundledAgentConfig[];
+  /** Bundled agents with instructions loaded in memory (never written to workspace disk) */
+  bundledAgents: LoadedBundledAgent[];
   /** HTTP handlers registered by the extension factory (bridge-local) */
   httpHandlers: ExtensionHttpHandler[];
   errors: string[];
@@ -166,70 +175,32 @@ function validateManifest(raw: unknown): { ok: true; manifest: ExtensionManifest
 }
 
 // ---------------------------------------------------------------------------
-// Bundled-agent auto-provisioning (idempotent, contract §2)
+// Bundled-agent in-memory loading
+//
+// Reads each bundled agent's instruction body from the extension directory.
+// Never writes to the workspace's committed .floe/ tree — callers register
+// the agents dynamically with the bus instead.
 // ---------------------------------------------------------------------------
 
-async function provisionBundledAgents(
+async function loadBundledAgentsInMemory(
   manifest: ExtensionManifest,
   extDir: string,
-  workspacePath: string,
   errors: string[]
-): Promise<void> {
-  const floeDir = join(workspacePath, ".floe");
-  const agentsDir = join(floeDir, "agents");
-  const projectConfigPath = join(floeDir, "floe.yaml");
-
+): Promise<LoadedBundledAgent[]> {
+  const result: LoadedBundledAgent[] = [];
   for (const agentDef of (manifest.agents ?? [])) {
-    const agentFilePath = join(agentsDir, `${agentDef.agent_id}.md`);
     const instructionsAbsPath = resolve(extDir, agentDef.instructions_path);
-
-    // Step 1: write the agent .md file if missing
-    if (!existsSync(agentFilePath)) {
-      let instructions = "";
-      try {
-        instructions = readFileSync(instructionsAbsPath, "utf-8");
-      } catch (err: any) {
-        errors.push(`[provision] Failed to read agent instructions "${agentDef.instructions_path}": ${err.message}`);
-        continue;
-      }
-      const frontmatter = {
-        schema: "floe.agent.v1",
-        agent_id: agentDef.agent_id,
-        label: agentDef.label,
-        runtime: agentDef.runtime ?? { engine: "pi" },
-        extensions: agentDef.extensions ?? [manifest.name],
-        pulse: agentDef.pulse ?? { inherit: true }
-      };
-      try {
-        mkdirSync(agentsDir, { recursive: true });
-        const content = `---\n${YAML.stringify(frontmatter).trim()}\n---\n${instructions}`;
-        writeFileSync(agentFilePath, content, "utf-8");
-        console.log(`[bridge] provisioned bundled agent: ${agentDef.agent_id}`);
-      } catch (err: any) {
-        errors.push(`[provision] Failed to write agent file "${agentFilePath}": ${err.message}`);
-        continue;
-      }
-    }
-
-    // Step 2: ensure the agent appears in .floe/floe.yaml agents: array
-    if (!existsSync(projectConfigPath)) {
-      errors.push(`[provision] floe.yaml not found at ${projectConfigPath}; skipping agent registration for ${agentDef.agent_id}`);
+    let instructions = "";
+    try {
+      instructions = readFileSync(instructionsAbsPath, "utf-8");
+    } catch (err: any) {
+      errors.push(`[bundled-agent] Failed to read agent instructions "${agentDef.instructions_path}": ${err.message}`);
       continue;
     }
-    try {
-      const projectConfig = YAML.parse(readFileSync(projectConfigPath, "utf-8")) ?? {};
-      const agents: any[] = Array.isArray(projectConfig.agents) ? projectConfig.agents : [];
-      const alreadyListed = agents.some((a: any) => (a.id ?? a.agent_id) === agentDef.agent_id);
-      if (!alreadyListed) {
-        agents.push({ id: agentDef.agent_id, path: `./agents/${agentDef.agent_id}.md` });
-        projectConfig.agents = agents;
-        writeFileSync(projectConfigPath, YAML.stringify(projectConfig), "utf-8");
-        console.log(`[bridge] registered bundled agent in floe.yaml: ${agentDef.agent_id}`);
-      }
-    } catch (err: any) {
-      errors.push(`[provision] Failed to update floe.yaml for agent ${agentDef.agent_id}: ${err.message}`);
-    }
+    result.push({ ...agentDef, body: instructions });
+    console.log(`[bridge] loaded bundled agent in memory: ${agentDef.agent_id}`);
   }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,15 +244,12 @@ async function loadSingleExtension(
   // 3. Extract views
   result.views = manifest.views ?? [];
 
-  // 4. Extract bundled agents
-  result.bundledAgents = manifest.agents ?? [];
-
-  // 5. Auto-provision bundled agents (idempotent)
+  // 4. Load bundled agent instructions into memory (no disk writes to the workspace)
   if (manifest.agents && manifest.agents.length > 0) {
-    await provisionBundledAgents(manifest, extDir, context.workspacePath, errors);
+    result.bundledAgents = await loadBundledAgentsInMemory(manifest, extDir, errors);
   }
 
-  // 6. Resolve and import entry point
+  // 5. Resolve and import entry point
   const entryPath = resolve(extDir, manifest.entry);
   let factory: (ctx: ExtensionContext) => any[];
   try {
@@ -297,7 +265,7 @@ async function loadSingleExtension(
     return result;
   }
 
-  // 7. Call factory
+  // 6. Call factory
   const extContext: ExtensionContext = {
     ...context,
     extensionName: manifest.name,
@@ -323,7 +291,7 @@ async function loadSingleExtension(
     return result;
   }
 
-  // 8. Prefix tool names
+  // 7. Prefix tool names
   result.tools = rawTools.map((tool) => ({
     ...tool,
     name: `${manifest.name}_${tool.name}`,
