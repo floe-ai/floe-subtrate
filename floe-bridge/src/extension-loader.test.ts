@@ -213,13 +213,6 @@ describe("loadExtensions", () => {
     writeFileSync(join(extDir, "extension.json"), JSON.stringify(manifest, null, 2));
     writeFileSync(join(extDir, typeof manifest.entry === "string" ? manifest.entry.replace(/^\.\//,"") : "index.ts"), VALID_ENTRY);
     writeFileSync(join(extDir, "overseer.md"), "# Overseer\nYou oversee.", "utf-8");
-    // Write floe.yaml
-    const { stringify } = await import("yaml");
-    writeFileSync(
-      join(workspaceDir, ".floe", "floe.yaml"),
-      stringify({ schema: "floe.workspace.v1", version: 1, agents: [] }),
-      "utf-8"
-    );
     const ctx = { workspacePath: workspaceDir, busClient: {}, workspaceId: "test-workspace" };
     const result = await loadExtensions(extRoot, ctx);
     const todoExt = result.find(e => e.name === "todo")!;
@@ -227,9 +220,12 @@ describe("loadExtensions", () => {
     expect(todoExt.bundledAgents).toHaveLength(1);
     expect(todoExt.bundledAgents[0].agent_id).toBe("overseer");
     expect(todoExt.bundledAgents[0].label).toBe("Overseer");
+    // Instructions body must be loaded into memory
+    expect(todoExt.bundledAgents[0].body).toContain("# Overseer");
+    expect(todoExt.bundledAgents[0].body).toContain("You oversee.");
   });
 
-  it("provisions bundled agent files idempotently", async () => {
+  it("loads bundled agents in memory without writing to workspace disk", async () => {
     const manifest = {
       ...VALID_MANIFEST,
       agents: [
@@ -245,25 +241,25 @@ describe("loadExtensions", () => {
     writeFileSync(join(extDir, "extension.json"), JSON.stringify(manifest, null, 2));
     writeFileSync(join(extDir, typeof manifest.entry === "string" ? manifest.entry.replace(/^\.\//,"") : "index.ts"), VALID_ENTRY);
     writeFileSync(join(extDir, "instructions.md"), "You are a test agent.", "utf-8");
-    const { stringify } = await import("yaml");
-    writeFileSync(
-      join(workspaceDir, ".floe", "floe.yaml"),
-      stringify({ schema: "floe.workspace.v1", version: 1, agents: [] }),
-      "utf-8"
-    );
     const ctx = { workspacePath: workspaceDir, busClient: {}, workspaceId: "test-workspace" };
-    // First load: should provision the agent
-    await loadExtensions(extRoot, ctx);
+
+    // First load: must NOT write any file to the workspace .floe/ tree
+    const result = await loadExtensions(extRoot, ctx);
     const agentPath = join(workspaceDir, ".floe", "agents", "test-agent.md");
-    const { existsSync, readFileSync: readFs } = await import("node:fs");
-    expect(existsSync(agentPath)).toBe(true);
-    const content = readFs(agentPath, "utf-8");
-    expect(content).toContain("agent_id: test-agent");
-    expect(content).toContain("You are a test agent.");
-    // Second load: should NOT overwrite existing file
-    const firstContent = content;
-    await loadExtensions(extRoot, ctx);
-    expect(readFs(agentPath, "utf-8")).toBe(firstContent);
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(agentPath)).toBe(false);
+
+    // The agent IS returned in bundledAgents with its instructions body loaded in memory
+    const todo = result.find(e => e.name === "todo")!;
+    expect(todo).toBeDefined();
+    expect(todo.bundledAgents).toHaveLength(1);
+    expect(todo.bundledAgents[0].agent_id).toBe("test-agent");
+    expect(todo.bundledAgents[0].body).toContain("You are a test agent.");
+
+    // Second load: still no file on disk, still returns agent in memory
+    const result2 = await loadExtensions(extRoot, ctx);
+    expect(existsSync(agentPath)).toBe(false);
+    expect(result2.find(e => e.name === "todo")!.bundledAgents[0].body).toContain("You are a test agent.");
   });
 
   it("extension factory can call registerHttpHandler and it stores the handler", async () => {

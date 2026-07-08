@@ -302,6 +302,45 @@ export class BridgeDaemon {
           }
         }
 
+        // Register bundled extension agents as live endpoints (in-memory; no disk writes)
+        for (const ext of loaded) {
+          if (ext.errors.length > 0) continue; // skip broken extensions
+          for (const agent of ext.bundledAgents) {
+            const endpointId = actorEndpointId(workspace.workspace_id, agent.agent_id);
+            // BundledAgentConfig.runtime uses { engine } not { provider }; map to an
+            // empty AgentRuntimeConfig so auth falls through to workspace/global bindings.
+            const runtimeConfig = extractRuntimeConfig({ runtime: agent.runtime ?? { engine: "pi" } });
+            this.endpointRuntime.set(endpointId, {
+              config: runtimeConfig,
+              instructions: agent.body,
+              workspace_locator: locator,
+              agent_id: agent.agent_id,
+              extensions: agent.extensions ?? [ext.name]
+            });
+            const resolvedAuth = await this.resolveAuthProfile(workspace.workspace_id, endpointId, runtimeConfig);
+            await this.bus.registerEndpoint({
+              endpoint_id: endpointId,
+              workspace_id: workspace.workspace_id,
+              name: agent.label,
+              agent_id: agent.agent_id,
+              bridge_id: this.bridgeId,
+              status: resolvedAuth.auth_profile ? "idle" : "runtime_unconfigured",
+              metadata: {
+                file: `[extension:${ext.name}]`,
+                runtime_adapter: this.adapter.name,
+                frontmatter: {
+                  runtime: agent.runtime ?? { engine: "pi" },
+                  extensions: agent.extensions ?? [ext.name],
+                  pulse: agent.pulse ?? { inherit: true }
+                },
+                runtime_auth_profile: resolvedAuth.auth_profile ?? null,
+                runtime_auth_source: resolvedAuth.source
+              }
+            });
+            console.log(`[bridge] registered bundled agent endpoint: ${agent.agent_id}`);
+          }
+        }
+
         // Register extension-declared pulses
         for (const ext of loaded) {
           for (const pulseDef of ext.pulses) {

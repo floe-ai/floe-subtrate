@@ -363,6 +363,15 @@ npm run build -- --help
 
 ## Extension Substrate (Track S — ext-substrate-s3)
 
+### Update-safety invariant (fm/state-hygiene-p6)
+
+**`.floe/floe.yaml` is human-authored, committed project config — treat it as read-only at runtime.**
+
+- Bundled/extension agents are registered **in memory** directly from the loaded extension manifest, never persisted to `.floe/floe.yaml` or `.floe/agents/`.
+- `provisionBundledAgents()` has been removed. Its replacement `loadBundledAgentsInMemory()` reads instructions from the extension's `instructions_path` and returns `LoadedBundledAgent[]` (includes `body: string`) — no disk writes.
+- `daemon.ts` `attachWorkspace()` iterates `ext.bundledAgents` after loading extensions and calls `bus.registerEndpoint()` + stores in `endpointRuntime` — the same path used for project-declared agents, but sourced entirely from memory.
+- After a clean boot, `git status --porcelain` in the workspace repo must be empty (no tracked file dirtied).
+
 ### Context `title` field
 
 - `ContextRecord` and `ContextListRow` have `title: string | null`.
@@ -432,8 +441,7 @@ New workspace package added in `fm/snowball-ext-x2` (PR #72).
 The extension is pre-installed for this workspace at `.floe/extensions/snowball/extension.json`.
 The entry path (`../../../floe-ext-snowball/src/index.ts`) resolves to the source package when this repo IS the workspace.
 
-When bridge loads: `snowball-overseer` agent is auto-provisioned into `.floe/agents/snowball-overseer.md` (gitignored).
-Board sidecars live at `.floe/extensions/snowball/boards/<slug>.yaml` (gitignored, created on first use or manually).
+When bridge loads: `snowball-overseer` agent is registered **in memory only** (no disk write) — its instructions are read from `floe-ext-snowball/overseer-instructions.md` at load time and the endpoint is registered directly with the bus via `registerEndpoint`. No file is written to `.floe/agents/` and `floe.yaml` is not modified at runtime.
 
 **To run live:**
 ```bash
