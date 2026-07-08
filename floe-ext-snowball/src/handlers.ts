@@ -25,6 +25,7 @@ import {
   getUncheckedCriteria,
 } from "./sidecar.js";
 import { asBusClient } from "./stub/bus-client.js";
+import { advanceCardIfReady } from "./overseer.js";
 import type { SidecarColumn } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -506,7 +507,7 @@ function handlePostMove(
       // Non-fatal
     }
 
-    // If destination is agent-owned, emit routing event
+    // If destination is agent-owned, emit routing event and run mechanical evaluation.
     if (toColumn.owner.kind === "agent" && toColumn.owner.agent_id) {
       try {
         const endpoints = await bus.listEndpoints(workspaceId);
@@ -540,6 +541,14 @@ function handlePostMove(
         }
       } catch (err) {
         console.warn(`[snowball] Routing event failed: ${err}`);
+      }
+
+      // Synchronous overseer evaluation: advance the card immediately if its
+      // exit criteria are all satisfied, cascading through further agent columns.
+      try {
+        await advanceCardIfReady(ctx, scope_id, card_id);
+      } catch (err) {
+        console.warn(`[snowball] Overseer advance failed: ${err}`);
       }
     }
 

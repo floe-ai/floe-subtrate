@@ -20,12 +20,5 @@
       "pulse": { "inherit": true }
     }
   ],
-  "pulses": [
-    {
-      "id": "snowball-board-heartbeat",
-      "persistence": "workspace",
-      "trigger": { "type": "cron", "schedule": "*/10 * * * *" },
-      "subscribers": ["snowball-overseer"]
-    }
-  ]
+  "pulses": []
 }

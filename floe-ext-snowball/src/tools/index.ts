@@ -19,6 +19,7 @@ import {
   buildBoardSnapshot,
   cardCountsByColumn,
 } from "../sidecar.js";
+import { advanceCardIfReady } from "../overseer.js";
 
 // ---------------------------------------------------------------------------
 // Routing event helper
@@ -439,7 +440,7 @@ export function createTools(ctx: ExtensionContext) {
           // Non-fatal
         }
 
-        // If destination is agent-owned, emit routing event
+        // If destination is agent-owned, emit routing event and run mechanical evaluation.
         if (toColumn.owner.kind === "agent" && toColumn.owner.agent_id) {
           try {
             await emitCardEnteredColumn(ctx, {
@@ -455,6 +456,14 @@ export function createTools(ctx: ExtensionContext) {
             console.warn(
               `[snowball] Failed to emit routing event: ${err}`
             );
+          }
+
+          // Synchronous overseer evaluation: advance the card immediately if
+          // exit criteria are all satisfied, cascading through further agent columns.
+          try {
+            await advanceCardIfReady(ctx, scope_id, card_id);
+          } catch (err) {
+            console.warn(`[snowball] Overseer advance failed: ${err}`);
           }
         }
 

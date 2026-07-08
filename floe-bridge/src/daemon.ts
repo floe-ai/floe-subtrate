@@ -3,9 +3,8 @@
  * Adapter selection and runtime resolution happen here; callers may provide bindings and config,
  * but only the bridge decides the live adapter and the effective runtime passed into sessions.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
 import type { AgentRuntimeConfig } from "./auth.js";
 import { RuntimeAuthError } from "./auth.js";
 import { createBridgeAuthRuntime } from "./auth.js";
@@ -342,50 +341,26 @@ export class BridgeDaemon {
           }
         }
 
-        // Register extension-declared pulses
-        // For pulses with no explicit scope_id, enumerate board scopes and register one pulse
-        // per board so the bus scope_required requirement is satisfied.
+        // Register extension-declared pulses (only pulses with explicit scope_id are supported;
+        // per-board scope discovery was removed along with the snowball heartbeat).
         for (const ext of loaded) {
           for (const pulseDef of ext.pulses) {
             if (!pulseDef.scope_id) {
-              // Discover board scopes for this extension
-              const boardScopes = listExtensionBoardScopes(locator, ext.name);
-              if (boardScopes.length === 0) {
-                // No boards yet — skip until next attach (when a board has been initialised)
-                console.log("[bridge] no boards found, skipping extension pulse registration", { extension: ext.name, pulse_id: pulseDef.id });
-                continue;
-              }
-              for (const boardScope of boardScopes) {
-                const pulseId = `${ext.name}:${pulseDef.id}:${slugifyForPulseId(boardScope.scopeId)}`;
-                try {
-                  await this.bus.createPulse({
-                    pulse_id: pulseId,
-                    workspace_id: workspace.workspace_id,
-                    persistence: pulseDef.persistence ?? "workspace",
-                    scope_id: boardScope.scopeId,
-                    trigger: pulseDef.trigger,
-                    content: { ...(pulseDef.content ?? {}), scope_id: boardScope.scopeId },
-                    subscribers: (pulseDef.subscribers ?? []).map(ref => ({ endpoint_ref: ref })),
-                  });
-                  console.log("[bridge] extension pulse registered (per-scope)", { extension: ext.name, pulse_id: pulseId, scope_id: boardScope.scopeId });
-                } catch (error) {
-                  console.error("[bridge] extension pulse registration failed", { extension: ext.name, pulse_id: pulseId, scope_id: boardScope.scopeId, error });
-                }
-              }
-            } else {
-              try {
-                await this.bus.createPulse({
-                  pulse_id: `${ext.name}:${pulseDef.id}`,
-                  workspace_id: workspace.workspace_id,
-                  persistence: pulseDef.persistence ?? "workspace",
-                  scope_id: pulseDef.scope_id,
-                  trigger: pulseDef.trigger,
-                  content: pulseDef.content ?? {},
-                  subscribers: (pulseDef.subscribers ?? []).map(ref => ({ endpoint_ref: ref })),
-                });
-              } catch (error) {
-                console.error("[bridge] extension pulse registration failed", { extension: ext.name, pulse_id: pulseDef.id, error });
-              }
+              console.log("[bridge] extension pulse has no scope_id — skipping (scope_id is required)", { extension: ext.name, pulse_id: pulseDef.id });
+              continue;
+            }
+            try {
+              await this.bus.createPulse({
+                pulse_id: `${ext.name}:${pulseDef.id}`,
+                workspace_id: workspace.workspace_id,
+                persistence: pulseDef.persistence ?? "workspace",
+                scope_id: pulseDef.scope_id,
+                trigger: pulseDef.trigger,
+                content: pulseDef.content ?? {},
+                subscribers: (pulseDef.subscribers ?? []).map(ref => ({ endpoint_ref: ref })),
+              });
+            } catch (error) {
+              console.error("[bridge] extension pulse registration failed", { extension: ext.name, pulse_id: pulseDef.id, error });
             }
           }
         }
@@ -771,51 +746,6 @@ function actorEndpointId(workspaceId: string, agentId: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ---------------------------------------------------------------------------
-// Extension board helpers — used for per-scope pulse registration (Part A)
-// ---------------------------------------------------------------------------
-
-/**
- * Slugify a scope_id for use in a pulse_id (mirrors sidecar.ts slugify).
- * Replaces characters illegal in filenames or awkward in IDs with underscores.
- */
-function slugifyForPulseId(scopeId: string): string {
-  return scopeId.replace(/[:/\\*?"<>|]/g, "_");
-}
-
-interface BoardScopeEntry {
-  scopeId: string;
-}
-
-/**
- * Enumerate all board sidecar files for an extension and return the scope_ids
- * they represent.  Returns an empty array when the boards directory does not
- * exist (no boards initialised yet).
- */
-function listExtensionBoardScopes(workspacePath: string, extensionName: string): BoardScopeEntry[] {
-  const boardsDir = join(workspacePath, ".floe", "extensions", extensionName, "boards");
-  if (!existsSync(boardsDir)) return [];
-  let files: string[];
-  try {
-    files = readdirSync(boardsDir).filter((f) => f.endsWith(".yaml"));
-  } catch {
-    return [];
-  }
-  const result: BoardScopeEntry[] = [];
-  for (const file of files) {
-    try {
-      const raw = readFileSync(join(boardsDir, file), "utf-8");
-      const parsed = parseYaml(raw) as { scope_id?: string };
-      if (typeof parsed?.scope_id === "string" && parsed.scope_id.trim()) {
-        result.push({ scopeId: parsed.scope_id.trim() });
-      }
-    } catch {
-      // Ignore malformed sidecar files
-    }
-  }
-  return result;
 }
 
 function extractRuntimeConfig(frontmatter: Record<string, unknown>): AgentRuntimeConfig {
