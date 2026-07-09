@@ -21,6 +21,8 @@ pub fn run() {
       substrate_commands::get_substrate_auth_profiles,
       substrate_commands::save_substrate_auth_profile,
       substrate_commands::delete_substrate_auth_profile,
+      substrate_commands::get_runtime_adapter,
+      substrate_commands::set_runtime_adapter,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
