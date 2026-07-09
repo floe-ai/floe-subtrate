@@ -432,7 +432,9 @@ New workspace package added in `fm/snowball-ext-x2` (PR #72).
 
 **Stub seam (§6) — CLOSED (fm/integrate-board-i4):** `src/stub/bus-client.ts` provides `BusClient` interface + `StubBusClient` for isolated testing. The real `BusClient` from `floe-bridge` has all required methods (`createContext`, `listContextsForScope`, `emit`, `listEndpoints`). The cast `asBusClient(ctx.busClient)` bridges the `any`-typed runtime object to the typed interface. The stub extension-context type now has `registerHttpHandler` as **required** (non-optional); test fixtures must provide a no-op `() => {}` implementation.
 
-**Tests:** `npm test --workspace floe-ext-snowball` — 30 unit tests (sidecar + gate enforcement).
+**Tests:** `npm test --workspace floe-ext-snowball` — 84 unit tests (sidecar + gate enforcement + handler + post-mutation reload correctness).
+
+**Board live refresh (fm/board-refresh-fix):** Human mutations use `withReload()` in `BoardView.tsx` — every mutation calls `reload()` after the POST completes. Agent-driven moves are covered by a WS subscription to `ws://…/v1/events/stream`; when the bus broadcasts `event_submitted` for any `snowball.*` event with the matching `board_scope_id`, `reload()` is called automatically. The bus broadcasts `event_submitted` via `store.submitEvent` → `broadcast("event_submitted", { event })` at `floe-bus/src/store.ts:1352`.
 
 **Board UI entry point:** `floe-ext-snowball/src/ui/BoardView.tsx` exported at `package.json exports['./BoardView']` for Track S's static import into `ScopeDetail.tsx`.
 
