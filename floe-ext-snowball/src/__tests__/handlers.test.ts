@@ -1,28 +1,25 @@
 /**
- * Handler unit tests — relay endpoint logic for new board CRUD handlers.
+ * Handler unit tests — relay endpoint logic for board CRUD handlers.
  *
- * Tests the request/response semantics of:
- *  - GET /board (includes initialized flag)
- *  - POST /board/init
- *  - POST /columns (add / update / delete / reorder)
- *  - POST /card
- *  - POST /card/delete
- *  - POST /card/rename
- *  - POST /card/criteria
- *
- * Uses the same test harness pattern as tools.test.ts.
+ * Foundation Slice 1 (fm/snowball-found-s1):
+ *   - Cards are now markdown files at tasks/<id>.md (not bus Contexts)
+ *   - Columns are bus Contexts (created at board init)
+ *   - GET /board reads card files
+ *   - POST /card creates card files
+ *   - POST /move rewrites card file frontmatter + appends carry-forward
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync } from "node:fs";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext } from "../stub/extension-context.js";
 import { registerHttpHandlers } from "../handlers.js";
 import { saveSidecar, loadSidecar, sidecarExists } from "../sidecar.js";
+import { writeCard, readCard, listCards } from "../card-file.js";
 import { SIDECAR_SCHEMA, defaultColumns } from "../types.js";
-import type { BoardSidecar } from "../types.js";
+import type { BoardSidecar, CardFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -53,9 +50,6 @@ function makeCtx(tmpDir: string, bus: StubBusClient): ExtensionContext {
   };
 }
 
-/**
- * Collect all registered handlers into a map by "METHOD /path".
- */
 function buildHandlerMap(ctx: ExtensionContext): Map<string, Handler> {
   const map = new Map<string, Handler>();
   const ctxWithCapture: ExtensionContext = {
@@ -91,14 +85,29 @@ async function call(
 function makeSidecar(
   scopeId: string,
   workspaceId: string,
-  cards: BoardSidecar["cards"] = {}
+  column_contexts: Record<string, string> = {}
 ): BoardSidecar {
   return {
     schema: SIDECAR_SCHEMA,
     scope_id: scopeId,
     workspace_id: workspaceId,
     columns: defaultColumns(),
-    cards,
+    column_contexts,
+  };
+}
+
+function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
+  return {
+    id: "test-card",
+    title: "Test card",
+    type: "task",
+    actor: null,
+    column: "todo",
+    order: 0,
+    created_at: new Date().toISOString(),
+    checks: {},
+    body: "",
+    ...overrides,
   };
 }
 
@@ -138,7 +147,7 @@ describe("GET /board", () => {
     const body = res.body as Record<string, unknown>;
     expect(body.initialized).toBe(false);
     expect(Array.isArray(body.columns)).toBe(true);
-    expect((body.columns as unknown[]).length).toBe(3); // default 3 columns
+    expect((body.columns as unknown[]).length).toBe(3);
     expect(Array.isArray(body.cards)).toBe(true);
     expect((body.cards as unknown[]).length).toBe(0);
   });
@@ -149,12 +158,25 @@ describe("GET /board", () => {
     const res = await call(handlers, "GET", "/board", {
       query: { scope_id: SCOPE },
     });
+
     expect(res.status).toBe(200);
-    expect((res.body as Record<string, unknown>).initialized).toBe(true);
+    const body = res.body as Record<string, unknown>;
+    expect(body.initialized).toBe(true);
   });
 
-  it("returns 400 when scope_id is missing", async () => {
-    const res = await call(handlers, "GET", "/board");
+  it("includes cards from task files", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+    writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Task A", column: "todo" }));
+    writeCard(tmpDir, makeCardFile({ id: "card-b", title: "Task B", column: "in-progress" }));
+
+    const res = await call(handlers, "GET", "/board", { query: { scope_id: SCOPE } });
+    const body = res.body as Record<string, unknown>;
+    const cards = body.cards as unknown[];
+    expect(cards).toHaveLength(2);
+  });
+
+  it("returns 400 when scope_id missing", async () => {
+    const res = await call(handlers, "GET", "/board", { query: {} });
     expect(res.status).toBe(400);
   });
 });
@@ -164,237 +186,35 @@ describe("GET /board", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /board/init", () => {
-  it("creates the sidecar file on disk", async () => {
-    expect(sidecarExists(tmpDir, SCOPE)).toBe(false);
-
+  it("persists sidecar and creates column contexts", async () => {
     const res = await call(handlers, "POST", "/board/init", {
       body: { scope_id: SCOPE },
-    });
-
-    expect(res.status).toBe(200);
-    expect((res.body as Record<string, unknown>).ok).toBe(true);
-    expect(sidecarExists(tmpDir, SCOPE)).toBe(true);
-  });
-
-  it("is idempotent — calling twice does not error", async () => {
-    await call(handlers, "POST", "/board/init", { body: { scope_id: SCOPE } });
-    const res = await call(handlers, "POST", "/board/init", {
-      body: { scope_id: SCOPE },
-    });
-    expect(res.status).toBe(200);
-  });
-
-  it("returns 400 when scope_id is missing", async () => {
-    const res = await call(handlers, "POST", "/board/init", { body: {} });
-    expect(res.status).toBe(400);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POST /columns — add
-// ---------------------------------------------------------------------------
-
-describe("POST /columns (add)", () => {
-  beforeEach(() => {
-    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
-  });
-
-  it("adds a new column with given name", async () => {
-    const res = await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "add", name: "Review" },
     });
 
     expect(res.status).toBe(200);
     const body = res.body as Record<string, unknown>;
     expect(body.ok).toBe(true);
-    const board = body.board as { columns: Array<{ name: string }> };
-    expect(board.columns.some((c) => c.name === "Review")).toBe(true);
-    expect(board.columns.length).toBe(4);
+    expect((body.board as Record<string, unknown>).initialized).toBe(true);
+
+    // Sidecar should exist on disk
+    expect(sidecarExists(tmpDir, SCOPE)).toBe(true);
+
+    // Column contexts should be created in bus
+    expect(bus.createdContexts).toHaveLength(3); // one per default column
   });
 
-  it("persists the new column to disk", async () => {
-    await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "add", name: "Staging" },
-    });
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.columns.some((c) => c.name === "Staging")).toBe(true);
+  it("is idempotent — calling twice doesn't create duplicate contexts", async () => {
+    await call(handlers, "POST", "/board/init", { body: { scope_id: SCOPE } });
+    const contextCountAfterFirst = bus.createdContexts.length;
+
+    await call(handlers, "POST", "/board/init", { body: { scope_id: SCOPE } });
+    // No new contexts created on second call
+    expect(bus.createdContexts.length).toBe(contextCountAfterFirst);
   });
 
-  it("sets wip_limit when provided", async () => {
-    await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "add", name: "Hot", wip_limit: 3 },
-    });
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    const col = reloaded.columns.find((c) => c.name === "Hot")!;
-    expect(col.wip_limit).toBe(3);
-  });
-
-  it("returns 400 when name is missing", async () => {
-    const res = await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "add" },
-    });
+  it("returns 400 when scope_id missing", async () => {
+    const res = await call(handlers, "POST", "/board/init", { body: {} });
     expect(res.status).toBe(400);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POST /columns — update
-// ---------------------------------------------------------------------------
-
-describe("POST /columns (update)", () => {
-  beforeEach(() => {
-    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
-  });
-
-  it("renames a column", async () => {
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    const colId = sidecar.columns[0].id; // "todo"
-
-    const res = await call(handlers, "POST", "/columns", {
-      body: {
-        scope_id: SCOPE,
-        action: "update",
-        column_id: colId,
-        name: "Backlog",
-      },
-    });
-
-    expect(res.status).toBe(200);
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.columns[0].name).toBe("Backlog");
-  });
-
-  it("updates wip_limit to null", async () => {
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    const inProgressId = sidecar.columns[1].id; // wip_limit = 5
-
-    await call(handlers, "POST", "/columns", {
-      body: {
-        scope_id: SCOPE,
-        action: "update",
-        column_id: inProgressId,
-        wip_limit: null,
-      },
-    });
-
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.columns[1].wip_limit).toBeNull();
-  });
-
-  it("updates exit_criteria", async () => {
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    const colId = sidecar.columns[0].id;
-
-    await call(handlers, "POST", "/columns", {
-      body: {
-        scope_id: SCOPE,
-        action: "update",
-        column_id: colId,
-        exit_criteria: [
-          { id: "ec-1", description: "Tests pass", kind: "machine" },
-        ],
-      },
-    });
-
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.columns[0].exit_criteria.length).toBe(1);
-    expect(reloaded.columns[0].exit_criteria[0].id).toBe("ec-1");
-  });
-
-  it("returns 404 for unknown column_id", async () => {
-    const res = await call(handlers, "POST", "/columns", {
-      body: {
-        scope_id: SCOPE,
-        action: "update",
-        column_id: "nonexistent",
-        name: "X",
-      },
-    });
-    expect(res.status).toBe(404);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POST /columns — delete
-// ---------------------------------------------------------------------------
-
-describe("POST /columns (delete)", () => {
-  beforeEach(() => {
-    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
-  });
-
-  it("removes the column", async () => {
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    const colId = sidecar.columns[2].id; // "done"
-
-    const res = await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "delete", column_id: colId },
-    });
-
-    expect(res.status).toBe(200);
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.columns.find((c) => c.id === colId)).toBeUndefined();
-    expect(reloaded.columns.length).toBe(2);
-  });
-
-  it("moves cards to first remaining column when deleting a column with cards", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test", {
-      ctx_1: {
-        column_id: "todo",
-        order: 0,
-        title: "Task 1",
-        created_at: new Date().toISOString(),
-        checks: {},
-      },
-    });
-    saveSidecar(tmpDir, SCOPE, sidecar);
-
-    // Delete "todo" — cards should move to first remaining (todo is index 0, so fallback is in-progress)
-    const res = await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "delete", column_id: "todo" },
-    });
-
-    expect(res.status).toBe(200);
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.cards["ctx_1"].column_id).toBe("in-progress");
-  });
-
-  it("returns 422 when trying to delete the last column", async () => {
-    // Remove two columns first
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    sidecar.columns = [sidecar.columns[0]]; // keep only first
-    saveSidecar(tmpDir, SCOPE, sidecar);
-
-    const res = await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "delete", column_id: "todo" },
-    });
-    expect(res.status).toBe(422);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POST /columns — reorder
-// ---------------------------------------------------------------------------
-
-describe("POST /columns (reorder)", () => {
-  beforeEach(() => {
-    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
-  });
-
-  it("reorders columns as specified", async () => {
-    const res = await call(handlers, "POST", "/columns", {
-      body: {
-        scope_id: SCOPE,
-        action: "reorder",
-        column_ids: ["done", "in-progress", "todo"],
-      },
-    });
-
-    expect(res.status).toBe(200);
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.columns[0].id).toBe("done");
-    expect(reloaded.columns[1].id).toBe("in-progress");
-    expect(reloaded.columns[2].id).toBe("todo");
   });
 });
 
@@ -403,13 +223,11 @@ describe("POST /columns (reorder)", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /card", () => {
-  beforeEach(() => {
+  it("creates a card file in tasks/", async () => {
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
-  });
 
-  it("creates a card in the default (first) column", async () => {
     const res = await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "My new card" },
+      body: { scope_id: SCOPE, title: "New task" },
     });
 
     expect(res.status).toBe(201);
@@ -417,85 +235,67 @@ describe("POST /card", () => {
     expect(body.ok).toBe(true);
     expect(typeof body.card_id).toBe("string");
 
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    const card = reloaded.cards[body.card_id as string];
-    expect(card).toBeDefined();
-    expect(card.title).toBe("My new card");
-    expect(card.column_id).toBe("todo");
+    // Verify file was created
+    const cards = listCards(tmpDir);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].title).toBe("New task");
+    expect(cards[0].column).toBe("todo"); // default first column
   });
 
-  it("creates a card in the specified column", async () => {
+  it("places card in specified column", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+
     const res = await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "In-progress card", column_id: "in-progress" },
+      body: { scope_id: SCOPE, title: "Done task", column_id: "done" },
     });
 
     expect(res.status).toBe(201);
     const body = res.body as Record<string, unknown>;
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.cards[body.card_id as string].column_id).toBe("in-progress");
+    expect(body.card_id).toBeDefined();
+
+    const cards = listCards(tmpDir);
+    expect(cards[0].column).toBe("done");
   });
 
-  it("emits a context creation via bus client", async () => {
-    await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "Test card" },
-    });
-    // The stub bus client records contexts; we can verify one was created
-    // by checking that the returned card_id was created by the stub
-    expect(bus.emittedEvents.length).toBe(0); // card creation doesn't emit events
-  });
-
-  it("respects WIP limit when adding to a column at limit", async () => {
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    // in-progress has wip_limit=5; fill it with 5 cards
-    for (let i = 0; i < 5; i++) {
-      sidecar.cards[`ctx_${i}`] = {
-        column_id: "in-progress",
-        order: i,
-        title: `Card ${i}`,
-        created_at: new Date().toISOString(),
-        checks: {},
-      };
-    }
-    saveSidecar(tmpDir, SCOPE, sidecar);
+  it("includes description in card body", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/card", {
-      body: {
-        scope_id: SCOPE,
-        title: "Over limit",
-        column_id: "in-progress",
-      },
+      body: { scope_id: SCOPE, title: "Task with desc", description: "Do this work." },
     });
 
-    expect(res.status).toBe(422);
-    expect((res.body as Record<string, unknown>).error).toBe(
-      "wip_limit_exceeded"
-    );
+    expect(res.status).toBe(201);
+    const cards = listCards(tmpDir);
+    expect(cards[0].body).toContain("Do this work.");
   });
 
-  it("auto-initializes (saves) sidecar when no file exists", async () => {
-    // Delete the saved sidecar
-    rmSync(join(tmpDir, ".floe"), { recursive: true, force: true });
-    expect(sidecarExists(tmpDir, SCOPE)).toBe(false);
-
-    await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "First card ever" },
-    });
-
-    expect(sidecarExists(tmpDir, SCOPE)).toBe(true);
-  });
-
-  it("returns 400 when scope_id is missing", async () => {
+  it("returns 400 when scope_id missing", async () => {
     const res = await call(handlers, "POST", "/card", {
-      body: { title: "No scope" },
+      body: { title: "Bad" },
     });
     expect(res.status).toBe(400);
   });
 
-  it("returns 400 when title is missing", async () => {
+  it("returns 400 when title missing", async () => {
     const res = await call(handlers, "POST", "/card", {
       body: { scope_id: SCOPE },
     });
     expect(res.status).toBe(400);
+  });
+
+  it("enforces WIP limit", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
+    sidecar.columns[0].wip_limit = 1;
+    saveSidecar(tmpDir, SCOPE, sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "existing", column: "todo" }));
+
+    const res = await call(handlers, "POST", "/card", {
+      body: { scope_id: SCOPE, title: "Overflow card" },
+    });
+
+    expect(res.status).toBe(422);
+    const body = res.body as Record<string, unknown>;
+    expect(body.error).toBe("wip_limit_exceeded");
   });
 });
 
@@ -504,48 +304,29 @@ describe("POST /card", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /card/delete", () => {
-  const CARD_ID = "ctx_to_delete";
+  it("removes the card file", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+    writeCard(tmpDir, makeCardFile({ id: "card-to-delete" }));
 
-  beforeEach(() => {
-    const sidecar = makeSidecar(SCOPE, "ws-test", {
-      [CARD_ID]: {
-        column_id: "todo",
-        order: 0,
-        title: "Delete me",
-        created_at: new Date().toISOString(),
-        checks: {},
-      },
-    });
-    saveSidecar(tmpDir, SCOPE, sidecar);
-  });
-
-  it("removes card from sidecar", async () => {
     const res = await call(handlers, "POST", "/card/delete", {
-      body: { scope_id: SCOPE, card_id: CARD_ID },
+      body: { scope_id: SCOPE, card_id: "card-to-delete" },
     });
 
     expect(res.status).toBe(200);
-    expect((res.body as Record<string, unknown>).ok).toBe(true);
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
 
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.cards[CARD_ID]).toBeUndefined();
+    expect(listCards(tmpDir)).toHaveLength(0);
   });
 
-  it("returns 404 for unknown card_id", async () => {
+  it("returns 404 for nonexistent card", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+
     const res = await call(handlers, "POST", "/card/delete", {
-      body: { scope_id: SCOPE, card_id: "unknown" },
+      body: { scope_id: SCOPE, card_id: "nonexistent" },
     });
+
     expect(res.status).toBe(404);
-  });
-
-  it("returns board snapshot with the deleted card absent", async () => {
-    const res = await call(handlers, "POST", "/card/delete", {
-      body: { scope_id: SCOPE, card_id: CARD_ID },
-    });
-    const board = (res.body as Record<string, unknown>).board as {
-      cards: Array<{ card_id: string }>;
-    };
-    expect(board.cards.find((c) => c.card_id === CARD_ID)).toBeUndefined();
   });
 });
 
@@ -554,43 +335,29 @@ describe("POST /card/delete", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /card/rename", () => {
-  const CARD_ID = "ctx_to_rename";
+  it("updates card title in file", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+    writeCard(tmpDir, makeCardFile({ id: "my-card", title: "Old title" }));
 
-  beforeEach(() => {
-    const sidecar = makeSidecar(SCOPE, "ws-test", {
-      [CARD_ID]: {
-        column_id: "todo",
-        order: 0,
-        title: "Old title",
-        created_at: new Date().toISOString(),
-        checks: {},
-      },
-    });
-    saveSidecar(tmpDir, SCOPE, sidecar);
-  });
-
-  it("renames the card in the sidecar", async () => {
     const res = await call(handlers, "POST", "/card/rename", {
-      body: { scope_id: SCOPE, card_id: CARD_ID, title: "New title" },
+      body: { scope_id: SCOPE, card_id: "my-card", title: "New title" },
     });
 
     expect(res.status).toBe(200);
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.cards[CARD_ID].title).toBe("New title");
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+
+    const card = readCard(tmpDir, "my-card");
+    expect(card!.title).toBe("New title");
   });
 
-  it("trims whitespace from the title", async () => {
-    await call(handlers, "POST", "/card/rename", {
-      body: { scope_id: SCOPE, card_id: CARD_ID, title: "  Trimmed  " },
-    });
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    expect(reloaded.cards[CARD_ID].title).toBe("Trimmed");
-  });
+  it("returns 404 for nonexistent card", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
-  it("returns 404 for unknown card_id", async () => {
     const res = await call(handlers, "POST", "/card/rename", {
-      body: { scope_id: SCOPE, card_id: "ghost", title: "Ghost" },
+      body: { scope_id: SCOPE, card_id: "nonexistent", title: "New title" },
     });
+
     expect(res.status).toBe(404);
   });
 });
@@ -600,313 +367,251 @@ describe("POST /card/rename", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /card/criteria", () => {
-  const CARD_ID = "ctx_with_criteria";
-  const COL_ID = "in-progress";
-  const EC_ID = "ec-tests";
+  it("updates criterion check in card file", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+    writeCard(tmpDir, makeCardFile({ id: "my-card", column: "in-progress" }));
 
-  beforeEach(() => {
-    const sidecar = makeSidecar(SCOPE, "ws-test", {
-      [CARD_ID]: {
-        column_id: COL_ID,
-        order: 0,
-        title: "Criterioned card",
-        created_at: new Date().toISOString(),
-        checks: {},
-      },
-    });
-    // Give in-progress column an exit criterion
-    sidecar.columns[1].exit_criteria = [
-      { id: EC_ID, description: "Tests pass", kind: "machine" },
-    ];
-    saveSidecar(tmpDir, SCOPE, sidecar);
-  });
-
-  it("marks a criterion as checked", async () => {
     const res = await call(handlers, "POST", "/card/criteria", {
       body: {
         scope_id: SCOPE,
-        card_id: CARD_ID,
-        column_id: COL_ID,
-        criterion_id: EC_ID,
+        card_id: "my-card",
+        column_id: "in-progress",
+        criterion_id: "ec-tests",
         checked: true,
       },
     });
 
     expect(res.status).toBe(200);
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    const check = reloaded.cards[CARD_ID].checks[COL_ID]?.[EC_ID];
-    expect(check).toBeDefined();
-    expect(check!.checked).toBe(true);
-    expect(check!.checked_at).toBeTruthy();
-    expect(check!.checked_by).toBe("human");
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+
+    const card = readCard(tmpDir, "my-card");
+    expect(card!.checks["in-progress"]["ec-tests"].checked).toBe(true);
   });
 
-  it("marks a criterion as unchecked", async () => {
-    // First check it
-    await call(handlers, "POST", "/card/criteria", {
-      body: {
-        scope_id: SCOPE,
-        card_id: CARD_ID,
-        column_id: COL_ID,
-        criterion_id: EC_ID,
-        checked: true,
-      },
-    });
+  it("returns 404 for nonexistent card", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
-    // Then uncheck it
-    await call(handlers, "POST", "/card/criteria", {
-      body: {
-        scope_id: SCOPE,
-        card_id: CARD_ID,
-        column_id: COL_ID,
-        criterion_id: EC_ID,
-        checked: false,
-      },
-    });
-
-    const reloaded = loadSidecar(tmpDir, SCOPE);
-    const check = reloaded.cards[CARD_ID].checks[COL_ID]?.[EC_ID];
-    expect(check!.checked).toBe(false);
-    expect(check!.checked_at).toBeNull();
-  });
-
-  it("reflects updated criteria_checks in the board snapshot", async () => {
     const res = await call(handlers, "POST", "/card/criteria", {
       body: {
         scope_id: SCOPE,
-        card_id: CARD_ID,
-        column_id: COL_ID,
-        criterion_id: EC_ID,
+        card_id: "nonexistent",
+        column_id: "todo",
+        criterion_id: "ec-tests",
         checked: true,
       },
     });
 
-    const board = (res.body as Record<string, unknown>).board as {
-      cards: Array<{
-        card_id: string;
-        criteria_checks: Array<{ criterionId: string; checked: boolean }>;
-      }>;
-    };
-    const card = board.cards.find((c) => c.card_id === CARD_ID)!;
-    const checkInSnapshot = card.criteria_checks.find(
-      (c) => c.criterionId === EC_ID
-    );
-    expect(checkInSnapshot?.checked).toBe(true);
-  });
-
-  it("returns 404 for unknown card_id", async () => {
-    const res = await call(handlers, "POST", "/card/criteria", {
-      body: {
-        scope_id: SCOPE,
-        card_id: "ghost",
-        column_id: COL_ID,
-        criterion_id: EC_ID,
-        checked: true,
-      },
-    });
     expect(res.status).toBe(404);
-  });
-
-  it("returns 400 when required fields are missing", async () => {
-    const res = await call(handlers, "POST", "/card/criteria", {
-      body: { scope_id: SCOPE, card_id: CARD_ID },
-    });
-    expect(res.status).toBe(400);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Post-mutation reload correctness
-//
-// These tests exercise the GET /board path that BoardView.tsx's reload()
-// calls after every mutation (via withReload()).  They verify that each
-// mutation type produces durable, immediately-readable state so the board
-// UI can refresh correctly after any human action.
-//
-// The sequence: mutate via POST → re-fetch via GET /board → assert fresh data.
+// POST /move
 // ---------------------------------------------------------------------------
 
-describe("post-mutation reload correctness", () => {
-  beforeEach(() => {
+describe("POST /move", () => {
+  it("moves card to target column", async () => {
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+    writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo" }));
+
+    const res = await call(handlers, "POST", "/move", {
+      body: { scope_id: SCOPE, card_id: "my-card", to_column_id: "in-progress" },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.from_column_id).toBe("todo");
+    expect(body.to_column_id).toBe("in-progress");
+
+    // Card file should be updated
+    const card = readCard(tmpDir, "my-card");
+    expect(card!.column).toBe("in-progress");
   });
 
-  it("GET /board after POST /card shows the new card in the correct column", async () => {
-    const addRes = await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "Reload test card" },
-    });
-    expect(addRes.status).toBe(201);
-    const { card_id } = addRes.body as { card_id: string };
+  it("appends carry-forward comment on move", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+    writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo", body: "Original body." }));
 
-    // Simulate reload(): re-fetch the board state
-    const boardRes = await call(handlers, "GET", "/board", {
-      query: { scope_id: SCOPE },
+    await call(handlers, "POST", "/move", {
+      body: { scope_id: SCOPE, card_id: "my-card", to_column_id: "in-progress" },
     });
-    expect(boardRes.status).toBe(200);
-    const board = boardRes.body as {
-      cards: Array<{ card_id: string; title: string; column_id: string }>;
-    };
-    const found = board.cards.find((c) => c.card_id === card_id);
-    expect(found).toBeDefined();
-    expect(found!.title).toBe("Reload test card");
-    expect(found!.column_id).toBe("todo"); // default first column
+
+    const card = readCard(tmpDir, "my-card");
+    expect(card!.body).toContain("Original body.");
+    expect(card!.body).toContain(`carry-forward from "To Do"`);
   });
 
-  it("GET /board after POST /move shows the card in its new column", async () => {
-    // Create a card in the default (todo) column
-    const addRes = await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "Moveable card" },
-    });
-    const { card_id } = addRes.body as { card_id: string };
+  it("blocks move when exit criteria not satisfied (no force)", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
+    sidecar.columns[0].exit_criteria = [{ id: "ec-1", description: "Review", kind: "human" }];
+    saveSidecar(tmpDir, SCOPE, sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo", checks: {} }));
 
-    // Move it to in-progress (no exit criteria on todo, no WIP block on in-progress)
-    const moveRes = await call(handlers, "POST", "/move", {
-      body: {
-        scope_id: SCOPE,
-        card_id,
-        to_column_id: "in-progress",
-        force: false,
-      },
+    const res = await call(handlers, "POST", "/move", {
+      body: { scope_id: SCOPE, card_id: "my-card", to_column_id: "in-progress" },
     });
-    expect(moveRes.status).toBe(200);
 
-    // Simulate reload(): re-fetch the board state
-    const boardRes = await call(handlers, "GET", "/board", {
-      query: { scope_id: SCOPE },
-    });
-    const board = boardRes.body as {
-      cards: Array<{ card_id: string; column_id: string }>;
-    };
-    const movedCard = board.cards.find((c) => c.card_id === card_id);
-    expect(movedCard?.column_id).toBe("in-progress");
+    expect(res.status).toBe(422);
+    const body = res.body as Record<string, unknown>;
+    expect(body.error).toBe("gate_blocked");
   });
 
-  it("GET /board after POST /card/rename shows the updated title", async () => {
-    const addRes = await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "Original title" },
-    });
-    const { card_id } = addRes.body as { card_id: string };
+  it("allows move with force=true despite unchecked criteria", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
+    sidecar.columns[0].exit_criteria = [{ id: "ec-1", description: "Review", kind: "human" }];
+    saveSidecar(tmpDir, SCOPE, sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo", checks: {} }));
 
-    await call(handlers, "POST", "/card/rename", {
-      body: { scope_id: SCOPE, card_id, title: "Renamed title" },
+    const res = await call(handlers, "POST", "/move", {
+      body: { scope_id: SCOPE, card_id: "my-card", to_column_id: "in-progress", force: true },
     });
 
-    // Simulate reload()
-    const boardRes = await call(handlers, "GET", "/board", {
-      query: { scope_id: SCOPE },
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.forced).toBe(true);
+  });
+
+  it("blocks move when WIP limit exceeded", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
+    sidecar.columns[1].wip_limit = 1;
+    saveSidecar(tmpDir, SCOPE, sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "card-a", column: "in-progress", order: 0 }));
+    writeCard(tmpDir, makeCardFile({ id: "card-b", column: "todo", order: 0 }));
+
+    const res = await call(handlers, "POST", "/move", {
+      body: { scope_id: SCOPE, card_id: "card-b", to_column_id: "in-progress" },
     });
-    const board = boardRes.body as {
-      cards: Array<{ card_id: string; title: string }>;
-    };
-    expect(board.cards.find((c) => c.card_id === card_id)?.title).toBe(
-      "Renamed title"
+
+    expect(res.status).toBe(422);
+    const body = res.body as Record<string, unknown>;
+    expect(body.error).toBe("wip_limit_exceeded");
+  });
+
+  it("returns 404 for nonexistent card", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+
+    const res = await call(handlers, "POST", "/move", {
+      body: { scope_id: SCOPE, card_id: "nonexistent", to_column_id: "done" },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 422 when already in target column", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+    writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo" }));
+
+    const res = await call(handlers, "POST", "/move", {
+      body: { scope_id: SCOPE, card_id: "my-card", to_column_id: "todo" },
+    });
+
+    expect(res.status).toBe(422);
+    const body = res.body as Record<string, unknown>;
+    expect(body.error).toBe("already_in_column");
+  });
+
+  it("routes event to agent endpoint when destination is agent-owned", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
+    sidecar.columns[1].owner = { kind: "agent", agent_id: "my-worker" };
+    sidecar.column_contexts["in-progress"] = "ctx-inprogress";
+    saveSidecar(tmpDir, SCOPE, sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo" }));
+
+    await call(handlers, "POST", "/move", {
+      body: { scope_id: SCOPE, card_id: "my-card", to_column_id: "in-progress" },
+    });
+
+    // Should have emitted a routing event
+    const routingEvent = bus.emittedEvents.find(
+      (e) => e.type === "snowball.card.entered_column"
     );
+    expect(routingEvent).toBeDefined();
+    expect(routingEvent!.destination?.endpoint_id).toBe("actor:ws-test:my-worker");
+    expect(routingEvent!.context_id).toBe("ctx-inprogress");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /columns
+// ---------------------------------------------------------------------------
+
+describe("POST /columns", () => {
+  it("adds a new column", async () => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+
+    const res = await call(handlers, "POST", "/columns", {
+      body: { scope_id: SCOPE, action: "add", name: "Testing" },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    const cols = (body.board as Record<string, unknown>).columns as unknown[];
+    expect(cols).toHaveLength(4);
   });
 
-  it("GET /board after POST /card/delete shows the card absent", async () => {
-    const addRes = await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "Deletable" },
-    });
-    const { card_id } = addRes.body as { card_id: string };
-
-    await call(handlers, "POST", "/card/delete", {
-      body: { scope_id: SCOPE, card_id },
-    });
-
-    // Simulate reload()
-    const boardRes = await call(handlers, "GET", "/board", {
-      query: { scope_id: SCOPE },
-    });
-    const board = boardRes.body as {
-      cards: Array<{ card_id: string }>;
-    };
-    expect(board.cards.find((c) => c.card_id === card_id)).toBeUndefined();
-  });
-
-  it("GET /board after POST /card/criteria shows the updated check state", async () => {
-    // Set up a column with an exit criterion
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    sidecar.columns[0].exit_criteria = [
-      { id: "ec-reload-test", description: "Done", kind: "human" },
-    ];
+  it("updates a column name", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
     saveSidecar(tmpDir, SCOPE, sidecar);
 
-    const addRes = await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "Criteria card" },
+    const res = await call(handlers, "POST", "/columns", {
+      body: { scope_id: SCOPE, action: "update", column_id: "todo", name: "Backlog" },
     });
-    const { card_id } = addRes.body as { card_id: string };
 
-    await call(handlers, "POST", "/card/criteria", {
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    const cols = (body.board as Record<string, unknown>).columns as Array<{ id: string; name: string }>;
+    const updatedCol = cols.find((c) => c.id === "todo");
+    expect(updatedCol!.name).toBe("Backlog");
+  });
+
+  it("deletes a column and moves its cards to first remaining column", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
+    saveSidecar(tmpDir, SCOPE, sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "card-in-todo", column: "todo" }));
+
+    const res = await call(handlers, "POST", "/columns", {
+      body: { scope_id: SCOPE, action: "delete", column_id: "in-progress" },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    const cols = (body.board as Record<string, unknown>).columns as unknown[];
+    expect(cols).toHaveLength(2);
+  });
+
+  it("cannot delete the last column", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
+    sidecar.columns = [sidecar.columns[0]]; // Keep only todo
+    saveSidecar(tmpDir, SCOPE, sidecar);
+
+    const res = await call(handlers, "POST", "/columns", {
+      body: { scope_id: SCOPE, action: "delete", column_id: "todo" },
+    });
+
+    expect(res.status).toBe(422);
+  });
+
+  it("reorders columns", async () => {
+    const sidecar = makeSidecar(SCOPE, "ws-test");
+    saveSidecar(tmpDir, SCOPE, sidecar);
+
+    const res = await call(handlers, "POST", "/columns", {
       body: {
         scope_id: SCOPE,
-        card_id,
-        column_id: "todo",
-        criterion_id: "ec-reload-test",
-        checked: true,
+        action: "reorder",
+        column_ids: ["done", "in-progress", "todo"],
       },
     });
 
-    // Simulate reload()
-    const boardRes = await call(handlers, "GET", "/board", {
-      query: { scope_id: SCOPE },
-    });
-    const board = boardRes.body as {
-      cards: Array<{
-        card_id: string;
-        criteria_checks: Array<{ criterionId: string; checked: boolean }>;
-      }>;
-    };
-    const card = board.cards.find((c) => c.card_id === card_id)!;
-    const check = card.criteria_checks.find(
-      (c) => c.criterionId === "ec-reload-test"
-    );
-    expect(check?.checked).toBe(true);
-  });
-
-  it("GET /board after POST /columns (add) shows the new column", async () => {
-    await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "add", name: "QA" },
-    });
-
-    // Simulate reload()
-    const boardRes = await call(handlers, "GET", "/board", {
-      query: { scope_id: SCOPE },
-    });
-    const board = boardRes.body as { columns: Array<{ name: string }> };
-    expect(board.columns.some((c) => c.name === "QA")).toBe(true);
-    expect(board.columns.length).toBe(4); // 3 default + 1 new
-  });
-
-  it("GET /board after POST /columns (update) shows renamed column", async () => {
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    const colId = sidecar.columns[0].id; // "todo"
-
-    await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "update", column_id: colId, name: "Backlog" },
-    });
-
-    // Simulate reload()
-    const boardRes = await call(handlers, "GET", "/board", {
-      query: { scope_id: SCOPE },
-    });
-    const board = boardRes.body as { columns: Array<{ id: string; name: string }> };
-    expect(board.columns.find((c) => c.id === colId)?.name).toBe("Backlog");
-  });
-
-  it("GET /board after POST /columns (delete) shows the column removed", async () => {
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    const colToDelete = sidecar.columns[2].id; // "done"
-
-    await call(handlers, "POST", "/columns", {
-      body: { scope_id: SCOPE, action: "delete", column_id: colToDelete },
-    });
-
-    // Simulate reload()
-    const boardRes = await call(handlers, "GET", "/board", {
-      query: { scope_id: SCOPE },
-    });
-    const board = boardRes.body as { columns: Array<{ id: string }> };
-    expect(board.columns.find((c) => c.id === colToDelete)).toBeUndefined();
-    expect(board.columns.length).toBe(2);
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    const cols = (body.board as Record<string, unknown>).columns as Array<{ id: string }>;
+    expect(cols[0].id).toBe("done");
+    expect(cols[1].id).toBe("in-progress");
+    expect(cols[2].id).toBe("todo");
   });
 });

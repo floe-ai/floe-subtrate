@@ -1,15 +1,22 @@
 /**
  * Snowball extension — shared domain types.
  *
- * Covers both the sidecar file schema and the engine types used by tools/hooks.
+ * Foundation Slice 1 (fm/snowball-found-s1):
+ *   - Column = Context (bus Context per column, owner actor frozen participant)
+ *   - Card = Markdown file at tasks/<id>.md (frontmatter + body + carry-forward comments)
+ *   - Card-move = event delivered to destination column's Context
+ *
  * Owner identity uses `agent_id` (contract R5) not free-form `role`.
  */
 
 // ---------------------------------------------------------------------------
-// Sidecar schema  (.floe/extensions/snowball/boards/<slug>.yaml)
+// Board sidecar schema v2
+// (.floe/extensions/snowball/boards/<slug>.yaml)
+// Now owns column definitions + column_contexts map only.
+// Cards are files in tasks/; the sidecar no longer holds card state.
 // ---------------------------------------------------------------------------
 
-export const SIDECAR_SCHEMA = "floe.ext.snowball.board.v1" as const;
+export const SIDECAR_SCHEMA = "floe.ext.snowball.board.v2" as const;
 
 export interface SidecarColumnOwner {
   kind: "human" | "agent";
@@ -32,6 +39,27 @@ export interface SidecarColumn {
   exit_criteria: SidecarExitCriterion[];
 }
 
+export interface BoardSidecar {
+  schema: typeof SIDECAR_SCHEMA;
+  scope_id: string;
+  workspace_id: string;
+  columns: SidecarColumn[];
+  /**
+   * column_id → context_id (bus Context, created at board init).
+   * Each column has one stable bus Context scoped to the board scope.
+   * The column owner actor is a frozen participant; the snowball-overseer
+   * is also always added as a participant so it can route card-move events
+   * into the column context.
+   *
+   * This map is populated by POST /board/init (idempotent).
+   */
+  column_contexts: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Card file schema (tasks/<id>.md)
+// ---------------------------------------------------------------------------
+
 export interface CriterionCheckState {
   checked: boolean;
   checked_at: string | null;
@@ -39,26 +67,33 @@ export interface CriterionCheckState {
   note?: string | null;
 }
 
-export interface SidecarCard {
-  column_id: string;
-  /** Position within the column (0-based) */
-  order: number;
+/**
+ * The parsed card file.  Lives at tasks/<id>.md in the workspace.
+ *
+ * Frontmatter fields are the source of truth for card state.
+ * The body is the description, and carry-forward comments are appended
+ * at the bottom on each column move.
+ */
+export interface CardFile {
+  /** Stable card identity — matches the filename (without .md). */
+  id: string;
   title: string;
+  /** Accepted card type for this board (e.g. "task"). */
+  type: string;
+  /** Assigned actor (agent_id), or null if unassigned. */
+  actor: string | null;
+  /** Current column id. Updated in-place on move; file never moves. */
+  column: string;
+  /** Position within the column (0-based). Updated on move. */
+  order: number;
   created_at: string;
   /**
-   * Nested: checks[column_id][criterion_id] → CriterionCheckState
-   * Only the column the card is currently in (or was previously in) has entries.
+   * Exit-criteria check state per column.
+   * checks[column_id][criterion_id] → CriterionCheckState
    */
   checks: Record<string, Record<string, CriterionCheckState>>;
-}
-
-export interface BoardSidecar {
-  schema: typeof SIDECAR_SCHEMA;
-  scope_id: string;
-  workspace_id: string;
-  columns: SidecarColumn[];
-  /** Keyed by context_id (= card_id) */
-  cards: Record<string, SidecarCard>;
+  /** Markdown body text (everything after the YAML frontmatter block). */
+  body: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +130,7 @@ export function defaultColumns(): SidecarColumn[] {
 }
 
 // ---------------------------------------------------------------------------
-// Engine types (ported from Snowball engine/types.ts; adapted for floe)
+// Engine types (used by tools/hooks)
 // ---------------------------------------------------------------------------
 
 export interface ExitCriterion {
@@ -106,7 +141,6 @@ export interface ExitCriterion {
 
 export interface ColumnOwner {
   kind: "human" | "agent";
-  /** agent_id when kind === "agent" */
   agent_id?: string;
 }
 
@@ -127,6 +161,7 @@ export interface CardCriterionCheck {
   note?: string;
 }
 
+/** Card as projected for API responses and BeforeTurn injection. */
 export interface Card {
   card_id: string;
   column_id: string;

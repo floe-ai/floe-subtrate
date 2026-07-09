@@ -1,15 +1,18 @@
 /**
- * Sidecar — board/column/card state management.
+ * Board sidecar — column configuration and context registry.
+ *
+ * Foundation Slice 1 (fm/snowball-found-s1):
+ *   The sidecar now owns:
+ *    - Column definitions (id, name, wip_limit, owner, exit_criteria)
+ *    - column_contexts map: column_id → bus Context id (created at board init)
+ *
+ *   Cards are no longer stored here — they live in tasks/<id>.md files.
+ *   The sidecar is NOT the source of truth for card state.
  *
  * State lives at: .floe/extensions/snowball/boards/<scope_id_slug>.yaml
  *
  * Slug rule (R8): replace `:` and `/` and any chars illegal in filenames with `_`.
  * The mapping is deterministic: same scope_id → same slug always.
- *
- * Reconcile rules (§3.4):
- *  - Context in bus but not sidecar → recover into first column
- *  - Context in sidecar but not bus → remove (context was deleted)
- *  - Card references unknown column → move to first column, warn
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -20,16 +23,17 @@ import {
   SIDECAR_SCHEMA,
   defaultColumns,
   type BoardSidecar,
-  type SidecarCard,
+  type SidecarColumn,
   type BoardSnapshot,
   type Card,
   type CardCriterionCheck,
 } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// Slug — deterministic, safe filename from scope_id
-// ---------------------------------------------------------------------------
-
+import {
+  listCards,
+  cardCountsByColumnFromFiles,
+  getUncheckedCriteriaForCard,
+} from "./card-file.js";
+import type { CardFile } from "./types.js";
 /**
  * Convert a scope_id to a safe filesystem slug.
  * Characters illegal in filenames on Windows/Unix (: / \ * ? " < > |) are
@@ -38,7 +42,6 @@ import {
  * Example: "scope:workspace_id:feature-planning" → "scope_workspace_id_feature-planning"
  */
 export function slugify(scopeId: string): string {
-  // Replace characters illegal on Windows and/or problematic on Unix
   return scopeId.replace(/[:/\\*?"<>|]/g, "_");
 }
 
@@ -59,10 +62,10 @@ function sidecarPath(workspacePath: string, scopeId: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Load the sidecar for a scope.  If it does not exist, create and return a
- * default board with three columns (To Do / In Progress / Done).
+ * Load the sidecar for a scope.  If it does not exist, return a default board
+ * with three columns and an empty column_contexts map.
  *
- * Does NOT run reconciliation — call reconcileSidecar() separately when needed.
+ * Does NOT create column contexts — call initBoardContexts() separately.
  */
 export function loadSidecar(
   workspacePath: string,
@@ -71,22 +74,22 @@ export function loadSidecar(
   const path = sidecarPath(workspacePath, scopeId);
 
   if (!existsSync(path)) {
-    // Return in-memory default; caller must saveSidecar() to persist.
     return {
       schema: SIDECAR_SCHEMA,
       scope_id: scopeId,
-      workspace_id: "", // filled in by caller on first save
+      workspace_id: "",
       columns: defaultColumns(),
-      cards: {},
+      column_contexts: {},
     };
   }
 
   try {
     const raw = readFileSync(path, "utf-8");
     const parsed = parseYaml(raw) as BoardSidecar;
-    // Normalise: ensure cards object exists
-    if (!parsed.cards) parsed.cards = {};
     if (!Array.isArray(parsed.columns)) parsed.columns = defaultColumns();
+    if (!parsed.column_contexts || typeof parsed.column_contexts !== "object") {
+      parsed.column_contexts = {};
+    }
     return parsed;
   } catch (err) {
     console.error(`[snowball] Failed to parse sidecar at ${path}: ${err}`);
@@ -95,13 +98,14 @@ export function loadSidecar(
       scope_id: scopeId,
       workspace_id: "",
       columns: defaultColumns(),
-      cards: {},
+      column_contexts: {},
     };
   }
 }
 
 /**
  * Check if a sidecar file exists on disk for this scope.
+ * A sidecar that exists means the board has been initialized (column contexts created).
  */
 export function sidecarExists(
   workspacePath: string,
@@ -123,90 +127,92 @@ export function saveSidecar(
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(path, stringifyYaml(sidecar as unknown as Record<string, unknown>), "utf-8");
+  writeFileSync(
+    path,
+    stringifyYaml(sidecar as unknown as Record<string, unknown>),
+    "utf-8"
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Reconcile (§3.4)
+// Board init — create column contexts
 // ---------------------------------------------------------------------------
 
 /**
- * Reconcile sidecar cards with the bus context list for this scope.
- * Modifies the sidecar in-place and returns it.
- * Caller should saveSidecar() afterwards if any changes occurred.
+ * Compute the snowball overseer endpoint id for a workspace.
+ * The overseer is always added as a participant to ALL column contexts so
+ * it can emit card-move events directly into the context.
  */
-export async function reconcileSidecar(
+function overseerId(workspaceId: string): string {
+  return `actor:${workspaceId}:snowball-overseer`;
+}
+
+/**
+ * Compute the agent endpoint id for a workspace + agent.
+ */
+function agentEndpointId(workspaceId: string, agentId: string): string {
+  return `actor:${workspaceId}:${agentId}`;
+}
+
+/**
+ * Initialise column contexts in the bus and persist context_ids to sidecar.
+ *
+ * Creates one bus Context per column (scoped to the board scope_id) if the
+ * column does not already have a context_id in the sidecar.  Idempotent:
+ * already-created contexts are not touched.
+ *
+ * Participants per column:
+ *  - snowball-overseer (always, so it can route card-move events into context)
+ *  - column owner agent (if agent-owned; adds them as frozen participant)
+ *
+ * Call saveSidecar() after this function if changed is true.
+ */
+export async function initBoardContexts(
   sidecar: BoardSidecar,
-  busClient: BusClient,
-  workspaceId: string
-): Promise<{ sidecar: BoardSidecar; changed: boolean }> {
+  workspaceId: string,
+  busClient: BusClient
+): Promise<{ changed: boolean }> {
   let changed = false;
-  const busContexts = await busClient.listContextsForScope(
-    workspaceId,
-    sidecar.scope_id
-  );
-  const busIds = new Set(busContexts.map((c) => c.context_id));
-  const sidecarIds = new Set(Object.keys(sidecar.cards));
-  const firstColumn = sidecar.columns[0];
+  const overseer = overseerId(workspaceId);
 
-  // Rule 1: Context in bus but not in sidecar → recover into first column
-  for (const ctx of busContexts) {
-    if (!sidecarIds.has(ctx.context_id)) {
-      if (firstColumn) {
-        const order = Object.values(sidecar.cards).filter(
-          (c) => c.column_id === firstColumn.id
-        ).length;
-        sidecar.cards[ctx.context_id] = {
-          column_id: firstColumn.id,
-          order,
-          title: ctx.first_message_preview ?? ctx.context_id,
-          created_at: ctx.created_at,
-          checks: {},
-        };
-        console.warn(
-          `[snowball] Recovered orphaned context ${ctx.context_id} → first column`
-        );
-        changed = true;
-      }
+  for (const col of sidecar.columns) {
+    if (sidecar.column_contexts[col.id]) {
+      // Already has a context — skip (idempotent)
+      continue;
     }
-  }
 
-  // Rule 2: Context in sidecar but not in bus → remove (context deleted)
-  for (const ctxId of sidecarIds) {
-    if (!busIds.has(ctxId)) {
-      delete sidecar.cards[ctxId];
-      console.warn(
-        `[snowball] Removed sidecar entry ${ctxId} (context not found in bus)`
-      );
+    const participants: string[] = [overseer];
+    if (col.owner.kind === "agent" && col.owner.agent_id) {
+      const agent = agentEndpointId(workspaceId, col.owner.agent_id);
+      if (!participants.includes(agent)) participants.push(agent);
+    }
+
+    try {
+      const contextId = await busClient.createContext({
+        workspace_id: workspaceId,
+        scope_id: sidecar.scope_id,
+        participants,
+        title: `Column: ${col.name}`,
+      });
+      sidecar.column_contexts[col.id] = contextId;
       changed = true;
+    } catch (err) {
+      console.error(
+        `[snowball] Failed to create column context for "${col.name}": ${err}`
+      );
     }
   }
 
-  // Rule 3: Card references unknown column → move to first column
-  const validColIds = new Set(sidecar.columns.map((c) => c.id));
-  for (const [ctxId, card] of Object.entries(sidecar.cards)) {
-    if (!validColIds.has(card.column_id)) {
-      if (firstColumn) {
-        console.warn(
-          `[snowball] Card ${ctxId} references unknown column '${card.column_id}' → moved to first column`
-        );
-        card.column_id = firstColumn.id;
-        card.order = 0;
-        changed = true;
-      }
-    }
-  }
-
-  return { sidecar, changed };
+  return { changed };
 }
 
 // ---------------------------------------------------------------------------
 // Query helpers
 // ---------------------------------------------------------------------------
 
-/** Return the unchecked exit criteria for a card leaving the given column. */
+/** Return the unchecked exit criteria for a card in its current column. */
 export function getUncheckedCriteria(
-  card: SidecarCard,
+  card: CardFile,
   columnId: string,
   exitCriteria: Array<{ id: string; description: string; kind: string }>
 ): Array<{ id: string; description: string; kind: string }> {
@@ -214,25 +220,23 @@ export function getUncheckedCriteria(
   return exitCriteria.filter((ec) => !colChecks[ec.id]?.checked);
 }
 
-/** Count cards per column. */
+/** Count cards per column by reading card files. */
 export function cardCountsByColumn(
+  workspacePath: string,
   sidecar: BoardSidecar
 ): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const col of sidecar.columns) {
-    counts[col.id] = 0;
-  }
-  for (const card of Object.values(sidecar.cards)) {
-    if (counts[card.column_id] !== undefined) {
-      counts[card.column_id]++;
-    }
-  }
-  return counts;
+  return cardCountsByColumnFromFiles(
+    workspacePath,
+    sidecar.columns.map((c) => c.id)
+  );
 }
 
 /** Build a full board snapshot suitable for API responses and board injection. */
-export function buildBoardSnapshot(sidecar: BoardSidecar): BoardSnapshot {
-  const counts = cardCountsByColumn(sidecar);
+export function buildBoardSnapshot(
+  workspacePath: string,
+  sidecar: BoardSidecar
+): BoardSnapshot {
+  const counts = cardCountsByColumn(workspacePath, sidecar);
   const columns = sidecar.columns.map((col) => ({
     id: col.id,
     name: col.name,
@@ -244,36 +248,34 @@ export function buildBoardSnapshot(sidecar: BoardSidecar): BoardSnapshot {
     exit_criteria: col.exit_criteria,
   }));
 
-  const cards: Card[] = Object.entries(sidecar.cards).map(
-    ([ctxId, card]): Card => {
-      const colChecks = card.checks[card.column_id] ?? {};
-      const criteria_checks: CardCriterionCheck[] = Object.entries(
-        colChecks
-      ).map(
-        ([criterionId, state]): CardCriterionCheck => ({
-          columnId: card.column_id,
-          criterionId,
-          checked: state.checked,
-          checkedAt: state.checked_at ?? undefined,
-          checkedBy: state.checked_by ?? undefined,
-          note: state.note ?? undefined,
-        })
-      );
-      return {
-        card_id: ctxId,
-        column_id: card.column_id,
-        order: card.order,
-        title: card.title,
-        created_at: card.created_at,
-        criteria_checks,
-      };
-    }
-  );
+  const allCards = listCards(workspacePath);
+  const cards: Card[] = allCards.map((cardFile): Card => {
+    const colChecks = cardFile.checks[cardFile.column] ?? {};
+    const criteria_checks: CardCriterionCheck[] = Object.entries(colChecks).map(
+      ([criterionId, state]): CardCriterionCheck => ({
+        columnId: cardFile.column,
+        criterionId,
+        checked: state.checked,
+        checkedAt: state.checked_at ?? undefined,
+        checkedBy: state.checked_by ?? undefined,
+        note: state.note ?? undefined,
+      })
+    );
+    return {
+      card_id: cardFile.id,
+      column_id: cardFile.column,
+      order: cardFile.order,
+      title: cardFile.title,
+      created_at: cardFile.created_at,
+      criteria_checks,
+    };
+  });
 
   // Sort cards by column order then card order
+  const colOrderMap = new Map(sidecar.columns.map((c, i) => [c.id, i]));
   cards.sort((a, b) => {
-    const colA = sidecar.columns.findIndex((c) => c.id === a.column_id);
-    const colB = sidecar.columns.findIndex((c) => c.id === b.column_id);
+    const colA = colOrderMap.get(a.column_id) ?? 999;
+    const colB = colOrderMap.get(b.column_id) ?? 999;
     if (colA !== colB) return colA - colB;
     return a.order - b.order;
   });
@@ -324,9 +326,14 @@ export function renderCompactBoardSnapshot(snapshot: BoardSnapshot): string {
   }
 
   const result = lines.join("\n");
-  // Safety cap: if over 3800 chars, truncate with notice
   if (result.length > 3800) {
     return result.slice(0, 3750) + "\n\n[...board snapshot truncated]";
   }
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// Column management helpers
+// ---------------------------------------------------------------------------
+
+export { SidecarColumn };
