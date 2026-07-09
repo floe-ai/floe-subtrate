@@ -23,6 +23,60 @@ real file so a future reader can verify or correct it.
 
 ---
 
+### 1.0 System Domains & Seams
+
+The four domains and the mechanisms connecting them. Read this first — the sections
+below zoom in on each domain independently.
+
+```mermaid
+graph LR
+    subgraph APP["floe-app · port 5379"]
+        UI["React UI\n(App.tsx, ScopeDetail, Settings)"]
+        CREG["COMPONENT_REGISTRY\n(maps extension component IDs\nto React components at build time)"]
+    end
+
+    subgraph BUS["floe-bus · port 5377"]
+        BHTTP["Fastify HTTP + WebSocket"]
+        BSTORE["BusStore (SQLite)\nWorkspace · Scope · Context\nEndpoint · Event · Delivery · Pulse"]
+        BHTTP <-->|"internal"| BSTORE
+    end
+
+    subgraph BRIDGE["floe-bridge"]
+        DAEMON["BridgeDaemon\n(delivery loop + runtime adapter)"]
+        HOOKS["HookRegistry\n(BeforeTurn, Pulse, TurnEnd…)"]
+        LOADER["extension-loader"]
+        RELAY["extension-relay · port 5378"]
+    end
+
+    subgraph EXTS["extensions (e.g. snowball)"]
+        ENTRY["entry factory\n(tools + hook handlers)"]
+        EHTTP["HTTP handlers\n(board API)"]
+        EVIEW["UI component\n(BoardView.tsx)"]
+        EFILES[".floe/extensions/name/\n(definition files)"]
+    end
+
+    UI -->|"HTTP GET/POST /v1/*"| BHTTP
+    UI -->|"WebSocket — event_submitted"| BHTTP
+    BHTTP -->|"GET /v1/extensions\n→ registered views"| UI
+    CREG -.->|"static import at build time"| EVIEW
+
+    DAEMON -->|"GET deliveries\nPOST events, endpoints"| BHTTP
+    DAEMON -->|"POST /v1/extensions/report\n(relay_url)"| BHTTP
+
+    ENTRY -->|"loaded by (workspace attach)"| LOADER
+    ENTRY -->|"registers handlers on"| HOOKS
+    EHTTP -->|"served via"| RELAY
+    RELAY -->|"proxied as\nGET/POST /v1/extensions/name/*"| BHTTP
+
+    EFILES -->|"read/written by\nextension tools & handlers"| DAEMON
+```
+
+**Desktop path (Tauri, optional):** `SubstrateSettingsView` auth-write operations bypass the bus
+and go directly through Tauri IPC to the local filesystem (ADR-0005). The bus never exposes
+auth-write endpoints.
+
+---
+
 ### 1.1 Substrate Primitives (`floe-bus`)
 
 The bus is the canonical event store and the only mutable substrate daemon.
@@ -35,14 +89,16 @@ substrate store for bus-owned records. No parallel runtime state.
 
 ```mermaid
 graph TD
-    WS["Workspace\n(locator + workspace_id)"]
-    SC["Scope\n(organising boundary)"]
-    CTX["Context\n(bounded stream)"]
-    EP["Endpoint\n(actor / agent / webhook / scheduler)"]
-    EV["Event\n(canonical record)"]
-    DEL["Delivery\n(per-endpoint view of an event)"]
-    PL["Pulse\n(scheduled trigger)"]
-    PF["pulse.fired event\n(one per subscriber per fire)"]
+    subgraph BUS["floe-bus — BusStore (SQLite)"]
+        WS["Workspace\n(locator + workspace_id)"]
+        SC["Scope\n(organising boundary)"]
+        CTX["Context\n(bounded stream)"]
+        EP["Endpoint\n(actor / agent / webhook / scheduler)"]
+        EV["Event\n(canonical record)"]
+        DEL["Delivery\n(per-endpoint view of an event)"]
+        PL["Pulse\n(scheduled trigger)"]
+        PF["pulse.fired event\n(one per subscriber per fire)"]
+    end
 
     WS -->|"contains 0..n"| SC
     WS -->|"contains 0..n"| EP
@@ -70,10 +126,10 @@ graph TD
 
 ```mermaid
 sequenceDiagram
-    participant PS as PulseScheduler<br/>(priority queue)
-    participant BUS as BusStore
-    participant EV as Events table
-    participant DEL as Deliveries table
+    participant PS as [bus] PulseScheduler
+    participant BUS as [bus] BusStore
+    participant EV as [bus] Events table
+    participant DEL as [bus] Deliveries table
 
     Note over PS: setTimeout → nearest pulse
     PS->>BUS: firePulse(pulseId)
@@ -95,13 +151,17 @@ sequenceDiagram
 
 ```mermaid
 graph LR
-    SRC["Source endpoint\nor system (null)"] -->|"emit or trigger"| SE["submitEvent()"]
-    SE -->|"resolve/create Context"| CTX["Context"]
-    SE -->|"insert Event"| EV["Events table"]
-    SE -->|"resolveDestinations()"| DST{"destination\nkind?"}
-    DST -->|endpoint| D1["INSERT delivery\nfor target endpoint"]
-    DST -->|broadcast| D2["INSERT delivery\nfor each matching endpoint"]
-    SE -->|"broadcastEventSubmission()"| WS["WebSocket broadcast\nevent_submitted"]
+    SRC["Source endpoint\nor system (null)"] -->|"emit or trigger"| SE
+
+    subgraph BUS["floe-bus — submitEvent()"]
+        SE["submitEvent()"]
+        SE -->|"resolve/create Context"| CTX["Context"]
+        SE -->|"insert Event"| EV["Events table"]
+        SE -->|"resolveDestinations()"| DST{"destination\nkind?"}
+        DST -->|endpoint| D1["INSERT delivery\nfor target endpoint"]
+        DST -->|broadcast| D2["INSERT delivery\nfor each matching endpoint"]
+        SE -->|"broadcastEventSubmission()"| WS["WebSocket broadcast\nevent_submitted"]
+    end
 ```
 
 - `source_endpoint_id` is null for system-originated events (pulse.fired, webhook ingest).
@@ -119,13 +179,19 @@ event deliveries and runs agent turns.
 
 ```mermaid
 graph TD
-    BD["BridgeDaemon\n(floe-bridge/src/daemon.ts)"]
-    CA["chooseAdapter()\n(daemon.ts:728)"]
-    FA["FakeRuntimeAdapter\n(fake-runtime-adapter.ts)"]
-    PA["PiAgentCoreAdapter\n(pi-agent-core-adapter.ts)"]
-    CS["CopilotSdkAdapter\n(copilot-sdk-adapter.ts)\n[gated/deferred]"]
-    HR["HookRegistry\n(hooks.ts)"]
-    EXT["LoadedExtension[]\n(extension-loader.ts)"]
+    subgraph BRIDGE["floe-bridge"]
+        BD["BridgeDaemon\n(daemon.ts)"]
+        CA["chooseAdapter()\n(daemon.ts:728)"]
+        FA["FakeRuntimeAdapter\n(fake-runtime-adapter.ts)"]
+        PA["PiAgentCoreAdapter\n(pi-agent-core-adapter.ts)"]
+        CS["CopilotSdkAdapter\n(copilot-sdk-adapter.ts)\n[gated/deferred]"]
+        HR["HookRegistry\n(hooks.ts)"]
+        TURN["handleBundle()"]
+    end
+
+    subgraph EXTS["extensions (loaded into bridge)"]
+        EXT["LoadedExtension[]\n(extension-loader.ts)"]
+    end
 
     BD -->|"at startup"| CA
     CA -->|"no real profile"| FA
@@ -134,7 +200,7 @@ graph TD
 
     BD -->|"per workspace attach"| EXT
     EXT -->|"registers handlers on"| HR
-    BD -->|"per delivery"| TURN["handleBundle()"]
+    BD -->|"per delivery"| TURN
     TURN -->|"fires hooks"| HR
 ```
 
@@ -157,11 +223,12 @@ interface RuntimeAdapter {
 
 ```mermaid
 sequenceDiagram
-    participant BD as BridgeDaemon
-    participant EL as extension-loader.ts
-    participant EXT as Extension entry (TS)
-    participant HR as HookRegistry
-    participant RL as extension-relay.ts
+    participant BD as [bridge] BridgeDaemon
+    participant EL as [bridge] extension-loader.ts
+    participant EXT as [extension] entry factory
+    participant HR as [bridge] HookRegistry
+    participant RL as [bridge] extension-relay.ts
+    participant BUS as [bus] POST /v1/extensions/report
 
     BD->>EL: loadExtensions(workspaceExtDir, ctx)
     EL->>EXT: import(entry) → factory(ctx)
@@ -201,27 +268,38 @@ Tauri adds local IPC for auth-write operations.
 
 ```mermaid
 graph TD
-    APP["App.tsx\n(workspace selector)"]
-    SD["ScopeDetail.tsx\n(scope main view)"]
-    CTX_LIST["Contexts tab\n(listContextsForScope)"]
-    OPS["Ops tab\n(Ops.tsx — pulse / endpoint ops)"]
-    EXT_TABS["Extension tabs\n(dynamic from GET /v1/extensions)"]
-    SB["SnowballBoard\n(from floe-ext-snowball/BoardView)"]
-    SS["SubstrateSettingsView\n(auth profiles / runtime config)"]
-    BUS["floe-bus :5377"]
-    TAURI["Tauri IPC\n(auth-write only — desktop)"]
+    subgraph APP["floe-app (port 5379)"]
+        APPX["App.tsx\n(workspace selector)"]
+        SD["ScopeDetail.tsx\n(scope main view)"]
+        CTX_LIST["Contexts tab\n(listContextsForScope)"]
+        OPS["Ops tab\n(Ops.tsx — pulse / endpoint ops)"]
+        EXT_TABS["Extension tabs\n(dynamic from GET /v1/extensions)"]
+        SS["SubstrateSettingsView\n(auth profiles / runtime config)"]
+    end
 
-    APP -->|"scope selected"| SD
+    subgraph EXT["extensions (e.g. snowball)"]
+        SB["SnowballBoard\n(floe-ext-snowball/BoardView)\n— static import via COMPONENT_REGISTRY"]
+    end
+
+    subgraph BUS["floe-bus (port 5377)"]
+        BAPI["HTTP + WebSocket API"]
+    end
+
+    subgraph DESKTOP["Tauri desktop shell (optional)"]
+        TAURI["Tauri IPC\n(auth-write only — bypasses bus)"]
+    end
+
+    APPX -->|"scope selected"| SD
     SD --> CTX_LIST
     SD --> OPS
     SD --> EXT_TABS
     EXT_TABS -->|"component = @floe/ext-snowball/BoardView"| SB
-    APP --> SS
-    SS -->|"browser: read-only via GET /v1/auth/profiles"| BUS
-    SS -->|"desktop: read+write via invoke()"| TAURI
+    APPX --> SS
+    SS -->|"browser: GET /v1/auth/profiles (read-only)"| BAPI
+    SS -->|"desktop: invoke()"| TAURI
 
-    SD -->|"WebSocket subscription\nevent_submitted"| BUS
-    SD -->|"HTTP"| BUS
+    SD -->|"WebSocket — event_submitted"| BAPI
+    SD -->|"HTTP GET/POST"| BAPI
 ```
 
 **Extension view registration** (`ScopeDetail.tsx`):
@@ -240,14 +318,20 @@ graph TD
 
 ```mermaid
 graph TD
-    SBX["Snowball extension entry\n(src/index.ts)"]
-    SIDECAR["Sidecar YAML\n(.floe/extensions/snowball/boards/<slug>.yaml)\nOwns: columns, cards, exit criteria, WIP limits"]
-    HOOK["BeforeTurn hook\n(src/hooks.ts)\nInjects board snapshot into agent prompt"]
-    TOOLS["Tools\n(src/tools/index.ts)\nmove_card, list_board, add_card, set_column_config, check_criterion, set_card_title"]
-    OVERSEER["Overseer\n(src/overseer.ts)\nadvanceCardIfReady() — in-process cascade on move"]
-    HTTP["HTTP handlers\n(src/handlers.ts)\nBoard state + card move relay → UI"]
-    UI["BoardView.tsx\n(src/ui/BoardView.tsx)\nKanban board React UI"]
-    BUS_EV["Bus events\nsnowball.card.moved\nsnowball.card.entered_column"]
+    subgraph EXT["floe-ext-snowball"]
+        SBX["entry (src/index.ts)"]
+        HOOK["BeforeTurn hook (hooks.ts)\nInjects board snapshot into agent prompt"]
+        TOOLS["Tools (tools/index.ts)\nmove_card · list_board · add_card\nset_column_config · check_criterion · set_card_title"]
+        OVERSEER["Overseer (overseer.ts)\nadvanceCardIfReady()\n— in-process cascade on move"]
+        HTTP["HTTP handlers (handlers.ts)\nboard state + card move relay"]
+        UI["BoardView.tsx (ui/)\nKanban board React UI"]
+        SIDECAR["Sidecar YAML\n(.floe/extensions/snowball/boards/<slug>.yaml)\nOwns: columns · cards · exit criteria · WIP limits"]
+    end
+
+    subgraph BUS["floe-bus (SQLite)"]
+        BUS_EV["Events\nsnowball.card.moved\nsnowball.card.entered_column"]
+        BUS_CTX["Contexts\n(one per card)"]
+    end
 
     SBX --> HOOK
     SBX --> TOOLS
@@ -258,6 +342,7 @@ graph TD
     TOOLS -->|"triggers"| OVERSEER
     OVERSEER -->|"emit"| BUS_EV
     HTTP -->|"serves"| UI
+    TOOLS -->|"creates contexts for cards"| BUS_CTX
 ```
 
 **What Snowball owns today:**
@@ -289,6 +374,37 @@ The sidecar owns too much: it acts as both a definition store and a mutable runt
 > **This section is aspirational / target state.**  
 > Items here represent agreed direction but are NOT yet in the code.
 > Do not treat this section as current-state documentation.
+
+---
+
+### 2.0 Substrate vs Extension — What Belongs Where
+
+A future agent building a *different* extension must know exactly which
+capabilities come from the general substrate and which are Snowball-specific
+applications of those primitives. Snowball is an example consumer of the
+substrate — not part of it.
+
+| Concept | Owner | Available to any extension? |
+|---|---|---|
+| Workspaces, Scopes, Contexts | **Substrate** (`floe-bus`) | ✅ Yes |
+| Events, Deliveries, Endpoints | **Substrate** (`floe-bus`) | ✅ Yes |
+| Pulses (`pulse.fired`) | **Substrate** (`floe-bus`) | ✅ Yes |
+| Hooks (`BeforeTurn`, `Pulse`, `TurnEnd`, …) | **Substrate** (`floe-bridge`) | ✅ Yes — register via `ExtensionContext.hooks.on(...)` |
+| HTTP relay (`GET/POST /v1/extensions/name/*`) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare handlers via `ctx.registerHttpHandler(...)` |
+| Scope-detail tab views | **Substrate** (`floe-app` COMPONENT_REGISTRY) | ✅ Yes — declare `views` in extension manifest |
+| Tool namespacing (auto-prefix) | **Substrate** (`extension-loader`) | ✅ Yes — automatic for all extensions |
+| Agent bundling (in-memory, no disk write) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare `agents` in extension manifest |
+| **Boards** (column config, accepted card type) | **Snowball-specific** | ❌ No |
+| **Columns as Contexts** | **Snowball's use** of substrate Contexts | ❌ No |
+| **Cards** (markdown files with YAML frontmatter) | **Snowball-specific** | ❌ No |
+| **Exit criteria** (per-column gate logic) | **Snowball-specific** | ❌ No |
+| **Overseer agent** (`snowball-overseer`) | **Snowball-specific** | ❌ No |
+| **WIP limits** | **Snowball-specific** | ❌ No |
+| **Carry-forward comments** | **Snowball-specific** | ❌ No |
+
+> **Rule:** if Snowball deleted tomorrow, the substrate (bus, bridge, app) must
+> be completely unmodified. Snowball only calls substrate APIs — it never adds
+> to them.
 
 ---
 
@@ -326,13 +442,13 @@ Extensions must integrate INTO substrate primitives — not build parallel state
 
 ```mermaid
 graph LR
-    subgraph "Substrate (already exists)"
+    subgraph SUB["Substrate (general — available to any extension)"]
         BUS_CTX["Bus: Contexts\n(column contexts)"]
         BUS_EV["Bus: Events\n(card moved, criteria checked)"]
         FILES["Workspace files\n(card .md, column .md, board config)"]
     end
 
-    subgraph "Snowball (target: thin glue only)"
+    subgraph SB["Snowball (target: thin glue only)"]
         FMT["File formats\n(card + column schema)"]
         UI2["UI projection\n(BoardView reads files + events)"]
         GLUE["Thin event handlers\n(route card moves to correct context)"]
@@ -358,12 +474,17 @@ graph LR
 
 ```mermaid
 graph TD
-    BOARD_CFG["Board configuration file\n(columns + accepted card type)"]
-    COL_FILE["Column file\n(.md with frontmatter + agent instructions)"]
-    COL_CTX["Column Context\n(bus: scope_id = board scope)\nStable participant = column owner actor\nNO per-move participant churn"]
-    CARD_FILE["Card file\n(tasks/<id>.md)\nFlows between columns as a file move"]
-    MOVE_EV["Event: card.moved\n(from_column, to_column, card_id)\nDelivered to new column context"]
-    CARRY["Carry-forward comment\nAppended to card .md on column move\nExplicit, inspectable, diffable"]
+    subgraph SB["Snowball (extension)"]
+        BOARD_CFG["Board configuration file\n(columns + accepted card type)"]
+        COL_FILE["Column file\n(.md with frontmatter + agent instructions)"]
+        CARD_FILE["Card file\n(tasks/<id>.md)\nFlows between columns as a file move"]
+        CARRY["Carry-forward comment\nAppended to card .md on column move\nExplicit, inspectable, diffable"]
+    end
+
+    subgraph SUB["Substrate (floe-bus)"]
+        COL_CTX["Column Context\n(scope_id = board scope)\nStable participant = column owner actor\nNO per-move participant churn"]
+        MOVE_EV["Event: card.moved\n(from_column, to_column, card_id)\nDelivered to new column context"]
+    end
 
     BOARD_CFG -->|"references"| COL_FILE
     COL_FILE -->|"corresponds to"| COL_CTX
@@ -404,15 +525,24 @@ Following the ADR-0001 model (pulse definitions in `.floe/`, runtime in SQLite):
 
 ```mermaid
 graph LR
-    SCHED["Clock / Cron"] -->|"fires"| PL["Pulse\n(scheduled event trigger)"]
-    PL -->|"creates"| PFE["pulse.fired event"]
-    HUM["Human action"] -->|"emits"| EV["Event"]
-    AGT["Agent tool call"] -->|"emits"| EV
-    WH["Webhook ingest"] -->|"emits"| EV
-    EV -->|"delivered to"| EP["Endpoint"]
-    EP -->|"processed by bridge"| HOOKS["Hooks\n(BeforeTurn, TurnEnd, Pulse…)"]
-    HOOKS -->|"extension handlers observe/inject"| RT["Runtime turn"]
-    RT -->|"agent may emit"| EV
+    subgraph SUB["Substrate (general primitives)"]
+        SCHED["Clock / Cron"] -->|"fires"| PL["Pulse\n(scheduled event trigger)"]
+        PL -->|"creates"| PFE["pulse.fired event"]
+        PFE -->|"is an"| EV["Event"]
+        HUM["Human action"] -->|"emits"| EV
+        WH["Webhook ingest"] -->|"emits"| EV
+        EV -->|"delivered to"| EP["Endpoint"]
+        EP -->|"processed by bridge"| HOOKS["Hooks\n(BeforeTurn, TurnEnd, Pulse…)"]
+    end
+
+    subgraph EXT["Extension handlers (e.g. snowball)"]
+        HNDL["Hook handler\n(observes / injects)"]
+        AGT["Agent tool call"] -->|"emits"| EV
+        HNDL -->|"may emit"| EV
+    end
+
+    HOOKS -->|"fires registered handlers"| HNDL
+    HNDL -->|"may return inject{ }\nfor BeforeTurn"| RT["Runtime turn"]
 ```
 
 - A pulse is just a scheduled event — no special processing path beyond creation.
