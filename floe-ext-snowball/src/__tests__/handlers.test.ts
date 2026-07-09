@@ -714,3 +714,199 @@ describe("POST /card/criteria", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Post-mutation reload correctness
+//
+// These tests exercise the GET /board path that BoardView.tsx's reload()
+// calls after every mutation (via withReload()).  They verify that each
+// mutation type produces durable, immediately-readable state so the board
+// UI can refresh correctly after any human action.
+//
+// The sequence: mutate via POST → re-fetch via GET /board → assert fresh data.
+// ---------------------------------------------------------------------------
+
+describe("post-mutation reload correctness", () => {
+  beforeEach(() => {
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+  });
+
+  it("GET /board after POST /card shows the new card in the correct column", async () => {
+    const addRes = await call(handlers, "POST", "/card", {
+      body: { scope_id: SCOPE, title: "Reload test card" },
+    });
+    expect(addRes.status).toBe(201);
+    const { card_id } = addRes.body as { card_id: string };
+
+    // Simulate reload(): re-fetch the board state
+    const boardRes = await call(handlers, "GET", "/board", {
+      query: { scope_id: SCOPE },
+    });
+    expect(boardRes.status).toBe(200);
+    const board = boardRes.body as {
+      cards: Array<{ card_id: string; title: string; column_id: string }>;
+    };
+    const found = board.cards.find((c) => c.card_id === card_id);
+    expect(found).toBeDefined();
+    expect(found!.title).toBe("Reload test card");
+    expect(found!.column_id).toBe("todo"); // default first column
+  });
+
+  it("GET /board after POST /move shows the card in its new column", async () => {
+    // Create a card in the default (todo) column
+    const addRes = await call(handlers, "POST", "/card", {
+      body: { scope_id: SCOPE, title: "Moveable card" },
+    });
+    const { card_id } = addRes.body as { card_id: string };
+
+    // Move it to in-progress (no exit criteria on todo, no WIP block on in-progress)
+    const moveRes = await call(handlers, "POST", "/move", {
+      body: {
+        scope_id: SCOPE,
+        card_id,
+        to_column_id: "in-progress",
+        force: false,
+      },
+    });
+    expect(moveRes.status).toBe(200);
+
+    // Simulate reload(): re-fetch the board state
+    const boardRes = await call(handlers, "GET", "/board", {
+      query: { scope_id: SCOPE },
+    });
+    const board = boardRes.body as {
+      cards: Array<{ card_id: string; column_id: string }>;
+    };
+    const movedCard = board.cards.find((c) => c.card_id === card_id);
+    expect(movedCard?.column_id).toBe("in-progress");
+  });
+
+  it("GET /board after POST /card/rename shows the updated title", async () => {
+    const addRes = await call(handlers, "POST", "/card", {
+      body: { scope_id: SCOPE, title: "Original title" },
+    });
+    const { card_id } = addRes.body as { card_id: string };
+
+    await call(handlers, "POST", "/card/rename", {
+      body: { scope_id: SCOPE, card_id, title: "Renamed title" },
+    });
+
+    // Simulate reload()
+    const boardRes = await call(handlers, "GET", "/board", {
+      query: { scope_id: SCOPE },
+    });
+    const board = boardRes.body as {
+      cards: Array<{ card_id: string; title: string }>;
+    };
+    expect(board.cards.find((c) => c.card_id === card_id)?.title).toBe(
+      "Renamed title"
+    );
+  });
+
+  it("GET /board after POST /card/delete shows the card absent", async () => {
+    const addRes = await call(handlers, "POST", "/card", {
+      body: { scope_id: SCOPE, title: "Deletable" },
+    });
+    const { card_id } = addRes.body as { card_id: string };
+
+    await call(handlers, "POST", "/card/delete", {
+      body: { scope_id: SCOPE, card_id },
+    });
+
+    // Simulate reload()
+    const boardRes = await call(handlers, "GET", "/board", {
+      query: { scope_id: SCOPE },
+    });
+    const board = boardRes.body as {
+      cards: Array<{ card_id: string }>;
+    };
+    expect(board.cards.find((c) => c.card_id === card_id)).toBeUndefined();
+  });
+
+  it("GET /board after POST /card/criteria shows the updated check state", async () => {
+    // Set up a column with an exit criterion
+    const sidecar = loadSidecar(tmpDir, SCOPE);
+    sidecar.columns[0].exit_criteria = [
+      { id: "ec-reload-test", description: "Done", kind: "human" },
+    ];
+    saveSidecar(tmpDir, SCOPE, sidecar);
+
+    const addRes = await call(handlers, "POST", "/card", {
+      body: { scope_id: SCOPE, title: "Criteria card" },
+    });
+    const { card_id } = addRes.body as { card_id: string };
+
+    await call(handlers, "POST", "/card/criteria", {
+      body: {
+        scope_id: SCOPE,
+        card_id,
+        column_id: "todo",
+        criterion_id: "ec-reload-test",
+        checked: true,
+      },
+    });
+
+    // Simulate reload()
+    const boardRes = await call(handlers, "GET", "/board", {
+      query: { scope_id: SCOPE },
+    });
+    const board = boardRes.body as {
+      cards: Array<{
+        card_id: string;
+        criteria_checks: Array<{ criterionId: string; checked: boolean }>;
+      }>;
+    };
+    const card = board.cards.find((c) => c.card_id === card_id)!;
+    const check = card.criteria_checks.find(
+      (c) => c.criterionId === "ec-reload-test"
+    );
+    expect(check?.checked).toBe(true);
+  });
+
+  it("GET /board after POST /columns (add) shows the new column", async () => {
+    await call(handlers, "POST", "/columns", {
+      body: { scope_id: SCOPE, action: "add", name: "QA" },
+    });
+
+    // Simulate reload()
+    const boardRes = await call(handlers, "GET", "/board", {
+      query: { scope_id: SCOPE },
+    });
+    const board = boardRes.body as { columns: Array<{ name: string }> };
+    expect(board.columns.some((c) => c.name === "QA")).toBe(true);
+    expect(board.columns.length).toBe(4); // 3 default + 1 new
+  });
+
+  it("GET /board after POST /columns (update) shows renamed column", async () => {
+    const sidecar = loadSidecar(tmpDir, SCOPE);
+    const colId = sidecar.columns[0].id; // "todo"
+
+    await call(handlers, "POST", "/columns", {
+      body: { scope_id: SCOPE, action: "update", column_id: colId, name: "Backlog" },
+    });
+
+    // Simulate reload()
+    const boardRes = await call(handlers, "GET", "/board", {
+      query: { scope_id: SCOPE },
+    });
+    const board = boardRes.body as { columns: Array<{ id: string; name: string }> };
+    expect(board.columns.find((c) => c.id === colId)?.name).toBe("Backlog");
+  });
+
+  it("GET /board after POST /columns (delete) shows the column removed", async () => {
+    const sidecar = loadSidecar(tmpDir, SCOPE);
+    const colToDelete = sidecar.columns[2].id; // "done"
+
+    await call(handlers, "POST", "/columns", {
+      body: { scope_id: SCOPE, action: "delete", column_id: colToDelete },
+    });
+
+    // Simulate reload()
+    const boardRes = await call(handlers, "GET", "/board", {
+      query: { scope_id: SCOPE },
+    });
+    const board = boardRes.body as { columns: Array<{ id: string }> };
+    expect(board.columns.find((c) => c.id === colToDelete)).toBeUndefined();
+    expect(board.columns.length).toBe(2);
+  });
+});
