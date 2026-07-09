@@ -464,7 +464,8 @@ npm run floe -- setup -- --no-autostart --no-open
 
 ### No-second-vite mechanism
 `tauri.conf.json` has `beforeDevCommand: "npm run dev"`. Running `tauri dev` naively would start a second vite → port 5379 collision.
-Solution: `floe-app/package.json` has a `tauri:attach` script (`tauri dev --no-dev-server`) that uses the Tauri v2 CLI `--no-dev-server` flag to skip `beforeDevCommand` and attach directly to the already-running `devUrl` (5379).
+Solution: `floe-app/package.json` has a `tauri:attach` script (`tauri dev --config src-tauri/tauri.attach.conf.json`) that deep-merges `tauri.attach.conf.json` (which sets `beforeDevCommand: ""`) onto the base config, preventing Tauri from running `npm run dev` and attaching directly to the already-running `devUrl` (5379).
+**Note:** `--no-dev-server` does NOT suppress `beforeDevCommand` (it only governs Tauri's own static-file server); a config override with an empty `beforeDevCommand` is the correct mechanism.
 `floe desktop` invokes `npm run tauri:attach --workspace floe-app`.
 
 ### Cargo preflight
