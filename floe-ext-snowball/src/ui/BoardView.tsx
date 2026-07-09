@@ -503,6 +503,57 @@ export function SnowballBoard({
     reload();
   }, [reload]);
 
+  // ── Agent-driven live refresh via bus WebSocket stream ─────────────────
+  // The bus broadcasts `event_submitted` for every routed event.  When the
+  // snowball overseer (or a column worker) mechanically advances a card, it
+  // emits `snowball.card.moved` through the bus.  Subscribing here means the
+  // board updates live without any polling timer — the same event-driven
+  // channel used by ScopeDetail for `extensions_updated`.
+  //
+  // Human-mutation handlers already call reload() directly; the WS path
+  // triggers a second reload for those (harmless — same data) and is the
+  // primary signal for agent-driven changes.
+  useEffect(() => {
+    // Derive WS URL from busBaseUrl: http:// → ws://, https:// → wss://
+    const wsUrl = busBaseUrl.replace(/^http/, "ws") + "/v1/events/stream";
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch {
+      // WebSocket unavailable (test/SSR env without browser globals)
+      return;
+    }
+    const client = ws;
+
+    client.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data as string) as {
+          type: string;
+          payload?: {
+            event?: {
+              type?: string;
+              content?: { data?: { board_scope_id?: string } };
+            };
+          };
+        };
+        // Re-fetch board when any snowball event for this scope arrives.
+        if (
+          msg.type === "event_submitted" &&
+          msg.payload?.event?.type?.startsWith("snowball.") &&
+          msg.payload?.event?.content?.data?.board_scope_id === scopeId
+        ) {
+          void reload();
+        }
+      } catch {
+        // Ignore non-JSON or unexpected message shapes
+      }
+    };
+
+    return () => {
+      client.close();
+    };
+  }, [busBaseUrl, scopeId, reload]);
+
   // ── Mutation helpers ─────────────────────────────────────────────────────
 
   async function withReload<T>(
