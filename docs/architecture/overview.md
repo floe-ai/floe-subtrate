@@ -312,61 +312,82 @@ graph TD
 
 ### 1.4 Snowball Extension — Current State (`floe-ext-snowball`)
 
-> **Honesty note:** Snowball's current implementation diverges from the agreed
-> target model (§2 below). This section describes what exists today, not what
-> it should become.
+> **Foundation Slice 1 (`fm/snowball-found-s1`) shipped:**
+> The core inversion (card = file, column = context) is now live.
+> This section reflects post-slice-1 reality.
 
 ```mermaid
 graph TD
     subgraph EXT["floe-ext-snowball"]
         SBX["entry (src/index.ts)"]
-        HOOK["BeforeTurn hook (hooks.ts)\nInjects board snapshot into agent prompt"]
-        TOOLS["Tools (tools/index.ts)\nmove_card · list_board · add_card\nset_column_config · check_criterion · set_card_title"]
-        OVERSEER["Overseer (overseer.ts)\nadvanceCardIfReady()\n— in-process cascade on move"]
-        HTTP["HTTP handlers (handlers.ts)\nboard state + card move relay"]
-        UI["BoardView.tsx (ui/)\nKanban board React UI"]
-        SIDECAR["Sidecar YAML\n(.floe/extensions/snowball/boards/<slug>.yaml)\nOwns: columns · cards · exit criteria · WIP limits"]
+        HOOK["BeforeTurn hook (hooks.ts)
+Injects board snapshot into agent prompt
+(reads tasks/*.md card files)"]
+        TOOLS["Tools (tools/index.ts)
+move_card · list_cards · create_card
+check_criteria · list_columns · get_board_state"]
+        OVERSEER["Overseer (overseer.ts)
+advanceCardIfReady()
+— reads/writes card files, not sidecar"]
+        HTTP["HTTP handlers (handlers.ts)
+board state + card move relay"]
+        UI["BoardView.tsx (ui/)
+Kanban board React UI"]
+        SIDECAR[".floe/extensions/snowball/boards/<slug>.yaml (v2)
+Owns: column definitions + column_contexts map"]
+        CARDS["tasks/<id>.md
+Frontmatter: id · title · type · actor · column · order · checks
+Body: description + carry-forward comments"]
     end
 
     subgraph BUS["floe-bus (SQLite)"]
-        BUS_EV["Events\nsnowball.card.moved\nsnowball.card.entered_column"]
-        BUS_CTX["Contexts\n(one per card)"]
+        BUS_EV["Events
+snowball.card.moved
+snowball.card.entered_column"]
+        BUS_CTX["Contexts
+(one per COLUMN, not per card)
+Owner actor + overseer frozen participants"]
     end
 
     SBX --> HOOK
     SBX --> TOOLS
     SBX --> HTTP
-    TOOLS -->|"read/write"| SIDECAR
+    TOOLS -->|"read/write"| CARDS
+    TOOLS -->|"read"| SIDECAR
+    HOOK -->|"read"| CARDS
     HOOK -->|"read"| SIDECAR
-    OVERSEER -->|"read/write"| SIDECAR
+    OVERSEER -->|"read/write"| CARDS
+    OVERSEER -->|"read"| SIDECAR
     TOOLS -->|"triggers"| OVERSEER
     OVERSEER -->|"emit"| BUS_EV
     HTTP -->|"serves"| UI
-    TOOLS -->|"creates contexts for cards"| BUS_CTX
+    BUS_CTX -->|"listContextsForScope
+(columns as context rows)"| UI
 ```
 
-**What Snowball owns today:**
+**What Snowball owns (post-slice-1):**
 
-- **Sidecar YAML** (`.floe/extensions/snowball/boards/<slug>.yaml`, schema `floe.ext.snowball.board.v1`) is the single source of truth for board state: columns, cards, exit criteria, WIP limits, check states.
+- **Sidecar YAML** (`.floe/extensions/snowball/boards/<slug>.yaml`, schema `floe.ext.snowball.board.v2`) owns **column definitions** (id, name, wip_limit, owner, exit_criteria) and the **`column_contexts`** map (`column_id → bus Context id`). No card state.
 - **`slugify()`** maps `scope_id → filename` (replaces `:`, `/`, `\` with `_` for Windows-safe filenames).
-- **BeforeTurn injection**: overseer receives full board snapshot; column workers receive only cards in their owned columns.
-- **Overseer** (`advanceCardIfReady`) is triggered synchronously from the move path — deterministic, no timer. Maximum 20-column cascade guard.
-- **Gate enforcement**: AI `move_card` is hard-blocked by unchecked exit criteria (`force` not accepted); human `force=true` is soft-warn; WIP limits block both.
-- **Cards are contexts** (today): each card is a bus Context under the scope. Context title = card title. `listContextsForScope` returns cards as context rows.
-- **Participants are frozen** (per ADR-0004 invariant) — agents connect via `snowball.card.entered_column` routing events.
-- **Overseer agent** (`snowball-overseer`) is registered in memory at workspace attach — no disk write, no `floe.yaml` modification.
+- **Card files** (`tasks/<id>.md`) are the source of truth for card state. Frontmatter: `id`, `title`, `type`, `actor`, `column` (updated in-place on move, file never moves — D1), `order`, `created_at`, `checks` (nested by column_id). Body: description + appended carry-forward comments.
+- **Column = bus Context**: `POST /board/init` creates one bus Context per column, scoped to the board scope_id, with the column owner actor + `snowball-overseer` as frozen participants. Context ids stored in `column_contexts`.
+- **Columns as context rows**: `listContextsForScope` returns column contexts — the UI Contexts tab shows columns, not cards.
+- **Card-move path**: rewrites `column` frontmatter in-place, appends `<!-- carry-forward from "ColumnName" at ISO -->` comment to body, emits `snowball.card.entered_column` (for agent-owned columns) into the column context.
+- **BeforeTurn injection**: reads card files; overseer receives full board snapshot; column workers receive only their cards.
+- **Overseer** (`advanceCardIfReady`) triggered synchronously from move path — reads/writes card files. Maximum 20-column cascade guard.
+- **Gate enforcement**: AI `move_card` hard-blocked by unchecked exit criteria; human `force=true` is soft-warn; WIP limits hard-block both.
+- **Overseer agent** (`snowball-overseer`) registered in memory at workspace attach — no disk write, no `floe.yaml` modification.
 
-**State/runtime split (today):**
+**State/runtime split (post-slice-1):**
 
 | What | Where |
 |---|---|
-| Column/card/exit-criteria definitions | Sidecar YAML (`.floe/extensions/snowball/boards/`) |
-| Card runtime tracking (column, order, checks) | Sidecar YAML (same file) |
-| Bus contexts (one per card) | Bus SQLite |
-| Events (`snowball.card.*`) | Bus SQLite |
-
-The sidecar owns too much: it acts as both a definition store and a mutable runtime state store. The target model realigns this.
-
+| Column definitions (name, owner, exit-criteria, WIP) | Sidecar YAML (`.floe/extensions/snowball/boards/`) |
+| Column context ids | Sidecar YAML (`column_contexts` map) |
+| Card definition (type, description, checks, comments) | Workspace markdown file (`tasks/<id>.md`) |
+| Card current column + order | Card file frontmatter (updated in-place on move) |
+| Column contexts (stable, scoped) | Bus SQLite (created at board init) |
+| Card-move events | Bus SQLite |
 ---
 
 ## Part 2 — Target Model
@@ -561,7 +582,7 @@ graph LR
 | OQ-2 | **Multi-board hierarchy**: epics on a higher board, tasks on a lower board, cross-board exit criteria ("all child tasks validated + PR-ready"). | Requires scoped membership model and cross-scope event routing, neither of which is decided. |
 | OQ-3 | **Overseer observation model**: how does the overseer "observe" the system to know when exit criteria are satisfied without a polling/heartbeat mechanism? | Near-term: overseer is a file-authoring systems agent, not a work manager. Full reactive observation model not yet designed. |
 | OQ-4 | **Domain-event hooks**: should extensions register handlers on domain events (e.g. `card.moved`) rather than lifecycle hooks (BeforeTurn)? | Hook system currently covers session/turn lifecycle only. Extending to arbitrary event types requires design. |
-| OQ-5 | **Card identity across moves**: if a card is a file, is its identity the filename, a frontmatter UUID, or the git path? What happens on file rename? | No decision yet; depends on whether carry-forward is by reference or by copy. |
+| ~~OQ-5~~ | **Card identity across moves** — **RESOLVED** (fm/snowball-found-s1): identity is the stable frontmatter `id` field. The card file STAYS in `tasks/` and is NEVER moved. The current column is a frontmatter field updated in-place. Carry-forward is by appended comment. File rename does not affect card identity (`id` frontmatter is stable). | Resolved — see §1.4 and D1. |
 
 ---
 

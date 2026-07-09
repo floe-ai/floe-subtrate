@@ -1,6 +1,10 @@
 /**
  * Overseer driver tests.
  *
+ * Foundation Slice 1 (fm/snowball-found-s1):
+ *   - Cards are now markdown files at tasks/<id>.md
+ *   - advanceCardIfReady reads/writes card files instead of sidecar cards
+ *
  * Part B — snowball.card.entered_column is emitted when a card moves to an agent-owned column
  * Part C — the event-driven advance driver (advanceCardIfReady):
  *   - Advances cards whose exit criteria are ALL satisfied
@@ -15,11 +19,12 @@ import { join } from "node:path";
 import { mkdirSync, rmSync } from "node:fs";
 import { createTools } from "../tools/index.js";
 import { advanceCardIfReady } from "../overseer.js";
-import { saveSidecar, loadSidecar } from "../sidecar.js";
+import { saveSidecar } from "../sidecar.js";
+import { writeCard, readCard } from "../card-file.js";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext } from "../stub/extension-context.js";
 import { SIDECAR_SCHEMA } from "../types.js";
-import type { BoardSidecar } from "../types.js";
+import type { BoardSidecar, CardFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -36,8 +41,8 @@ function makeToolCtx(tmpDir: string, bus: StubBusClient): ExtensionContext {
   };
 }
 
-/** Build a board sidecar with an agent-owned column. */
-function makeAgentBoardSidecar(cards: BoardSidecar["cards"] = {}): BoardSidecar {
+/** Build a board sidecar with an agent-owned column (no cards — they're in files). */
+function makeAgentBoardSidecar(): BoardSidecar {
   return {
     schema: SIDECAR_SCHEMA,
     scope_id: "scope:ws:test",
@@ -70,7 +75,22 @@ function makeAgentBoardSidecar(cards: BoardSidecar["cards"] = {}): BoardSidecar 
         exit_criteria: [],
       },
     ],
-    cards,
+    column_contexts: {},
+  };
+}
+
+function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
+  return {
+    id: "test-card",
+    title: "Test card",
+    type: "task",
+    actor: null,
+    column: "todo",
+    order: 0,
+    created_at: new Date().toISOString(),
+    checks: {},
+    body: "",
+    ...overrides,
   };
 }
 
@@ -96,7 +116,6 @@ describe("Part B — routing event on agent-column entry", () => {
     tmpDir = join(tmpdir(), `snowball-routing-test-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
     bus = new StubBusClient();
-    // Seed the overseer endpoint so routing resolves
     bus.seedEndpoint({
       endpoint_id: "actor:ws:test:snowball-overseer",
       workspace_id: "ws:test",
@@ -111,17 +130,8 @@ describe("Part B — routing event on agent-column entry", () => {
   });
 
   it("emits snowball.card.entered_column when move_card targets agent-owned column", async () => {
-    const now = new Date().toISOString();
-    const sidecar = makeAgentBoardSidecar({
-      ctx_card1: {
-        column_id: "todo",
-        order: 0,
-        title: "Feature A",
-        created_at: now,
-        checks: {},
-      },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    saveSidecar(tmpDir, "scope:ws:test", makeAgentBoardSidecar());
+    writeCard(tmpDir, makeCardFile({ id: "ctx_card1", title: "Feature A", column: "todo" }));
 
     const tools = createTools(makeToolCtx(tmpDir, bus));
     const result = await callTool(tools, "move_card", {
@@ -141,25 +151,22 @@ describe("Part B — routing event on agent-column entry", () => {
     expect(routingEvent!.destination?.endpoint_id).toBe(
       "actor:ws:test:snowball-overseer"
     );
-    expect((routingEvent!.content.data as any)?.card_context_id).toBe("ctx_card1");
+    expect((routingEvent!.content.data as any)?.card_id).toBe("ctx_card1");
   });
 
   it("does NOT emit entered_column when destination is human-owned", async () => {
     const now = new Date().toISOString();
-    const sidecar = makeAgentBoardSidecar({
-      ctx_card2: {
-        column_id: "agent-col",
-        order: 0,
-        title: "Feature B",
-        created_at: now,
-        checks: {
-          "agent-col": {
-            "ec-done": { checked: true, checked_at: now, checked_by: null },
-          },
+    saveSidecar(tmpDir, "scope:ws:test", makeAgentBoardSidecar());
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_card2",
+      title: "Feature B",
+      column: "agent-col",
+      checks: {
+        "agent-col": {
+          "ec-done": { checked: true, checked_at: now, checked_by: null },
         },
       },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    }));
 
     const tools = createTools(makeToolCtx(tmpDir, bus));
     const result = await callTool(tools, "move_card", {
@@ -171,7 +178,6 @@ describe("Part B — routing event on agent-column entry", () => {
     const payload = JSON.parse(result.content[0].text);
     expect(payload.ok).toBe(true);
 
-    // No entered_column for human-owned destination
     const routingEvents = bus.emittedEvents.filter(
       (e) => e.type === "snowball.card.entered_column"
     );
@@ -207,55 +213,68 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("advances card when all exit criteria are satisfied", async () => {
     const now = new Date().toISOString();
-    const sidecar = makeAgentBoardSidecar({
-      ctx_ready: {
-        column_id: "agent-col",
-        order: 0,
-        title: "Ready card",
-        created_at: now,
-        checks: {
-          "agent-col": {
-            "ec-done": { checked: true, checked_at: now, checked_by: null },
-          },
+    saveSidecar(tmpDir, "scope:ws:test", makeAgentBoardSidecar());
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_ready",
+      title: "Ready card",
+      column: "agent-col",
+      checks: {
+        "agent-col": {
+          "ec-done": { checked: true, checked_at: now, checked_by: null },
         },
       },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    }));
 
     await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_ready");
 
-    // Card should have moved to Done
-    const updated = loadSidecar(tmpDir, "scope:ws:test");
-    expect(updated.cards["ctx_ready"].column_id).toBe("done");
+    // Card file should be updated to done column
+    const updatedCard = readCard(tmpDir, "ctx_ready");
+    expect(updatedCard!.column).toBe("done");
 
-    // Move event should be emitted with overseer as source
-    const moveEvent = bus.emittedEvents.find(
-      (e) => e.type === "snowball.card.moved"
-    );
+    // Move event should be emitted
+    const moveEvent = bus.emittedEvents.find((e) => e.type === "snowball.card.moved");
     expect(moveEvent).toBeDefined();
     expect((moveEvent!.content.data as any)?.source).toBe("overseer");
     expect((moveEvent!.content.data as any)?.from_column_id).toBe("agent-col");
     expect((moveEvent!.content.data as any)?.to_column_id).toBe("done");
   });
 
-  it("holds card when exit criteria are NOT satisfied (hard gate)", async () => {
+  it("advance appends carry-forward comment to card body", async () => {
     const now = new Date().toISOString();
-    const sidecar = makeAgentBoardSidecar({
-      ctx_blocked: {
-        column_id: "agent-col",
-        order: 0,
-        title: "Blocked card",
-        created_at: now,
-        checks: {}, // No checks → ec-done is unmet
+    saveSidecar(tmpDir, "scope:ws:test", makeAgentBoardSidecar());
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_ready",
+      title: "Ready card",
+      column: "agent-col",
+      body: "Work in progress.",
+      checks: {
+        "agent-col": {
+          "ec-done": { checked: true, checked_at: now, checked_by: null },
+        },
       },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    }));
+
+    await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_ready");
+
+    const updatedCard = readCard(tmpDir, "ctx_ready");
+    expect(updatedCard!.body).toContain("Work in progress.");
+    expect(updatedCard!.body).toContain(`carry-forward from "Agent Work"`);
+  });
+
+  it("holds card when exit criteria are NOT satisfied (hard gate)", async () => {
+    saveSidecar(tmpDir, "scope:ws:test", makeAgentBoardSidecar());
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_blocked",
+      title: "Blocked card",
+      column: "agent-col",
+      checks: {}, // No checks → ec-done is unmet
+    }));
 
     await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_blocked");
 
-    // Card should still be in agent-col
-    const updated = loadSidecar(tmpDir, "scope:ws:test");
-    expect(updated.cards["ctx_blocked"].column_id).toBe("agent-col");
+    // Card file should still be in agent-col
+    const card = readCard(tmpDir, "ctx_blocked");
+    expect(card!.column).toBe("agent-col");
 
     // No move event
     const moveEvent = bus.emittedEvents.find((e) => e.type === "snowball.card.moved");
@@ -264,92 +283,63 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("holds criteria-met card when destination is at WIP limit (hard block)", async () => {
     const now = new Date().toISOString();
-    const sidecarBase = makeAgentBoardSidecar({
-      ctx_ready: {
-        column_id: "agent-col",
-        order: 0,
-        title: "Ready card",
-        created_at: now,
-        checks: {
-          "agent-col": {
-            "ec-done": { checked: true, checked_at: now, checked_by: null },
-          },
+    const sidecar = makeAgentBoardSidecar();
+    const doneCol = sidecar.columns.find((c) => c.id === "done")!;
+    doneCol.wip_limit = 2;
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+
+    // Fill done column to WIP limit
+    writeCard(tmpDir, makeCardFile({ id: "blocker-1", column: "done", order: 0 }));
+    writeCard(tmpDir, makeCardFile({ id: "blocker-2", column: "done", order: 1 }));
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_ready",
+      title: "Ready card",
+      column: "agent-col",
+      checks: {
+        "agent-col": {
+          "ec-done": { checked: true, checked_at: now, checked_by: null },
         },
       },
-      ctx_blocker: {
-        column_id: "done",
-        order: 0,
-        title: "Done card 1",
-        created_at: now,
-        checks: {},
-      },
-      ctx_blocker2: {
-        column_id: "done",
-        order: 1,
-        title: "Done card 2",
-        created_at: now,
-        checks: {},
-      },
-    });
-    // Set done column WIP limit to 2
-    const doneCol = sidecarBase.columns.find((c) => c.id === "done")!;
-    doneCol.wip_limit = 2;
-    saveSidecar(tmpDir, "scope:ws:test", sidecarBase);
+    }));
 
     await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_ready");
 
     // Card should still be in agent-col (WIP limit blocks advance)
-    const updated = loadSidecar(tmpDir, "scope:ws:test");
-    expect(updated.cards["ctx_ready"].column_id).toBe("agent-col");
+    const card = readCard(tmpDir, "ctx_ready");
+    expect(card!.column).toBe("agent-col");
 
     const moveEvent = bus.emittedEvents.find((e) => e.type === "snowball.card.moved");
     expect(moveEvent).toBeUndefined();
   });
 
   it("does nothing when card is in a human-owned column", async () => {
-    const now = new Date().toISOString();
-    const sidecar = makeAgentBoardSidecar({
-      ctx_human: {
-        column_id: "todo",
-        order: 0,
-        title: "Human card",
-        created_at: now,
-        checks: {},
-      },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    saveSidecar(tmpDir, "scope:ws:test", makeAgentBoardSidecar());
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_human",
+      title: "Human card",
+      column: "todo",
+    }));
 
     await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_human");
 
-    // Card should still be in todo (human-owned, driver ignores it)
-    const updated = loadSidecar(tmpDir, "scope:ws:test");
-    expect(updated.cards["ctx_human"].column_id).toBe("todo");
+    const card = readCard(tmpDir, "ctx_human");
+    expect(card!.column).toBe("todo");
 
     const moveEvent = bus.emittedEvents.find((e) => e.type === "snowball.card.moved");
     expect(moveEvent).toBeUndefined();
   });
 
   it("does not advance card that is already in the last column", async () => {
-    const now = new Date().toISOString();
-    const sidecar = makeAgentBoardSidecar({
-      ctx_done: {
-        column_id: "done",
-        order: 0,
-        title: "Done card",
-        created_at: now,
-        checks: {},
-      },
-    });
-    // Make 'done' agent-owned for this test
+    const sidecar = makeAgentBoardSidecar();
     const doneCol = sidecar.columns.find((c) => c.id === "done")!;
     doneCol.owner = { kind: "agent", agent_id: "snowball-overseer" };
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "ctx_done", title: "Done card", column: "done" }));
 
     await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_done");
 
-    // Card should still be in 'done' (it's the last column)
-    const updated = loadSidecar(tmpDir, "scope:ws:test");
-    expect(updated.cards["ctx_done"].column_id).toBe("done");
+    const card = readCard(tmpDir, "ctx_done");
+    expect(card!.column).toBe("done");
 
     const moveEvent = bus.emittedEvents.find((e) => e.type === "snowball.card.moved");
     expect(moveEvent).toBeUndefined();
@@ -357,38 +347,21 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("advances multiple ready cards independently", async () => {
     const now = new Date().toISOString();
-    const sidecar = makeAgentBoardSidecar({
-      ctx_ready1: {
-        column_id: "agent-col",
-        order: 0,
-        title: "Card A",
-        created_at: now,
-        checks: {
-          "agent-col": {
-            "ec-done": { checked: true, checked_at: now, checked_by: null },
-          },
-        },
-      },
-      ctx_ready2: {
-        column_id: "agent-col",
-        order: 1,
-        title: "Card B",
-        created_at: now,
-        checks: {
-          "agent-col": {
-            "ec-done": { checked: true, checked_at: now, checked_by: null },
-          },
-        },
-      },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    saveSidecar(tmpDir, "scope:ws:test", makeAgentBoardSidecar());
+
+    const checks = {
+      "agent-col": { "ec-done": { checked: true, checked_at: now, checked_by: null } },
+    };
+    writeCard(tmpDir, makeCardFile({ id: "ctx_ready1", title: "Card A", column: "agent-col", checks }));
+    writeCard(tmpDir, makeCardFile({ id: "ctx_ready2", title: "Card B", column: "agent-col", order: 1, checks }));
 
     await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_ready1");
     await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_ready2");
 
-    const updated = loadSidecar(tmpDir, "scope:ws:test");
-    expect(updated.cards["ctx_ready1"].column_id).toBe("done");
-    expect(updated.cards["ctx_ready2"].column_id).toBe("done");
+    const card1 = readCard(tmpDir, "ctx_ready1");
+    const card2 = readCard(tmpDir, "ctx_ready2");
+    expect(card1!.column).toBe("done");
+    expect(card2!.column).toBe("done");
 
     const moveEvents = bus.emittedEvents.filter((e) => e.type === "snowball.card.moved");
     expect(moveEvents).toHaveLength(2);
@@ -396,8 +369,7 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("cascades through consecutive agent-owned columns", async () => {
     // Board: todo → agent-col-1 → agent-col-2 → done
-    // Card is ready in agent-col-1 AND would be ready in agent-col-2 (no criteria)
-    // advanceCardIfReady should cascade it all the way to done in one call.
+    // Card ready in agent-col-1 AND agent-col-2 has no exit criteria (passes through immediately)
     const now = new Date().toISOString();
     const cascadeSidecar: BoardSidecar = {
       schema: SIDECAR_SCHEMA,
@@ -439,27 +411,26 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
           exit_criteria: [],
         },
       ],
-      cards: {
-        ctx_cascade: {
-          column_id: "agent-col-1",
-          order: 0,
-          title: "Cascade card",
-          created_at: now,
-          checks: {
-            "agent-col-1": {
-              "stage1-done": { checked: true, checked_at: now, checked_by: null },
-            },
-          },
-        },
-      },
+      column_contexts: {},
     };
     saveSidecar(tmpDir, "scope:ws:test", cascadeSidecar);
+
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_cascade",
+      title: "Cascade card",
+      column: "agent-col-1",
+      checks: {
+        "agent-col-1": {
+          "stage1-done": { checked: true, checked_at: now, checked_by: null },
+        },
+      },
+    }));
 
     await advanceCardIfReady(makeCtx(), "scope:ws:test", "ctx_cascade");
 
     // Card should have advanced all the way to done
-    const updated = loadSidecar(tmpDir, "scope:ws:test");
-    expect(updated.cards["ctx_cascade"].column_id).toBe("done");
+    const card = readCard(tmpDir, "ctx_cascade");
+    expect(card!.column).toBe("done");
 
     // Two move events: agent-col-1 → agent-col-2, agent-col-2 → done
     const moveEvents = bus.emittedEvents.filter((e) => e.type === "snowball.card.moved");
@@ -472,7 +443,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("move_card tool triggers advance immediately on agent-column entry (integration)", async () => {
     const now = new Date().toISOString();
-    // Seed overseer endpoint for routing event
     bus.seedEndpoint({
       endpoint_id: "actor:ws:test:snowball-overseer",
       workspace_id: "ws:test",
@@ -481,21 +451,18 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
       status: "idle",
     });
 
-    // Card in todo with ALL criteria pre-satisfied for agent-col
-    const sidecar = makeAgentBoardSidecar({
-      ctx_auto: {
-        column_id: "todo",
-        order: 0,
-        title: "Auto-advance card",
-        created_at: now,
-        checks: {
-          "agent-col": {
-            "ec-done": { checked: true, checked_at: now, checked_by: null },
-          },
+    saveSidecar(tmpDir, "scope:ws:test", makeAgentBoardSidecar());
+    // Card with ALL criteria pre-satisfied for agent-col
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_auto",
+      title: "Auto-advance card",
+      column: "todo",
+      checks: {
+        "agent-col": {
+          "ec-done": { checked: true, checked_at: now, checked_by: null },
         },
       },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    }));
 
     const ctx = makeToolCtx(tmpDir, bus);
     const tools = createTools(ctx);
@@ -511,12 +478,11 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     expect(payload.ok).toBe(true);
 
     // After the tool returns, the card should be in done (overseer advanced it)
-    const updated = loadSidecar(tmpDir, "scope:ws:test");
-    expect(updated.cards["ctx_auto"].column_id).toBe("done");
+    const card = readCard(tmpDir, "ctx_auto");
+    expect(card!.column).toBe("done");
 
-    // Events: initial move (tool), overseer advance move
+    // Events: overseer advance move
     const moveEvents = bus.emittedEvents.filter((e) => e.type === "snowball.card.moved");
-    // At minimum: the overseer advance move
     const overseerMoveEvent = moveEvents.find(
       (e) => (e.content.data as any)?.source === "overseer"
     );

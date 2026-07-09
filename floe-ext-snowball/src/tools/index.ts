@@ -1,8 +1,10 @@
 /**
  * Snowball extension tools.
  *
- * All 6 tools per contract §5.  Tool names here are WITHOUT the `snowball_`
- * prefix — the extension loader adds that automatically.
+ * Foundation Slice 1 (fm/snowball-found-s1):
+ *   - Cards are markdown files at tasks/<id>.md (not bus Contexts)
+ *   - Columns are bus Contexts (created at board init)
+ *   - Card-move writes frontmatter + appends carry-forward + emits to column context
  *
  * Gate enforcement (§5.2):
  *  - move_card: hard block for AI (no force), soft warning for human (force=true)
@@ -14,66 +16,31 @@ import type { ExtensionContext } from "../stub/extension-context.js";
 import { asBusClient } from "../stub/bus-client.js";
 import {
   loadSidecar,
-  saveSidecar,
   getUncheckedCriteria,
   buildBoardSnapshot,
   cardCountsByColumn,
 } from "../sidecar.js";
+import {
+  readCard,
+  writeCard,
+  listCards,
+  generateCardId,
+  updateCardFrontmatter,
+  appendCarryForward,
+  cardCountsByColumnFromFiles,
+} from "../card-file.js";
 import { advanceCardIfReady } from "../overseer.js";
 
 // ---------------------------------------------------------------------------
-// Routing event helper
+// Routing helpers
 // ---------------------------------------------------------------------------
 
-async function emitCardEnteredColumn(
-  ctx: ExtensionContext,
-  params: {
-    card_id: string;
-    card_title: string;
-    column_id: string;
-    column_name: string;
-    from_column_id: string;
-    scope_id: string;
-    agent_id: string;
-  }
-): Promise<void> {
-  const bus = asBusClient(ctx.busClient);
-  // Resolve agent_id → endpoint_id
-  const endpoints = await bus.listEndpoints(ctx.workspaceId);
-  const agentEndpoint = endpoints.find(
-    (ep) =>
-      ep.endpoint_id.endsWith(`:${params.agent_id}`) ||
-      ep.agent_id === params.agent_id
-  );
+function overseerId(workspaceId: string): string {
+  return `actor:${workspaceId}:snowball-overseer`;
+}
 
-  if (!agentEndpoint) {
-    console.warn(
-      `[snowball] Could not resolve endpoint for agent '${params.agent_id}' — routing event skipped`
-    );
-    return;
-  }
-
-  await bus.emit({
-    type: "snowball.card.entered_column",
-    workspace_id: ctx.workspaceId,
-    destination: {
-      kind: "endpoint",
-      endpoint_id: agentEndpoint.endpoint_id,
-    },
-    content: {
-      text: `Card "${params.card_title}" has entered column "${params.column_name}"`,
-      data: {
-        card_context_id: params.card_id,
-        card_title: params.card_title,
-        column_id: params.column_id,
-        column_name: params.column_name,
-        from_column_id: params.from_column_id,
-        board_scope_id: params.scope_id,
-      },
-    },
-    response: { expected: true },
-    metadata: { source: "snowball-extension" },
-  });
+function agentEndpointId(workspaceId: string, agentId: string): string {
+  return `actor:${workspaceId}:${agentId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +73,7 @@ export function createTools(ctx: ExtensionContext) {
       ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
         const scope_id = params.scope_id as string;
         const sidecar = loadSidecar(workspacePath, scope_id);
-        const card_counts = cardCountsByColumn(sidecar);
+        const card_counts = cardCountsByColumn(workspacePath, sidecar);
         return {
           content: [
             {
@@ -123,7 +90,7 @@ export function createTools(ctx: ExtensionContext) {
       name: "list_cards",
       label: "List Board Cards",
       description:
-        "List cards in a column (or all columns). Each card is identified by context_id. Include column_id to filter.",
+        "List cards on the board (or filtered to a column). Each card is identified by its id. Include column_id to filter.",
       parameters: {
         type: "object",
         properties: {
@@ -139,12 +106,17 @@ export function createTools(ctx: ExtensionContext) {
         _callId: string,
         params: Record<string, unknown>
       ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-        const scope_id = params.scope_id as string;
         const column_id = params.column_id as string | undefined;
-        const sidecar = loadSidecar(workspacePath, scope_id);
-        const cards = Object.entries(sidecar.cards)
-          .filter(([, c]) => !column_id || c.column_id === column_id)
-          .map(([ctxId, c]) => ({ card_id: ctxId, ...c }))
+        const cards = listCards(workspacePath)
+          .filter((c) => !column_id || c.column === column_id)
+          .map((c) => ({
+            card_id: c.id,
+            title: c.title,
+            column_id: c.column,
+            order: c.order,
+            created_at: c.created_at,
+            actor: c.actor,
+          }))
           .sort((a, b) => a.order - b.order);
         return {
           content: [{ type: "text", text: JSON.stringify({ cards }) }],
@@ -157,7 +129,7 @@ export function createTools(ctx: ExtensionContext) {
       name: "create_card",
       label: "Create Card",
       description:
-        "Create a new card (= a new floe Context scoped to the board). Returns the card's context_id, which is its permanent identity.",
+        "Create a new card as a markdown file in tasks/. Returns the card's id, which is its permanent identity.",
       parameters: {
         type: "object",
         properties: {
@@ -169,7 +141,7 @@ export function createTools(ctx: ExtensionContext) {
           },
           description: {
             type: "string",
-            description: "Card description / initial context message",
+            description: "Card description / body text",
           },
         },
         required: ["scope_id", "title"],
@@ -181,9 +153,9 @@ export function createTools(ctx: ExtensionContext) {
         const scope_id = params.scope_id as string;
         const title = params.title as string;
         const column_id = params.column_id as string | undefined;
+        const description = params.description as string | undefined;
 
         const sidecar = loadSidecar(workspacePath, scope_id);
-        sidecar.workspace_id = workspaceId;
 
         const targetColumn = column_id
           ? sidecar.columns.find((c) => c.id === column_id)
@@ -204,52 +176,58 @@ export function createTools(ctx: ExtensionContext) {
           };
         }
 
-        // Create the Context in the bus — card_id = context_id
-        const bus = asBusClient(ctx.busClient);
-        let context_id: string;
-        try {
-          context_id = await bus.createContext({
-            workspace_id: workspaceId,
-            scope_id,
-            participants: [],
-          });
-        } catch (err) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  ok: false,
-                  error: "create_context_failed",
-                  message: String(err),
-                }),
-              },
-            ],
-          };
+        // WIP check
+        if (targetColumn.wip_limit !== null) {
+          const counts = cardCountsByColumnFromFiles(workspacePath, [targetColumn.id]);
+          const current = counts[targetColumn.id] ?? 0;
+          if (current >= targetColumn.wip_limit) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    ok: false,
+                    error: "wip_limit_exceeded",
+                    column_id: targetColumn.id,
+                    current,
+                    limit: targetColumn.wip_limit,
+                  }),
+                },
+              ],
+            };
+          }
         }
 
-        const order = Object.values(sidecar.cards).filter(
-          (c) => c.column_id === targetColumn.id
-        ).length;
-
-        sidecar.cards[context_id] = {
-          column_id: targetColumn.id,
-          order,
+        const order = listCards(workspacePath).filter((c) => c.column === targetColumn.id).length;
+        const cardId = generateCardId(title);
+        writeCard(workspacePath, {
+          id: cardId,
           title,
+          type: "task",
+          actor: null,
+          column: targetColumn.id,
+          order,
           created_at: new Date().toISOString(),
           checks: {},
-        };
-        saveSidecar(workspacePath, scope_id, sidecar);
+          body: description ?? "",
+        });
 
-        // Emit creation event
+        // Emit creation event (best-effort)
         try {
+          const bus = asBusClient(ctx.busClient);
           await bus.emit({
             type: "snowball.card.created",
             workspace_id: workspaceId,
+            source_endpoint_id: overseerId(workspaceId),
+            destination: {
+              kind: "broadcast" as const,
+              scope: "workspace",
+              target: "active_with_delivery_processor",
+            },
             content: {
               text: `Card "${title}" created in "${targetColumn.name}"`,
               data: {
-                card_context_id: context_id,
+                card_id: cardId,
                 column_id: targetColumn.id,
                 board_scope_id: scope_id,
               },
@@ -257,7 +235,7 @@ export function createTools(ctx: ExtensionContext) {
             metadata: { source: "snowball-extension" },
           });
         } catch {
-          // Non-fatal: emit failure does not roll back the card creation
+          // Non-fatal
         }
 
         return {
@@ -266,7 +244,7 @@ export function createTools(ctx: ExtensionContext) {
               type: "text",
               text: JSON.stringify({
                 ok: true,
-                card_id: context_id,
+                card_id: cardId,
                 column_id: targetColumn.id,
                 title,
               }),
@@ -287,7 +265,7 @@ export function createTools(ctx: ExtensionContext) {
         properties: {
           card_id: {
             type: "string",
-            description: "The context_id of the card (e.g. ctx_abc123)",
+            description: "The id of the card (e.g. fix-login-bug-lz0vb8)",
           },
           to_column_id: {
             type: "string",
@@ -313,7 +291,7 @@ export function createTools(ctx: ExtensionContext) {
 
         const sidecar = loadSidecar(workspacePath, scope_id);
 
-        const card = sidecar.cards[card_id];
+        const card = readCard(workspacePath, card_id);
         if (!card) {
           return {
             content: [
@@ -325,9 +303,7 @@ export function createTools(ctx: ExtensionContext) {
           };
         }
 
-        const fromColumn = sidecar.columns.find(
-          (c) => c.id === card.column_id
-        );
+        const fromColumn = sidecar.columns.find((c) => c.id === card.column);
         const toColumn = sidecar.columns.find((c) => c.id === to_column_id);
         if (!toColumn) {
           return {
@@ -344,7 +320,7 @@ export function createTools(ctx: ExtensionContext) {
           };
         }
 
-        if (card.column_id === to_column_id) {
+        if (card.column === to_column_id) {
           return {
             content: [
               {
@@ -362,9 +338,8 @@ export function createTools(ctx: ExtensionContext) {
 
         // ── Gate: exit criteria from the SOURCE column ──────────────────
         const exitCriteria = fromColumn?.exit_criteria ?? [];
-        const unchecked = getUncheckedCriteria(card, card.column_id, exitCriteria);
+        const unchecked = getUncheckedCriteria(card, card.column, exitCriteria);
         if (unchecked.length > 0 && !force) {
-          // Hard block: AI callers (and humans who haven't passed force=true)
           return {
             content: [
               {
@@ -375,7 +350,7 @@ export function createTools(ctx: ExtensionContext) {
                   message:
                     "Exit criteria not satisfied. Check all criteria before moving.",
                   unchecked_criteria: unchecked,
-                  from_column_id: card.column_id,
+                  from_column_id: card.column,
                   to_column_id,
                 }),
               },
@@ -385,9 +360,8 @@ export function createTools(ctx: ExtensionContext) {
 
         // ── Gate: WIP limit on destination column ──────────────────────
         if (toColumn.wip_limit !== null) {
-          const current = Object.values(sidecar.cards).filter(
-            (c) => c.column_id === to_column_id
-          ).length;
+          const counts = cardCountsByColumnFromFiles(workspacePath, [to_column_id]);
+          const current = counts[to_column_id] ?? 0;
           if (current >= toColumn.wip_limit) {
             return {
               content: [
@@ -408,25 +382,37 @@ export function createTools(ctx: ExtensionContext) {
         }
 
         // ── Perform move ───────────────────────────────────────────────
-        const previousColumnId = card.column_id;
-        const newOrder = Object.values(sidecar.cards).filter(
-          (c) => c.column_id === to_column_id
-        ).length;
-        card.column_id = to_column_id;
-        card.order = newOrder;
-        saveSidecar(workspacePath, scope_id, sidecar);
+        const previousColumnId = card.column;
+        const previousColumnName = fromColumn?.name ?? previousColumnId;
+        const newOrder = listCards(workspacePath).filter((c) => c.column === to_column_id).length;
+
+        // Rewrite card file frontmatter in-place (file stays at tasks/<id>.md)
+        updateCardFrontmatter(workspacePath, card_id, {
+          column: to_column_id,
+          order: newOrder,
+        });
+        // Append carry-forward comment to card body
+        appendCarryForward(workspacePath, card_id, previousColumnName);
 
         const bus = asBusClient(ctx.busClient);
+        const overseer = overseerId(workspaceId);
+        const columnContextId = sidecar.column_contexts[to_column_id];
 
-        // Emit general move event to overseer (best-effort)
+        // Emit general move event (best-effort)
         try {
           await bus.emit({
             type: "snowball.card.moved",
             workspace_id: workspaceId,
+            source_endpoint_id: overseer,
+            destination: {
+              kind: "broadcast" as const,
+              scope: "workspace",
+              target: "active_with_delivery_processor",
+            },
             content: {
-              text: `Card "${card.title}" moved from "${fromColumn?.name ?? previousColumnId}" to "${toColumn.name}"`,
+              text: `Card "${card.title}" moved from "${previousColumnName}" to "${toColumn.name}"`,
               data: {
-                card_context_id: card_id,
+                card_id,
                 card_title: card.title,
                 from_column_id: previousColumnId,
                 to_column_id,
@@ -440,26 +426,38 @@ export function createTools(ctx: ExtensionContext) {
           // Non-fatal
         }
 
-        // If destination is agent-owned, emit routing event and run mechanical evaluation.
+        // If destination is agent-owned, emit routing event to column context
         if (toColumn.owner.kind === "agent" && toColumn.owner.agent_id) {
+          const agentEp = agentEndpointId(workspaceId, toColumn.owner.agent_id);
           try {
-            await emitCardEnteredColumn(ctx, {
-              card_id,
-              card_title: card.title,
-              column_id: to_column_id,
-              column_name: toColumn.name,
-              from_column_id: previousColumnId,
-              scope_id,
-              agent_id: toColumn.owner.agent_id,
+            await bus.emit({
+              type: "snowball.card.entered_column",
+              workspace_id: workspaceId,
+              source_endpoint_id: overseer,
+              ...(columnContextId ? { context_id: columnContextId } : {}),
+              destination: {
+                kind: "endpoint" as const,
+                endpoint_id: agentEp,
+              },
+              content: {
+                text: `Card "${card.title}" has entered column "${toColumn.name}"`,
+                data: {
+                  card_id,
+                  card_title: card.title,
+                  column_id: to_column_id,
+                  column_name: toColumn.name,
+                  from_column_id: previousColumnId,
+                  board_scope_id: scope_id,
+                },
+              },
+              response: { expected: true },
+              metadata: { source: "snowball-extension" },
             });
           } catch (err) {
-            console.warn(
-              `[snowball] Failed to emit routing event: ${err}`
-            );
+            console.warn(`[snowball] Failed to emit routing event: ${err}`);
           }
 
-          // Synchronous overseer evaluation: advance the card immediately if
-          // exit criteria are all satisfied, cascading through further agent columns.
+          // Synchronous overseer evaluation
           try {
             await advanceCardIfReady(ctx, scope_id, card_id);
           } catch (err) {
@@ -467,20 +465,22 @@ export function createTools(ctx: ExtensionContext) {
           }
         }
 
-        // If WIP exceeded softly (force path only, warn overseer)
-        if (
-          force &&
-          unchecked.length > 0 &&
-          toColumn.wip_limit === null
-        ) {
+        // Soft gate override warning (human + unchecked)
+        if (force && unchecked.length > 0) {
           try {
             await bus.emit({
               type: "snowball.card.gate_overridden",
               workspace_id: workspaceId,
+              source_endpoint_id: overseer,
+              destination: {
+                kind: "broadcast" as const,
+                scope: "workspace",
+                target: "active_with_delivery_processor",
+              },
               content: {
                 text: `Human override: card "${card.title}" moved from "${fromColumn?.name}" despite unchecked criteria`,
                 data: {
-                  card_context_id: card_id,
+                  card_id,
                   unchecked_criteria: unchecked,
                   board_scope_id: scope_id,
                 },
@@ -520,7 +520,7 @@ export function createTools(ctx: ExtensionContext) {
         properties: {
           card_id: {
             type: "string",
-            description: "context_id of the card",
+            description: "id of the card",
           },
           scope_id: { type: "string" },
           criterion_id: {
@@ -547,8 +547,7 @@ export function createTools(ctx: ExtensionContext) {
         const checked = Boolean(params.checked);
         const note = params.note as string | undefined;
 
-        const sidecar = loadSidecar(workspacePath, scope_id);
-        const card = sidecar.cards[card_id];
+        const card = readCard(workspacePath, card_id);
         if (!card) {
           return {
             content: [
@@ -564,17 +563,20 @@ export function createTools(ctx: ExtensionContext) {
           };
         }
 
-        const column_id = card.column_id;
-        if (!card.checks[column_id]) {
-          card.checks[column_id] = {};
-        }
-        card.checks[column_id][criterion_id] = {
-          checked,
-          checked_at: checked ? new Date().toISOString() : null,
-          checked_by: null,
-          note: note ?? null,
+        const column_id = card.column;
+        const updatedChecks = {
+          ...card.checks,
+          [column_id]: {
+            ...(card.checks[column_id] ?? {}),
+            [criterion_id]: {
+              checked,
+              checked_at: checked ? new Date().toISOString() : null,
+              checked_by: null,
+              note: note ?? null,
+            },
+          },
         };
-        saveSidecar(workspacePath, scope_id, sidecar);
+        updateCardFrontmatter(workspacePath, card_id, { checks: updatedChecks });
 
         // Emit criteria checked event (best-effort)
         try {
@@ -582,10 +584,16 @@ export function createTools(ctx: ExtensionContext) {
           await bus.emit({
             type: "snowball.card.criteria_checked",
             workspace_id: workspaceId,
+            source_endpoint_id: overseerId(workspaceId),
+            destination: {
+              kind: "broadcast" as const,
+              scope: "workspace",
+              target: "active_with_delivery_processor",
+            },
             content: {
               text: `Criterion "${criterion_id}" ${checked ? "checked" : "unchecked"} for card "${card.title}"`,
               data: {
-                card_context_id: card_id,
+                card_id,
                 criterion_id,
                 column_id,
                 checked,
@@ -620,7 +628,7 @@ export function createTools(ctx: ExtensionContext) {
       name: "get_board_state",
       label: "Get Board State",
       description:
-        "Get a full board snapshot: columns with card counts, WIP status, cards per column, stalled detection. Use before any strategic decision.",
+        "Get a full board snapshot: columns with card counts, WIP status, cards per column. Use before any strategic decision.",
       parameters: {
         type: "object",
         properties: {
@@ -634,7 +642,7 @@ export function createTools(ctx: ExtensionContext) {
       ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
         const scope_id = params.scope_id as string;
         const sidecar = loadSidecar(workspacePath, scope_id);
-        const snapshot = buildBoardSnapshot(sidecar);
+        const snapshot = buildBoardSnapshot(workspacePath, sidecar);
         return {
           content: [{ type: "text", text: JSON.stringify(snapshot) }],
         };

@@ -109,6 +109,8 @@ export class StubBusClient implements BusClient {
   private contexts: ContextRef[] = [];
   private endpoints: EndpointRef[] = [];
   public emittedEvents: EmitInput[] = [];
+  /** Captured createContext inputs — for assertions in tests. */
+  public createdContexts: CreateContextInput[] = [];
 
   seedContext(ctx: ContextRef): void {
     this.contexts.push(ctx);
@@ -120,6 +122,7 @@ export class StubBusClient implements BusClient {
 
   async createContext(input: CreateContextInput): Promise<string> {
     const id = `ctx_stub_${++_ctxSeq}`;
+    this.createdContexts.push(input);
     this.contexts.push({
       context_id: id,
       workspace_id: input.workspace_id,

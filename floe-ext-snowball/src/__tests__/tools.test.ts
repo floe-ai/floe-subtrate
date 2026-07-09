@@ -2,6 +2,10 @@
  * Tool gate enforcement tests — the critical invariant for Snowball's
  * asymmetric gating model (contract §5.2).
  *
+ * Foundation Slice 1 (fm/snowball-found-s1):
+ *   - Cards are now markdown files at tasks/<id>.md
+ *   - Gate checks read card files instead of sidecar cards
+ *
  * AI movers: HARD blocked by unchecked exit criteria (no force)
  * Human movers (force=true): soft gate — warned but allowed
  * WIP limit: hard block for both
@@ -12,11 +16,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, rmSync } from "node:fs";
 import { createTools } from "../tools/index.js";
-import { saveSidecar, loadSidecar } from "../sidecar.js";
+import { saveSidecar } from "../sidecar.js";
+import { writeCard } from "../card-file.js";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext } from "../stub/extension-context.js";
 import { SIDECAR_SCHEMA, defaultColumns } from "../types.js";
-import type { BoardSidecar } from "../types.js";
+import type { BoardSidecar, CardFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -33,7 +38,7 @@ function makeCtx(tmpDir: string, bus: StubBusClient): ExtensionContext {
   };
 }
 
-function makeSidecar(cards: BoardSidecar["cards"] = {}): BoardSidecar {
+function makeSidecar(): BoardSidecar {
   const columns = defaultColumns();
   // Give in-progress column an exit criterion
   columns[1].exit_criteria = [
@@ -46,7 +51,22 @@ function makeSidecar(cards: BoardSidecar["cards"] = {}): BoardSidecar {
     scope_id: "scope:ws:test",
     workspace_id: "ws:test",
     columns,
-    cards,
+    column_contexts: {},
+  };
+}
+
+function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
+  return {
+    id: "test-card",
+    title: "Test card",
+    type: "task",
+    actor: null,
+    column: "todo",
+    order: 0,
+    created_at: new Date().toISOString(),
+    checks: {},
+    body: "",
+    ...overrides,
   };
 }
 
@@ -79,16 +99,10 @@ describe("move_card gate enforcement", () => {
   });
 
   it("hard blocks AI move when exit criteria unchecked (no force)", async () => {
-    const sidecar = makeSidecar({
-      ctx_card: {
-        column_id: "in-progress",
-        order: 0,
-        title: "Test card",
-        created_at: new Date().toISOString(),
-        checks: {},
-      },
-    });
+    const sidecar = makeSidecar();
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    // Card is in in-progress column with no checks
+    writeCard(tmpDir, makeCardFile({ id: "ctx_card", column: "in-progress" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "move_card", {
@@ -107,20 +121,17 @@ describe("move_card gate enforcement", () => {
 
   it("allows AI move when all criteria are checked", async () => {
     const now = new Date().toISOString();
-    const sidecar = makeSidecar({
-      ctx_card: {
-        column_id: "in-progress",
-        order: 0,
-        title: "Test card",
-        created_at: now,
-        checks: {
-          "in-progress": {
-            "ec-tests": { checked: true, checked_at: now, checked_by: null },
-          },
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_card",
+      column: "in-progress",
+      checks: {
+        "in-progress": {
+          "ec-tests": { checked: true, checked_at: now, checked_by: null },
         },
       },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "move_card", {
@@ -135,16 +146,9 @@ describe("move_card gate enforcement", () => {
   });
 
   it("allows human move with force=true even when criteria unchecked", async () => {
-    const sidecar = makeSidecar({
-      ctx_card: {
-        column_id: "in-progress",
-        order: 0,
-        title: "Test card",
-        created_at: new Date().toISOString(),
-        checks: {},
-      },
-    });
+    const sidecar = makeSidecar();
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "ctx_card", column: "in-progress", checks: {} }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "move_card", {
@@ -160,35 +164,28 @@ describe("move_card gate enforcement", () => {
   });
 
   it("hard blocks WIP limit regardless of force", async () => {
-    const sidecar = makeSidecar({
-      ctx_existing_1: {
-        column_id: "in-progress",
-        order: 0,
-        title: "Existing 1",
-        created_at: new Date().toISOString(),
-        checks: { "in-progress": { "ec-tests": { checked: true, checked_at: new Date().toISOString(), checked_by: null } } },
-      },
-      ctx_existing_2: {
-        column_id: "in-progress",
-        order: 1,
-        title: "Existing 2",
-        created_at: new Date().toISOString(),
-        checks: { "in-progress": { "ec-tests": { checked: true, checked_at: new Date().toISOString(), checked_by: null } } },
-      },
-      ctx_new: {
-        column_id: "todo",
-        order: 0,
-        title: "New card",
-        created_at: new Date().toISOString(),
-        checks: {},
-      },
-    });
+    const now = new Date().toISOString();
+    const sidecar = makeSidecar();
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    // Fill in-progress to WIP limit of 2
+    writeCard(tmpDir, makeCardFile({
+      id: "existing-1",
+      column: "in-progress",
+      order: 0,
+      checks: { "in-progress": { "ec-tests": { checked: true, checked_at: now, checked_by: null } } },
+    }));
+    writeCard(tmpDir, makeCardFile({
+      id: "existing-2",
+      column: "in-progress",
+      order: 1,
+      checks: { "in-progress": { "ec-tests": { checked: true, checked_at: now, checked_by: null } } },
+    }));
+    writeCard(tmpDir, makeCardFile({ id: "new-card", column: "todo", order: 0 }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
     // in-progress has WIP limit of 2 (already at 2)
     const result = await callTool(tools, "move_card", {
-      card_id: "ctx_new",
+      card_id: "new-card",
       to_column_id: "in-progress",
       scope_id: "scope:ws:test",
       force: true, // Even with force, WIP is hard-blocked
@@ -201,15 +198,230 @@ describe("move_card gate enforcement", () => {
     expect(payload.limit).toBe(2);
   });
 
-  it("returns card_not_found for unknown card", async () => {
-    const sidecar = makeSidecar({});
+  it("reports card_not_found for missing card", async () => {
+    const sidecar = makeSidecar();
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "move_card", {
-      card_id: "ctx_nonexistent",
+      card_id: "nonexistent",
       to_column_id: "done",
       scope_id: "scope:ws:test",
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toBe("card_not_found");
+  });
+
+  it("move updates card file column field", async () => {
+    const { readCard } = await import("../card-file.js");
+    const now = new Date().toISOString();
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_card",
+      column: "in-progress",
+      checks: {
+        "in-progress": { "ec-tests": { checked: true, checked_at: now, checked_by: null } },
+      },
+    }));
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    const result = await callTool(tools, "move_card", {
+      card_id: "ctx_card",
+      to_column_id: "done",
+      scope_id: "scope:ws:test",
+    });
+
+    expect(JSON.parse(result.content[0].text).ok).toBe(true);
+
+    // Verify card file was updated
+    const updatedCard = readCard(tmpDir, "ctx_card");
+    expect(updatedCard).not.toBeNull();
+    expect(updatedCard!.column).toBe("done");
+  });
+
+  it("move appends carry-forward comment to card body", async () => {
+    const { readCard } = await import("../card-file.js");
+    const now = new Date().toISOString();
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({
+      id: "ctx_card",
+      column: "in-progress",
+      body: "Initial work notes.",
+      checks: {
+        "in-progress": { "ec-tests": { checked: true, checked_at: now, checked_by: null } },
+      },
+    }));
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    await callTool(tools, "move_card", {
+      card_id: "ctx_card",
+      to_column_id: "done",
+      scope_id: "scope:ws:test",
+    });
+
+    const updatedCard = readCard(tmpDir, "ctx_card");
+    expect(updatedCard!.body).toContain("Initial work notes.");
+    expect(updatedCard!.body).toContain(`carry-forward from "In Progress"`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// create_card tool
+// ---------------------------------------------------------------------------
+
+describe("create_card tool", () => {
+  let tmpDir: string;
+  let bus: StubBusClient;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `snowball-create-test-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    bus = new StubBusClient();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates a card file in tasks/", async () => {
+    const { listCards } = await import("../card-file.js");
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    const result = await callTool(tools, "create_card", {
+      scope_id: "scope:ws:test",
+      title: "New task",
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.card_id).toBeDefined();
+    expect(payload.column_id).toBe("todo"); // default first column
+
+    const cards = listCards(tmpDir);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].title).toBe("New task");
+    expect(cards[0].column).toBe("todo");
+  });
+
+  it("places card in specified column", async () => {
+    const { listCards } = await import("../card-file.js");
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    const result = await callTool(tools, "create_card", {
+      scope_id: "scope:ws:test",
+      title: "Card in done",
+      column_id: "done",
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.column_id).toBe("done");
+
+    const cards = listCards(tmpDir);
+    expect(cards[0].column).toBe("done");
+  });
+
+  it("returns column_not_found for invalid column", async () => {
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    const result = await callTool(tools, "create_card", {
+      scope_id: "scope:ws:test",
+      title: "Bad card",
+      column_id: "nonexistent",
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toBe("column_not_found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// check_criteria tool
+// ---------------------------------------------------------------------------
+
+describe("check_criteria tool", () => {
+  let tmpDir: string;
+  let bus: StubBusClient;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `snowball-criteria-test-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    bus = new StubBusClient();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("marks criterion as checked in card file", async () => {
+    const { readCard } = await import("../card-file.js");
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "test-card", column: "in-progress" }));
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    const result = await callTool(tools, "check_criteria", {
+      card_id: "test-card",
+      scope_id: "scope:ws:test",
+      criterion_id: "ec-tests",
+      checked: true,
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.checked).toBe(true);
+
+    // Verify card file was updated
+    const updatedCard = readCard(tmpDir, "test-card");
+    expect(updatedCard!.checks["in-progress"]["ec-tests"].checked).toBe(true);
+  });
+
+  it("allows unchecking a criterion", async () => {
+    const { readCard } = await import("../card-file.js");
+    const now = new Date().toISOString();
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({
+      id: "test-card",
+      column: "in-progress",
+      checks: {
+        "in-progress": { "ec-tests": { checked: true, checked_at: now, checked_by: null } },
+      },
+    }));
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    await callTool(tools, "check_criteria", {
+      card_id: "test-card",
+      scope_id: "scope:ws:test",
+      criterion_id: "ec-tests",
+      checked: false,
+    });
+
+    const updatedCard = readCard(tmpDir, "test-card");
+    expect(updatedCard!.checks["in-progress"]["ec-tests"].checked).toBe(false);
+  });
+
+  it("returns card_not_found for missing card", async () => {
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    const result = await callTool(tools, "check_criteria", {
+      card_id: "nonexistent",
+      scope_id: "scope:ws:test",
+      criterion_id: "ec-tests",
+      checked: true,
     });
 
     const payload = JSON.parse(result.content[0].text);
@@ -219,15 +431,15 @@ describe("move_card gate enforcement", () => {
 });
 
 // ---------------------------------------------------------------------------
-// check_criteria
+// list_cards / list_columns / get_board_state tools
 // ---------------------------------------------------------------------------
 
-describe("check_criteria", () => {
+describe("list_cards / list_columns / get_board_state tools", () => {
   let tmpDir: string;
   let bus: StubBusClient;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `snowball-tools-test-${Date.now()}`);
+    tmpDir = join(tmpdir(), `snowball-list-test-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
     bus = new StubBusClient();
   });
@@ -236,210 +448,57 @@ describe("check_criteria", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("records a criterion as checked", async () => {
-    const sidecar = makeSidecar({
-      ctx_card: {
-        column_id: "in-progress",
-        order: 0,
-        title: "Test card",
-        created_at: new Date().toISOString(),
-        checks: {},
-      },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
-
-    const tools = createTools(makeCtx(tmpDir, bus));
-    const result = await callTool(tools, "check_criteria", {
-      card_id: "ctx_card",
-      scope_id: "scope:ws:test",
-      criterion_id: "ec-tests",
-      checked: true,
-      note: "CI green",
-    });
-
-    const payload = JSON.parse(result.content[0].text);
-    expect(payload.ok).toBe(true);
-    expect(payload.checked).toBe(true);
-
-    // Verify persisted
-    const reloaded = loadSidecar(tmpDir, "scope:ws:test");
-    const check = reloaded.cards["ctx_card"].checks["in-progress"]?.["ec-tests"];
-    expect(check?.checked).toBe(true);
-    expect(check?.checked_at).toBeTruthy();
-  });
-
-  it("records a criterion as unchecked", async () => {
+  it("list_cards returns all cards from task files", async () => {
     const now = new Date().toISOString();
-    const sidecar = makeSidecar({
-      ctx_card: {
-        column_id: "in-progress",
-        order: 0,
-        title: "Test card",
-        created_at: now,
-        checks: {
-          "in-progress": {
-            "ec-tests": { checked: true, checked_at: now, checked_by: null },
-          },
-        },
-      },
-    });
+    const sidecar = makeSidecar();
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "card-a", title: "A", column: "todo" }));
+    writeCard(tmpDir, makeCardFile({ id: "card-b", title: "B", column: "in-progress" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
-    await callTool(tools, "check_criteria", {
-      card_id: "ctx_card",
-      scope_id: "scope:ws:test",
-      criterion_id: "ec-tests",
-      checked: false,
-    });
-
-    const reloaded = loadSidecar(tmpDir, "scope:ws:test");
-    const check = reloaded.cards["ctx_card"].checks["in-progress"]?.["ec-tests"];
-    expect(check?.checked).toBe(false);
-    expect(check?.checked_at).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// list_columns
-// ---------------------------------------------------------------------------
-
-describe("list_columns", () => {
-  let tmpDir: string;
-  let bus: StubBusClient;
-
-  beforeEach(() => {
-    tmpDir = join(tmpdir(), `snowball-tools-test-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
-    bus = new StubBusClient();
+    const result = await callTool(tools, "list_cards", { scope_id: "scope:ws:test" });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.cards).toHaveLength(2);
   });
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("returns columns with card counts", async () => {
-    const sidecar = makeSidecar({
-      ctx_1: { column_id: "todo", order: 0, title: "Card 1", created_at: new Date().toISOString(), checks: {} },
-      ctx_2: { column_id: "todo", order: 1, title: "Card 2", created_at: new Date().toISOString(), checks: {} },
-    });
+  it("list_cards filters by column_id", async () => {
+    const sidecar = makeSidecar();
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "card-a", title: "A", column: "todo" }));
+    writeCard(tmpDir, makeCardFile({ id: "card-b", title: "B", column: "in-progress" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
-    const result = await callTool(tools, "list_columns", {
+    const result = await callTool(tools, "list_cards", {
       scope_id: "scope:ws:test",
+      column_id: "todo",
     });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.cards).toHaveLength(1);
+    expect(payload.cards[0].card_id).toBe("card-a");
+  });
 
+  it("list_columns returns card counts from files", async () => {
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "card-a", column: "todo" }));
+    writeCard(tmpDir, makeCardFile({ id: "card-b", column: "todo" }));
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    const result = await callTool(tools, "list_columns", { scope_id: "scope:ws:test" });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.card_counts["todo"]).toBe(2);
+  });
+
+  it("get_board_state includes cards and columns", async () => {
+    const sidecar = makeSidecar();
+    saveSidecar(tmpDir, "scope:ws:test", sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Task A", column: "todo" }));
+
+    const tools = createTools(makeCtx(tmpDir, bus));
+    const result = await callTool(tools, "get_board_state", { scope_id: "scope:ws:test" });
     const payload = JSON.parse(result.content[0].text);
     expect(payload.columns).toHaveLength(3);
-    expect(payload.card_counts["todo"]).toBe(2);
-    expect(payload.card_counts["in-progress"]).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// create_card
-// ---------------------------------------------------------------------------
-
-describe("create_card", () => {
-  let tmpDir: string;
-  let bus: StubBusClient;
-
-  beforeEach(() => {
-    tmpDir = join(tmpdir(), `snowball-tools-test-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
-    bus = new StubBusClient();
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("creates a card and returns context_id", async () => {
-    const sidecar = makeSidecar({});
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
-
-    const tools = createTools(makeCtx(tmpDir, bus));
-    const result = await callTool(tools, "create_card", {
-      scope_id: "scope:ws:test",
-      title: "New feature card",
-    });
-
-    const payload = JSON.parse(result.content[0].text);
-    expect(payload.ok).toBe(true);
-    expect(payload.card_id).toMatch(/^ctx_stub_/);
-    expect(payload.column_id).toBe("todo"); // first column by default
-    expect(payload.title).toBe("New feature card");
-
-    // Verify sidecar was updated
-    const reloaded = loadSidecar(tmpDir, "scope:ws:test");
-    expect(reloaded.cards[payload.card_id]).toBeDefined();
-    expect(reloaded.cards[payload.card_id].title).toBe("New feature card");
-  });
-
-  it("places card in specified column", async () => {
-    const sidecar = makeSidecar({});
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
-
-    const tools = createTools(makeCtx(tmpDir, bus));
-    const result = await callTool(tools, "create_card", {
-      scope_id: "scope:ws:test",
-      title: "Already in progress",
-      column_id: "in-progress",
-    });
-
-    const payload = JSON.parse(result.content[0].text);
-    expect(payload.ok).toBe(true);
-    expect(payload.column_id).toBe("in-progress");
-  });
-
-  it("emits card.created event", async () => {
-    const sidecar = makeSidecar({});
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
-
-    const tools = createTools(makeCtx(tmpDir, bus));
-    await callTool(tools, "create_card", {
-      scope_id: "scope:ws:test",
-      title: "Emitted card",
-    });
-
-    const emitted = bus.emittedEvents.find((e) => e.type === "snowball.card.created");
-    expect(emitted).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// get_board_state
-// ---------------------------------------------------------------------------
-
-describe("get_board_state", () => {
-  let tmpDir: string;
-  let bus: StubBusClient;
-
-  beforeEach(() => {
-    tmpDir = join(tmpdir(), `snowball-tools-test-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
-    bus = new StubBusClient();
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("returns board snapshot with columns and cards", async () => {
-    const sidecar = makeSidecar({
-      ctx_1: { column_id: "todo", order: 0, title: "Card 1", created_at: new Date().toISOString(), checks: {} },
-    });
-    saveSidecar(tmpDir, "scope:ws:test", sidecar);
-
-    const tools = createTools(makeCtx(tmpDir, bus));
-    const result = await callTool(tools, "get_board_state", {
-      scope_id: "scope:ws:test",
-    });
-
-    const snapshot = JSON.parse(result.content[0].text);
-    expect(snapshot.columns).toHaveLength(3);
-    expect(snapshot.cards).toHaveLength(1);
-    expect(snapshot.cards[0].title).toBe("Card 1");
+    expect(payload.cards).toHaveLength(1);
+    expect(payload.cards[0].title).toBe("Task A");
   });
 });

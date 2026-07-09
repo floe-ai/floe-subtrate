@@ -1,18 +1,21 @@
 /**
  * Snowball extension hooks.
  *
+ * Foundation Slice 1 (fm/snowball-found-s1):
+ *   BeforeTurn now reads card state from tasks/*.md files instead of the sidecar.
+ *
  * BeforeTurn (§4.3, R7):
  *  - Overseer receives full board snapshot (all columns + all cards)
- *  - Column workers receive only the cards in their owned column
+ *  - Column workers receive only the cards in their owned columns
  *  - Agents without a board context receive no injection
- *
- * The former Pulse / heartbeat hook has been removed.  Overseer evaluation is
- * now triggered synchronously from the move path (handlePostMove, move_card
- * tool) via `advanceCardIfReady` in overseer.ts.
  */
 
 import type { ExtensionContext, HookResult } from "./stub/extension-context.js";
-import { loadSidecar, buildBoardSnapshot, renderCompactBoardSnapshot } from "./sidecar.js";
+import {
+  loadSidecar,
+  buildBoardSnapshot,
+  renderCompactBoardSnapshot,
+} from "./sidecar.js";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -27,7 +30,7 @@ function agentIdFromEndpoint(endpointId: string): string {
 }
 
 /**
- * Find the board scope that an agent is associated with.
+ * Find the board scope(s) that an agent is associated with.
  * The overseer is associated with ALL boards.
  * A column worker is associated with any board where their agent_id appears as
  * a column owner.
@@ -54,15 +57,17 @@ async function findBoardScopesForAgent(
   for (const file of files) {
     try {
       const raw = readFileSync(join(dir, file), "utf-8");
-      const sidecar = parseYaml(raw) as { scope_id?: string; workspace_id?: string; columns?: Array<{ owner?: { kind: string; agent_id?: string } }> };
+      const sidecar = parseYaml(raw) as {
+        scope_id?: string;
+        workspace_id?: string;
+        columns?: Array<{ owner?: { kind: string; agent_id?: string } }>;
+      };
       if (!sidecar.scope_id) continue;
       if (sidecar.workspace_id && sidecar.workspace_id !== workspaceId) continue;
 
       if (agentId === OVERSEER_AGENT_ID) {
-        // Overseer sees all boards in this workspace
         scopes.push(sidecar.scope_id);
       } else {
-        // Column workers only see boards where they own a column
         const ownsColumn = (sidecar.columns ?? []).some(
           (col) => col.owner?.kind === "agent" && col.owner.agent_id === agentId
         );
@@ -91,11 +96,11 @@ export function registerHooks(ctx: ExtensionContext): void {
     const scopes = await findBoardScopesForAgent(workspacePath, agentId, workspaceId);
     if (scopes.length === 0) return;
 
-    // Build injection content
     const lines: string[] = [];
     for (const scopeId of scopes) {
       const sidecar = loadSidecar(workspacePath, scopeId);
-      const snapshot = buildBoardSnapshot(sidecar);
+      // buildBoardSnapshot reads card files from tasks/
+      const snapshot = buildBoardSnapshot(workspacePath, sidecar);
 
       if (agentId === OVERSEER_AGENT_ID) {
         // Overseer: full board snapshot
@@ -120,13 +125,15 @@ export function registerHooks(ctx: ExtensionContext): void {
               totalCriteria > 0
                 ? ` [${checkedCount}/${totalCriteria} criteria]`
                 : "";
-            lines.push(`  - [${col?.name ?? card.column_id}] ${card.title}${criteriaStr} (${card.card_id})`);
+            lines.push(
+              `  - [${col?.name ?? card.column_id}] ${card.title}${criteriaStr} (${card.card_id})`
+            );
           }
         }
       }
     }
 
-    const content = lines.join("\n").slice(0, 3800); // hard cap per source
+    const content = lines.join("\n").slice(0, 3800);
     if (!content) return;
 
     return {

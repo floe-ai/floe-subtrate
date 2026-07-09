@@ -1,24 +1,43 @@
 /**
  * Snowball overseer — mechanical card advance driver.
  *
+ * Foundation Slice 1 (fm/snowball-found-s1):
+ *   Now reads/writes card state from tasks/*.md files instead of the sidecar.
+ *
  * Provides a deterministic in-process evaluator that advances a card through
  * consecutive agent-owned columns when its exit criteria are all satisfied.
  *
- * This replaces the former heartbeat / Pulse approach.  Evaluation is
- * triggered synchronously from the move path (handlePostMove, move_card tool)
- * whenever a card enters an agent-owned column, and cascades through further
- * agent columns in the same call with no timer involved.
+ * Evaluation is triggered synchronously from the move path (handlePostMove,
+ * move_card tool) whenever a card enters an agent-owned column, and cascades
+ * through further agent columns in the same call with no timer involved.
  *
  * Accepted limitation (Captain-approved): if exit criteria become satisfied
  * while a card is already sitting in an agent column with no card-move event,
  * the overseer will NOT wake and the card stays put.
  */
 
-import { loadSidecar, saveSidecar, getUncheckedCriteria } from "./sidecar.js";
+import {
+  loadSidecar,
+  getUncheckedCriteria,
+} from "./sidecar.js";
+import {
+  readCard,
+  updateCardFrontmatter,
+  appendCarryForward,
+  listCards,
+} from "./card-file.js";
 import { asBusClient } from "./stub/bus-client.js";
 
 /** Maximum cascade depth guard against infinite column loops. */
 const MAX_CASCADE = 20;
+
+function overseerId(workspaceId: string): string {
+  return `actor:${workspaceId}:snowball-overseer`;
+}
+
+function agentEndpointId(workspaceId: string, agentId: string): string {
+  return `actor:${workspaceId}:${agentId}`;
+}
 
 /**
  * Run the overseer's advance evaluation for a single card.
@@ -33,7 +52,7 @@ const MAX_CASCADE = 20;
  * `snowball.card.entered_column` when an advance lands in a further
  * agent-owned column (for routing / telemetry).
  *
- * All emits are best-effort; a failed emit does not roll back the sidecar.
+ * All emits are best-effort; a failed emit does not roll back the card file.
  */
 export async function advanceCardIfReady(
   ctx: { workspacePath: string; workspaceId: string; busClient: unknown },
@@ -41,14 +60,15 @@ export async function advanceCardIfReady(
   cardId: string
 ): Promise<void> {
   const bus = asBusClient(ctx.busClient);
+  const overseer = overseerId(ctx.workspaceId);
 
   for (let depth = 0; depth < MAX_CASCADE; depth++) {
-    // Reload sidecar each iteration so we see the freshest committed state.
+    // Reload sidecar and card each iteration for freshest state.
     const sidecar = loadSidecar(ctx.workspacePath, scopeId);
-    const card = sidecar.cards[cardId];
+    const card = readCard(ctx.workspacePath, cardId);
     if (!card) break;
 
-    const col = sidecar.columns.find((c) => c.id === card.column_id);
+    const col = sidecar.columns.find((c) => c.id === card.column);
     // Stop if card is in a human-owned column (or column is missing).
     if (!col || col.owner.kind !== "agent") break;
 
@@ -77,8 +97,8 @@ export async function advanceCardIfReady(
 
     // WIP limit on destination — hard block for agent-driven moves.
     if (nextCol.wip_limit !== null) {
-      const currentCount = Object.values(sidecar.cards).filter(
-        (c) => c.column_id === nextCol.id
+      const currentCount = listCards(ctx.workspacePath).filter(
+        (c) => c.column === nextCol.id
       ).length;
       if (currentCount >= nextCol.wip_limit) {
         console.info("[snowball:overseer] card held — destination WIP limit", {
@@ -92,14 +112,18 @@ export async function advanceCardIfReady(
       }
     }
 
-    // Advance the card.
-    const fromColumnId = card.column_id;
-    const newOrder = Object.values(sidecar.cards).filter(
-      (c) => c.column_id === nextCol.id
+    // Advance the card: update frontmatter in-place, append carry-forward comment.
+    const fromColumnId = col.id;
+    const fromColumnName = col.name;
+    const newOrder = listCards(ctx.workspacePath).filter(
+      (c) => c.column === nextCol.id
     ).length;
-    card.column_id = nextCol.id;
-    card.order = newOrder;
-    saveSidecar(ctx.workspacePath, scopeId, sidecar);
+
+    updateCardFrontmatter(ctx.workspacePath, cardId, {
+      column: nextCol.id,
+      order: newOrder,
+    });
+    appendCarryForward(ctx.workspacePath, cardId, fromColumnName);
 
     console.info("[snowball:overseer] card advanced", {
       card_id: cardId,
@@ -109,15 +133,23 @@ export async function advanceCardIfReady(
       scope_id: scopeId,
     });
 
+    const columnContextId = sidecar.column_contexts[nextCol.id];
+
     // Emit move event (best-effort).
     try {
       await bus.emit({
         type: "snowball.card.moved",
         workspace_id: ctx.workspaceId,
+        source_endpoint_id: overseer,
+        destination: {
+          kind: "broadcast" as const,
+          scope: "workspace",
+          target: "active_with_delivery_processor",
+        },
         content: {
-          text: `[overseer] Card "${card.title}" advanced from "${col.name}" to "${nextCol.name}" (all exit criteria satisfied)`,
+          text: `[overseer] Card "${card.title}" advanced from "${fromColumnName}" to "${nextCol.name}" (all exit criteria satisfied)`,
           data: {
-            card_context_id: cardId,
+            card_id: cardId,
             card_title: card.title,
             from_column_id: fromColumnId,
             to_column_id: nextCol.id,
@@ -129,44 +161,42 @@ export async function advanceCardIfReady(
         metadata: { source: "snowball-overseer" },
       });
     } catch (err) {
-      console.warn("[snowball:overseer] failed to emit card moved event", { error: String(err) });
+      console.warn("[snowball:overseer] failed to emit card moved event", {
+        error: String(err),
+      });
     }
 
-    // If the destination is agent-owned, emit the routing event and continue
-    // the loop to evaluate the card in its new column.
+    // If destination is agent-owned, emit routing event and continue cascade.
     if (nextCol.owner.kind === "agent" && nextCol.owner.agent_id) {
+      const agentEp = agentEndpointId(ctx.workspaceId, nextCol.owner.agent_id);
       try {
-        const endpoints = await bus.listEndpoints(ctx.workspaceId);
-        const agentEndpoint = endpoints.find(
-          (ep) =>
-            ep.endpoint_id.endsWith(`:${nextCol.owner.agent_id}`) ||
-            ep.agent_id === nextCol.owner.agent_id
-        );
-        if (agentEndpoint) {
-          await bus.emit({
-            type: "snowball.card.entered_column",
-            workspace_id: ctx.workspaceId,
-            destination: {
-              kind: "endpoint",
-              endpoint_id: agentEndpoint.endpoint_id,
+        await bus.emit({
+          type: "snowball.card.entered_column",
+          workspace_id: ctx.workspaceId,
+          source_endpoint_id: overseer,
+          ...(columnContextId ? { context_id: columnContextId } : {}),
+          destination: {
+            kind: "endpoint" as const,
+            endpoint_id: agentEp,
+          },
+          content: {
+            text: `Card "${card.title}" has entered column "${nextCol.name}" (overseer advance)`,
+            data: {
+              card_id: cardId,
+              card_title: card.title,
+              column_id: nextCol.id,
+              column_name: nextCol.name,
+              from_column_id: fromColumnId,
+              board_scope_id: scopeId,
             },
-            content: {
-              text: `Card "${card.title}" has entered column "${nextCol.name}" (overseer advance)`,
-              data: {
-                card_context_id: cardId,
-                card_title: card.title,
-                column_id: nextCol.id,
-                column_name: nextCol.name,
-                from_column_id: fromColumnId,
-                board_scope_id: scopeId,
-              },
-            },
-            response: { expected: true },
-            metadata: { source: "snowball-overseer" },
-          });
-        }
+          },
+          response: { expected: true },
+          metadata: { source: "snowball-overseer" },
+        });
       } catch (err) {
-        console.warn("[snowball:overseer] failed to emit routing event", { error: String(err) });
+        console.warn("[snowball:overseer] failed to emit routing event", {
+          error: String(err),
+        });
       }
       // Loop continues: re-evaluate the card in the new agent-owned column.
     } else {
