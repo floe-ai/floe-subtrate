@@ -1,16 +1,17 @@
 /**
  * Sidecar unit tests — slugify, load/save, column_contexts, board snapshot.
  *
- * Foundation Slice 1 (fm/snowball-found-s1):
- *   - Sidecar no longer holds card state (cards are files)
- *   - Sidecar holds column definitions + column_contexts map
- *   - buildBoardSnapshot reads cards from tasks/ directory
+ * Slice 2 (fm/snowball-col-instr-s2):
+ *   - Sidecar is now v3 (no `columns` field — column defs live in column files)
+ *   - buildBoardSnapshot takes column files as 3rd argument
+ *   - initBoardContexts takes column files as 4th argument
+ *   - cardCountsByColumn helper removed; tests use cardCountsByColumnFromFiles directly
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import {
   slugify,
   loadSidecar,
@@ -18,14 +19,44 @@ import {
   sidecarExists,
   buildBoardSnapshot,
   renderCompactBoardSnapshot,
-  cardCountsByColumn,
   getUncheckedCriteria,
   initBoardContexts,
 } from "../sidecar.js";
-import { writeCard } from "../card-file.js";
+import { writeCard, cardCountsByColumnFromFiles } from "../card-file.js";
+import {
+  writeColumnFile,
+  listColumnFiles,
+  defaultColumnFiles,
+  type ColumnFile,
+} from "../column-file.js";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { BoardSidecar } from "../types.js";
-import { SIDECAR_SCHEMA, defaultColumns } from "../types.js";
+import { SIDECAR_SCHEMA } from "../types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeEmptySidecar(
+  scopeId: string,
+  workspaceId: string,
+  column_contexts: Record<string, string> = {}
+): BoardSidecar {
+  return {
+    schema: SIDECAR_SCHEMA,
+    scope_id: scopeId,
+    workspace_id: workspaceId,
+    column_contexts,
+  };
+}
+
+/** Write default column files to tmpDir and return them. */
+function writeDefaultColumns(tmpDir: string, scopeId: string): ColumnFile[] {
+  const slug = slugify(scopeId);
+  const cols = defaultColumnFiles(scopeId);
+  for (const col of cols) writeColumnFile(tmpDir, slug, col);
+  return cols;
+}
 
 // ---------------------------------------------------------------------------
 // slugify
@@ -71,12 +102,12 @@ describe("loadSidecar / saveSidecar", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns default board with v2 schema when file does not exist", () => {
+  it("returns v3 schema with empty column_contexts when file does not exist", () => {
     const sidecar = loadSidecar(tmpDir, "scope:ws:test");
     expect(sidecar.schema).toBe(SIDECAR_SCHEMA);
-    expect(sidecar.columns).toHaveLength(3);
-    expect(sidecar.columns[0].id).toBe("todo");
     expect(sidecar.column_contexts).toEqual({});
+    // No `columns` field in v3
+    expect((sidecar as unknown as Record<string, unknown>)["columns"]).toBeUndefined();
   });
 
   it("returns empty column_contexts when not present in file", () => {
@@ -112,6 +143,23 @@ describe("loadSidecar / saveSidecar", () => {
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
     expect(sidecarExists(tmpDir, "scope:ws:test")).toBe(true);
   });
+
+  it("ignores v2 columns field when loading an old sidecar", () => {
+    // Simulate a v2 sidecar with columns field
+    const sidecarDir = join(tmpDir, ".floe", "extensions", "snowball", "boards");
+    mkdirSync(sidecarDir, { recursive: true });
+    const v2Content = `schema: floe.ext.snowball.board.v2\nscope_id: scope:ws:test\nworkspace_id: ws:test\ncolumns:\n  - id: todo\n    name: To Do\n    order: 0\n    wip_limit: null\n    owner:\n      kind: human\n    exit_criteria: []\ncolumn_contexts:\n  todo: ctx-123\n`;
+    writeFileSync(
+      join(sidecarDir, "scope_ws_test.yaml"),
+      v2Content,
+      "utf-8"
+    );
+
+    const sidecar = loadSidecar(tmpDir, "scope:ws:test");
+    expect(sidecar.column_contexts["todo"]).toBe("ctx-123");
+    // columns field is stripped out
+    expect((sidecar as unknown as Record<string, unknown>)["columns"]).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -133,59 +181,48 @@ describe("initBoardContexts", () => {
   });
 
   it("creates one context per column", async () => {
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: defaultColumns(),
-      column_contexts: {},
-    };
+    const scopeId = "scope:ws:test";
+    const sidecar = makeEmptySidecar(scopeId, "ws:test");
+    const columns = writeDefaultColumns(tmpDir, scopeId);
 
-    const { changed } = await initBoardContexts(sidecar, "ws:test", bus);
+    const { changed } = await initBoardContexts(sidecar, "ws:test", bus, columns);
     expect(changed).toBe(true);
     expect(Object.keys(sidecar.column_contexts)).toHaveLength(3);
-    for (const col of sidecar.columns) {
+    for (const col of columns) {
       expect(sidecar.column_contexts[col.id]).toBeDefined();
       expect(typeof sidecar.column_contexts[col.id]).toBe("string");
     }
   });
 
   it("includes overseer as participant in all column contexts", async () => {
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: defaultColumns(),
-      column_contexts: {},
-    };
+    const scopeId = "scope:ws:test";
+    const sidecar = makeEmptySidecar(scopeId, "ws:test");
+    const columns = writeDefaultColumns(tmpDir, scopeId);
 
-    await initBoardContexts(sidecar, "ws:test", bus);
+    await initBoardContexts(sidecar, "ws:test", bus, columns);
 
-    // The stub bus captures contexts; check that overseer was added
     for (const ctx of bus.createdContexts) {
       expect(ctx.participants).toContain("actor:ws:test:snowball-overseer");
     }
   });
 
   it("includes column owner agent as participant for agent-owned columns", async () => {
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: [
-        {
-          id: "agent-col",
-          name: "Agent Work",
-          wip_limit: null,
-          order: 0,
-          owner: { kind: "agent", agent_id: "my-worker" },
-          exit_criteria: [],
-        },
-      ],
-      column_contexts: {},
+    const scopeId = "scope:ws:test";
+    const sidecar = makeEmptySidecar(scopeId, "ws:test");
+    const agentCol: ColumnFile = {
+      id: "agent-col",
+      name: "Agent Work",
+      scope_id: scopeId,
+      wip_limit: null,
+      order: 0,
+      owner: { kind: "agent", agent_id: "my-worker" },
+      exit_criteria: [],
+      instructions: "",
     };
+    const slug = slugify(scopeId);
+    writeColumnFile(tmpDir, slug, agentCol);
 
-    await initBoardContexts(sidecar, "ws:test", bus);
+    await initBoardContexts(sidecar, "ws:test", bus, [agentCol]);
 
     const ctx = bus.createdContexts.find((c) => c.title === "Column: Agent Work");
     expect(ctx).toBeDefined();
@@ -194,15 +231,11 @@ describe("initBoardContexts", () => {
   });
 
   it("is idempotent — skips columns that already have contexts", async () => {
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: defaultColumns(),
-      column_contexts: { todo: "existing-ctx-id" },
-    };
+    const scopeId = "scope:ws:test";
+    const sidecar = makeEmptySidecar(scopeId, "ws:test", { todo: "existing-ctx-id" });
+    const columns = writeDefaultColumns(tmpDir, scopeId);
 
-    await initBoardContexts(sidecar, "ws:test", bus);
+    await initBoardContexts(sidecar, "ws:test", bus, columns);
 
     // Only 2 new contexts created (in-progress and done), not todo
     expect(bus.createdContexts).toHaveLength(2);
@@ -210,40 +243,39 @@ describe("initBoardContexts", () => {
   });
 
   it("returns changed=false when all columns already have contexts", async () => {
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: [defaultColumns()[0]],
-      column_contexts: { todo: "existing-ctx" },
-    };
+    const scopeId = "scope:ws:test";
+    const defaultCols = defaultColumnFiles(scopeId);
+    const sidecar = makeEmptySidecar(scopeId, "ws:test", {
+      todo: "existing-ctx",
+    });
+    const firstCol = defaultCols[0];
+    const slug = slugify(scopeId);
+    writeColumnFile(tmpDir, slug, firstCol);
 
-    const { changed } = await initBoardContexts(sidecar, "ws:test", bus);
+    const { changed } = await initBoardContexts(sidecar, "ws:test", bus, [firstCol]);
     expect(changed).toBe(false);
     expect(bus.createdContexts).toHaveLength(0);
   });
 
   it("scopes contexts to the board scope_id", async () => {
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test:my-board",
-      workspace_id: "ws:test",
-      columns: [defaultColumns()[0]],
-      column_contexts: {},
-    };
+    const scopeId = "scope:ws:test:my-board";
+    const sidecar = makeEmptySidecar(scopeId, "ws:test");
+    const slug = slugify(scopeId);
+    const col = defaultColumnFiles(scopeId)[0];
+    writeColumnFile(tmpDir, slug, col);
 
-    await initBoardContexts(sidecar, "ws:test", bus);
+    await initBoardContexts(sidecar, "ws:test", bus, [col]);
 
     const ctx = bus.createdContexts[0];
-    expect(ctx.scope_id).toBe("scope:ws:test:my-board");
+    expect(ctx.scope_id).toBe(scopeId);
   });
 });
 
 // ---------------------------------------------------------------------------
-// cardCountsByColumn
+// cardCountsByColumnFromFiles (was cardCountsByColumn)
 // ---------------------------------------------------------------------------
 
-describe("cardCountsByColumn", () => {
+describe("cardCountsByColumnFromFiles", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -256,14 +288,7 @@ describe("cardCountsByColumn", () => {
   });
 
   it("returns zero counts when tasks/ does not exist", () => {
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: defaultColumns(),
-      column_contexts: {},
-    };
-    const counts = cardCountsByColumn(tmpDir, sidecar);
+    const counts = cardCountsByColumnFromFiles(tmpDir, ["todo", "in-progress", "done"]);
     expect(counts).toEqual({ todo: 0, "in-progress": 0, done: 0 });
   });
 
@@ -273,14 +298,7 @@ describe("cardCountsByColumn", () => {
     writeCard(tmpDir, { id: "b", title: "B", type: "task", actor: null, column: "todo", order: 1, created_at: now, checks: {}, body: "" });
     writeCard(tmpDir, { id: "c", title: "C", type: "task", actor: null, column: "in-progress", order: 0, created_at: now, checks: {}, body: "" });
 
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: defaultColumns(),
-      column_contexts: {},
-    };
-    const counts = cardCountsByColumn(tmpDir, sidecar);
+    const counts = cardCountsByColumnFromFiles(tmpDir, ["todo", "in-progress", "done"]);
     expect(counts["todo"]).toBe(2);
     expect(counts["in-progress"]).toBe(1);
     expect(counts["done"]).toBe(0);
@@ -303,19 +321,14 @@ describe("buildBoardSnapshot", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns columns from sidecar and cards from files", () => {
+  it("returns columns from column files and cards from task files", () => {
+    const scopeId = "scope:ws:test";
     const now = new Date().toISOString();
+    const columns = writeDefaultColumns(tmpDir, scopeId);
     writeCard(tmpDir, { id: "card-1", title: "Task 1", type: "task", actor: null, column: "todo", order: 0, created_at: now, checks: {}, body: "" });
 
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: defaultColumns(),
-      column_contexts: { todo: "ctx-todo" },
-    };
-
-    const snapshot = buildBoardSnapshot(tmpDir, sidecar);
+    const sidecar = makeEmptySidecar(scopeId, "ws:test", { todo: "ctx-todo" });
+    const snapshot = buildBoardSnapshot(tmpDir, sidecar, columns);
     expect(snapshot.columns).toHaveLength(3);
     expect(snapshot.cards).toHaveLength(1);
     expect(snapshot.cards[0].card_id).toBe("card-1");
@@ -323,9 +336,29 @@ describe("buildBoardSnapshot", () => {
     expect(snapshot.cards[0].title).toBe("Task 1");
   });
 
+  it("includes instructions in snapshot columns", () => {
+    const scopeId = "scope:ws:test";
+    const slug = slugify(scopeId);
+    const col: ColumnFile = {
+      id: "todo",
+      name: "To Do",
+      scope_id: scopeId,
+      order: 0,
+      wip_limit: null,
+      owner: { kind: "human" },
+      exit_criteria: [],
+      instructions: "Work on tasks here.",
+    };
+    writeColumnFile(tmpDir, slug, col);
+    const sidecar = makeEmptySidecar(scopeId, "ws:test");
+    const snapshot = buildBoardSnapshot(tmpDir, sidecar, [col]);
+    expect(snapshot.columns[0].instructions).toBe("Work on tasks here.");
+  });
+
   it("computes wip_exceeded correctly", () => {
+    const scopeId = "scope:ws:test";
     const now = new Date().toISOString();
-    // in-progress has wip_limit=5 — add 6 cards
+    const columns = writeDefaultColumns(tmpDir, scopeId); // in-progress has wip_limit=5
     for (let i = 0; i < 6; i++) {
       writeCard(tmpDir, {
         id: `card-${i}`,
@@ -339,21 +372,17 @@ describe("buildBoardSnapshot", () => {
         body: "",
       });
     }
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: defaultColumns(),
-      column_contexts: {},
-    };
-    const snapshot = buildBoardSnapshot(tmpDir, sidecar);
+    const sidecar = makeEmptySidecar(scopeId, "ws:test");
+    const snapshot = buildBoardSnapshot(tmpDir, sidecar, columns);
     const inProgress = snapshot.columns.find((c) => c.id === "in-progress")!;
     expect(inProgress.wip_exceeded).toBe(true);
     expect(inProgress.card_count).toBe(6);
   });
 
   it("includes criteria_checks in card data", () => {
+    const scopeId = "scope:ws:test";
     const now = new Date().toISOString();
+    const columns = writeDefaultColumns(tmpDir, scopeId);
     writeCard(tmpDir, {
       id: "card-x",
       title: "Checked card",
@@ -369,14 +398,8 @@ describe("buildBoardSnapshot", () => {
       },
       body: "",
     });
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: "scope:ws:test",
-      workspace_id: "ws:test",
-      columns: defaultColumns(),
-      column_contexts: {},
-    };
-    const snapshot = buildBoardSnapshot(tmpDir, sidecar);
+    const sidecar = makeEmptySidecar(scopeId, "ws:test");
+    const snapshot = buildBoardSnapshot(tmpDir, sidecar, columns);
     const card = snapshot.cards.find((c) => c.card_id === "card-x")!;
     expect(card.criteria_checks).toHaveLength(1);
     expect(card.criteria_checks[0].checked).toBe(true);
@@ -446,6 +469,7 @@ describe("renderCompactBoardSnapshot", () => {
           wip_exceeded: false,
           owner: { kind: "human" as const },
           exit_criteria: [],
+          instructions: "",
         },
       ],
       cards: [

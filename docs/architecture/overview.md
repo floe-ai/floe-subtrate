@@ -312,9 +312,9 @@ graph TD
 
 ### 1.4 Snowball Extension — Current State (`floe-ext-snowball`)
 
-> **Foundation Slice 1 (`fm/snowball-found-s1`) shipped:**
-> The core inversion (card = file, column = context) is now live.
-> This section reflects post-slice-1 reality.
+> **Foundation Slices 1+2 (`fm/snowball-found-s1` + `fm/snowball-col-instr-s2`) shipped.**
+> Cards are committed files. Columns are now ALSO committed definition files with
+> agent instructions in the body. This section reflects post-slice-2 reality.
 
 ```mermaid
 graph TD
@@ -333,9 +333,12 @@ advanceCardIfReady()
 board state + card move relay"]
         UI["BoardView.tsx (ui/)
 Kanban board React UI"]
-        SIDECAR[".floe/extensions/snowball/boards/<slug>.yaml (v2)
-Owns: column definitions + column_contexts map"]
-        CARDS["tasks/<id>.md
+        SIDECAR[".floe/extensions/snowball/boards/<slug>.yaml (v3, GITIGNORED)
+Owns ONLY: column_contexts map (runtime)"]
+        COL_FILES["boards/<slug>/columns/<id>.md (COMMITTED)
+Frontmatter: id · name · scope_id · owner · order · wip_limit · exit_criteria
+Body: agent instructions (editable, injected via BeforeTurn)"]
+        CARDS["tasks/<id>.md (COMMITTED)
 Frontmatter: id · title · type · actor · column · order · checks
 Body: description + carry-forward comments"]
     end
@@ -353,41 +356,47 @@ Owner actor + overseer frozen participants"]
     SBX --> TOOLS
     SBX --> HTTP
     TOOLS -->|"read/write"| CARDS
-    TOOLS -->|"read"| SIDECAR
+    TOOLS -->|"read"| COL_FILES
     HOOK -->|"read"| CARDS
-    HOOK -->|"read"| SIDECAR
+    HOOK -->|"read"| COL_FILES
     OVERSEER -->|"read/write"| CARDS
-    OVERSEER -->|"read"| SIDECAR
+    OVERSEER -->|"read"| COL_FILES
     TOOLS -->|"triggers"| OVERSEER
     OVERSEER -->|"emit"| BUS_EV
+    HTTP -->|"read/write"| COL_FILES
+    HTTP -->|"read/write"| CARDS
+    HTTP -->|"read/write (context map only)"| SIDECAR
     HTTP -->|"serves"| UI
     BUS_CTX -->|"listContextsForScope
 (columns as context rows)"| UI
 ```
 
-**What Snowball owns (post-slice-1):**
+**What Snowball owns (post-slice-2):**
 
-- **Sidecar YAML** (`.floe/extensions/snowball/boards/<slug>.yaml`, schema `floe.ext.snowball.board.v2`) owns **column definitions** (id, name, wip_limit, owner, exit_criteria) and the **`column_contexts`** map (`column_id → bus Context id`). No card state.
-- **`slugify()`** maps `scope_id → filename` (replaces `:`, `/`, `\` with `_` for Windows-safe filenames).
-- **Card files** (`tasks/<id>.md`) are the source of truth for card state. Frontmatter: `id`, `title`, `type`, `actor`, `column` (updated in-place on move, file never moves — D1), `order`, `created_at`, `checks` (nested by column_id). Body: description + appended carry-forward comments.
-- **Column = bus Context**: `POST /board/init` creates one bus Context per column, scoped to the board scope_id, with the column owner actor + `snowball-overseer` as frozen participants. Context ids stored in `column_contexts`.
+- **Column definition files** (`boards/<slug>/columns/<id>.md`, **committed + diffable**) own column config: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner` (kind + agent_id), `exit_criteria`. **Body = agent instructions** (free-form markdown, editable in Board UI, injected via BeforeTurn).
+- **Sidecar YAML** (`.floe/extensions/snowball/boards/<slug>.yaml`, schema `floe.ext.snowball.board.v3`, **gitignored**) now owns ONLY the `column_contexts` map (`column_id → bus Context id`). Column definitions removed. Populated by `POST /board/init` (idempotent).
+- **`slugify()`** maps `scope_id → filesystem slug` (replaces `:`, `/`, `\` with `_` for Windows-safe filenames).
+- **Card files** (`tasks/<id>.md`, **committed**) are the source of truth for card state. Frontmatter: `id`, `title`, `type`, `actor`, `column` (updated in-place on move, file never moves — D1), `order`, `created_at`, `checks`. Body: description + appended carry-forward comments.
+- **Column = bus Context**: `POST /board/init` creates one bus Context per column (scoped to board scope_id), with column owner actor + `snowball-overseer` as frozen participants. Context ids stored in `column_contexts` (sidecar).
 - **Columns as context rows**: `listContextsForScope` returns column contexts — the UI Contexts tab shows columns, not cards.
 - **Card-move path**: rewrites `column` frontmatter in-place, appends `<!-- carry-forward from "ColumnName" at ISO -->` comment to body, emits `snowball.card.entered_column` (for agent-owned columns) into the column context.
-- **BeforeTurn injection**: reads card files; overseer receives full board snapshot; column workers receive only their cards.
-- **Overseer** (`advanceCardIfReady`) triggered synchronously from move path — reads/writes card files. Maximum 20-column cascade guard.
-- **Gate enforcement**: AI `move_card` hard-blocked by unchecked exit criteria; human `force=true` is soft-warn; WIP limits hard-block both.
+- **BeforeTurn injection**: reads column files + card files. Column workers receive their column's instructions + card list. Overseer receives full board snapshot + all columns' instructions. Board discovery uses committed `boards/` directory (works after clone — no sidecar needed).
+- **Overseer** (`advanceCardIfReady`) reads column definitions from column files (not sidecar). Maximum 20-column cascade guard.
+- **Gate enforcement**: AI `move_card` hard-blocked by unchecked exit criteria (read from column files); human `force=true` is soft-warn; WIP limits hard-block both.
+- **Column instructions UI**: `ColumnConfigPanel` includes an "Agent Instructions" textarea. Saving writes the column file body via `POST /column/instructions` (the file IS the source of truth). Instructions are committed and diffable.
 - **Overseer agent** (`snowball-overseer`) registered in memory at workspace attach — no disk write, no `floe.yaml` modification.
 
-**State/runtime split (post-slice-1):**
+**State/runtime split (post-slice-2 — §2.4 fully realized for columns):**
 
-| What | Where |
-|---|---|
-| Column definitions (name, owner, exit-criteria, WIP) | Sidecar YAML (`.floe/extensions/snowball/boards/`) |
-| Column context ids | Sidecar YAML (`column_contexts` map) |
-| Card definition (type, description, checks, comments) | Workspace markdown file (`tasks/<id>.md`) |
-| Card current column + order | Card file frontmatter (updated in-place on move) |
-| Column contexts (stable, scoped) | Bus SQLite (created at board init) |
-| Card-move events | Bus SQLite |
+| What | Where | Tracked? |
+|---|---|---|
+| Column definitions (name, owner, exit-criteria, WIP) | Column file frontmatter (`boards/<slug>/columns/<id>.md`) | ✅ Committed |
+| Column agent instructions | Column file body (`boards/<slug>/columns/<id>.md`) | ✅ Committed |
+| Column context ids | Sidecar YAML (`column_contexts` map, v3, gitignored) | ❌ Runtime scratch |
+| Card definition (type, description, comments) | Card file (`tasks/<id>.md`) | ✅ Committed |
+| Card current column + order | Card file frontmatter (updated in-place on move) | ✅ Committed |
+| Column contexts (stable, scoped) | Bus SQLite (created at board init) | ❌ Runtime |
+| Card-move events | Bus SQLite | ❌ Runtime |
 ---
 
 ## Part 2 — Target Model
@@ -430,6 +439,8 @@ substrate — not part of it.
 ---
 
 ### 2.1 File-First Philosophy
+
+> **Realized for cards (`fm/snowball-found-s1`) and columns (`fm/snowball-col-instr-s2`).**
 
 Everything in Floe is a committable, diffable file.
 
@@ -522,19 +533,21 @@ graph TD
 
 ---
 
-### 2.4 Definitions-in-Files / Runtime-in-Bus Split (target)
+### 2.4 Definitions-in-Files / Runtime-in-Bus Split
 
-Following the ADR-0001 model (pulse definitions in `.floe/`, runtime in SQLite):
+> **Fully realized for cards and columns as of `fm/snowball-col-instr-s2`.**
+> Following the ADR-0001 model (pulse definitions in `.floe/`, runtime in SQLite):
 
-| What | Target home |
-|---|---|
-| Card definition (type, description, comments) | Workspace markdown file (`tasks/<id>.md`) |
-| Column definition (name, owner, exit-criteria, WIP, agent instructions) | Workspace markdown file |
-| Board definition (column list, accepted card type) | Workspace config file |
-| Column context (stable, scoped) | Bus SQLite (created at board init) |
-| Card-move events | Bus SQLite |
-| Exit-criteria check events | Bus SQLite |
-| Watermarks / delivery state | Bus SQLite |
+| What | Home | Committed? |
+|---|---|---|
+| Card definition (type, description, comments) | `tasks/<id>.md` | ✅ Yes |
+| Column definition (name, owner, exit-criteria, WIP, agent instructions) | `boards/<slug>/columns/<id>.md` | ✅ Yes |
+| Board definition (column list, accepted card type) | Implied by column files; `boards/<slug>/` directory | ✅ Yes |
+| Column context ids | Sidecar YAML (`column_contexts` map, gitignored) | ❌ No — runtime |
+| Column context (stable, scoped) | Bus SQLite (created at board init) | ❌ No — runtime |
+| Card-move events | Bus SQLite | ❌ No — runtime |
+| Exit-criteria check events | Bus SQLite | ❌ No — runtime |
+| Watermarks / delivery state | Bus SQLite | ❌ No — runtime |
 
 ---
 

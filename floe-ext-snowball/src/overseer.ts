@@ -1,8 +1,9 @@
 /**
  * Snowball overseer — mechanical card advance driver.
  *
- * Foundation Slice 1 (fm/snowball-found-s1):
- *   Now reads/writes card state from tasks/*.md files instead of the sidecar.
+ * Slice 2 (fm/snowball-col-instr-s2):
+ *   Now reads column definitions from committed column files instead of sidecar.
+ *   Minimal change to keep overseer working with the new file-first model.
  *
  * Provides a deterministic in-process evaluator that advances a card through
  * consecutive agent-owned columns when its exit criteria are all satisfied.
@@ -18,8 +19,10 @@
 
 import {
   loadSidecar,
+  slugify,
   getUncheckedCriteria,
 } from "./sidecar.js";
+import { listColumnFiles } from "./column-file.js";
 import {
   readCard,
   updateCardFrontmatter,
@@ -61,14 +64,16 @@ export async function advanceCardIfReady(
 ): Promise<void> {
   const bus = asBusClient(ctx.busClient);
   const overseer = overseerId(ctx.workspaceId);
+  const slug = slugify(scopeId);
 
   for (let depth = 0; depth < MAX_CASCADE; depth++) {
-    // Reload sidecar and card each iteration for freshest state.
+    // Reload column files, sidecar, and card each iteration for freshest state.
     const sidecar = loadSidecar(ctx.workspacePath, scopeId);
+    const columns = listColumnFiles(ctx.workspacePath, slug);
     const card = readCard(ctx.workspacePath, cardId);
     if (!card) break;
 
-    const col = sidecar.columns.find((c) => c.id === card.column);
+    const col = columns.find((c) => c.id === card.column);
     // Stop if card is in a human-owned column (or column is missing).
     if (!col || col.owner.kind !== "agent") break;
 
@@ -85,8 +90,8 @@ export async function advanceCardIfReady(
     }
 
     // Find the next column in array order.
-    const colIdx = sidecar.columns.indexOf(col);
-    const nextCol = sidecar.columns[colIdx + 1];
+    const colIdx = columns.indexOf(col);
+    const nextCol = columns[colIdx + 1];
     if (!nextCol) {
       console.info("[snowball:overseer] card is in the last column — no advance", {
         card_id: cardId,

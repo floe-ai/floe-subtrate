@@ -669,6 +669,19 @@ export function SnowballBoard({
     }
   }
 
+  async function handleSaveInstructions(
+    columnId: string,
+    instructions: string
+  ): Promise<void> {
+    await withReload(async () => {
+      await postJson(busBaseUrl, extensionName, "/column/instructions", {
+        scope_id: scopeId,
+        column_id: columnId,
+        instructions,
+      });
+    });
+  }
+
   async function handleDeleteColumn(columnId: string): Promise<void> {
     await withReload(async () => {
       await postJson(busBaseUrl, extensionName, "/columns", {
@@ -913,6 +926,7 @@ export function SnowballBoard({
         onDelete={handleDeleteColumn}
         onMoveUp={handleMoveColumnUp}
         onMoveDown={handleMoveColumnDown}
+        onSaveInstructions={handleSaveInstructions}
       />
     </div>
   );
