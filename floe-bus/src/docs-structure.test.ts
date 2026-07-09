@@ -42,7 +42,8 @@ const FREE_FORM_DOC_DIRS = new Set([
   "implementation-reviews",
   "evidence",
   "qa",
-  "reference" // non-markdown reference assets
+  "reference", // non-markdown reference assets
+  "architecture" // living architecture graph (operator-approved, standing — docs/architecture/overview.md)
 ]);
 
 const ADR_NAME = /^\d{4}-[a-z0-9-]+\.md$/;
