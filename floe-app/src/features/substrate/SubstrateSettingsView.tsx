@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import type { AuthProfileRecord } from "../../bus-client/types.ts";
-import { getAuthProfiles } from "../../bus-client/client.ts";
+import { getAuthProfiles, getRuntimeStatus } from "../../bus-client/client.ts";
 import { isTauri } from "../../fs/workspaceFs.ts";
 import { tk } from "../../theme.ts";
 
@@ -57,6 +57,7 @@ export function SubstrateSettingsView(): React.ReactElement {
           gap: 4,
         }}>
           <TabButton id="auth" label="🔑 Authentication" active={activeTab === "auth"} onClick={() => setActiveTab("auth")} />
+          <TabButton id="runtime" label="⚙️ Runtime" active={activeTab === "runtime"} onClick={() => setActiveTab("runtime")} />
           <TabButton id="models" label="🤖 Model Registry" active={activeTab === "models"} onClick={() => setActiveTab("models")} isStub />
           <TabButton id="mcp" label="🔌 MCP Manager" active={activeTab === "mcp"} onClick={() => setActiveTab("mcp")} isStub />
           <TabButton id="workspaces" label="📁 Workspace Catalog" active={activeTab === "workspaces"} onClick={() => setActiveTab("workspaces")} isStub />
@@ -67,6 +68,8 @@ export function SubstrateSettingsView(): React.ReactElement {
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "24px 32px 48px" }}>
           {activeTab === "auth" ? (
             <AuthenticationPillar desktop={desktop} />
+          ) : activeTab === "runtime" ? (
+            <RuntimeAdapterPillar desktop={desktop} />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyItems: "center", padding: 40, color: tk.ink3, textAlign: "center" }}>
               <span style={{ fontSize: 28, marginBottom: 12 }}>⚡</span>
@@ -86,7 +89,7 @@ export function SubstrateSettingsView(): React.ReactElement {
 // Sidebar Tab Button Helper
 // ---------------------------------------------------------------------------
 
-type ActiveTab = "auth" | "models" | "mcp" | "workspaces" | "diagnostics";
+type ActiveTab = "auth" | "runtime" | "models" | "mcp" | "workspaces" | "diagnostics";
 
 type TabButtonProps = {
   id: ActiveTab;
@@ -123,6 +126,319 @@ function TabButton({ id, label, active, onClick, isStub }: TabButtonProps): Reac
         <span style={{ marginLeft: "auto", fontSize: 9, color: tk.ink4, background: "rgba(255,255,255,0.03)", padding: "1px 4px", borderRadius: 3 }}>
           Soon
         </span>
+      )}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Runtime Adapter Pillar — Test (fake) / Live (pi) switch
+// ---------------------------------------------------------------------------
+
+function RuntimeAdapterPillar({ desktop }: { desktop: boolean }): React.ReactElement {
+  return desktop ? <DesktopRuntimePillar /> : <BrowserRuntimePillar />;
+}
+
+/** Shared hook — fetches effective runtime_adapter from the bus GET /v1/runtime/status */
+function useEffectiveRuntime(): { runtime: string | null; bridgeOnline: boolean; error: string | null; loading: boolean } {
+  const [runtime, setRuntime] = useState<string | null>(null);
+  const [bridgeOnline, setBridgeOnline] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getRuntimeStatus()
+      .then((status) => {
+        setRuntime(status.bridge.runtime_adapter);
+        setBridgeOnline(status.bridge.online);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
+  }, []);
+
+  return { runtime, bridgeOnline, error, loading };
+}
+
+/** Maps raw adapter name to human-readable label */
+function adapterLabel(adapter: string | null): string {
+  if (!adapter) return "Unknown";
+  if (adapter === "fake") return "Test (fake)";
+  if (adapter === "pi" || adapter === "pi-agent-core") return "Live (pi)";
+  return adapter;
+}
+
+/** Browser read-only view */
+function BrowserRuntimePillar(): React.ReactElement {
+  const { runtime, bridgeOnline, error, loading } = useEffectiveRuntime();
+
+  return (
+    <div style={{ maxWidth: 800, display: "flex", flexDirection: "column", gap: 28 }}>
+      <section>
+        <h2 style={{ fontSize: 16, fontWeight: 510, color: tk.ink, margin: "0 0 6px" }}>Runtime Adapter</h2>
+        <p style={{ fontSize: 13, color: tk.ink3, margin: 0, lineHeight: 1.5 }}>
+          Controls whether agents use the deterministic <strong>Test (fake)</strong> adapter or the real{" "}
+          <strong>Live (pi)</strong> adapter. This switch is substrate-wide — all actors share one runtime.
+        </p>
+      </section>
+
+      <RuntimeStatusCard loading={loading} error={error} runtime={runtime} bridgeOnline={bridgeOnline} />
+
+      <RuntimeSwitchCard
+        desktop={false}
+        configured={null}
+        onSwitch={() => {}}
+        saving={false}
+        saveError={null}
+      />
+
+      <section style={{
+        background: "rgba(255,200,80,0.05)", border: `1px solid rgba(255,200,80,0.2)`,
+        borderRadius: tk.r3, padding: "14px 18px",
+      }}>
+        <p style={{ fontSize: 12.5, color: tk.ink3, margin: 0, lineHeight: 1.6 }}>
+          <strong style={{ color: tk.ink2 }}>Note:</strong> The runtime adapter setting is desktop/CLI-only.
+          Use the desktop app to change this setting.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+/** Desktop read/write view */
+function DesktopRuntimePillar(): React.ReactElement {
+  const { runtime, bridgeOnline, error: statusError, loading: statusLoading } = useEffectiveRuntime();
+
+  const [configured, setConfigured] = useState<string | null>(null);
+  const [configLoading, setConfigLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveOk, setSaveOk] = useState(false);
+
+  useEffect(() => {
+    invokeTauri<{ configured_adapter: string | null }>("get_runtime_adapter")
+      .then((res) => {
+        setConfigured(res.configured_adapter);
+        setConfigLoading(false);
+      })
+      .catch(() => setConfigLoading(false));
+  }, []);
+
+  const handleSwitch = async (adapter: "fake" | "pi") => {
+    setSaving(true);
+    setSaveError(null);
+    setSaveOk(false);
+    try {
+      await invokeTauri<void>("set_runtime_adapter", { adapter });
+      setConfigured(adapter);
+      setSaveOk(true);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: 800, display: "flex", flexDirection: "column", gap: 28 }}>
+      <section>
+        <h2 style={{ fontSize: 16, fontWeight: 510, color: tk.ink, margin: "0 0 6px" }}>Runtime Adapter</h2>
+        <p style={{ fontSize: 13, color: tk.ink3, margin: 0, lineHeight: 1.5 }}>
+          Controls whether agents use the deterministic <strong>Test (fake)</strong> adapter or the real{" "}
+          <strong>Live (pi)</strong> adapter. This switch is substrate-wide — all actors share one runtime.
+          The change takes effect on the next bridge start.
+        </p>
+      </section>
+
+      <RuntimeStatusCard
+        loading={statusLoading}
+        error={statusError}
+        runtime={runtime}
+        bridgeOnline={bridgeOnline}
+      />
+
+      {configLoading ? (
+        <div style={{ padding: 24, textAlign: "center", color: tk.ink3 }}>Loading setting…</div>
+      ) : (
+        <RuntimeSwitchCard
+          desktop={true}
+          configured={configured}
+          onSwitch={(a) => void handleSwitch(a)}
+          saving={saving}
+          saveError={saveError}
+        />
+      )}
+
+      {saveOk && (
+        <section style={{
+          background: "rgba(0,200,100,0.05)", border: `1px solid rgba(0,200,100,0.25)`,
+          borderRadius: tk.r3, padding: "14px 18px",
+        }}>
+          <p style={{ fontSize: 12.5, color: tk.ink3, margin: 0, lineHeight: 1.6 }}>
+            <strong style={{ color: "#6ee7b7" }}>Saved.</strong>{" "}
+            The new adapter will be used when the bridge is next started or restarted.
+            Current run reports: <strong>{bridgeOnline ? adapterLabel(runtime) : "bridge offline"}</strong>.
+          </p>
+        </section>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared sub-components for the Runtime pillar
+// ---------------------------------------------------------------------------
+
+type RuntimeStatusCardProps = {
+  loading: boolean;
+  error: string | null;
+  runtime: string | null;
+  bridgeOnline: boolean;
+};
+
+function RuntimeStatusCard({ loading, error, runtime, bridgeOnline }: RuntimeStatusCardProps): React.ReactElement {
+  return (
+    <section style={{
+      background: tk.surface, border: `1px solid ${tk.border}`, borderRadius: tk.r3, overflow: "hidden"
+    }}>
+      <div style={{ padding: "16px 20px", borderBottom: `1px solid ${tk.border2}`, display: "flex", alignItems: "center" }}>
+        <h3 style={{ fontSize: 13, fontWeight: 510, margin: 0, color: tk.ink }}>Effective Runtime (current bridge)</h3>
+      </div>
+      {loading ? (
+        <div style={{ padding: 24, textAlign: "center", color: tk.ink3 }}>Fetching status…</div>
+      ) : error ? (
+        <div role="alert" style={{ padding: 24, color: tk.danger }}>{error}</div>
+      ) : (
+        <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: 16 }}>
+          <span style={{
+            display: "inline-flex", alignItems: "center",
+            padding: "4px 10px",
+            borderRadius: tk.r2,
+            fontSize: 12.5, fontWeight: 510,
+            background: runtime === "fake" ? "rgba(255,200,80,0.12)" : "rgba(0,200,100,0.10)",
+            color: runtime === "fake" ? "#e0b84a" : "#6ee7b7",
+            border: `1px solid ${runtime === "fake" ? "rgba(255,200,80,0.25)" : "rgba(0,200,100,0.25)"}`,
+          }}>
+            {runtime === "fake" ? "🧪" : "⚡"}{" "}{adapterLabel(runtime)}
+          </span>
+          {!bridgeOnline && (
+            <span style={{ fontSize: 12, color: tk.ink4 }}>(bridge offline — showing last known)</span>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+type RuntimeSwitchCardProps = {
+  desktop: boolean;
+  configured: string | null;
+  onSwitch: (adapter: "fake" | "pi") => void;
+  saving: boolean;
+  saveError: string | null;
+};
+
+function RuntimeSwitchCard({ desktop, configured, onSwitch, saving, saveError }: RuntimeSwitchCardProps): React.ReactElement {
+  const isTest = configured === "fake";
+  const isLive = configured === "pi" || configured === "pi-agent-core";
+
+  return (
+    <section style={{
+      background: tk.surface, border: `1px solid ${tk.border}`, borderRadius: tk.r3, overflow: "hidden",
+    }}>
+      <div style={{
+        padding: "16px 20px", borderBottom: `1px solid ${tk.border2}`,
+        display: "flex", alignItems: "center",
+      }}>
+        <h3 style={{ fontSize: 13, fontWeight: 510, margin: 0, color: tk.ink }}>Adapter Setting</h3>
+        {!desktop && (
+          <span style={{
+            marginLeft: "auto", fontSize: 11, color: tk.ink4,
+            background: "rgba(255,255,255,0.03)", border: `1px solid ${tk.border}`,
+            padding: "2px 8px", borderRadius: tk.r2,
+          }}>Read-only</span>
+        )}
+      </div>
+
+      <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: 16 }}>
+        <p style={{ fontSize: 12.5, color: tk.ink3, margin: 0 }}>
+          {desktop
+            ? "Choose which adapter the bridge uses. Applies on next bridge start."
+            : "Current setting (read-only). Use the desktop app to change."
+          }
+        </p>
+        <div style={{ display: "flex", gap: 12 }}>
+          <AdapterButton
+            label="🧪 Test"
+            sublabel="Deterministic fake adapter"
+            active={isTest}
+            disabled={!desktop || saving}
+            onClick={() => onSwitch("fake")}
+          />
+          <AdapterButton
+            label="⚡ Live"
+            sublabel="Real pi-agent-core adapter"
+            active={isLive || (!isTest && !isLive)}
+            disabled={!desktop || saving}
+            onClick={() => onSwitch("pi")}
+          />
+        </div>
+        {configured === null && !desktop && (
+          <p style={{ fontSize: 11, color: tk.ink4, margin: 0 }}>Auto-detect (Live when any real profile exists, else Test)</p>
+        )}
+        {configured === null && desktop && (
+          <p style={{ fontSize: 11, color: tk.ink4, margin: 0 }}>Currently auto-detecting (no explicit setting). Select an option above to pin it.</p>
+        )}
+        {saveError && (
+          <p role="alert" style={{ fontSize: 12, color: tk.danger, margin: 0 }}>{saveError}</p>
+        )}
+        {saving && (
+          <p style={{ fontSize: 12, color: tk.ink3, margin: 0 }}>Saving…</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+type AdapterButtonProps = {
+  label: string;
+  sublabel: string;
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+};
+
+function AdapterButton({ label, sublabel, active, disabled, onClick }: AdapterButtonProps): React.ReactElement {
+  const [hov, setHov] = useState(false);
+
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        display: "flex", flexDirection: "column", alignItems: "flex-start",
+        flex: 1, padding: "14px 16px", borderRadius: tk.r3,
+        border: active
+          ? `2px solid ${tk.accent}`
+          : `2px solid ${hov && !disabled ? tk.border : tk.border2}`,
+        background: active ? "rgba(100,220,180,0.05)" : hov && !disabled ? "rgba(255,255,255,0.02)" : "transparent",
+        color: active ? tk.accent : disabled ? tk.ink4 : tk.ink2,
+        cursor: disabled ? (active ? "default" : "not-allowed") : "pointer",
+        opacity: disabled && !active ? 0.5 : 1,
+        transition: "border 120ms ease, background 120ms ease, color 120ms ease",
+        textAlign: "left",
+      }}
+    >
+      <span style={{ fontSize: 14, fontWeight: 510, marginBottom: 4 }}>{label}</span>
+      <span style={{ fontSize: 11, color: active ? tk.ink3 : tk.ink4 }}>{sublabel}</span>
+      {active && (
+        <span style={{
+          marginTop: 8, fontSize: 10, padding: "2px 6px", borderRadius: tk.r1,
+          background: "rgba(100,220,180,0.12)", color: tk.accent,
+        }}>Selected</span>
       )}
     </button>
   );

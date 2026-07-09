@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import { SubstrateSettingsView } from "./SubstrateSettingsView.tsx";
 import * as workspaceFs from "../../fs/workspaceFs.ts";
 import * as client from "../../bus-client/client.ts";
@@ -15,6 +15,7 @@ vi.mock("../../fs/workspaceFs.ts", () => ({
 
 vi.mock("../../bus-client/client.ts", () => ({
   getAuthProfiles: vi.fn(),
+  getRuntimeStatus: vi.fn(),
 }));
 
 // Tauri API is not present in jsdom; mock the dynamic import path so the
@@ -35,6 +36,9 @@ describe("SubstrateSettingsView — browser mode (isTauri = false)", () => {
     vi.mocked(client.getAuthProfiles).mockResolvedValue({
       profiles: mockProfiles,
       default_auth_profile: null,
+    });
+    vi.mocked(client.getRuntimeStatus).mockResolvedValue({
+      bridge: { online: true, runtime_adapter: "pi" },
     });
   });
 
@@ -108,9 +112,21 @@ describe("SubstrateSettingsView — desktop mode (isTauri = true)", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.mocked(workspaceFs.isTauri).mockReturnValue(true);
-    // Desktop path: Tauri invoke returns the profiles
+    vi.mocked(client.getRuntimeStatus).mockResolvedValue({
+      bridge: { online: true, runtime_adapter: "pi" },
+    });
+    // Desktop path: Tauri invoke returns the profiles by default;
+    // individual tests may override with mockImplementation.
     const tauriCore = await import("@tauri-apps/api/core");
-    vi.mocked(tauriCore.invoke).mockResolvedValue({ profiles: mockProfiles, default_auth_profile: null });
+    vi.mocked(tauriCore.invoke).mockImplementation((cmd: string) => {
+      if (cmd === "get_substrate_auth_profiles") {
+        return Promise.resolve({ profiles: mockProfiles, default_auth_profile: null });
+      }
+      if (cmd === "get_runtime_adapter") {
+        return Promise.resolve({ configured_adapter: null });
+      }
+      return Promise.resolve(null);
+    });
   });
 
   afterEach(() => cleanup());
@@ -133,6 +149,128 @@ describe("SubstrateSettingsView — desktop mode (isTauri = true)", () => {
     render(<SubstrateSettingsView />);
     await waitFor(() => {
       expect(vi.mocked(client.getAuthProfiles)).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime Adapter Pillar tests
+// ---------------------------------------------------------------------------
+
+describe("SubstrateSettingsView — Runtime tab, browser mode", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(workspaceFs.isTauri).mockReturnValue(false);
+    vi.mocked(client.getAuthProfiles).mockResolvedValue({
+      profiles: [],
+      default_auth_profile: null,
+    });
+    vi.mocked(client.getRuntimeStatus).mockResolvedValue({
+      bridge: { online: true, runtime_adapter: "pi" },
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  it("shows the Runtime tab in the sidebar", async () => {
+    render(<SubstrateSettingsView />);
+    await waitFor(() => {
+      // Tab button text contains ⚙️ Runtime
+      expect(screen.getByText(/⚙️ Runtime/)).toBeTruthy();
+    });
+  });
+
+  it("shows Read-only badge and adapter card after clicking Runtime tab", async () => {
+    render(<SubstrateSettingsView />);
+    const runtimeTabBtn = screen.getByText(/⚙️ Runtime/).closest("button")!;
+    fireEvent.click(runtimeTabBtn);
+    await waitFor(() => {
+      expect(screen.getByText("Read-only")).toBeTruthy();
+    });
+  });
+
+  it("shows effective adapter badge from GET /v1/runtime/status", async () => {
+    vi.mocked(client.getRuntimeStatus).mockResolvedValue({
+      bridge: { online: true, runtime_adapter: "fake" },
+    });
+    render(<SubstrateSettingsView />);
+    const runtimeTabBtn = screen.getByText(/⚙️ Runtime/).closest("button")!;
+    fireEvent.click(runtimeTabBtn);
+    await waitFor(() => {
+      expect(screen.getByText(/Test \(fake\)/)).toBeTruthy();
+    });
+  });
+
+  it("shows error alert when runtime status fetch fails", async () => {
+    vi.mocked(client.getRuntimeStatus).mockRejectedValue(new Error("bus down"));
+    render(<SubstrateSettingsView />);
+    const runtimeTabBtn = screen.getByText(/⚙️ Runtime/).closest("button")!;
+    fireEvent.click(runtimeTabBtn);
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toBeTruthy();
+    });
+  });
+});
+
+describe("SubstrateSettingsView — Runtime tab, desktop mode", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.mocked(workspaceFs.isTauri).mockReturnValue(true);
+    vi.mocked(client.getRuntimeStatus).mockResolvedValue({
+      bridge: { online: true, runtime_adapter: "pi" },
+    });
+    const tauriCore = await import("@tauri-apps/api/core");
+    vi.mocked(tauriCore.invoke).mockImplementation((cmd: string) => {
+      if (cmd === "get_substrate_auth_profiles") {
+        return Promise.resolve({ profiles: [], default_auth_profile: null });
+      }
+      if (cmd === "get_runtime_adapter") {
+        return Promise.resolve({ configured_adapter: "pi" });
+      }
+      if (cmd === "set_runtime_adapter") {
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve(null);
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  it("shows both adapter buttons in desktop mode", async () => {
+    render(<SubstrateSettingsView />);
+    const runtimeTabBtn = screen.getByText(/⚙️ Runtime/).closest("button")!;
+    fireEvent.click(runtimeTabBtn);
+    await waitFor(() => {
+      // Both Test and Live buttons should appear
+      expect(screen.getAllByText(/Test/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Live/).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("calls set_runtime_adapter when user clicks Test button", async () => {
+    const tauriCore = await import("@tauri-apps/api/core");
+    render(<SubstrateSettingsView />);
+    const runtimeTabBtn = screen.getByText(/⚙️ Runtime/).closest("button")!;
+    fireEvent.click(runtimeTabBtn);
+    // Wait for the adapter buttons to render (configured_adapter loads asynchronously)
+    await waitFor(() => {
+      const buttons = screen.getAllByRole("button");
+      const testBtn = buttons.find(b => b.textContent?.includes("🧪 Test"));
+      if (!testBtn) throw new Error("Test button not found");
+    });
+    const testBtn = screen.getAllByRole("button").find(b => b.textContent?.includes("🧪 Test"))!;
+    fireEvent.click(testBtn);
+    await waitFor(() => {
+      expect(vi.mocked(tauriCore.invoke)).toHaveBeenCalledWith("set_runtime_adapter", { adapter: "fake" });
+    });
+  });
+
+  it("shows no Read-only badge in desktop mode", async () => {
+    render(<SubstrateSettingsView />);
+    const runtimeTabBtn = screen.getByText(/⚙️ Runtime/).closest("button")!;
+    fireEvent.click(runtimeTabBtn);
+    await waitFor(() => {
+      expect(screen.queryByText("Read-only")).toBeNull();
     });
   });
 });

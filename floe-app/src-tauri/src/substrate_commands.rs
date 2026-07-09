@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::env;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthProfileRecord {
@@ -34,10 +35,64 @@ pub struct AuthStorageItem {
 }
 
 fn get_floe_auth_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
+    let home = env::var("USERPROFILE")
+        .or_else(|_| env::var("HOME"))
         .map_err(|_| "Could not determine user home directory".to_string())?;
     Ok(PathBuf::from(home).join(".floe").join("auth"))
+}
+
+fn get_floe_config_path() -> Result<PathBuf, String> {
+    // Honour FLOE_CONFIG env override (same logic as the TS bridge)
+    if let Ok(explicit) = env::var("FLOE_CONFIG") {
+        return Ok(PathBuf::from(explicit));
+    }
+    let home = env::var("USERPROFILE")
+        .or_else(|_| env::var("HOME"))
+        .map_err(|_| "Could not determine user home directory".to_string())?;
+    Ok(PathBuf::from(home).join(".floe").join("config.yaml"))
+}
+
+/// Read config.yaml, update bridge.runtime_adapter, write back.
+/// Uses serde_yaml::Value so the rest of the file is not disturbed.
+fn write_runtime_adapter_to_config(adapter: &str) -> Result<(), String> {
+    let config_path = get_floe_config_path()?;
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config.yaml: {}", e))?;
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(&content)
+        .map_err(|e| format!("Failed to parse config.yaml: {}", e))?;
+    // Navigate bridge section, creating it if missing
+    let bridge = doc
+        .get_mut("bridge")
+        .ok_or_else(|| "config.yaml missing 'bridge' section".to_string())?;
+    let bridge_map = bridge
+        .as_mapping_mut()
+        .ok_or_else(|| "config.yaml 'bridge' is not a mapping".to_string())?;
+    bridge_map.insert(
+        serde_yaml::Value::String("runtime_adapter".to_string()),
+        serde_yaml::Value::String(adapter.to_string()),
+    );
+    let updated = serde_yaml::to_string(&doc)
+        .map_err(|e| format!("Failed to serialize config.yaml: {}", e))?;
+    fs::write(&config_path, updated)
+        .map_err(|e| format!("Failed to write config.yaml: {}", e))?;
+    Ok(())
+}
+
+fn read_runtime_adapter_from_config() -> Result<Option<String>, String> {
+    let config_path = get_floe_config_path()?;
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config.yaml: {}", e))?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&content)
+        .map_err(|e| format!("Failed to parse config.yaml: {}", e))?;
+    let adapter = doc
+        .get("bridge")
+        .and_then(|b| b.get("runtime_adapter"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Ok(adapter)
 }
 
 #[tauri::command]
@@ -171,4 +226,36 @@ pub fn delete_substrate_auth_profile(profile_id: String) -> Result<(), String> {
     }
     
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Runtime adapter — Test (fake) / Live (pi) switch
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RuntimeAdapterStatus {
+    /// The persisted setting in config.yaml bridge.runtime_adapter (None = auto-detect)
+    pub configured_adapter: Option<String>,
+}
+
+/// Read the persisted runtime_adapter from ~/.floe/config.yaml.
+#[tauri::command]
+pub fn get_runtime_adapter() -> Result<RuntimeAdapterStatus, String> {
+    let configured_adapter = read_runtime_adapter_from_config()?;
+    Ok(RuntimeAdapterStatus { configured_adapter })
+}
+
+/// Persist runtime_adapter to ~/.floe/config.yaml bridge.runtime_adapter.
+/// Valid values: "fake" (Test) or "pi" / "pi-agent-core" (Live).
+/// The new value takes effect on the next bridge start.
+#[tauri::command]
+pub fn set_runtime_adapter(adapter: String) -> Result<(), String> {
+    let normalised = adapter.trim().to_lowercase();
+    if normalised != "fake" && normalised != "pi" && normalised != "pi-agent-core" {
+        return Err(format!(
+            "Invalid adapter \"{}\". Use \"fake\" (Test) or \"pi\" (Live).",
+            adapter
+        ));
+    }
+    write_runtime_adapter_to_config(&normalised)
 }
