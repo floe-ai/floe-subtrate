@@ -104,9 +104,12 @@ program
       `(first run compiles Rust — this may take a few minutes)\n`
     );
 
-    // Launch Tauri with --no-dev-server so it skips `beforeDevCommand` (npm run dev)
-    // and attaches directly to the already-running vite at devUrl (5379).
-    // This is the Tauri v2 mechanism for attaching to an externally-managed dev server.
+    // Launch Tauri using a config override (tauri.attach.conf.json) that sets
+    // beforeDevCommand to "" — this prevents Tauri from running `npm run dev`
+    // and starting a second vite on 5379. Tauri connects directly to devUrl (5379)
+    // which is already running from `floe start`.
+    // NOTE: --no-dev-server does NOT suppress beforeDevCommand (it governs Tauri's
+    // own static-file server only); the config override is the correct mechanism.
     const root = repoRoot();
     const { command, args } = commandForNpm(["run", "tauri:attach", "--workspace", "floe-app"]);
     const child = spawn(command, args, {
