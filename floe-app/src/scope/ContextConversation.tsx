@@ -400,13 +400,31 @@ export function ContextConversation({
         )}
       </div>
 
-      {/* Composer dock */}
-      <ComposerDock
-        endpoints={endpoints}
-        speakingAsId={speakingAsId}
-        onSpeakingAsChange={handleSpeakingAsChange}
-        onSend={handleSend}
-      />
+      {/* Composer dock — only rendered when the acting actor is a participant */}
+      {context.participants.includes(speakingAsId) ? (
+        <ComposerDock
+          endpoints={endpoints}
+          speakingAsId={speakingAsId}
+          onSpeakingAsChange={handleSpeakingAsChange}
+          onSend={handleSend}
+        />
+      ) : (
+        <div
+          aria-label="Not a participant"
+          style={{
+            flexShrink: 0,
+            borderTop: `1px solid ${tk.border}`,
+            background: tk.surface,
+            padding: "12px 24px",
+            fontSize: 12,
+            color: tk.ink4,
+            fontStyle: "italic",
+            fontFamily: tk.fontUi,
+          }}
+        >
+          You are not a participant of this context.
+        </div>
+      )}
     </div>
   );
 }
