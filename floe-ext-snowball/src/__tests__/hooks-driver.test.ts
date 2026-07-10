@@ -257,10 +257,10 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     expect(updatedCard!.column).toBe("done");
 
     const moveEvent = bus.emittedEvents.find((e) => e.type === "snowball.card.moved");
-    expect(moveEvent).toBeDefined();
-    expect((moveEvent!.content.data as Record<string, unknown>)?.source).toBe("overseer");
-    expect((moveEvent!.content.data as Record<string, unknown>)?.from_column_id).toBe("agent-col");
-    expect((moveEvent!.content.data as Record<string, unknown>)?.to_column_id).toBe("done");
+    // card.moved broadcast is intentionally not emitted (context-churn fix).
+    expect(moveEvent).toBeUndefined();
+    // The card file itself is authoritative — it has moved to 'done'.
+    expect(updatedCard!.column).toBe("done"); // re-assert the key invariant
   });
 
   it("advance appends carry-forward comment to card body", async () => {
@@ -392,8 +392,10 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     expect(card1!.column).toBe("done");
     expect(card2!.column).toBe("done");
 
+    // card.moved broadcast is intentionally not emitted (context-churn fix);
+    // verify the card files themselves are in the correct columns instead.
     const moveEvents = bus.emittedEvents.filter((e) => e.type === "snowball.card.moved");
-    expect(moveEvents).toHaveLength(2);
+    expect(moveEvents).toHaveLength(0);
   });
 
   it("cascades through consecutive agent-owned columns", async () => {
@@ -443,12 +445,13 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     const card = readCard(tmpDir, "ctx_cascade");
     expect(card!.column).toBe("done");
 
+    // card.moved broadcast is intentionally not emitted (context-churn fix).
+    // Verify the card file is at the correct final column instead.
     const moveEvents = bus.emittedEvents.filter((e) => e.type === "snowball.card.moved");
-    expect(moveEvents).toHaveLength(2);
-    expect((moveEvents[0].content.data as Record<string, unknown>)?.from_column_id).toBe("agent-col-1");
-    expect((moveEvents[0].content.data as Record<string, unknown>)?.to_column_id).toBe("agent-col-2");
-    expect((moveEvents[1].content.data as Record<string, unknown>)?.from_column_id).toBe("agent-col-2");
-    expect((moveEvents[1].content.data as Record<string, unknown>)?.to_column_id).toBe("done");
+    expect(moveEvents).toHaveLength(0);
+    // entered_column events ARE still emitted for each agent-column step
+    const enteredEvents = bus.emittedEvents.filter((e) => e.type === "snowball.card.entered_column");
+    expect(enteredEvents.length).toBeGreaterThanOrEqual(1);
   });
 
   it("move_card tool does NOT auto-advance on agent-column entry (advance-on-conclusion)", async () => {

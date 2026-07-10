@@ -230,32 +230,10 @@ export function createTools(ctx: ExtensionContext) {
           body: description ?? "",
         });
 
-        // Emit creation event (best-effort)
-        try {
-          const bus = asBusClient(ctx.busClient);
-          await bus.emit({
-            type: "snowball.card.created",
-            workspace_id: workspaceId,
-            source_endpoint_id: overseerId(workspaceId),
-            scope_id,
-            destination: {
-              kind: "broadcast" as const,
-              scope: "workspace",
-              target: "active_with_delivery_processor",
-            },
-            content: {
-              text: `Card "${title}" created in "${targetColumn.name}"`,
-              data: {
-                card_id: cardId,
-                column_id: targetColumn.id,
-                board_scope_id: scope_id,
-              },
-            },
-            metadata: { source: "snowball-extension" },
-          });
-        } catch {
-          // Non-fatal
-        }
+        // NOTE: card.created broadcast intentionally omitted — broadcasting to
+        // active_with_delivery_processor with no context_id creates a throwaway
+        // context per card and triggers spurious agent turns. entered_column
+        // is the canonical routing signal for agent work.
 
         return {
           content: [
@@ -446,34 +424,10 @@ export function createTools(ctx: ExtensionContext) {
 
         const columnContextId = sidecar.column_contexts[to_column_id];
 
-        // Emit general move event (best-effort)
-        try {
-          await bus.emit({
-            type: "snowball.card.moved",
-            workspace_id: workspaceId,
-            source_endpoint_id: overseer,
-            scope_id,
-            destination: {
-              kind: "broadcast" as const,
-              scope: "workspace",
-              target: "active_with_delivery_processor",
-            },
-            content: {
-              text: `Card "${card.title}" moved from "${previousColumnName}" to "${toColumn.name}"`,
-              data: {
-                card_id,
-                card_title: card.title,
-                from_column_id: previousColumnId,
-                to_column_id,
-                forced: force,
-                board_scope_id: scope_id,
-              },
-            },
-            metadata: { source: "snowball-extension" },
-          });
-        } catch {
-          // Non-fatal
-        }
+        // NOTE: card.moved broadcast intentionally omitted — see card.created note
+        // above. The entered_column routing event below carries the stable
+        // column context_id and is the canonical signal for both agent routing
+        // and WS-based UI refresh.
 
         // If destination is agent-owned, emit routing event to column context
         if (toColumn.owner.kind === "agent" && toColumn.owner.agent_id) {
@@ -514,33 +468,10 @@ export function createTools(ctx: ExtensionContext) {
           // See fm/floe-advance-protocol for the advance-on-conclusion design.
         }
 
-        // Soft gate override warning (human + unchecked)
-        if (force && unchecked.length > 0) {
-          try {
-            await bus.emit({
-              type: "snowball.card.gate_overridden",
-              workspace_id: workspaceId,
-              source_endpoint_id: overseer,
-              scope_id,
-              destination: {
-                kind: "broadcast" as const,
-                scope: "workspace",
-                target: "active_with_delivery_processor",
-              },
-              content: {
-                text: `Human override: card "${card.title}" moved from "${fromColumn?.name}" despite unchecked criteria`,
-                data: {
-                  card_id,
-                  unchecked_criteria: unchecked,
-                  board_scope_id: scope_id,
-                },
-              },
-              metadata: { source: "snowball-extension" },
-            });
-          } catch {
-            // Non-fatal
-          }
-        }
+        // NOTE: gate_overridden broadcast intentionally omitted — same pattern
+        // as card.created: no context_id + active_with_delivery_processor creates
+        // a throwaway context and triggers spurious agent turns.
+        // The audit trail is the carry-forward comment written to the card file.
 
         return {
           content: [
@@ -630,34 +561,11 @@ export function createTools(ctx: ExtensionContext) {
           checks: updatedChecks,
         });
 
-        // Emit criteria checked event (best-effort)
-        try {
-          const bus = asBusClient(ctx.busClient);
-          await bus.emit({
-            type: "snowball.card.criteria_checked",
-            workspace_id: workspaceId,
-            source_endpoint_id: overseerId(workspaceId),
-            scope_id,
-            destination: {
-              kind: "broadcast" as const,
-              scope: "workspace",
-              target: "active_with_delivery_processor",
-            },
-            content: {
-              text: `Criterion "${criterion_id}" ${checked ? "checked" : "unchecked"} for card "${card.title}"`,
-              data: {
-                card_id,
-                criterion_id,
-                column_id,
-                checked,
-                board_scope_id: scope_id,
-              },
-            },
-            metadata: { source: "snowball-extension" },
-          });
-        } catch {
-          // Non-fatal
-        }
+        // NOTE: criteria_checked broadcast intentionally omitted — same reason
+        // as card.created: no context_id + active_with_delivery_processor creates
+        // a throwaway context and triggers agent turns for a pure state update.
+        // The agent always follows check_criteria with move_card, which emits
+        // entered_column → the canonical routing + UI-refresh signal.
 
         return {
           content: [
