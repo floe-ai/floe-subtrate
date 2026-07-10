@@ -127,6 +127,24 @@ export function registerHooks(ctx: ExtensionContext): void {
             lines.push(
               `  - [${col?.name ?? card.column_id}] ${card.title}${criteriaStr} (${card.card_id})`
             );
+            // Issue #1 fix: list unchecked criteria IDs so the agent can call
+            // check_criteria without needing a separate get_board_state call.
+            if (col && col.exit_criteria.length > 0) {
+              const uncheckedCriteria = col.exit_criteria.filter((ec) => {
+                const check = card.criteria_checks.find(
+                  (c) => c.criterionId === ec.id
+                );
+                return !check?.checked;
+              });
+              if (uncheckedCriteria.length > 0) {
+                lines.push(
+                  `    Unchecked criteria (call check_criteria for each):`
+                );
+                for (const ec of uncheckedCriteria) {
+                  lines.push(`      criterion_id="${ec.id}" — ${ec.description}`);
+                }
+              }
+            }
           }
         }
       }

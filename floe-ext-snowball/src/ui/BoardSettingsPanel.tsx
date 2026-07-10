@@ -179,7 +179,7 @@ export function BoardSettingsPanel({
                   color: "#8a8f98",
                 }}
               >
-                boards/&lt;slug&gt;/board.md
+                .floe/extensions/snowball/boards/&lt;slug&gt;/board.md
               </code>
               .
             </p>

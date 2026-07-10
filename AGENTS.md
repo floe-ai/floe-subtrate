@@ -425,22 +425,22 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 **What it is:** The Snowball Kanban extension — exit-criteria-gated cards, column ownership, and agent routing — implemented as a floe extension that builds against the substrate contract (contract-w7).
 
 **Key invariants (post fm/snowball-col-instr-s2):**
-- Sidecar schema: `floe.ext.snowball.board.v3` at `.floe/extensions/snowball/boards/<slug>.yaml` (GITIGNORED)
+- Sidecar schema: `floe.ext.snowball.board.v3` at `.floe/extensions/snowball/runtime/<slug>.yaml` (GITIGNORED — runtime context map, regenerable)
 - Sidecar v3 owns ONLY: `column_contexts` map (`column_id → bus Context id`). No column definitions. No card state.
-- **Column = committed markdown file** at `boards/<slug>/columns/<id>.md`. Frontmatter: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner`, `exit_criteria`. Body = agent instructions (may be empty).
+- **Column = committed markdown file** at `.floe/extensions/snowball/boards/<slug>/columns/<id>.md`. Frontmatter: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner`, `exit_criteria`. Body = agent instructions (may be empty).
 - `slugify(scope_id)` replaces `:`, `/`, `\` with `_` for Windows-safe filenames (R8)
 - Column owner uses `agent_id` (not free-form `role`) matching `.floe/agents/<id>.md` (R5)
 - **Card = markdown file** at `tasks/<id>.md`. Identity = stable frontmatter `id` field. File NEVER moves (D1). Current column is a frontmatter field updated in-place on move.
 - **Column = bus Context** scoped to the board scope. Column owner actor + `snowball-overseer` are frozen participants.
 - `POST /board/init` creates column files (if absent) + one bus Context per column (idempotent). Stores context ids in `column_contexts` sidecar.
-- Board discovery in hooks: scans `boards/<slug>/columns/*.md` (committed files), NOT the gitignored sidecar. Works after a fresh clone with no sidecar present.
+- Board discovery in hooks: scans `.floe/extensions/snowball/boards/<slug>/columns/*.md` (committed files), NOT the gitignored sidecar. Works after a fresh clone with no sidecar present.
 - Card-move: rewrites `column` frontmatter → appends `<!-- carry-forward from "Name" at ISO -->` comment → emits `snowball.card.entered_column` into the column context.
-- BeforeTurn injection: **column workers get**: board-wide done protocol (from `board.md` body) + their column's instructions + card list. **Overseer gets**: full board snapshot + all columns' instructions. Done protocol is injected first so it takes precedence over column-specific instructions.
+- BeforeTurn injection: **column workers get**: board-wide done protocol (from `board.md` body) + their column's instructions + card list (including **unchecked exit-criteria IDs and descriptions** for each card, so agents can call `check_criteria` directly). **Overseer gets**: full board snapshot + all columns' instructions. Done protocol is injected first so it takes precedence over column-specific instructions.
 - `GET /column/instructions?scope_id=<id>&column_id=<id>` — read column instructions.
-- `POST /column/instructions { scope_id, column_id, instructions }` — write column file body (file is source of truth).
+- `POST /column/instructions { scope_id, column_id, instructions }` — write column file body (file is source of truth). Auto-creates default column files if the column file doesn't exist yet (Issue #3 fix: allows saving instructions before explicit board init).
 - `GET /board/instructions?scope_id=<id>` — read board done protocol from `board.md`.
 - `POST /board/instructions { scope_id, done_protocol }` — write board done protocol (creates `board.md` if absent).
-- **Board definition file** (`boards/<slug>/board.md`, **committed**): frontmatter has `scope_id`; body = board-wide done protocol. Created on `POST /board/init` with `DEFAULT_DONE_PROTOCOL`; lazily created by BeforeTurn `ensureBoardFile()` if absent. Editable in UI via Board Settings panel.
+- **Board definition file** (`.floe/extensions/snowball/boards/<slug>/board.md`, **committed**): frontmatter has `scope_id`; body = board-wide done protocol. Created on `POST /board/init` with `DEFAULT_DONE_PROTOCOL`; lazily created by BeforeTurn `ensureBoardFile()` if absent. Editable in UI via Board Settings panel.
 - **Advance-on-conclusion** (`fm/floe-advance-protocol`): `advanceCardIfReady` is NO LONGER called automatically when a card arrives in an agent column. It is kept as a utility (tests, explicit overseer calls). Cards stay in an agent column until the agent calls `move_card` after completing work. The done protocol instructs agents how to do this. The `snowball.card.entered_column` routing event is still emitted on arrival to wake the agent.
 - Columns are the context rows in `listContextsForScope` (not cards).
 - Participants are FROZEN — agents connect via `snowball.card.entered_column` routing events (R1)
@@ -449,13 +449,14 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 - `StubBusClient.createdContexts` captures `CreateContextInput[]` for test assertions on column context creation.
 - Test helpers: `setupBoard(tmpDir)` / `writeDefaultColumns(tmpDir, scopeId)` write column files for tests. Tests never put columns in the sidecar.
 
-**Tests:** `npm test --workspace floe-ext-snowball` — 180 unit tests (column-file format + sidecar/column-contexts + gate enforcement + handler + overseer driver + instructions endpoints + board-file + advance-on-conclusion timing).
+**Tests:** `npm test --workspace floe-ext-snowball` — 193 unit tests (column-file format + sidecar/column-contexts + gate enforcement + handler + overseer driver + instructions endpoints + board-file + advance-on-conclusion timing + hooks BeforeTurn injection + stable context regression).
 
 **Board live refresh (fm/board-refresh-fix):** Human mutations use `withReload()` in `BoardView.tsx` — every mutation calls `reload()` after the POST completes. Agent-driven moves are covered by a WS subscription via `subscribeBusStream()` in `bus-stream.ts` (which provides automatic reconnect with exponential back-off — no reconnect storms). The bus broadcasts `event_submitted` via `store.submitEvent` → `broadcast("event_submitted", { event })` at `floe-bus/src/store.ts:1352`.
 
 **Board routing invariants (fm/floe-e2e-fix):**
 - **All snowball emits must include `scope_id`** so any fallback-created contexts are scoped to the board scope, never stray no-scope contexts. Every `bus.emit()` call in `handlers.ts`, `tools/index.ts`, `overseer.ts` must include `scope_id`.
-- **Lazy board init on move**: `handlePostMove` lazily calls `initBoardContexts` when the destination agent-owned column has no `column_contexts` entry in the sidecar. Do not assume the board was initialized before first move.
+- **Lazy board init on move**: BOTH `handlePostMove` (HTTP handler) AND the `move_card` tool lazily call `initBoardContexts` when the destination agent-owned column has no `column_contexts` entry in the sidecar. This ensures `entered_column` always carries a `context_id` pointing to the stable column context. Without lazy init in the tool path, each AI-initiated move would create a fresh context (Issue #2 root cause). Do not assume the board was initialized before first move.
+- **Stable column context**: each agent-owned column has ONE stable context in the bus. The context_id is persisted to the runtime sidecar after first lazy init. All subsequent card moves to that column reuse the same context_id — no per-move context creation.
 - **Owner-change eviction**: `handlePostColumns` action:update MUST evict the column context from the sidecar when the column owner changes to an agent, so the next move triggers a lazy re-init with the new agent as a participant. Failing to do so causes the routing event to target a context with wrong participants.
 - **Endpoint status gate**: the `snowball-overseer` endpoint starts as `runtime_unconfigured` (no auth profile). The bus does NOT create delivery bundles for `runtime_unconfigured` endpoints (`tryCreateDeliveryForEndpoint` returns null). A workspace runtime binding must be set before the overseer can process deliveries.
 

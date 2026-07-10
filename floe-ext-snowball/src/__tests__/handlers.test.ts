@@ -365,6 +365,41 @@ describe("POST /column/instructions", () => {
     expect(res.status).toBe(404);
   });
 
+  it("Issue #3 regression: saves instructions for a default column that has not been persisted yet", async () => {
+    // Issue #3: UI shows default in-memory columns before board is initialized.
+    // Saving instructions for a default column (e.g. 'todo') should work without
+    // requiring a separate POST /board/init first. The handler now auto-creates
+    // default column files before writing instructions.
+    // Before fix: returned 404 because the column file didn't exist.
+    const res = await call(handlers, "POST", "/column/instructions", {
+      body: { scope_id: SCOPE, column_id: "todo", instructions: "Work from top of list first." },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.instructions).toBe("Work from top of list first.");
+
+    // Default column file must have been created on disk
+    const slug = slugify(SCOPE);
+    const updated = readColumnFile(tmpDir, slug, "todo");
+    expect(updated).not.toBeNull();
+    expect(updated!.name).toBe("To Do"); // default name preserved
+    expect(updated!.instructions).toBe("Work from top of list first.");
+  });
+
+  it("Issue #3: auto-creates ALL default columns when saving instructions (not just the target)", async () => {
+    await call(handlers, "POST", "/column/instructions", {
+      body: { scope_id: SCOPE, column_id: "done", instructions: "Final check column." },
+    });
+
+    const slug = slugify(SCOPE);
+    // All three default columns must exist on disk now
+    expect(readColumnFile(tmpDir, slug, "todo")).not.toBeNull();
+    expect(readColumnFile(tmpDir, slug, "in-progress")).not.toBeNull();
+    expect(readColumnFile(tmpDir, slug, "done")).not.toBeNull();
+  });
+
   it("returns 400 when params missing", async () => {
     const res = await call(handlers, "POST", "/column/instructions", {
       body: { scope_id: SCOPE, column_id: "todo" }, // missing instructions

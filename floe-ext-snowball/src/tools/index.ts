@@ -16,9 +16,11 @@ import type { ExtensionContext } from "../stub/extension-context.js";
 import { asBusClient } from "../stub/bus-client.js";
 import {
   loadSidecar,
+  saveSidecar,
   slugify,
   getUncheckedCriteria,
   buildBoardSnapshot,
+  initBoardContexts,
 } from "../sidecar.js";
 import {
   listColumnFiles,
@@ -423,6 +425,25 @@ export function createTools(ctx: ExtensionContext) {
 
         const bus = asBusClient(ctx.busClient);
         const overseer = overseerId(workspaceId);
+
+        // Lazy board init: ensure the destination column context exists in the sidecar
+        // before emitting the routing event. Without this, every agent-initiated move
+        // to an agent-owned column would create a FRESH context instead of reusing the
+        // column's stable persistent context. (Issue #2 fix)
+        if (toColumn.owner.kind === "agent" && !sidecar.column_contexts[to_column_id]) {
+          try {
+            const { changed } = await initBoardContexts(
+              sidecar,
+              workspaceId,
+              bus,
+              effectiveColumns
+            );
+            if (changed) saveSidecar(workspacePath, scope_id, sidecar);
+          } catch (err) {
+            console.warn(`[snowball] Lazy board init failed in move_card tool: ${err}`);
+          }
+        }
+
         const columnContextId = sidecar.column_contexts[to_column_id];
 
         // Emit general move event (best-effort)

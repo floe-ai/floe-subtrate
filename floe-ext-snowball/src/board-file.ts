@@ -81,7 +81,7 @@ than moving the card.`;
 
 /** Absolute path to the board directory for a board. */
 export function boardDir(workspacePath: string, scopeSlug: string): string {
-  return join(workspacePath, "boards", scopeSlug);
+  return join(workspacePath, ".floe", "extensions", "snowball", "boards", scopeSlug);
 }
 
 /** Absolute path to the board definition file. */

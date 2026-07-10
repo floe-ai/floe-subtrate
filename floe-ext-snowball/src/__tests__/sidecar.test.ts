@@ -130,7 +130,7 @@ describe("loadSidecar / saveSidecar", () => {
   it("creates parent directories on save", () => {
     const sidecar = loadSidecar(tmpDir, "scope:ws:test");
     saveSidecar(tmpDir, "scope:ws:test", sidecar);
-    const dir = join(tmpDir, ".floe", "extensions", "snowball", "boards");
+    const dir = join(tmpDir, ".floe", "extensions", "snowball", "runtime");
     expect(existsSync(dir)).toBe(true);
   });
 
@@ -146,7 +146,7 @@ describe("loadSidecar / saveSidecar", () => {
 
   it("ignores v2 columns field when loading an old sidecar", () => {
     // Simulate a v2 sidecar with columns field
-    const sidecarDir = join(tmpDir, ".floe", "extensions", "snowball", "boards");
+    const sidecarDir = join(tmpDir, ".floe", "extensions", "snowball", "runtime");
     mkdirSync(sidecarDir, { recursive: true });
     const v2Content = `schema: floe.ext.snowball.board.v2\nscope_id: scope:ws:test\nworkspace_id: ws:test\ncolumns:\n  - id: todo\n    name: To Do\n    order: 0\n    wip_limit: null\n    owner:\n      kind: human\n    exit_criteria: []\ncolumn_contexts:\n  todo: ctx-123\n`;
     writeFileSync(

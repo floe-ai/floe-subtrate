@@ -333,12 +333,12 @@ advanceCardIfReady()
 board state + card move relay"]
         UI["BoardView.tsx (ui/)
 Kanban board React UI"]
-        SIDECAR[".floe/extensions/snowball/boards/<slug>.yaml (v3, GITIGNORED)
-Owns ONLY: column_contexts map (runtime)"]
-        COL_FILES["boards/<slug>/columns/<id>.md (COMMITTED)
+        SIDECAR[".floe/extensions/snowball/runtime/<slug>.yaml (v3, GITIGNORED)
+Owns ONLY: column_contexts map (runtime, regenerable)"]
+        COL_FILES[".floe/extensions/snowball/boards/<slug>/columns/<id>.md (COMMITTED)
 Frontmatter: id · name · scope_id · owner · order · wip_limit · exit_criteria
 Body: agent instructions (editable, injected via BeforeTurn)"]
-        BOARD_FILE["boards/<slug>/board.md (COMMITTED)
+        BOARD_FILE[".floe/extensions/snowball/boards/<slug>/board.md (COMMITTED)
 Frontmatter: scope_id
 Body: board-wide done protocol (editable in Board Settings UI,
 injected into every column worker's BeforeTurn)"]
@@ -379,18 +379,20 @@ Owner actor + overseer frozen participants"]
 
 **What Snowball owns (post-slice-2):**
 
-- **Column definition files** (`boards/<slug>/columns/<id>.md`, **committed + diffable**) own column config: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner` (kind + agent_id), `exit_criteria`. **Body = agent instructions** (free-form markdown, editable in Board UI, injected via BeforeTurn).
-- **Board definition file** (`boards/<slug>/board.md`, **committed + diffable**) owns board-level config. **Body = board-wide done protocol** (free-form markdown, editable in Board UI via the "Board Settings" button). The done protocol is injected into every column worker's BeforeTurn prompt and drives the advance-on-conclusion behavior: agents do work, check criteria, then call `move_card`. Created on board init with a default done protocol; lazily created on first BeforeTurn read if absent.
-- **Advance-on-conclusion** (`fm/floe-advance-protocol`): a card entering an agent-owned column is held there while the agent does its work (triggered by `snowball.card.entered_column`). The card advances only when the agent concludes — calling `check_criteria` (for criteria columns) and then `move_card`. The synchronous `advanceCardIfReady` cascade is NOT called on card arrival; it is kept as a utility callable by the overseer or in tests. The board-level done protocol provides the explicit instructions agents need.
-- **Sidecar YAML** (`.floe/extensions/snowball/boards/<slug>.yaml`, schema `floe.ext.snowball.board.v3`, **gitignored**) now owns ONLY the `column_contexts` map (`column_id → bus Context id`). Column definitions removed. Populated by `POST /board/init` (idempotent).
+- **Column definition files** (`.floe/extensions/snowball/boards/<slug>/columns/<id>.md`, **committed + diffable**) own column config: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner` (kind + agent_id), `exit_criteria`. **Body = agent instructions** (free-form markdown, editable in Board UI, injected via BeforeTurn).
+- **Board definition file** (`.floe/extensions/snowball/boards/<slug>/board.md`, **committed + diffable**) owns board-level config. **Body = board-wide done protocol** (free-form markdown, editable in Board UI via the "Board Settings" button). The done protocol is injected into every column worker's BeforeTurn prompt and drives the advance-on-conclusion behavior: agents do work, check criteria, then call `move_card`. Created on board init with a default done protocol; lazily created on first BeforeTurn read if absent.
+- **Advance-on-conclusion** (`fm/floe-advance-protocol`): a card entering an agent-owned column is held there while the agent does its work (triggered by `snowball.card.entered_column`). The card advances only when the agent concludes — calling `check_criteria` (for criteria columns) and then `move_card`. The synchronous `advanceCardIfReady` cascade is NOT called on card arrival; it is kept as a utility callable by the overseer or in tests. The board-level done protocol provides the explicit instructions agents need. The BeforeTurn injection now also lists **unchecked criteria IDs** inline so agents can call `check_criteria` without an extra `get_board_state` call.
+- **Sidecar YAML** (`.floe/extensions/snowball/runtime/<slug>.yaml`, schema `floe.ext.snowball.board.v3`, **gitignored**) owns ONLY the `column_contexts` map (`column_id → bus Context id`). Renamed from `boards/<slug>.yaml` to `runtime/<slug>.yaml` to clearly separate authored content from regenerable runtime state. Populated lazily on first card move to an agent-owned column (no explicit `POST /board/init` required).
 - **`slugify()`** maps `scope_id → filesystem slug` (replaces `:`, `/`, `\` with `_` for Windows-safe filenames).
 - **Card files** (`tasks/<id>.md`, **committed**) are the source of truth for card state. Frontmatter: `id`, `title`, `type`, `actor`, `column` (updated in-place on move, file never moves — D1), `order`, `created_at`, `checks`. Body: description + appended carry-forward comments.
 - **Column = bus Context**: `POST /board/init` creates one bus Context per column (scoped to board scope_id), with column owner actor + `snowball-overseer` as frozen participants. Context ids stored in `column_contexts` (sidecar).
 - **Columns as context rows**: `listContextsForScope` returns column contexts — the UI Contexts tab shows columns, not cards.
 - **Card-move path**: rewrites `column` frontmatter in-place, appends `<!-- carry-forward from "ColumnName" at ISO -->` comment to body, emits `snowball.card.entered_column` (for agent-owned columns) into the column context. All emits include `scope_id` so any fallback-created contexts are always board-scoped (never stray no-scope contexts).
-- **Lazy board init on move**: `handlePostMove` lazily calls `initBoardContexts` when the destination agent-owned column has no column context in the sidecar (e.g. board never initialized, or context evicted after owner change). This ensures `entered_column` routing always targets a scoped column context.
+- **Lazy board init on move**: `handlePostMove` (HTTP handler) AND the `move_card` tool both lazily call `initBoardContexts` when the destination agent-owned column has no column context in the sidecar. This ensures `entered_column` routing ALWAYS targets a scoped, stable column context — the same context reused across all moves to that column. Without lazy init in the tool path, each AI-initiated move would create a fresh context instead of reusing the column's persistent context.
+- **Stable column context**: each agent-owned column has ONE context in the bus. The context_id is persisted to the runtime sidecar after lazy init. Subsequent moves reuse the same context_id.
 - **Owner-change eviction**: `handlePostColumns` action:update evicts the column context from the sidecar when the column owner changes to an agent, so the next move triggers a lazy re-init with the new agent as a participant.
-- **BeforeTurn injection**: reads column files + card files. Column workers receive their column's instructions + card list. Overseer receives full board snapshot + all columns' instructions. Board discovery uses committed `boards/` directory (works after clone — no sidecar needed).
+- **BeforeTurn injection**: reads column files + card files. Column workers receive: (1) board-wide done protocol, (2) their column's agent instructions, (3) card list with criteria count AND unchecked criteria IDs/descriptions (so agents can call `check_criteria` without a separate `get_board_state` call). Overseer receives full board snapshot + all columns' instructions. Board discovery uses `.floe/extensions/snowball/boards/` directory (works after clone — no sidecar needed).
+- **Column instructions before board init**: `POST /column/instructions` now auto-creates default column files if the target column doesn't exist yet on disk. This allows users to save instructions for a default (in-memory) column without first calling `POST /board/init`.
 - **Overseer** (`advanceCardIfReady`) reads column definitions from column files (not sidecar). Maximum 20-column cascade guard.
 - **Gate enforcement**: AI `move_card` hard-blocked by unchecked exit criteria (read from column files); human `force=true` is soft-warn; WIP limits hard-block both.
 - **Column instructions UI**: `ColumnConfigPanel` includes an "Agent Instructions" textarea. Saving writes the column file body via `POST /column/instructions` (the file IS the source of truth). Instructions are committed and diffable.
