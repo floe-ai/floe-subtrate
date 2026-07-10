@@ -18,6 +18,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { subscribeBusStream } from "./bus-stream.ts";
 import { PlusIcon, BotIcon, UserIcon, CheckCircle2Icon, CircleIcon, Trash2Icon, XIcon } from "lucide-react";
 import { Board } from "./Board.tsx";
 import { ColumnConfigPanel, type ColumnConfigPayload } from "./ColumnConfigPanel.tsx";
@@ -513,45 +514,33 @@ export function SnowballBoard({
   // Human-mutation handlers already call reload() directly; the WS path
   // triggers a second reload for those (harmless — same data) and is the
   // primary signal for agent-driven changes.
+  //
+  // Uses subscribeBusStream() which provides automatic reconnect with
+  // exponential back-off — no more "WebSocket closed before connection
+  // established" storms on page load or bus restart.
   useEffect(() => {
     // Derive WS URL from busBaseUrl: http:// → ws://, https:// → wss://
     const wsUrl = busBaseUrl.replace(/^http/, "ws") + "/v1/events/stream";
-    let ws: WebSocket | null = null;
-    try {
-      ws = new WebSocket(wsUrl);
-    } catch {
-      // WebSocket unavailable (test/SSR env without browser globals)
-      return;
-    }
-    const client = ws;
-
-    client.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data as string) as {
-          type: string;
-          payload?: {
-            event?: {
-              type?: string;
-              content?: { data?: { board_scope_id?: string } };
-            };
+    const unsubscribe = subscribeBusStream(wsUrl, (msg) => {
+      const m = msg as {
+        type: string;
+        payload?: {
+          event?: {
+            type?: string;
+            content?: { data?: { board_scope_id?: string } };
           };
         };
-        // Re-fetch board when any snowball event for this scope arrives.
-        if (
-          msg.type === "event_submitted" &&
-          msg.payload?.event?.type?.startsWith("snowball.") &&
-          msg.payload?.event?.content?.data?.board_scope_id === scopeId
-        ) {
-          void reload();
-        }
-      } catch {
-        // Ignore non-JSON or unexpected message shapes
+      };
+      // Re-fetch board when any snowball event for this scope arrives.
+      if (
+        m.type === "event_submitted" &&
+        m.payload?.event?.type?.startsWith("snowball.") &&
+        m.payload?.event?.content?.data?.board_scope_id === scopeId
+      ) {
+        void reload();
       }
-    };
-
-    return () => {
-      client.close();
-    };
+    });
+    return unsubscribe;
   }, [busBaseUrl, scopeId, reload]);
 
   // ── Mutation helpers ─────────────────────────────────────────────────────

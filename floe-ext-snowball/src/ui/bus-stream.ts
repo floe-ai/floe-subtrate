@@ -1,20 +1,32 @@
 /**
- * WebSocket stream client for /v1/events/stream.
+ * WebSocket event stream subscription utility for the Snowball extension UI.
  *
- * Provides an automatic reconnect loop with exponential back-off so components
- * do not lose their live-update channel when the bus restarts or the connection
- * drops briefly.  The returned cleanup function cancels the loop immediately —
- * even if the socket is still in the CONNECTING state — without triggering the
- * "WebSocket closed before connection established" Chrome warning.
+ * Mirrors floe-app/src/bus-client/stream.ts but derives the WS URL from the
+ * bus HTTP base URL passed as a prop, so the extension works regardless of
+ * which port the bus is on.
+ *
+ * Provides auto-reconnect with exponential back-off; the cleanup function is
+ * cancel-safe even when the socket is still CONNECTING (avoids the
+ * "WebSocket closed before connection established" Chrome warning that would
+ * occur when React strict-mode cleanup runs on an in-flight socket).
  */
-import type { StreamMsg } from "./types.ts";
-
-const BUS_WS_URL = "ws://127.0.0.1:5377/v1/events/stream";
 
 const INITIAL_BACKOFF_MS = 250;
 const MAX_BACKOFF_MS = 16_000;
 
-export function subscribeEvents(handler: (msg: StreamMsg) => void): () => void {
+export type BusStreamMsg = {
+  type: string;
+  payload?: Record<string, unknown>;
+};
+
+/**
+ * Subscribe to the bus event stream at `wsUrl`.
+ * Returns an unsubscribe/cleanup function.
+ */
+export function subscribeBusStream(
+  wsUrl: string,
+  handler: (msg: BusStreamMsg) => void
+): () => void {
   let cancelled = false;
   let ws: WebSocket | null = null;
   let backoffMs = INITIAL_BACKOFF_MS;
@@ -23,7 +35,7 @@ export function subscribeEvents(handler: (msg: StreamMsg) => void): () => void {
   function connect(): void {
     if (cancelled) return;
     try {
-      ws = new WebSocket(BUS_WS_URL);
+      ws = new WebSocket(wsUrl);
     } catch {
       // WebSocket unavailable (test/SSR env without browser globals)
       return;
@@ -32,8 +44,7 @@ export function subscribeEvents(handler: (msg: StreamMsg) => void): () => void {
     ws.onmessage = (event) => {
       if (cancelled) return;
       try {
-        const msg = JSON.parse(event.data) as StreamMsg;
-        handler(msg);
+        handler(JSON.parse(event.data) as BusStreamMsg);
       } catch {
         // ignore non-JSON frames
       }
@@ -44,7 +55,6 @@ export function subscribeEvents(handler: (msg: StreamMsg) => void): () => void {
         ws?.close();
         return;
       }
-      // Reset back-off on successful connection.
       backoffMs = INITIAL_BACKOFF_MS;
     };
 
@@ -57,7 +67,7 @@ export function subscribeEvents(handler: (msg: StreamMsg) => void): () => void {
     };
 
     ws.onerror = () => {
-      // `onclose` fires after `onerror`, so reconnect is handled there.
+      // onclose fires after onerror; reconnect is handled there.
     };
   }
 
@@ -73,8 +83,7 @@ export function subscribeEvents(handler: (msg: StreamMsg) => void): () => void {
       if (ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
-      // If CONNECTING: let the socket finish opening; onopen will close it.
-      // If CLOSING/CLOSED: no action needed.
+      // If CONNECTING: onopen will close it; if CLOSING/CLOSED: no-op.
       ws = null;
     }
   };
