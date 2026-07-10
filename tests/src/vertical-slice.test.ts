@@ -560,7 +560,22 @@ You are Floe.
     );
     const scopeId = testScope.scope_id;
 
-    // ── 5. Wait for extension relay to be reported to bus ─────────────────
+    // ── 5. Set runtime binding so fake adapter can process deliveries ────
+    // The snowball-overseer starts as runtime_unconfigured (no auth profile).
+    // Setting a workspace-default binding (any profile name — the fake adapter
+    // never validates it) causes the bridge to re-attach and set the endpoint
+    // to idle, enabling delivery processing.
+    await post("/v1/runtime/bindings", {
+      scope: "workspace_default",
+      workspace_id: workspaceId,
+      auth_profile: "fake"
+    });
+    await waitFor(async () => {
+      const result = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
+      return result.endpoints.some((ep) => ep.endpoint_id === overseerEndpointId && ep.status === "idle");
+    }, "snowball-overseer endpoint idle", 15_000);
+
+    // ── 6. Wait for extension relay to be reported to bus ─────────────────
     // The bridge reports relay_url after loading extensions + starting the relay.
     // We know it's done when the snowball-overseer is registered AND the extension
     // appears in GET /v1/extensions. Give it a moment after endpoint registration.
@@ -569,7 +584,7 @@ You are Floe.
       return result.extensions.some((e) => e.name === "snowball" && e.relay_url !== null);
     }, "snowball extension relay registered", 20_000);
 
-    // ── 6. Initialize the board via extension relay ───────────────────────
+    // ── 7. Initialize the board via extension relay ───────────────────────
     // POST /v1/extensions/snowball/board/init creates column files + column contexts.
     const initResult = await post<{ ok: boolean; board: any }>(
       "/v1/extensions/snowball/board/init",
