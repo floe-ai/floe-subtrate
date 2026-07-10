@@ -140,37 +140,9 @@ export async function advanceCardIfReady(
 
     const columnContextId = sidecar.column_contexts[nextCol.id];
 
-    // Emit move event (best-effort).
-    try {
-      await bus.emit({
-        type: "snowball.card.moved",
-        workspace_id: ctx.workspaceId,
-        source_endpoint_id: overseer,
-        scope_id: scopeId,
-        destination: {
-          kind: "broadcast" as const,
-          scope: "workspace",
-          target: "active_with_delivery_processor",
-        },
-        content: {
-          text: `[overseer] Card "${card.title}" advanced from "${fromColumnName}" to "${nextCol.name}" (all exit criteria satisfied)`,
-          data: {
-            card_id: cardId,
-            card_title: card.title,
-            from_column_id: fromColumnId,
-            to_column_id: nextCol.id,
-            board_scope_id: scopeId,
-            source: "overseer",
-            forced: false,
-          },
-        },
-        metadata: { source: "snowball-overseer" },
-      });
-    } catch (err) {
-      console.warn("[snowball:overseer] failed to emit card moved event", {
-        error: String(err),
-      });
-    }
+    // NOTE: card.moved broadcast intentionally omitted — see handlers.ts
+    // handlePostCard comment. The entered_column routing event below is the
+    // canonical signal for both agent routing and WS-based UI refresh.
 
     // If destination is agent-owned, emit routing event and continue cascade.
     if (nextCol.owner.kind === "agent" && nextCol.owner.agent_id) {

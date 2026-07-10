@@ -532,15 +532,16 @@ export function SnowballBoard({
   }, [reload, reloadBoardInstructions]);
 
   // ── Agent-driven live refresh via bus WebSocket stream ─────────────────
-  // The bus broadcasts `event_submitted` for every routed event.  When the
-  // snowball overseer (or a column worker) mechanically advances a card, it
-  // emits `snowball.card.moved` through the bus.  Subscribing here means the
-  // board updates live without any polling timer — the same event-driven
-  // channel used by ScopeDetail for `extensions_updated`.
+  // The bus broadcasts `event_submitted` for every routed event.  When an
+  // agent-owned column worker moves a card, it emits
+  // `snowball.card.entered_column` (the canonical routing signal); the
+  // `event_submitted` WS broadcast triggers the board reload.  Human-mutation
+  // handlers already call reload() directly; the WS path fires a second
+  // reload for those (harmless — same data).
   //
-  // Human-mutation handlers already call reload() directly; the WS path
-  // triggers a second reload for those (harmless — same data) and is the
-  // primary signal for agent-driven changes.
+  // Note: snowball.card.moved / .created / .criteria_checked broadcasts were
+  // removed (fm/floe-card-context-churn) — they created a throwaway context
+  // per mutation and triggered spurious agent turns.
   //
   // Uses subscribeBusStream() which provides automatic reconnect with
   // exponential back-off — no more "WebSocket closed before connection

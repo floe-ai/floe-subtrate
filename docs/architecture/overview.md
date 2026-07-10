@@ -349,8 +349,8 @@ Body: description + carry-forward comments"]
 
     subgraph BUS["floe-bus (SQLite)"]
         BUS_EV["Events
-snowball.card.moved
-snowball.card.entered_column"]
+snowball.card.entered_column (routing + UI-refresh signal)
+(snowball.card.moved / .created / .criteria_checked suppressed — caused context churn)"]
         BUS_CTX["Contexts
 (one per COLUMN, not per card)
 Owner actor + overseer frozen participants"]
@@ -528,13 +528,13 @@ graph TD
 
     subgraph SUB["Substrate (floe-bus)"]
         COL_CTX["Column Context\n(scope_id = board scope)\nStable participant = column owner actor\nNO per-move participant churn"]
-        MOVE_EV["Event: card.moved\n(from_column, to_column, card_id)\nDelivered to new column context"]
+        ENTER_EV["Event: card.entered_column\n(column_id, card_id, stable context_id)\nTargeted endpoint delivery → agent routing + UI-refresh signal"]
     end
 
     BOARD_CFG -->|"references"| COL_FILE
     COL_FILE -->|"corresponds to"| COL_CTX
-    CARD_FILE -->|"moved → emit"| MOVE_EV
-    MOVE_EV -->|"delivered to"| COL_CTX
+    CARD_FILE -->|"moved to agent col → emit"| ENTER_EV
+    ENTER_EV -->|"delivered to"| COL_CTX
     CARD_FILE -->|"on move"| CARRY
 ```
 

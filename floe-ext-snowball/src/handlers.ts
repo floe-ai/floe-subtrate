@@ -632,32 +632,11 @@ function handlePostCard(
         body: description?.trim() ?? "",
       });
 
-      // Emit creation event (best-effort)
-      const bus = asBusClient(ctx.busClient);
-      try {
-        await bus.emit({
-          type: "snowball.card.created",
-          workspace_id: ctx.workspaceId,
-          source_endpoint_id: overseerId(ctx.workspaceId),
-          scope_id,
-          destination: {
-            kind: "broadcast" as const,
-            scope: "workspace",
-            target: "active_with_delivery_processor",
-          },
-          content: {
-            text: `Card "${title.trim()}" created in "${targetCol.name}"`,
-            data: {
-              card_id: cardId,
-              column_id: targetColId,
-              board_scope_id: scope_id,
-            },
-          },
-          metadata: { source: "snowball-extension" },
-        });
-      } catch {
-        // Non-fatal
-      }
+      // NOTE: card.created broadcast intentionally omitted — broadcasting to
+      // active_with_delivery_processor with no context_id creates a throwaway
+      // context per card and triggers agent turns for a pure state notification.
+      // Human mutations use withReload() for UI refresh; agent mutations emit
+      // entered_column which triggers event_submitted → WS-based board refresh.
 
       const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
       return jsonResponse(201, {
@@ -954,34 +933,10 @@ function handlePostMove(
 
     const columnContextId = sidecar.column_contexts[to_column_id];
 
-    try {
-      await bus.emit({
-        type: "snowball.card.moved",
-        workspace_id: workspaceId,
-        source_endpoint_id: overseer,
-        scope_id,
-        destination: {
-          kind: "broadcast" as const,
-          scope: "workspace",
-          target: "active_with_delivery_processor",
-        },
-        content: {
-          text: `Card "${card.title}" moved from "${previousColumnName}" to "${toColumn.name}" (UI)`,
-          data: {
-            card_id,
-            card_title: card.title,
-            from_column_id: previousColumnId,
-            to_column_id,
-            forced: Boolean(force),
-            board_scope_id: scope_id,
-            source: "ui",
-          },
-        },
-        metadata: { source: "snowball-extension" },
-      });
-    } catch {
-      // Non-fatal
-    }
+    // NOTE: card.moved broadcast intentionally omitted — see card.created note
+    // in handlePostCard. The entered_column routing event below is the
+    // canonical signal; it uses a stable column context and does not create
+    // throwaway contexts or spurious agent turns.
 
     // If destination is agent-owned, emit routing event into column context
     if (toColumn.owner.kind === "agent" && toColumn.owner.agent_id) {
