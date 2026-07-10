@@ -33,7 +33,6 @@ import {
   appendCarryForward,
   cardCountsByColumnFromFiles,
 } from "../card-file.js";
-import { advanceCardIfReady } from "../overseer.js";
 
 // ---------------------------------------------------------------------------
 // Routing helpers
@@ -487,12 +486,11 @@ export function createTools(ctx: ExtensionContext) {
             console.warn(`[snowball] Failed to emit routing event: ${err}`);
           }
 
-          // Synchronous overseer evaluation
-          try {
-            await advanceCardIfReady(ctx, scope_id, card_id);
-          } catch (err) {
-            console.warn(`[snowball] Overseer advance failed: ${err}`);
-          }
+          // NOTE: advanceCardIfReady is intentionally NOT called here.
+          // This agent just moved the card, completing work in its source column.
+          // The destination agent column must do ITS OWN work (triggered by the
+          // entered_column routing event above) before advancing further.
+          // See fm/floe-advance-protocol for the advance-on-conclusion design.
         }
 
         // Soft gate override warning (human + unchecked)

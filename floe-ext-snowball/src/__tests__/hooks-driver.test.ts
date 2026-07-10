@@ -451,7 +451,14 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     expect((moveEvents[1].content.data as Record<string, unknown>)?.to_column_id).toBe("done");
   });
 
-  it("move_card tool triggers advance immediately on agent-column entry (integration)", async () => {
+  it("move_card tool does NOT auto-advance on agent-column entry (advance-on-conclusion)", async () => {
+    // This test verifies the fix for the pre-work cascade bug.
+    // Previously, advanceCardIfReady was called synchronously after move_card
+    // placed a card in an agent column, so a criteria-less column would
+    // pass the card through before the agent did any work.
+    //
+    // After fm/floe-advance-protocol: the card stays in the agent column;
+    // advance only happens when the agent concludes its work and calls move_card.
     const now = new Date().toISOString();
     bus.seedEndpoint({
       endpoint_id: "actor:ws:test:snowball-overseer",
@@ -464,9 +471,11 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
 
+    // Even with all criteria pre-checked, the card must NOT auto-advance
+    // simply because it arrived in an agent column.
     writeCard(tmpDir, makeCardFile({
-      id: "ctx_auto",
-      title: "Auto-advance card",
+      id: "ctx_no_cascade",
+      title: "Should stay in agent-col",
       column: "todo",
       checks: {
         "agent-col": {
@@ -479,7 +488,7 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     const tools = createTools(ctx);
 
     const result = await callTool(tools, "move_card", {
-      card_id: "ctx_auto",
+      card_id: "ctx_no_cascade",
       to_column_id: "agent-col",
       scope_id: AGENT_SCOPE,
     });
@@ -487,13 +496,22 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     const payload = JSON.parse(result.content[0].text) as { ok: boolean };
     expect(payload.ok).toBe(true);
 
-    const card = readCard(tmpDir, "ctx_auto");
-    expect(card!.column).toBe("done");
+    // Card must remain in the agent column — not auto-advanced.
+    const card = readCard(tmpDir, "ctx_no_cascade");
+    expect(card!.column).toBe("agent-col");
 
-    const moveEvents = bus.emittedEvents.filter((e) => e.type === "snowball.card.moved");
-    const overseerMoveEvent = moveEvents.find(
-      (e) => (e.content.data as Record<string, unknown>)?.source === "overseer"
+    // No overseer-sourced move event should have fired.
+    const overseerMoveEvents = bus.emittedEvents.filter(
+      (e) =>
+        e.type === "snowball.card.moved" &&
+        (e.content.data as Record<string, unknown>)?.source === "overseer"
     );
-    expect(overseerMoveEvent).toBeDefined();
+    expect(overseerMoveEvents).toHaveLength(0);
+
+    // The routing event (entered_column) MUST have been emitted so the agent wakes up.
+    const routingEvent = bus.emittedEvents.find(
+      (e) => e.type === "snowball.card.entered_column"
+    );
+    expect(routingEvent).toBeDefined();
   });
 });

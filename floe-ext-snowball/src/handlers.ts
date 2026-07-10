@@ -15,6 +15,8 @@
  *   POST /v1/extensions/snowball/columns                           → add/update/delete/reorder
  *   GET  /v1/extensions/snowball/column/instructions?scope_id=<id>&column_id=<id>
  *   POST /v1/extensions/snowball/column/instructions               → save instructions body
+ *   GET  /v1/extensions/snowball/board/instructions?scope_id=<id>  → read board done protocol
+ *   POST /v1/extensions/snowball/board/instructions                → save board done protocol
  *   POST /v1/extensions/snowball/card                              → create card file
  *   POST /v1/extensions/snowball/card/delete                       → remove card file
  *   POST /v1/extensions/snowball/card/rename                       → rename card title
@@ -43,8 +45,12 @@ import {
   defaultColumnFiles,
   type ColumnFile,
 } from "./column-file.js";
+import {
+  ensureBoardFile,
+  readBoardFile,
+  updateBoardFileProtocol,
+} from "./board-file.js";
 import { asBusClient } from "./stub/bus-client.js";
-import { advanceCardIfReady } from "./overseer.js";
 import {
   readCard,
   writeCard,
@@ -145,11 +151,14 @@ function handlePostBoardInit(
         }
       }
 
-      // 2. Load sidecar (context map only) and set workspace_id.
+      // 2. Ensure board.md exists (creates with default done protocol if absent).
+      ensureBoardFile(ctx.workspacePath, slug, scope_id);
+
+      // 3. Load sidecar (context map only) and set workspace_id.
       const sidecar = loadSidecar(ctx.workspacePath, scope_id);
       if (!sidecar.workspace_id) sidecar.workspace_id = ctx.workspaceId;
 
-      // 3. Create column contexts in bus (idempotent).
+      // 4. Create column contexts in bus (idempotent).
       const bus = asBusClient(ctx.busClient);
       const { changed } = await initBoardContexts(
         sidecar,
@@ -452,6 +461,73 @@ function handlePostColumnInstructions(
         column_id: updated.id,
         column_name: updated.name,
         instructions: updated.instructions,
+      });
+    } catch (err) {
+      return jsonResponse(500, { error: String(err) });
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// GET /board/instructions?scope_id=<id>
+// Returns the board's done protocol body from board.md.
+// ---------------------------------------------------------------------------
+
+function handleGetBoardInstructions(
+  workspacePath: string
+): (req: RelayRequest) => Promise<RelayResponse> {
+  return async (req) => {
+    const { scope_id } = req.query;
+    if (!scope_id) {
+      return jsonResponse(400, {
+        error: "scope_id query parameter required",
+      });
+    }
+    try {
+      const slug = slugify(scope_id);
+      const bf = readBoardFile(workspacePath, slug);
+      return jsonResponse(200, {
+        scope_id,
+        done_protocol: bf?.done_protocol ?? "",
+      });
+    } catch (err) {
+      return jsonResponse(500, { error: String(err) });
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// POST /board/instructions  { scope_id, done_protocol }
+// Saves the done protocol body of board.md.
+// The file body IS the done protocol — this is the committed source of truth.
+// ---------------------------------------------------------------------------
+
+function handlePostBoardInstructions(
+  workspacePath: string
+): (req: RelayRequest) => Promise<RelayResponse> {
+  return async (req) => {
+    const body = (req.body ?? {}) as {
+      scope_id?: string;
+      done_protocol?: string;
+    };
+    const { scope_id, done_protocol } = body;
+    if (!scope_id || done_protocol === undefined) {
+      return jsonResponse(400, {
+        error: "scope_id and done_protocol required",
+      });
+    }
+    try {
+      const slug = slugify(scope_id);
+      const updated = updateBoardFileProtocol(
+        workspacePath,
+        slug,
+        scope_id,
+        done_protocol
+      );
+      return jsonResponse(200, {
+        ok: true,
+        scope_id: updated.scope_id,
+        done_protocol: updated.done_protocol,
       });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
@@ -916,12 +992,12 @@ function handlePostMove(
         console.warn(`[snowball] Routing event failed: ${err}`);
       }
 
-      // Synchronous overseer evaluation
-      try {
-        await advanceCardIfReady(ctx, scope_id, card_id);
-      } catch (err) {
-        console.warn(`[snowball] Overseer advance failed: ${err}`);
-      }
+      // NOTE: advanceCardIfReady is intentionally NOT called here.
+      // The card has just arrived in an agent-owned column; the agent must do
+      // its work (triggered by the entered_column routing event above) before
+      // the card advances. Advance happens when the agent concludes its work
+      // and calls move_card (or check_criteria + move_card for criteria columns).
+      // See fm/floe-advance-protocol for the advance-on-conclusion design.
     }
 
     return jsonResponse(200, {
@@ -952,12 +1028,22 @@ export function registerHttpHandlers(ctx: ExtensionContext): void {
     "/column/instructions",
     handlePostColumnInstructions(ctx.workspacePath)
   );
+  ctx.registerHttpHandler(
+    "GET",
+    "/board/instructions",
+    handleGetBoardInstructions(ctx.workspacePath)
+  );
+  ctx.registerHttpHandler(
+    "POST",
+    "/board/instructions",
+    handlePostBoardInstructions(ctx.workspacePath)
+  );
   ctx.registerHttpHandler("POST", "/card", handlePostCard(ctx));
   ctx.registerHttpHandler("POST", "/card/delete", handlePostCardDelete(ctx));
   ctx.registerHttpHandler("POST", "/card/rename", handlePostCardRename(ctx));
   ctx.registerHttpHandler("POST", "/card/criteria", handlePostCardCriteria(ctx));
   ctx.registerHttpHandler("POST", "/move", handlePostMove(ctx));
   console.info(
-    "[snowball] HTTP handlers registered: GET /board, POST /board/init, POST /columns, GET /column/instructions, POST /column/instructions, POST /card, POST /card/delete, POST /card/rename, POST /card/criteria, POST /move"
+    "[snowball] HTTP handlers registered: GET /board, POST /board/init, POST /columns, GET /column/instructions, POST /column/instructions, GET /board/instructions, POST /board/instructions, POST /card, POST /card/delete, POST /card/rename, POST /card/criteria, POST /move"
   );
 }

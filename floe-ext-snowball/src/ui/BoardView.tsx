@@ -19,9 +19,10 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { subscribeBusStream } from "./bus-stream.ts";
-import { PlusIcon, BotIcon, UserIcon, CheckCircle2Icon, CircleIcon, Trash2Icon, XIcon } from "lucide-react";
+import { PlusIcon, BotIcon, UserIcon, CheckCircle2Icon, CircleIcon, Trash2Icon, XIcon, BookOpenIcon } from "lucide-react";
 import { Board } from "./Board.tsx";
 import { ColumnConfigPanel, type ColumnConfigPayload } from "./ColumnConfigPanel.tsx";
+import { BoardSettingsPanel } from "./BoardSettingsPanel.tsx";
 import type {
   ExtensionViewProps,
   UiBoardState,
@@ -57,6 +58,16 @@ async function fetchBoardState(
 ): Promise<UiBoardState> {
   const url = `${apiBase(busBaseUrl, extensionName)}/board?scope_id=${encodeURIComponent(scopeId)}`;
   return apiFetch(url) as Promise<UiBoardState>;
+}
+
+async function fetchBoardInstructions(
+  busBaseUrl: string,
+  extensionName: string,
+  scopeId: string
+): Promise<string> {
+  const url = `${apiBase(busBaseUrl, extensionName)}/board/instructions?scope_id=${encodeURIComponent(scopeId)}`;
+  const res = await apiFetch(url) as { done_protocol?: string };
+  return res.done_protocol ?? "";
 }
 
 async function postJson(
@@ -480,6 +491,10 @@ export function SnowballBoard({
   );
   const [configPanelOpen, setConfigPanelOpen] = useState(false);
 
+  // Board settings panel
+  const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
+  const [boardDoneProtocol, setBoardDoneProtocol] = useState<string>("");
+
   // ── Board fetch ──────────────────────────────────────────────────────────
 
   const reload = useCallback(async () => {
@@ -500,9 +515,21 @@ export function SnowballBoard({
     }
   }, [busBaseUrl, extensionName, scopeId]);
 
+  // Load board done protocol separately (only needed when board settings panel opens).
+  // Also pre-fetch on initial load so the panel is ready without a spinner.
+  const reloadBoardInstructions = useCallback(async () => {
+    try {
+      const protocol = await fetchBoardInstructions(busBaseUrl, extensionName, scopeId);
+      setBoardDoneProtocol(protocol);
+    } catch {
+      // Non-fatal: panel falls back to empty string
+    }
+  }, [busBaseUrl, extensionName, scopeId]);
+
   useEffect(() => {
     reload();
-  }, [reload]);
+    reloadBoardInstructions();
+  }, [reload, reloadBoardInstructions]);
 
   // ── Agent-driven live refresh via bus WebSocket stream ─────────────────
   // The bus broadcasts `event_submitted` for every routed event.  When the
@@ -671,6 +698,16 @@ export function SnowballBoard({
     });
   }
 
+  async function handleSaveBoardInstructions(
+    doneProtocol: string
+  ): Promise<void> {
+    await postJson(busBaseUrl, extensionName, "/board/instructions", {
+      scope_id: scopeId,
+      done_protocol: doneProtocol,
+    });
+    setBoardDoneProtocol(doneProtocol);
+  }
+
   async function handleDeleteColumn(columnId: string): Promise<void> {
     await withReload(async () => {
       await postJson(busBaseUrl, extensionName, "/columns", {
@@ -716,11 +753,15 @@ export function SnowballBoard({
   function openColumnConfig(column: UiColumn) {
     setConfigPanelColumn(column);
     setConfigPanelOpen(true);
+    // Close board settings panel if open
+    setBoardSettingsOpen(false);
   }
 
   function openAddColumn() {
     setConfigPanelColumn("ADD");
     setConfigPanelOpen(true);
+    // Close board settings panel if open
+    setBoardSettingsOpen(false);
   }
 
   function closeColumnConfig() {
@@ -856,6 +897,32 @@ export function SnowballBoard({
           )}
           <button
             type="button"
+            onClick={() => {
+              setBoardSettingsOpen(true);
+              // Close column config panel if open
+              setConfigPanelOpen(false);
+              // Pre-fetch instructions in case they changed
+              void reloadBoardInstructions();
+            }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "4px 10px",
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: 5,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: boardSettingsOpen ? "rgba(138,168,156,0.1)" : "transparent",
+              color: boardSettingsOpen ? "#8aa89c" : "#8a8f98",
+              cursor: "pointer",
+            }}
+            title="Board settings (done protocol)"
+          >
+            <BookOpenIcon size={11} /> Board Settings
+          </button>
+          <button
+            type="button"
             onClick={openAddColumn}
             style={{
               display: "inline-flex",
@@ -916,6 +983,14 @@ export function SnowballBoard({
         onMoveUp={handleMoveColumnUp}
         onMoveDown={handleMoveColumnDown}
         onSaveInstructions={handleSaveInstructions}
+      />
+
+      {/* Board settings panel */}
+      <BoardSettingsPanel
+        open={boardSettingsOpen}
+        onClose={() => setBoardSettingsOpen(false)}
+        doneProtocol={boardDoneProtocol}
+        onSave={handleSaveBoardInstructions}
       />
     </div>
   );

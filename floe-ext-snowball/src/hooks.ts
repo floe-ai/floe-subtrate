@@ -25,6 +25,7 @@ import {
   listColumnFiles,
   findBoardScopesForAgentFromFiles,
 } from "./column-file.js";
+import { ensureBoardFile } from "./board-file.js";
 
 const OVERSEER_AGENT_ID = "snowball-overseer";
 
@@ -82,7 +83,14 @@ export function registerHooks(ctx: ExtensionContext): void {
           }
         }
       } else {
-        // Column worker: only their cards + their column's instructions (R7)
+        // Column worker: board done protocol + per-column instructions + cards (R7)
+        // Load board done protocol (lazily creates board.md with defaults if absent).
+        const boardFile = ensureBoardFile(workspacePath, slug, scopeId);
+        if (boardFile.done_protocol.trim().length > 0) {
+          lines.push(boardFile.done_protocol.trim());
+          lines.push("");
+        }
+
         const ownedColumns = columns.filter(
           (col) =>
             col.owner.kind === "agent" && col.owner.agent_id === agentId
