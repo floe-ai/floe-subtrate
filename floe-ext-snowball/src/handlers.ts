@@ -276,6 +276,23 @@ function handlePostColumns(
           body.column_id,
           updates
         );
+
+        // When the column owner changes to an agent, evict the existing context
+        // from the sidecar so the next card move triggers a lazy re-init with
+        // the new agent as a participant.  The old context remains in the bus
+        // DB (historical events are preserved) but is no longer the routing
+        // target.  Only evict when the owner was NOT already the same agent to
+        // avoid unnecessary churn.
+        if (body.owner?.kind === "agent" && body.owner.agent_id) {
+          const previousOwner = col.owner;
+          const ownerChanged =
+            previousOwner.kind !== "agent" ||
+            previousOwner.agent_id !== body.owner.agent_id;
+          if (ownerChanged && sidecar.column_contexts[body.column_id]) {
+            delete sidecar.column_contexts[body.column_id];
+            saveSidecar(ctx.workspacePath, scope_id, sidecar);
+          }
+        }
       } else if (action === "delete") {
         if (!body.column_id)
           return jsonResponse(400, {
@@ -523,6 +540,7 @@ function handlePostCard(
           type: "snowball.card.created",
           workspace_id: ctx.workspaceId,
           source_endpoint_id: overseerId(ctx.workspaceId),
+          scope_id,
           destination: {
             kind: "broadcast" as const,
             scope: "workspace",
@@ -817,6 +835,24 @@ function handlePostMove(
     // Emit events (best-effort)
     const bus = asBusClient(ctx.busClient);
     const overseer = overseerId(workspaceId);
+
+    // Lazy board init: if the destination column is agent-owned but has no column
+    // context yet (board never initialised, or context was evicted after an owner
+    // change), create it now so the routing event lands in the right context.
+    if (toColumn.owner.kind === "agent" && !sidecar.column_contexts[to_column_id]) {
+      try {
+        const { changed } = await initBoardContexts(
+          sidecar,
+          workspaceId,
+          bus,
+          effectiveColumns
+        );
+        if (changed) saveSidecar(workspacePath, scope_id, sidecar);
+      } catch (err) {
+        console.warn(`[snowball] Lazy board init failed: ${err}`);
+      }
+    }
+
     const columnContextId = sidecar.column_contexts[to_column_id];
 
     try {
@@ -824,6 +860,7 @@ function handlePostMove(
         type: "snowball.card.moved",
         workspace_id: workspaceId,
         source_endpoint_id: overseer,
+        scope_id,
         destination: {
           kind: "broadcast" as const,
           scope: "workspace",
@@ -855,6 +892,7 @@ function handlePostMove(
           type: "snowball.card.entered_column",
           workspace_id: workspaceId,
           source_endpoint_id: overseer,
+          scope_id,
           ...(columnContextId ? { context_id: columnContextId } : {}),
           destination: {
             kind: "endpoint" as const,

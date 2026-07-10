@@ -236,6 +236,7 @@ export function createTools(ctx: ExtensionContext) {
             type: "snowball.card.created",
             workspace_id: workspaceId,
             source_endpoint_id: overseerId(workspaceId),
+            scope_id,
             destination: {
               kind: "broadcast" as const,
               scope: "workspace",
@@ -431,6 +432,7 @@ export function createTools(ctx: ExtensionContext) {
             type: "snowball.card.moved",
             workspace_id: workspaceId,
             source_endpoint_id: overseer,
+            scope_id,
             destination: {
               kind: "broadcast" as const,
               scope: "workspace",
@@ -461,6 +463,7 @@ export function createTools(ctx: ExtensionContext) {
               type: "snowball.card.entered_column",
               workspace_id: workspaceId,
               source_endpoint_id: overseer,
+              scope_id,
               ...(columnContextId ? { context_id: columnContextId } : {}),
               destination: {
                 kind: "endpoint" as const,
@@ -499,6 +502,7 @@ export function createTools(ctx: ExtensionContext) {
               type: "snowball.card.gate_overridden",
               workspace_id: workspaceId,
               source_endpoint_id: overseer,
+              scope_id,
               destination: {
                 kind: "broadcast" as const,
                 scope: "workspace",
@@ -614,6 +618,7 @@ export function createTools(ctx: ExtensionContext) {
             type: "snowball.card.criteria_checked",
             workspace_id: workspaceId,
             source_endpoint_id: overseerId(workspaceId),
+            scope_id,
             destination: {
               kind: "broadcast" as const,
               scope: "workspace",

@@ -146,6 +146,7 @@ export async function advanceCardIfReady(
         type: "snowball.card.moved",
         workspace_id: ctx.workspaceId,
         source_endpoint_id: overseer,
+        scope_id: scopeId,
         destination: {
           kind: "broadcast" as const,
           scope: "workspace",
@@ -179,6 +180,7 @@ export async function advanceCardIfReady(
           type: "snowball.card.entered_column",
           workspace_id: ctx.workspaceId,
           source_endpoint_id: overseer,
+          scope_id: scopeId,
           ...(columnContextId ? { context_id: columnContextId } : {}),
           destination: {
             kind: "endpoint" as const,

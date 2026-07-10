@@ -447,7 +447,13 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 
 **Tests:** `npm test --workspace floe-ext-snowball` — 170 unit tests (column-file format + sidecar/column-contexts + gate enforcement + handler + overseer driver + instructions endpoints).
 
-**Board live refresh (fm/board-refresh-fix):** Human mutations use `withReload()` in `BoardView.tsx` — every mutation calls `reload()` after the POST completes. Agent-driven moves are covered by a WS subscription to `ws://…/v1/events/stream`; when the bus broadcasts `event_submitted` for any `snowball.*` event with the matching `board_scope_id`, `reload()` is called automatically. The bus broadcasts `event_submitted` via `store.submitEvent` → `broadcast("event_submitted", { event })` at `floe-bus/src/store.ts:1352`.
+**Board live refresh (fm/board-refresh-fix):** Human mutations use `withReload()` in `BoardView.tsx` — every mutation calls `reload()` after the POST completes. Agent-driven moves are covered by a WS subscription via `subscribeBusStream()` in `bus-stream.ts` (which provides automatic reconnect with exponential back-off — no reconnect storms). The bus broadcasts `event_submitted` via `store.submitEvent` → `broadcast("event_submitted", { event })` at `floe-bus/src/store.ts:1352`.
+
+**Board routing invariants (fm/floe-e2e-fix):**
+- **All snowball emits must include `scope_id`** so any fallback-created contexts are scoped to the board scope, never stray no-scope contexts. Every `bus.emit()` call in `handlers.ts`, `tools/index.ts`, `overseer.ts` must include `scope_id`.
+- **Lazy board init on move**: `handlePostMove` lazily calls `initBoardContexts` when the destination agent-owned column has no `column_contexts` entry in the sidecar. Do not assume the board was initialized before first move.
+- **Owner-change eviction**: `handlePostColumns` action:update MUST evict the column context from the sidecar when the column owner changes to an agent, so the next move triggers a lazy re-init with the new agent as a participant. Failing to do so causes the routing event to target a context with wrong participants.
+- **Endpoint status gate**: the `snowball-overseer` endpoint starts as `runtime_unconfigured` (no auth profile). The bus does NOT create delivery bundles for `runtime_unconfigured` endpoints (`tryCreateDeliveryForEndpoint` returns null). A workspace runtime binding must be set before the overseer can process deliveries.
 
 **Board UI entry point:** `floe-ext-snowball/src/ui/BoardView.tsx` exported at `package.json exports['./BoardView']` for Track S's static import into `ScopeDetail.tsx`.
 
