@@ -78,7 +78,7 @@ export function boardColumnsDir(
   workspacePath: string,
   scopeSlug: string
 ): string {
-  return join(workspacePath, "boards", scopeSlug, "columns");
+  return join(workspacePath, ".floe", "extensions", "snowball", "boards", scopeSlug, "columns");
 }
 
 /** Absolute path to a column definition file. */
@@ -338,7 +338,7 @@ export function findBoardScopesForAgentFromFiles(
   agentId: string,
   overseerId: string
 ): string[] {
-  const boardsDir = join(workspacePath, "boards");
+  const boardsDir = join(workspacePath, ".floe", "extensions", "snowball", "boards");
   if (!existsSync(boardsDir)) return [];
 
   let slugDirs: string[];

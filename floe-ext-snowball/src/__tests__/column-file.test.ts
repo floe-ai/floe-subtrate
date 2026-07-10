@@ -498,8 +498,8 @@ describe("findBoardScopesForAgentFromFiles", () => {
   });
 
   it("handles boards directory with no column subdirectories", () => {
-    // Create boards/ with an empty subdirectory (no columns/ inside)
-    mkdirSync(join(tmpDir, "boards", "empty-slug"), { recursive: true });
+    // Create .floe/extensions/snowball/boards/ with an empty subdirectory (no columns/ inside)
+    mkdirSync(join(tmpDir, ".floe", "extensions", "snowball", "boards", "empty-slug"), { recursive: true });
 
     const scopes = findBoardScopesForAgentFromFiles(tmpDir, "snowball-overseer", "snowball-overseer");
     expect(scopes).toHaveLength(0);

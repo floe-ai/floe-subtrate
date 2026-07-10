@@ -443,6 +443,28 @@ function handlePostColumnInstructions(
     }
     try {
       const slug = slugify(scope_id);
+
+      // Issue #3 fix: if the column file doesn't exist yet (board using default
+      // in-memory columns, never persisted), auto-create the default column files
+      // so the instructions can be saved without a separate board-init step.
+      let existing = readColumnFile(workspacePath, slug, column_id);
+      if (!existing) {
+        const defaults = defaultColumnFiles(scope_id);
+        const defaultCol = defaults.find((c) => c.id === column_id);
+        if (!defaultCol) {
+          return jsonResponse(404, {
+            error: "column_not_found",
+            column_id,
+            note: "Column does not exist and is not a known default. Initialize the board first.",
+          });
+        }
+        // Persist all default column files so the board is now on disk.
+        for (const dc of defaults) {
+          writeColumnFile(workspacePath, slug, dc);
+        }
+        existing = defaultCol;
+      }
+
       const updated = updateColumnFileInstructions(
         workspacePath,
         slug,
@@ -450,6 +472,7 @@ function handlePostColumnInstructions(
         instructions
       );
       if (!updated) {
+        // Shouldn't happen after the ensure-defaults above, but guard defensively.
         return jsonResponse(404, {
           error: "column_not_found",
           column_id,

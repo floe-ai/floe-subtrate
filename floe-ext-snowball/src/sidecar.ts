@@ -52,7 +52,7 @@ export function slugify(scopeId: string): string {
 // ---------------------------------------------------------------------------
 
 function sidecarDir(workspacePath: string): string {
-  return join(workspacePath, ".floe", "extensions", "snowball", "boards");
+  return join(workspacePath, ".floe", "extensions", "snowball", "runtime");
 }
 
 function sidecarPath(workspacePath: string, scopeId: string): string {
