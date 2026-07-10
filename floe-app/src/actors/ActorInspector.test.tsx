@@ -1,7 +1,7 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import { ActorInspector, ActorContexts } from "./ActorInspector.tsx";
+import { ActorInspector, ActorContexts, actorExtensionName, actorFileRelPath } from "./ActorInspector.tsx";
 import * as client from "../bus-client/client.ts";
 import * as modelsForProfileHelper from "./modelsForProfile.ts";
 
@@ -212,5 +212,68 @@ describe("ActorContexts - New Context picker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("combobox", { name: "Select participant" })).toBeNull();
     expect(client.createDirectContext).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// actorExtensionName + actorFileRelPath — extension sentinel handling
+// ---------------------------------------------------------------------------
+
+function makeActor(metadata_json: string) {
+  return {
+    endpoint_id: "ep-x",
+    workspace_id: "ws-1",
+    name: "Test Actor",
+    agent_id: "agent-x",
+    bridge_id: "bridge-1",
+    status: "idle",
+    metadata_json,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+describe("actorExtensionName", () => {
+  it("returns the extension name for a sentinel file value", () => {
+    const actor = makeActor(JSON.stringify({ file: "[extension:snowball]" }));
+    expect(actorExtensionName(actor)).toBe("snowball");
+  });
+
+  it("returns null for a normal file path", () => {
+    const actor = makeActor(JSON.stringify({ file: "agents/my-agent.md" }));
+    expect(actorExtensionName(actor)).toBeNull();
+  });
+
+  it("returns null when metadata_json is missing", () => {
+    const actor = makeActor("");
+    actor.metadata_json = "";
+    expect(actorExtensionName({ ...actor, metadata_json: "" })).toBeNull();
+  });
+
+  it("returns null when file field is absent", () => {
+    const actor = makeActor(JSON.stringify({ runtime: "pi" }));
+    expect(actorExtensionName(actor)).toBeNull();
+  });
+});
+
+describe("actorFileRelPath", () => {
+  it("returns null for an extension sentinel", () => {
+    const actor = makeActor(JSON.stringify({ file: "[extension:snowball]" }));
+    expect(actorFileRelPath(actor)).toBeNull();
+  });
+
+  it("returns the .floe/-prefixed path for a normal file-backed actor", () => {
+    const actor = makeActor(JSON.stringify({ file: "agents/my-agent.md" }));
+    expect(actorFileRelPath(actor)).toBe(".floe/agents/my-agent.md");
+  });
+
+  it("returns null when metadata_json is empty/missing", () => {
+    const actor = makeActor("");
+    expect(actorFileRelPath({ ...actor, metadata_json: "" })).toBeNull();
+  });
+
+  it("returns null when file field is absent", () => {
+    const actor = makeActor(JSON.stringify({}));
+    expect(actorFileRelPath(actor)).toBeNull();
   });
 });

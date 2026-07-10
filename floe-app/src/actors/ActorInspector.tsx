@@ -488,8 +488,23 @@ type FileLoadState =
   | { phase: "loaded"; relPath: string; frontmatter: AgentFrontmatter; body: string }
   | { phase: "error"; message: string };
 
-function actorFileRelPath(actor: EndpointRef): string | null {
+/** Returns the extension name if this actor is supplied by an extension (sentinel file). */
+export function actorExtensionName(actor: EndpointRef): string | null {
   if (!actor.metadata_json) return null;
+  try {
+    const meta = JSON.parse(actor.metadata_json) as { file?: unknown };
+    if (typeof meta.file !== "string") return null;
+    const m = meta.file.match(/^\[extension:(.+)]$/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+export function actorFileRelPath(actor: EndpointRef): string | null {
+  if (!actor.metadata_json) return null;
+  // Extension-provided actors use a sentinel (e.g. "[extension:snowball]") — no on-disk file.
+  if (actorExtensionName(actor) !== null) return null;
   try {
     const meta = JSON.parse(actor.metadata_json) as { file?: unknown };
     if (typeof meta.file !== "string" || !meta.file) return null;
@@ -551,6 +566,38 @@ export function ActorFileSection({
       });
     return () => { cancelled = true; };
   }, [actor.endpoint_id, workspace, relPath, fsAvailable]);
+
+  // Extension-provided actors have no on-disk config file — show a read-only note
+  // regardless of FS availability (their definition lives in the extension, not on disk).
+  const extensionName = actorExtensionName(actor);
+  if (extensionName !== null) {
+    let frontmatterInfo: React.ReactNode = null;
+    try {
+      if (actor.metadata_json) {
+        const meta = JSON.parse(actor.metadata_json) as { frontmatter?: { runtime?: { engine?: string }; extensions?: string[]; pulse?: unknown } };
+        if (meta.frontmatter) {
+          const fm = meta.frontmatter;
+          const engine = fm.runtime?.engine ?? "pi";
+          const exts = (fm.extensions ?? []).join(", ");
+          frontmatterInfo = (
+            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+              {engine && <span style={{ fontSize: 11, color: tk.ink3 }}><span style={{ color: tk.ink4 }}>Engine: </span>{engine}</span>}
+              {exts && <span style={{ fontSize: 11, color: tk.ink3 }}><span style={{ color: tk.ink4 }}>Extensions: </span>{exts}</span>}
+            </div>
+          );
+        }
+      }
+    } catch { /* ignore */ }
+    return (
+      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
+        <p style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic", margin: 0 }}>
+          This actor is provided by the <strong style={{ color: tk.ink3, fontStyle: "normal" }}>{extensionName}</strong> extension.
+          Its definition is managed by the extension and is not editable on disk.
+        </p>
+        {frontmatterInfo}
+      </div>
+    );
+  }
 
   if (fsAvailable === null) {
     return (
