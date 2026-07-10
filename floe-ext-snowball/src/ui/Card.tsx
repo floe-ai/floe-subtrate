@@ -45,6 +45,12 @@ export function Card({ card, column, onSelect }: CardProps) {
         opacity: isDragging ? 0.5 : 1,
         boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
         transition: "opacity 0.15s",
+        // Prevents the browser from showing a wait/progress cursor during
+        // pointer capture setup (dnd-kit PointerSensor). Without this,
+        // some browsers briefly display a spinner indicator near the cursor
+        // while deciding whether the gesture is a scroll or a drag.
+        touchAction: "none",
+        userSelect: "none",
       }}
       {...listeners}
       {...attributes}

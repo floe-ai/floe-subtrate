@@ -25,6 +25,7 @@ import {
   readColumnFile,
   type ColumnFile,
 } from "../column-file.js";
+import { readBoardFile, DEFAULT_DONE_PROTOCOL } from "../board-file.js";
 import { SIDECAR_SCHEMA } from "../types.js";
 import type { BoardSidecar, CardFile } from "../types.js";
 
@@ -839,5 +840,191 @@ describe("POST /columns", () => {
     expect(cols[0].id).toBe("done");
     expect(cols[1].id).toBe("in-progress");
     expect(cols[2].id).toBe("todo");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /board/instructions  (board done protocol)
+// ---------------------------------------------------------------------------
+
+describe("GET /board/instructions", () => {
+  it("returns empty done_protocol when board.md does not exist", async () => {
+    const res = await call(handlers, "GET", "/board/instructions", {
+      query: { scope_id: SCOPE },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.scope_id).toBe(SCOPE);
+    expect(body.done_protocol).toBe("");
+  });
+
+  it("returns existing done_protocol when board.md exists", async () => {
+    // Trigger board init to create board.md
+    setupDefaultColumns(tmpDir, SCOPE);
+    await call(handlers, "POST", "/board/init", {
+      body: { scope_id: SCOPE },
+    });
+
+    const res = await call(handlers, "GET", "/board/instructions", {
+      query: { scope_id: SCOPE },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(typeof body.done_protocol).toBe("string");
+    // Default protocol should mention check_criteria and move_card
+    expect(body.done_protocol as string).toContain("check_criteria");
+    expect(body.done_protocol as string).toContain("move_card");
+  });
+
+  it("returns 400 when scope_id is missing", async () => {
+    const res = await call(handlers, "GET", "/board/instructions", {
+      query: {},
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /board/instructions  (save board done protocol)
+// ---------------------------------------------------------------------------
+
+describe("POST /board/instructions", () => {
+  it("saves a custom done protocol", async () => {
+    const customProtocol = "My custom done protocol. Call move_card when done.";
+
+    const res = await call(handlers, "POST", "/board/instructions", {
+      body: { scope_id: SCOPE, done_protocol: customProtocol },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.done_protocol).toBe(customProtocol);
+  });
+
+  it("persisted protocol is readable via GET", async () => {
+    const customProtocol = "Test protocol — do work, then advance.";
+    await call(handlers, "POST", "/board/instructions", {
+      body: { scope_id: SCOPE, done_protocol: customProtocol },
+    });
+
+    const res = await call(handlers, "GET", "/board/instructions", {
+      query: { scope_id: SCOPE },
+    });
+    const body = res.body as Record<string, unknown>;
+    expect(body.done_protocol).toBe(customProtocol);
+  });
+
+  it("returns 400 when required fields are missing", async () => {
+    const res = await call(handlers, "POST", "/board/instructions", {
+      body: { scope_id: SCOPE }, // missing done_protocol
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("persists protocol to board.md file on disk", async () => {
+    const customProtocol = "File-first done protocol.";
+    await call(handlers, "POST", "/board/instructions", {
+      body: { scope_id: SCOPE, done_protocol: customProtocol },
+    });
+
+    const slug = slugify(SCOPE);
+    const bf = readBoardFile(tmpDir, slug);
+    expect(bf).not.toBeNull();
+    expect(bf!.done_protocol).toBe(customProtocol);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /board/init creates board.md with default done protocol
+// ---------------------------------------------------------------------------
+
+describe("POST /board/init — board.md creation", () => {
+  it("creates board.md with default done protocol on init", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
+    const res = await call(handlers, "POST", "/board/init", {
+      body: { scope_id: SCOPE },
+    });
+
+    expect(res.status).toBe(200);
+
+    const slug = slugify(SCOPE);
+    const bf = readBoardFile(tmpDir, slug);
+    expect(bf).not.toBeNull();
+    expect(bf!.scope_id).toBe(SCOPE);
+    expect(bf!.done_protocol).toBe(DEFAULT_DONE_PROTOCOL);
+  });
+
+  it("does not overwrite existing board.md on re-init", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
+    // Init once
+    await call(handlers, "POST", "/board/init", { body: { scope_id: SCOPE } });
+
+    // Modify done protocol
+    const customProtocol = "Custom protocol — should survive re-init.";
+    await call(handlers, "POST", "/board/instructions", {
+      body: { scope_id: SCOPE, done_protocol: customProtocol },
+    });
+
+    // Init again (idempotent)
+    await call(handlers, "POST", "/board/init", { body: { scope_id: SCOPE } });
+
+    const slug = slugify(SCOPE);
+    const bf = readBoardFile(tmpDir, slug);
+    expect(bf!.done_protocol).toBe(customProtocol);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /move — advance-on-conclusion: card stays on arrival (Part 1)
+// ---------------------------------------------------------------------------
+
+describe("POST /move — advance-on-conclusion behavior", () => {
+  it("card entering agent-owned column is NOT immediately advanced (stays put)", async () => {
+    const slug = slugify(SCOPE);
+    const cols = defaultColumnFiles(SCOPE);
+    // Make in-progress agent-owned with no exit criteria
+    const agentCol: ColumnFile = {
+      ...cols[1],
+      owner: { kind: "agent", agent_id: "my-worker" },
+      exit_criteria: [],
+    };
+    writeColumnFile(tmpDir, slug, cols[0]);
+    writeColumnFile(tmpDir, slug, agentCol);
+    writeColumnFile(tmpDir, slug, cols[2]);
+    const sidecar = makeSidecar(SCOPE, "ws-test", { "in-progress": "ctx-agent" });
+    saveSidecar(tmpDir, SCOPE, sidecar);
+    writeCard(tmpDir, makeCardFile({ id: "stay-card", column: "todo" }));
+
+    const res = await call(handlers, "POST", "/move", {
+      body: {
+        scope_id: SCOPE,
+        card_id: "stay-card",
+        to_column_id: "in-progress",
+        force: false,
+      },
+    });
+
+    expect(res.status).toBe(200);
+
+    // Card must remain in the agent column, NOT auto-advanced to next column.
+    const card = readCard(tmpDir, "stay-card");
+    expect(card!.column).toBe("in-progress");
+
+    // The routing event must have been emitted to wake the agent.
+    const routingEvent = bus.emittedEvents.find(
+      (e) => e.type === "snowball.card.entered_column"
+    );
+    expect(routingEvent).toBeDefined();
+
+    // No overseer-sourced advance event should have fired.
+    const overseerAdvance = bus.emittedEvents.filter(
+      (e) =>
+        e.type === "snowball.card.moved" &&
+        (e.content.data as Record<string, unknown>)?.source === "overseer"
+    );
+    expect(overseerAdvance).toHaveLength(0);
   });
 });

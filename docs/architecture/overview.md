@@ -338,6 +338,10 @@ Owns ONLY: column_contexts map (runtime)"]
         COL_FILES["boards/<slug>/columns/<id>.md (COMMITTED)
 Frontmatter: id · name · scope_id · owner · order · wip_limit · exit_criteria
 Body: agent instructions (editable, injected via BeforeTurn)"]
+        BOARD_FILE["boards/<slug>/board.md (COMMITTED)
+Frontmatter: scope_id
+Body: board-wide done protocol (editable in Board Settings UI,
+injected into every column worker's BeforeTurn)"]
         CARDS["tasks/<id>.md (COMMITTED)
 Frontmatter: id · title · type · actor · column · order · checks
 Body: description + carry-forward comments"]
@@ -359,12 +363,14 @@ Owner actor + overseer frozen participants"]
     TOOLS -->|"read"| COL_FILES
     HOOK -->|"read"| CARDS
     HOOK -->|"read"| COL_FILES
+    HOOK -->|"read (done protocol)"| BOARD_FILE
     OVERSEER -->|"read/write"| CARDS
     OVERSEER -->|"read"| COL_FILES
     TOOLS -->|"triggers"| OVERSEER
     OVERSEER -->|"emit"| BUS_EV
     HTTP -->|"read/write"| COL_FILES
     HTTP -->|"read/write"| CARDS
+    HTTP -->|"read/write (done protocol)"| BOARD_FILE
     HTTP -->|"read/write (context map only)"| SIDECAR
     HTTP -->|"serves"| UI
     BUS_CTX -->|"listContextsForScope
@@ -374,6 +380,8 @@ Owner actor + overseer frozen participants"]
 **What Snowball owns (post-slice-2):**
 
 - **Column definition files** (`boards/<slug>/columns/<id>.md`, **committed + diffable**) own column config: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner` (kind + agent_id), `exit_criteria`. **Body = agent instructions** (free-form markdown, editable in Board UI, injected via BeforeTurn).
+- **Board definition file** (`boards/<slug>/board.md`, **committed + diffable**) owns board-level config. **Body = board-wide done protocol** (free-form markdown, editable in Board UI via the "Board Settings" button). The done protocol is injected into every column worker's BeforeTurn prompt and drives the advance-on-conclusion behavior: agents do work, check criteria, then call `move_card`. Created on board init with a default done protocol; lazily created on first BeforeTurn read if absent.
+- **Advance-on-conclusion** (`fm/floe-advance-protocol`): a card entering an agent-owned column is held there while the agent does its work (triggered by `snowball.card.entered_column`). The card advances only when the agent concludes — calling `check_criteria` (for criteria columns) and then `move_card`. The synchronous `advanceCardIfReady` cascade is NOT called on card arrival; it is kept as a utility callable by the overseer or in tests. The board-level done protocol provides the explicit instructions agents need.
 - **Sidecar YAML** (`.floe/extensions/snowball/boards/<slug>.yaml`, schema `floe.ext.snowball.board.v3`, **gitignored**) now owns ONLY the `column_contexts` map (`column_id → bus Context id`). Column definitions removed. Populated by `POST /board/init` (idempotent).
 - **`slugify()`** maps `scope_id → filesystem slug` (replaces `:`, `/`, `\` with `_` for Windows-safe filenames).
 - **Card files** (`tasks/<id>.md`, **committed**) are the source of truth for card state. Frontmatter: `id`, `title`, `type`, `actor`, `column` (updated in-place on move, file never moves — D1), `order`, `created_at`, `checks`. Body: description + appended carry-forward comments.
@@ -394,6 +402,7 @@ Owner actor + overseer frozen participants"]
 |---|---|---|
 | Column definitions (name, owner, exit-criteria, WIP) | Column file frontmatter (`boards/<slug>/columns/<id>.md`) | ✅ Committed |
 | Column agent instructions | Column file body (`boards/<slug>/columns/<id>.md`) | ✅ Committed |
+| Board done protocol (advance-on-conclusion instructions) | Board file body (`boards/<slug>/board.md`) | ✅ Committed |
 | Column context ids | Sidecar YAML (`column_contexts` map, v3, gitignored) | ❌ Runtime scratch |
 | Card definition (type, description, comments) | Card file (`tasks/<id>.md`) | ✅ Committed |
 | Card current column + order | Card file frontmatter (updated in-place on move) | ✅ Committed |
@@ -449,12 +458,12 @@ Everything in Floe is a committable, diffable file.
 ```mermaid
 graph TD
     CARD["Card = Markdown file\n(tasks/<id>.md)\nFrontmatter: type, actor\nBody: description\nAppended comments: carry-forward context"]
-    COL["Column = Markdown file\n(columns/<id>.md or similar)\nFrontmatter: name, owner-actor, exit-criteria, WIP\nBody: agent instructions for this column"]
-    BOARD["Board = Configuration\n(NOT a folder)\nA config of columns that accepts a card type"]
+    COL["Column = Markdown file\n(columns/<id>.md)\nFrontmatter: name, owner-actor, exit-criteria, WIP\nBody: agent instructions for this column"]
+    BOARD_FILE["Board = Markdown file\n(board.md)\nFrontmatter: scope_id\nBody: board-wide done protocol"]
     ACT["Actor / runtime binding = Files\n(.floe/agents/<id>.md)"]
 
     CARD -->|"flows between"| COL
-    COL -->|"configured into"| BOARD
+    COL -->|"configured into"| BOARD_FILE
     ACT -->|"owns"| COL
 
     note1["Files are source of truth.\nTools are thin optional endpoints that write files.\nRuntime state (delivery/event tracking) lives in bus."]
@@ -544,7 +553,7 @@ graph TD
 |---|---|---|
 | Card definition (type, description, comments) | `tasks/<id>.md` | ✅ Yes |
 | Column definition (name, owner, exit-criteria, WIP, agent instructions) | `boards/<slug>/columns/<id>.md` | ✅ Yes |
-| Board definition (column list, accepted card type) | Implied by column files; `boards/<slug>/` directory | ✅ Yes |
+| Board definition (done protocol, board config) | `boards/<slug>/board.md` | ✅ Yes |
 | Column context ids | Sidecar YAML (`column_contexts` map, gitignored) | ❌ No — runtime |
 | Column context (stable, scoped) | Bus SQLite (created at board init) | ❌ No — runtime |
 | Card-move events | Bus SQLite | ❌ No — runtime |

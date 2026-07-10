@@ -435,9 +435,13 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 - `POST /board/init` creates column files (if absent) + one bus Context per column (idempotent). Stores context ids in `column_contexts` sidecar.
 - Board discovery in hooks: scans `boards/<slug>/columns/*.md` (committed files), NOT the gitignored sidecar. Works after a fresh clone with no sidecar present.
 - Card-move: rewrites `column` frontmatter → appends `<!-- carry-forward from "Name" at ISO -->` comment → emits `snowball.card.entered_column` into the column context.
-- BeforeTurn injection: column workers get their column's instructions + card list. Overseer gets full board snapshot + all columns' instructions.
+- BeforeTurn injection: **column workers get**: board-wide done protocol (from `board.md` body) + their column's instructions + card list. **Overseer gets**: full board snapshot + all columns' instructions. Done protocol is injected first so it takes precedence over column-specific instructions.
 - `GET /column/instructions?scope_id=<id>&column_id=<id>` — read column instructions.
 - `POST /column/instructions { scope_id, column_id, instructions }` — write column file body (file is source of truth).
+- `GET /board/instructions?scope_id=<id>` — read board done protocol from `board.md`.
+- `POST /board/instructions { scope_id, done_protocol }` — write board done protocol (creates `board.md` if absent).
+- **Board definition file** (`boards/<slug>/board.md`, **committed**): frontmatter has `scope_id`; body = board-wide done protocol. Created on `POST /board/init` with `DEFAULT_DONE_PROTOCOL`; lazily created by BeforeTurn `ensureBoardFile()` if absent. Editable in UI via Board Settings panel.
+- **Advance-on-conclusion** (`fm/floe-advance-protocol`): `advanceCardIfReady` is NO LONGER called automatically when a card arrives in an agent column. It is kept as a utility (tests, explicit overseer calls). Cards stay in an agent column until the agent calls `move_card` after completing work. The done protocol instructs agents how to do this. The `snowball.card.entered_column` routing event is still emitted on arrival to wake the agent.
 - Columns are the context rows in `listContextsForScope` (not cards).
 - Participants are FROZEN — agents connect via `snowball.card.entered_column` routing events (R1)
 - AI `move_card` gate: HARD block when exit criteria unchecked; human `force=true` is soft-warn
@@ -445,7 +449,7 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 - `StubBusClient.createdContexts` captures `CreateContextInput[]` for test assertions on column context creation.
 - Test helpers: `setupBoard(tmpDir)` / `writeDefaultColumns(tmpDir, scopeId)` write column files for tests. Tests never put columns in the sidecar.
 
-**Tests:** `npm test --workspace floe-ext-snowball` — 170 unit tests (column-file format + sidecar/column-contexts + gate enforcement + handler + overseer driver + instructions endpoints).
+**Tests:** `npm test --workspace floe-ext-snowball` — 180 unit tests (column-file format + sidecar/column-contexts + gate enforcement + handler + overseer driver + instructions endpoints + board-file + advance-on-conclusion timing).
 
 **Board live refresh (fm/board-refresh-fix):** Human mutations use `withReload()` in `BoardView.tsx` — every mutation calls `reload()` after the POST completes. Agent-driven moves are covered by a WS subscription via `subscribeBusStream()` in `bus-stream.ts` (which provides automatic reconnect with exponential back-off — no reconnect storms). The bus broadcasts `event_submitted` via `store.submitEvent` → `broadcast("event_submitted", { event })` at `floe-bus/src/store.ts:1352`.
 
