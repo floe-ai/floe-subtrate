@@ -16,7 +16,13 @@
 // Cards are files in tasks/; the sidecar no longer holds card state.
 // ---------------------------------------------------------------------------
 
-export const SIDECAR_SCHEMA = "floe.ext.snowball.board.v2" as const;
+/**
+ * Slice 2 (fm/snowball-col-instr-s2):
+ *   Bumped to v3 — `columns` field removed from sidecar.
+ *   Column definitions now live in committed markdown files:
+ *   boards/<scopeSlug>/columns/<id>.md
+ */
+export const SIDECAR_SCHEMA = "floe.ext.snowball.board.v3" as const;
 
 export interface SidecarColumnOwner {
   kind: "human" | "agent";
@@ -43,15 +49,14 @@ export interface BoardSidecar {
   schema: typeof SIDECAR_SCHEMA;
   scope_id: string;
   workspace_id: string;
-  columns: SidecarColumn[];
   /**
-   * column_id → context_id (bus Context, created at board init).
-   * Each column has one stable bus Context scoped to the board scope.
-   * The column owner actor is a frozen participant; the snowball-overseer
-   * is also always added as a participant so it can route card-move events
-   * into the column context.
+   * Runtime map: column_id → context_id (bus Context, created at board init).
    *
-   * This map is populated by POST /board/init (idempotent).
+   * Column DEFINITIONS no longer live here — they are committed markdown files
+   * at boards/<scopeSlug>/columns/<id>.md (see column-file.ts).
+   *
+   * This map is populated by POST /board/init (idempotent) and lives in the
+   * gitignored sidecar location (.floe/extensions/snowball/boards/).
    */
   column_contexts: Record<string, string>;
 }
@@ -97,7 +102,9 @@ export interface CardFile {
 }
 
 // ---------------------------------------------------------------------------
-// Default columns — used when a board sidecar does not yet exist
+// Default columns — kept for test helpers and tooling that need raw column
+// definitions without a workspace path.  For runtime use, prefer
+// defaultColumnFiles() from column-file.ts.
 // ---------------------------------------------------------------------------
 
 export function defaultColumns(): SidecarColumn[] {
@@ -182,6 +189,8 @@ export interface BoardSnapshot {
     wip_exceeded: boolean;
     owner: SidecarColumnOwner;
     exit_criteria: SidecarExitCriterion[];
+    /** Agent instructions from the column definition file body. */
+    instructions: string;
   }>;
   cards: Card[];
 }

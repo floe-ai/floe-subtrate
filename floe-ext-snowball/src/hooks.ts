@@ -1,83 +1,37 @@
 /**
  * Snowball extension hooks.
  *
- * Foundation Slice 1 (fm/snowball-found-s1):
- *   BeforeTurn now reads card state from tasks/*.md files instead of the sidecar.
+ * Slice 2 (fm/snowball-col-instr-s2):
+ *   - Board discovery now reads committed column files (boards/<slug>/columns/)
+ *     instead of the gitignored sidecar directory.
+ *   - BeforeTurn injection now includes the column's agent instructions:
+ *       - Column workers: their column's instructions + their cards
+ *       - Overseer: full board snapshot + all columns' instructions
  *
  * BeforeTurn (§4.3, R7):
- *  - Overseer receives full board snapshot (all columns + all cards)
- *  - Column workers receive only the cards in their owned columns
+ *  - Overseer receives full board snapshot (all columns + all cards + all instructions)
+ *  - Column workers receive only the cards in their owned columns + column instructions
  *  - Agents without a board context receive no injection
  */
 
 import type { ExtensionContext, HookResult } from "./stub/extension-context.js";
 import {
   loadSidecar,
+  slugify,
   buildBoardSnapshot,
   renderCompactBoardSnapshot,
 } from "./sidecar.js";
-import { readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import {
+  listColumnFiles,
+  findBoardScopesForAgentFromFiles,
+} from "./column-file.js";
 
 const OVERSEER_AGENT_ID = "snowball-overseer";
-const BOARDS_DIR = (workspacePath: string): string =>
-  join(workspacePath, ".floe", "extensions", "snowball", "boards");
 
 /** Extract the agent_id from an endpoint_id (last colon-segment). */
 function agentIdFromEndpoint(endpointId: string): string {
   const parts = endpointId.split(":");
   return parts[parts.length - 1] ?? endpointId;
-}
-
-/**
- * Find the board scope(s) that an agent is associated with.
- * The overseer is associated with ALL boards.
- * A column worker is associated with any board where their agent_id appears as
- * a column owner.
- */
-async function findBoardScopesForAgent(
-  workspacePath: string,
-  agentId: string,
-  workspaceId: string
-): Promise<string[]> {
-  const dir = BOARDS_DIR(workspacePath);
-  if (!existsSync(dir)) return [];
-
-  const { parse: parseYaml } = await import("yaml");
-  const { readFileSync } = await import("node:fs");
-
-  const scopes: string[] = [];
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith(".yaml"));
-  } catch {
-    return [];
-  }
-
-  for (const file of files) {
-    try {
-      const raw = readFileSync(join(dir, file), "utf-8");
-      const sidecar = parseYaml(raw) as {
-        scope_id?: string;
-        workspace_id?: string;
-        columns?: Array<{ owner?: { kind: string; agent_id?: string } }>;
-      };
-      if (!sidecar.scope_id) continue;
-      if (sidecar.workspace_id && sidecar.workspace_id !== workspaceId) continue;
-
-      if (agentId === OVERSEER_AGENT_ID) {
-        scopes.push(sidecar.scope_id);
-      } else {
-        const ownsColumn = (sidecar.columns ?? []).some(
-          (col) => col.owner?.kind === "agent" && col.owner.agent_id === agentId
-        );
-        if (ownsColumn) scopes.push(sidecar.scope_id);
-      }
-    } catch {
-      // Ignore malformed sidecar files
-    }
-  }
-  return scopes;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,34 +47,71 @@ export function registerHooks(ctx: ExtensionContext): void {
     if (!endpointId) return;
 
     const agentId = agentIdFromEndpoint(endpointId);
-    const scopes = await findBoardScopesForAgent(workspacePath, agentId, workspaceId);
+
+    // Board discovery: scan committed boards/<slug>/columns/ directory.
+    // Works after a fresh clone (no sidecar needed).
+    const scopes = findBoardScopesForAgentFromFiles(
+      workspacePath,
+      agentId,
+      OVERSEER_AGENT_ID
+    );
     if (scopes.length === 0) return;
 
     const lines: string[] = [];
     for (const scopeId of scopes) {
+      const slug = slugify(scopeId);
+      const columns = listColumnFiles(workspacePath, slug);
+      if (columns.length === 0) continue;
+
       const sidecar = loadSidecar(workspacePath, scopeId);
-      // buildBoardSnapshot reads card files from tasks/
-      const snapshot = buildBoardSnapshot(workspacePath, sidecar);
+      const snapshot = buildBoardSnapshot(workspacePath, sidecar, columns);
 
       if (agentId === OVERSEER_AGENT_ID) {
-        // Overseer: full board snapshot
+        // Overseer: full board snapshot + all column instructions
         lines.push(renderCompactBoardSnapshot(snapshot));
+
+        // Append column instructions for any column that has them
+        const colsWithInstructions = columns.filter(
+          (c) => c.instructions.trim().length > 0
+        );
+        if (colsWithInstructions.length > 0) {
+          lines.push("## Column Instructions");
+          for (const col of colsWithInstructions) {
+            lines.push(`\n### ${col.name}`);
+            lines.push(col.instructions.trim());
+          }
+        }
       } else {
-        // Column worker: only their cards (R7)
-        const ownedColumns = sidecar.columns.filter(
-          (col) => col.owner.kind === "agent" && col.owner.agent_id === agentId
+        // Column worker: only their cards + their column's instructions (R7)
+        const ownedColumns = columns.filter(
+          (col) =>
+            col.owner.kind === "agent" && col.owner.agent_id === agentId
         );
         const ownedColumnIds = new Set(ownedColumns.map((c) => c.id));
-        const myCards = snapshot.cards.filter((c) => ownedColumnIds.has(c.column_id));
+        const myCards = snapshot.cards.filter((c) =>
+          ownedColumnIds.has(c.column_id)
+        );
 
+        // Inject column instructions first
+        for (const col of ownedColumns) {
+          if (col.instructions.trim().length > 0) {
+            lines.push(`## Column Instructions: ${col.name}`);
+            lines.push(col.instructions.trim());
+            lines.push("");
+          }
+        }
+
+        // Then inject card list
         if (myCards.length === 0) {
           lines.push(`Board ${scopeId}: no cards in your columns.`);
         } else {
           lines.push(`Board ${scopeId} — your cards:`);
           for (const card of myCards) {
-            const col = sidecar.columns.find((c) => c.id === card.column_id);
+            const col = columns.find((c) => c.id === card.column_id);
             const totalCriteria = col?.exit_criteria.length ?? 0;
-            const checkedCount = card.criteria_checks.filter((c) => c.checked).length;
+            const checkedCount = card.criteria_checks.filter(
+              (c) => c.checked
+            ).length;
             const criteriaStr =
               totalCriteria > 0
                 ? ` [${checkedCount}/${totalCriteria} criteria]`

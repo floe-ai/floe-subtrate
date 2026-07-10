@@ -1,10 +1,10 @@
 /**
  * Snowball extension tools.
  *
- * Foundation Slice 1 (fm/snowball-found-s1):
- *   - Cards are markdown files at tasks/<id>.md (not bus Contexts)
- *   - Columns are bus Contexts (created at board init)
- *   - Card-move writes frontmatter + appends carry-forward + emits to column context
+ * Slice 2 (fm/snowball-col-instr-s2):
+ *   - Column definitions now read from committed column files instead of sidecar.
+ *   - list_columns returns column definitions from column files.
+ *   - move_card and create_card read column config from column files.
  *
  * Gate enforcement (§5.2):
  *  - move_card: hard block for AI (no force), soft warning for human (force=true)
@@ -16,10 +16,14 @@ import type { ExtensionContext } from "../stub/extension-context.js";
 import { asBusClient } from "../stub/bus-client.js";
 import {
   loadSidecar,
+  slugify,
   getUncheckedCriteria,
   buildBoardSnapshot,
-  cardCountsByColumn,
 } from "../sidecar.js";
+import {
+  listColumnFiles,
+  defaultColumnFiles,
+} from "../column-file.js";
 import {
   readCard,
   writeCard,
@@ -56,7 +60,7 @@ export function createTools(ctx: ExtensionContext) {
       name: "list_columns",
       label: "List Board Columns",
       description:
-        "List board columns with their config (WIP limit, owner, exit criteria) for a scope. Returns current card counts per column.",
+        "List board columns with their config (WIP limit, owner, exit criteria, agent instructions) for a scope. Returns current card counts per column.",
       parameters: {
         type: "object",
         properties: {
@@ -72,13 +76,19 @@ export function createTools(ctx: ExtensionContext) {
         params: Record<string, unknown>
       ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
         const scope_id = params.scope_id as string;
-        const sidecar = loadSidecar(workspacePath, scope_id);
-        const card_counts = cardCountsByColumn(workspacePath, sidecar);
+        const slug = slugify(scope_id);
+        const columns = listColumnFiles(workspacePath, slug);
+        const effectiveColumns =
+          columns.length > 0 ? columns : defaultColumnFiles(scope_id);
+        const card_counts = cardCountsByColumnFromFiles(
+          workspacePath,
+          effectiveColumns.map((c) => c.id)
+        );
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ columns: sidecar.columns, card_counts }),
+              text: JSON.stringify({ columns: effectiveColumns, card_counts }),
             },
           ],
         };
@@ -155,11 +165,14 @@ export function createTools(ctx: ExtensionContext) {
         const column_id = params.column_id as string | undefined;
         const description = params.description as string | undefined;
 
-        const sidecar = loadSidecar(workspacePath, scope_id);
+        const slug = slugify(scope_id);
+        const columns = listColumnFiles(workspacePath, slug);
+        const effectiveColumns =
+          columns.length > 0 ? columns : defaultColumnFiles(scope_id);
 
         const targetColumn = column_id
-          ? sidecar.columns.find((c) => c.id === column_id)
-          : sidecar.columns[0];
+          ? effectiveColumns.find((c) => c.id === column_id)
+          : effectiveColumns[0];
 
         if (!targetColumn) {
           return {
@@ -178,7 +191,9 @@ export function createTools(ctx: ExtensionContext) {
 
         // WIP check
         if (targetColumn.wip_limit !== null) {
-          const counts = cardCountsByColumnFromFiles(workspacePath, [targetColumn.id]);
+          const counts = cardCountsByColumnFromFiles(workspacePath, [
+            targetColumn.id,
+          ]);
           const current = counts[targetColumn.id] ?? 0;
           if (current >= targetColumn.wip_limit) {
             return {
@@ -198,7 +213,9 @@ export function createTools(ctx: ExtensionContext) {
           }
         }
 
-        const order = listCards(workspacePath).filter((c) => c.column === targetColumn.id).length;
+        const order = listCards(workspacePath).filter(
+          (c) => c.column === targetColumn.id
+        ).length;
         const cardId = generateCardId(title);
         writeCard(workspacePath, {
           id: cardId,
@@ -289,6 +306,10 @@ export function createTools(ctx: ExtensionContext) {
         const scope_id = params.scope_id as string;
         const force = Boolean(params.force);
 
+        const slug = slugify(scope_id);
+        const columns = listColumnFiles(workspacePath, slug);
+        const effectiveColumns =
+          columns.length > 0 ? columns : defaultColumnFiles(scope_id);
         const sidecar = loadSidecar(workspacePath, scope_id);
 
         const card = readCard(workspacePath, card_id);
@@ -297,14 +318,18 @@ export function createTools(ctx: ExtensionContext) {
             content: [
               {
                 type: "text",
-                text: JSON.stringify({ ok: false, error: "card_not_found", card_id }),
+                text: JSON.stringify({
+                  ok: false,
+                  error: "card_not_found",
+                  card_id,
+                }),
               },
             ],
           };
         }
 
-        const fromColumn = sidecar.columns.find((c) => c.id === card.column);
-        const toColumn = sidecar.columns.find((c) => c.id === to_column_id);
+        const fromColumn = effectiveColumns.find((c) => c.id === card.column);
+        const toColumn = effectiveColumns.find((c) => c.id === to_column_id);
         if (!toColumn) {
           return {
             content: [
@@ -360,7 +385,9 @@ export function createTools(ctx: ExtensionContext) {
 
         // ── Gate: WIP limit on destination column ──────────────────────
         if (toColumn.wip_limit !== null) {
-          const counts = cardCountsByColumnFromFiles(workspacePath, [to_column_id]);
+          const counts = cardCountsByColumnFromFiles(workspacePath, [
+            to_column_id,
+          ]);
           const current = counts[to_column_id] ?? 0;
           if (current >= toColumn.wip_limit) {
             return {
@@ -384,14 +411,14 @@ export function createTools(ctx: ExtensionContext) {
         // ── Perform move ───────────────────────────────────────────────
         const previousColumnId = card.column;
         const previousColumnName = fromColumn?.name ?? previousColumnId;
-        const newOrder = listCards(workspacePath).filter((c) => c.column === to_column_id).length;
+        const newOrder = listCards(workspacePath).filter(
+          (c) => c.column === to_column_id
+        ).length;
 
-        // Rewrite card file frontmatter in-place (file stays at tasks/<id>.md)
         updateCardFrontmatter(workspacePath, card_id, {
           column: to_column_id,
           order: newOrder,
         });
-        // Append carry-forward comment to card body
         appendCarryForward(workspacePath, card_id, previousColumnName);
 
         const bus = asBusClient(ctx.busClient);
@@ -576,7 +603,9 @@ export function createTools(ctx: ExtensionContext) {
             },
           },
         };
-        updateCardFrontmatter(workspacePath, card_id, { checks: updatedChecks });
+        updateCardFrontmatter(workspacePath, card_id, {
+          checks: updatedChecks,
+        });
 
         // Emit criteria checked event (best-effort)
         try {
@@ -628,7 +657,7 @@ export function createTools(ctx: ExtensionContext) {
       name: "get_board_state",
       label: "Get Board State",
       description:
-        "Get a full board snapshot: columns with card counts, WIP status, cards per column. Use before any strategic decision.",
+        "Get a full board snapshot: columns with card counts, WIP status, cards per column, column instructions. Use before any strategic decision.",
       parameters: {
         type: "object",
         properties: {
@@ -641,8 +670,16 @@ export function createTools(ctx: ExtensionContext) {
         params: Record<string, unknown>
       ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
         const scope_id = params.scope_id as string;
+        const slug = slugify(scope_id);
+        const columns = listColumnFiles(workspacePath, slug);
+        const effectiveColumns =
+          columns.length > 0 ? columns : defaultColumnFiles(scope_id);
         const sidecar = loadSidecar(workspacePath, scope_id);
-        const snapshot = buildBoardSnapshot(workspacePath, sidecar);
+        const snapshot = buildBoardSnapshot(
+          workspacePath,
+          sidecar,
+          effectiveColumns
+        );
         return {
           content: [{ type: "text", text: JSON.stringify(snapshot) }],
         };

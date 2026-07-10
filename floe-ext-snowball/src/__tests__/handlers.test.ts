@@ -1,24 +1,31 @@
 /**
  * Handler unit tests — relay endpoint logic for board CRUD handlers.
  *
- * Foundation Slice 1 (fm/snowball-found-s1):
- *   - Cards are now markdown files at tasks/<id>.md (not bus Contexts)
- *   - Columns are bus Contexts (created at board init)
- *   - GET /board reads card files
- *   - POST /card creates card files
- *   - POST /move rewrites card file frontmatter + appends carry-forward
+ * Slice 2 (fm/snowball-col-instr-s2):
+ *   - Column definitions now live in committed column files (boards/<slug>/columns/).
+ *   - makeSidecar() is a slim v3 helper (no `columns` field).
+ *   - Tests use writeColumnFiles() to set up column definitions.
+ *   - Tests needing column-specific config (WIP, exit_criteria, owner) write
+ *     column files with those settings.
+ *   - New tests: GET /column/instructions, POST /column/instructions.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext } from "../stub/extension-context.js";
 import { registerHttpHandlers } from "../handlers.js";
-import { saveSidecar, loadSidecar, sidecarExists } from "../sidecar.js";
+import { saveSidecar, loadSidecar, sidecarExists, slugify } from "../sidecar.js";
 import { writeCard, readCard, listCards } from "../card-file.js";
-import { SIDECAR_SCHEMA, defaultColumns } from "../types.js";
+import {
+  writeColumnFile,
+  defaultColumnFiles,
+  readColumnFile,
+  type ColumnFile,
+} from "../column-file.js";
+import { SIDECAR_SCHEMA } from "../types.js";
 import type { BoardSidecar, CardFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +89,7 @@ async function call(
   });
 }
 
+/** v3 sidecar — no columns field. */
 function makeSidecar(
   scopeId: string,
   workspaceId: string,
@@ -91,9 +99,16 @@ function makeSidecar(
     schema: SIDECAR_SCHEMA,
     scope_id: scopeId,
     workspace_id: workspaceId,
-    columns: defaultColumns(),
     column_contexts,
   };
+}
+
+/** Write default column files for the SCOPE to tmpDir. */
+function setupDefaultColumns(tmpDir: string, scopeId: string): ColumnFile[] {
+  const slug = slugify(scopeId);
+  const cols = defaultColumnFiles(scopeId);
+  for (const col of cols) writeColumnFile(tmpDir, slug, col);
+  return cols;
 }
 
 function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
@@ -165,6 +180,7 @@ describe("GET /board", () => {
   });
 
   it("includes cards from task files", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Task A", column: "todo" }));
     writeCard(tmpDir, makeCardFile({ id: "card-b", title: "Task B", column: "in-progress" }));
@@ -179,6 +195,28 @@ describe("GET /board", () => {
     const res = await call(handlers, "GET", "/board", { query: {} });
     expect(res.status).toBe(400);
   });
+
+  it("includes instructions field in columns", async () => {
+    const slug = slugify(SCOPE);
+    const col: ColumnFile = {
+      id: "todo",
+      name: "To Do",
+      scope_id: SCOPE,
+      order: 0,
+      wip_limit: null,
+      owner: { kind: "human" },
+      exit_criteria: [],
+      instructions: "Review tasks carefully.",
+    };
+    writeColumnFile(tmpDir, slug, col);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+
+    const res = await call(handlers, "GET", "/board", { query: { scope_id: SCOPE } });
+    const body = res.body as Record<string, unknown>;
+    const cols = body.columns as Array<{ id: string; instructions: string }>;
+    const todo = cols.find((c) => c.id === "todo");
+    expect(todo?.instructions).toBe("Review tasks carefully.");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -186,7 +224,7 @@ describe("GET /board", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /board/init", () => {
-  it("persists sidecar and creates column contexts", async () => {
+  it("creates default column files and column contexts on first init", async () => {
     const res = await call(handlers, "POST", "/board/init", {
       body: { scope_id: SCOPE },
     });
@@ -196,7 +234,7 @@ describe("POST /board/init", () => {
     expect(body.ok).toBe(true);
     expect((body.board as Record<string, unknown>).initialized).toBe(true);
 
-    // Sidecar should exist on disk
+    // Sidecar should exist on disk (contexts created)
     expect(sidecarExists(tmpDir, SCOPE)).toBe(true);
 
     // Column contexts should be created in bus
@@ -208,12 +246,128 @@ describe("POST /board/init", () => {
     const contextCountAfterFirst = bus.createdContexts.length;
 
     await call(handlers, "POST", "/board/init", { body: { scope_id: SCOPE } });
-    // No new contexts created on second call
     expect(bus.createdContexts.length).toBe(contextCountAfterFirst);
+  });
+
+  it("preserves existing column files on second init", async () => {
+    const slug = slugify(SCOPE);
+    const customCol: ColumnFile = {
+      id: "todo",
+      name: "Custom Name",
+      scope_id: SCOPE,
+      order: 0,
+      wip_limit: null,
+      owner: { kind: "human" },
+      exit_criteria: [],
+      instructions: "Do this.",
+    };
+    writeColumnFile(tmpDir, slug, customCol);
+
+    await call(handlers, "POST", "/board/init", { body: { scope_id: SCOPE } });
+
+    // Custom column file should be preserved
+    const col = readColumnFile(tmpDir, slug, "todo");
+    expect(col!.name).toBe("Custom Name");
+    expect(col!.instructions).toBe("Do this.");
   });
 
   it("returns 400 when scope_id missing", async () => {
     const res = await call(handlers, "POST", "/board/init", { body: {} });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /column/instructions
+// ---------------------------------------------------------------------------
+
+describe("GET /column/instructions", () => {
+  it("returns instructions for an existing column", async () => {
+    const slug = slugify(SCOPE);
+    const col: ColumnFile = {
+      id: "todo",
+      name: "To Do",
+      scope_id: SCOPE,
+      order: 0,
+      wip_limit: null,
+      owner: { kind: "human" },
+      exit_criteria: [],
+      instructions: "Work on tasks here.",
+    };
+    writeColumnFile(tmpDir, slug, col);
+
+    const res = await call(handlers, "GET", "/column/instructions", {
+      query: { scope_id: SCOPE, column_id: "todo" },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.column_id).toBe("todo");
+    expect(body.instructions).toBe("Work on tasks here.");
+  });
+
+  it("returns 404 when column file does not exist", async () => {
+    const res = await call(handlers, "GET", "/column/instructions", {
+      query: { scope_id: SCOPE, column_id: "nonexistent" },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 when params missing", async () => {
+    const res = await call(handlers, "GET", "/column/instructions", {
+      query: { scope_id: SCOPE },
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /column/instructions
+// ---------------------------------------------------------------------------
+
+describe("POST /column/instructions", () => {
+  it("saves instructions to the column file", async () => {
+    const slug = slugify(SCOPE);
+    const col: ColumnFile = {
+      id: "todo",
+      name: "To Do",
+      scope_id: SCOPE,
+      order: 0,
+      wip_limit: null,
+      owner: { kind: "human" },
+      exit_criteria: [],
+      instructions: "",
+    };
+    writeColumnFile(tmpDir, slug, col);
+
+    const res = await call(handlers, "POST", "/column/instructions", {
+      body: { scope_id: SCOPE, column_id: "todo", instructions: "New instructions." },
+    });
+
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.instructions).toBe("New instructions.");
+
+    // Verify file on disk
+    const updated = readColumnFile(tmpDir, slug, "todo");
+    expect(updated!.instructions).toBe("New instructions.");
+    // Frontmatter preserved
+    expect(updated!.name).toBe("To Do");
+    expect(updated!.wip_limit).toBeNull();
+  });
+
+  it("returns 404 when column file does not exist", async () => {
+    const res = await call(handlers, "POST", "/column/instructions", {
+      body: { scope_id: SCOPE, column_id: "nonexistent", instructions: "Test" },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 when params missing", async () => {
+    const res = await call(handlers, "POST", "/column/instructions", {
+      body: { scope_id: SCOPE, column_id: "todo" }, // missing instructions
+    });
     expect(res.status).toBe(400);
   });
 });
@@ -224,6 +378,7 @@ describe("POST /board/init", () => {
 
 describe("POST /card", () => {
   it("creates a card file in tasks/", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/card", {
@@ -235,14 +390,14 @@ describe("POST /card", () => {
     expect(body.ok).toBe(true);
     expect(typeof body.card_id).toBe("string");
 
-    // Verify file was created
     const cards = listCards(tmpDir);
     expect(cards).toHaveLength(1);
     expect(cards[0].title).toBe("New task");
-    expect(cards[0].column).toBe("todo"); // default first column
+    expect(cards[0].column).toBe("todo");
   });
 
   it("places card in specified column", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/card", {
@@ -258,6 +413,7 @@ describe("POST /card", () => {
   });
 
   it("includes description in card body", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/card", {
@@ -284,9 +440,14 @@ describe("POST /card", () => {
   });
 
   it("enforces WIP limit", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    sidecar.columns[0].wip_limit = 1;
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    const slug = slugify(SCOPE);
+    const cols = defaultColumnFiles(SCOPE);
+    // todo with wip_limit=1
+    const todoCol = { ...cols[0], wip_limit: 1 };
+    writeColumnFile(tmpDir, slug, todoCol);
+    writeColumnFile(tmpDir, slug, cols[1]);
+    writeColumnFile(tmpDir, slug, cols[2]);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "existing", column: "todo" }));
 
     const res = await call(handlers, "POST", "/card", {
@@ -305,6 +466,7 @@ describe("POST /card", () => {
 
 describe("POST /card/delete", () => {
   it("removes the card file", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "card-to-delete" }));
 
@@ -320,6 +482,7 @@ describe("POST /card/delete", () => {
   });
 
   it("returns 404 for nonexistent card", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/card/delete", {
@@ -336,6 +499,7 @@ describe("POST /card/delete", () => {
 
 describe("POST /card/rename", () => {
   it("updates card title in file", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "my-card", title: "Old title" }));
 
@@ -352,6 +516,7 @@ describe("POST /card/rename", () => {
   });
 
   it("returns 404 for nonexistent card", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/card/rename", {
@@ -368,6 +533,7 @@ describe("POST /card/rename", () => {
 
 describe("POST /card/criteria", () => {
   it("updates criterion check in card file", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "my-card", column: "in-progress" }));
 
@@ -390,6 +556,7 @@ describe("POST /card/criteria", () => {
   });
 
   it("returns 404 for nonexistent card", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/card/criteria", {
@@ -412,6 +579,7 @@ describe("POST /card/criteria", () => {
 
 describe("POST /move", () => {
   it("moves card to target column", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo" }));
 
@@ -425,12 +593,12 @@ describe("POST /move", () => {
     expect(body.from_column_id).toBe("todo");
     expect(body.to_column_id).toBe("in-progress");
 
-    // Card file should be updated
     const card = readCard(tmpDir, "my-card");
     expect(card!.column).toBe("in-progress");
   });
 
   it("appends carry-forward comment on move", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo", body: "Original body." }));
 
@@ -444,9 +612,17 @@ describe("POST /move", () => {
   });
 
   it("blocks move when exit criteria not satisfied (no force)", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    sidecar.columns[0].exit_criteria = [{ id: "ec-1", description: "Review", kind: "human" }];
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    const slug = slugify(SCOPE);
+    const cols = defaultColumnFiles(SCOPE);
+    // Add exit criterion to todo column
+    const todoCol = {
+      ...cols[0],
+      exit_criteria: [{ id: "ec-1", description: "Review", kind: "machine" as const }],
+    };
+    writeColumnFile(tmpDir, slug, todoCol);
+    writeColumnFile(tmpDir, slug, cols[1]);
+    writeColumnFile(tmpDir, slug, cols[2]);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo", checks: {} }));
 
     const res = await call(handlers, "POST", "/move", {
@@ -459,9 +635,16 @@ describe("POST /move", () => {
   });
 
   it("allows move with force=true despite unchecked criteria", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    sidecar.columns[0].exit_criteria = [{ id: "ec-1", description: "Review", kind: "human" }];
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    const slug = slugify(SCOPE);
+    const cols = defaultColumnFiles(SCOPE);
+    const todoCol = {
+      ...cols[0],
+      exit_criteria: [{ id: "ec-1", description: "Review", kind: "human" as const }],
+    };
+    writeColumnFile(tmpDir, slug, todoCol);
+    writeColumnFile(tmpDir, slug, cols[1]);
+    writeColumnFile(tmpDir, slug, cols[2]);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo", checks: {} }));
 
     const res = await call(handlers, "POST", "/move", {
@@ -475,9 +658,14 @@ describe("POST /move", () => {
   });
 
   it("blocks move when WIP limit exceeded", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    sidecar.columns[1].wip_limit = 1;
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    const slug = slugify(SCOPE);
+    const cols = defaultColumnFiles(SCOPE);
+    // in-progress with wip_limit=1
+    const inProgressCol = { ...cols[1], wip_limit: 1 };
+    writeColumnFile(tmpDir, slug, cols[0]);
+    writeColumnFile(tmpDir, slug, inProgressCol);
+    writeColumnFile(tmpDir, slug, cols[2]);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "card-a", column: "in-progress", order: 0 }));
     writeCard(tmpDir, makeCardFile({ id: "card-b", column: "todo", order: 0 }));
 
@@ -491,6 +679,7 @@ describe("POST /move", () => {
   });
 
   it("returns 404 for nonexistent card", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/move", {
@@ -501,6 +690,7 @@ describe("POST /move", () => {
   });
 
   it("returns 422 when already in target column", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo" }));
 
@@ -514,9 +704,17 @@ describe("POST /move", () => {
   });
 
   it("routes event to agent endpoint when destination is agent-owned", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    sidecar.columns[1].owner = { kind: "agent", agent_id: "my-worker" };
-    sidecar.column_contexts["in-progress"] = "ctx-inprogress";
+    const slug = slugify(SCOPE);
+    const cols = defaultColumnFiles(SCOPE);
+    // in-progress owned by my-worker
+    const inProgressCol: ColumnFile = {
+      ...cols[1],
+      owner: { kind: "agent", agent_id: "my-worker" },
+    };
+    writeColumnFile(tmpDir, slug, cols[0]);
+    writeColumnFile(tmpDir, slug, inProgressCol);
+    writeColumnFile(tmpDir, slug, cols[2]);
+    const sidecar = makeSidecar(SCOPE, "ws-test", { "in-progress": "ctx-inprogress" });
     saveSidecar(tmpDir, SCOPE, sidecar);
     writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo" }));
 
@@ -524,7 +722,6 @@ describe("POST /move", () => {
       body: { scope_id: SCOPE, card_id: "my-card", to_column_id: "in-progress" },
     });
 
-    // Should have emitted a routing event
     const routingEvent = bus.emittedEvents.find(
       (e) => e.type === "snowball.card.entered_column"
     );
@@ -540,6 +737,7 @@ describe("POST /move", () => {
 
 describe("POST /columns", () => {
   it("adds a new column", async () => {
+    setupDefaultColumns(tmpDir, SCOPE);
     saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/columns", {
@@ -554,8 +752,8 @@ describe("POST /columns", () => {
   });
 
   it("updates a column name", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    setupDefaultColumns(tmpDir, SCOPE);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/columns", {
       body: { scope_id: SCOPE, action: "update", column_id: "todo", name: "Backlog" },
@@ -568,9 +766,36 @@ describe("POST /columns", () => {
     expect(updatedCol!.name).toBe("Backlog");
   });
 
+  it("preserves instructions when updating column name", async () => {
+    const slug = slugify(SCOPE);
+    const col: ColumnFile = {
+      id: "todo",
+      name: "To Do",
+      scope_id: SCOPE,
+      order: 0,
+      wip_limit: null,
+      owner: { kind: "human" },
+      exit_criteria: [],
+      instructions: "These are my instructions.",
+    };
+    writeColumnFile(tmpDir, slug, col);
+    const cols = defaultColumnFiles(SCOPE);
+    writeColumnFile(tmpDir, slug, cols[1]);
+    writeColumnFile(tmpDir, slug, cols[2]);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
+
+    await call(handlers, "POST", "/columns", {
+      body: { scope_id: SCOPE, action: "update", column_id: "todo", name: "Renamed" },
+    });
+
+    const updated = readColumnFile(tmpDir, slug, "todo");
+    expect(updated!.name).toBe("Renamed");
+    expect(updated!.instructions).toBe("These are my instructions.");
+  });
+
   it("deletes a column and moves its cards to first remaining column", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    setupDefaultColumns(tmpDir, SCOPE);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "card-in-todo", column: "todo" }));
 
     const res = await call(handlers, "POST", "/columns", {
@@ -584,9 +809,10 @@ describe("POST /columns", () => {
   });
 
   it("cannot delete the last column", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    sidecar.columns = [sidecar.columns[0]]; // Keep only todo
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    const slug = slugify(SCOPE);
+    const cols = defaultColumnFiles(SCOPE);
+    writeColumnFile(tmpDir, slug, cols[0]); // Only write todo
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/columns", {
       body: { scope_id: SCOPE, action: "delete", column_id: "todo" },
@@ -596,8 +822,8 @@ describe("POST /columns", () => {
   });
 
   it("reorders columns", async () => {
-    const sidecar = makeSidecar(SCOPE, "ws-test");
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    setupDefaultColumns(tmpDir, SCOPE);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
 
     const res = await call(handlers, "POST", "/columns", {
       body: {

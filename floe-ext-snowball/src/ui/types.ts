@@ -22,6 +22,8 @@ export interface UiColumn {
   order: number;
   owner: UiColumnOwner;
   exitCriteria: UiExitCriterion[];
+  /** Agent instructions for this column — editable, injected via BeforeTurn. */
+  instructions: string;
 }
 
 export interface UiCriterionCheck {
@@ -43,7 +45,7 @@ export interface UiCard {
 export interface UiBoardState {
   scope_id: string;
   workspace_id: string;
-  /** True when the sidecar file exists on disk (first mutation creates it). */
+  /** True when the sidecar file exists on disk (column contexts created). */
   initialized: boolean;
   columns: Array<{
     id: string;
@@ -53,6 +55,8 @@ export interface UiBoardState {
     wip_exceeded: boolean;
     owner: UiColumnOwner;
     exit_criteria: UiExitCriterion[];
+    /** Agent instructions from the column definition file body. */
+    instructions: string;
   }>;
   cards: UiCard[];
 }

@@ -37,6 +37,7 @@ interface ColumnConfigPanelProps {
   onDelete: (columnId: string) => Promise<void>;
   onMoveUp: (columnId: string) => Promise<void>;
   onMoveDown: (columnId: string) => Promise<void>;
+  onSaveInstructions?: (columnId: string, instructions: string) => Promise<void>;
 }
 
 let _ecSeq = Date.now();
@@ -54,6 +55,7 @@ export function ColumnConfigPanel({
   onDelete,
   onMoveUp,
   onMoveDown,
+  onSaveInstructions,
 }: ColumnConfigPanelProps) {
   const isAddMode = column === null;
 
@@ -70,6 +72,8 @@ export function ColumnConfigPanel({
   const [criteria, setCriteria] = useState<UiExitCriterion[]>(
     column?.exitCriteria ?? []
   );
+  const [instructions, setInstructions] = useState(column?.instructions ?? "");
+  const [savingInstructions, setSavingInstructions] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,6 +89,7 @@ export function ColumnConfigPanel({
         : ""
     );
     setCriteria(column?.exitCriteria ?? []);
+    setInstructions(column?.instructions ?? "");
     setError(null);
   }, [column]);
 
@@ -112,6 +117,19 @@ export function ColumnConfigPanel({
     setCriteria((prev) =>
       prev.map((c) => (c.id === id ? { ...c, [field]: value } : c))
     );
+  }
+
+  async function handleSaveInstructions() {
+    if (!column || !onSaveInstructions) return;
+    setSavingInstructions(true);
+    setError(null);
+    try {
+      await onSaveInstructions(column.id, instructions);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingInstructions(false);
+    }
   }
 
   async function handleSave() {
@@ -471,6 +489,56 @@ export function ColumnConfigPanel({
               <PlusIcon size={13} /> Add criterion
             </button>
           </section>
+
+          {/* ── Instructions (edit mode only) ───────────────────── */}
+          {!isAddMode && (
+            <>
+              <hr style={{ border: "none", borderTop: "1px solid rgba(255,255,255,0.06)", margin: 0 }} />
+              <section>
+                <p style={sectionLabel}>Agent Instructions</p>
+                <p style={{ margin: "0 0 6px", fontSize: 11, color: "#62666d" }}>
+                  Instructions injected into the column worker’s BeforeTurn prompt.
+                  Leave empty if none.
+                </p>
+                <textarea
+                  rows={6}
+                  style={{
+                    ...inputStyle,
+                    resize: "vertical",
+                    fontFamily: '"JetBrains Mono",monospace',
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                  }}
+                  value={instructions}
+                  onChange={(e) => setInstructions(e.target.value)}
+                  placeholder="e.g. When a card enters this column, review its description and verify all checks are accurate before advancing."
+                />
+                {onSaveInstructions && (
+                  <button
+                    type="button"
+                    onClick={handleSaveInstructions}
+                    disabled={savingInstructions}
+                    style={{
+                      ...btnBase,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "rgba(138,168,156,0.1)",
+                      borderColor: "rgba(138,168,156,0.3)",
+                      color: "#8aa89c",
+                      width: "100%",
+                      justifyContent: "center",
+                      marginTop: 8,
+                      cursor: savingInstructions ? "not-allowed" : "pointer",
+                      opacity: savingInstructions ? 0.6 : 1,
+                    }}
+                  >
+                    {savingInstructions ? "Saving…" : "Save Instructions"}
+                  </button>
+                )}
+              </section>
+            </>
+          )}
 
           {/* ── Reorder (edit mode only) ───────────────────────── */}
           {!isAddMode && (

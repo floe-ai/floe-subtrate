@@ -418,29 +418,34 @@ npm run build -- --help
 
 New workspace package added in `fm/snowball-ext-x2` (PR #72).
 Foundation Slice 1 shipped in `fm/snowball-found-s1`: **card = markdown file, column = bus Context**.
+Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown file** (with instructions in body).
 
 **Location:** `floe-ext-snowball/` (workspace entry in root `package.json`)
 
 **What it is:** The Snowball Kanban extension — exit-criteria-gated cards, column ownership, and agent routing — implemented as a floe extension that builds against the substrate contract (contract-w7).
 
-**Key invariants (post fm/snowball-found-s1):**
-- Sidecar schema: `floe.ext.snowball.board.v2` at `.floe/extensions/snowball/boards/<slug>.yaml`
-- Sidecar owns: column definitions + `column_contexts` map (`column_id → bus Context id`). No card state.
+**Key invariants (post fm/snowball-col-instr-s2):**
+- Sidecar schema: `floe.ext.snowball.board.v3` at `.floe/extensions/snowball/boards/<slug>.yaml` (GITIGNORED)
+- Sidecar v3 owns ONLY: `column_contexts` map (`column_id → bus Context id`). No column definitions. No card state.
+- **Column = committed markdown file** at `boards/<slug>/columns/<id>.md`. Frontmatter: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner`, `exit_criteria`. Body = agent instructions (may be empty).
 - `slugify(scope_id)` replaces `:`, `/`, `\` with `_` for Windows-safe filenames (R8)
 - Column owner uses `agent_id` (not free-form `role`) matching `.floe/agents/<id>.md` (R5)
 - **Card = markdown file** at `tasks/<id>.md`. Identity = stable frontmatter `id` field. File NEVER moves (D1). Current column is a frontmatter field updated in-place on move.
 - **Column = bus Context** scoped to the board scope. Column owner actor + `snowball-overseer` are frozen participants.
-- `POST /board/init` creates one bus Context per column (idempotent). Stores context ids in `column_contexts`.
+- `POST /board/init` creates column files (if absent) + one bus Context per column (idempotent). Stores context ids in `column_contexts` sidecar.
+- Board discovery in hooks: scans `boards/<slug>/columns/*.md` (committed files), NOT the gitignored sidecar. Works after a fresh clone with no sidecar present.
 - Card-move: rewrites `column` frontmatter → appends `<!-- carry-forward from "Name" at ISO -->` comment → emits `snowball.card.entered_column` into the column context.
+- BeforeTurn injection: column workers get their column's instructions + card list. Overseer gets full board snapshot + all columns' instructions.
+- `GET /column/instructions?scope_id=<id>&column_id=<id>` — read column instructions.
+- `POST /column/instructions { scope_id, column_id, instructions }` — write column file body (file is source of truth).
 - Columns are the context rows in `listContextsForScope` (not cards).
 - Participants are FROZEN — agents connect via `snowball.card.entered_column` routing events (R1)
 - AI `move_card` gate: HARD block when exit criteria unchecked; human `force=true` is soft-warn
 - WIP limit: hard block for both human and AI
 - `StubBusClient.createdContexts` captures `CreateContextInput[]` for test assertions on column context creation.
+- Test helpers: `setupBoard(tmpDir)` / `writeDefaultColumns(tmpDir, scopeId)` write column files for tests. Tests never put columns in the sidecar.
 
-**Stub seam (§6) — CLOSED (fm/integrate-board-i4):** `src/stub/bus-client.ts` provides `BusClient` interface + `StubBusClient` for isolated testing. The real `BusClient` from `floe-bridge` has all required methods (`createContext`, `listContextsForScope`, `emit`, `listEndpoints`). The cast `asBusClient(ctx.busClient)` bridges the `any`-typed runtime object to the typed interface. The stub extension-context type now has `registerHttpHandler` as **required** (non-optional); test fixtures must provide a no-op `() => {}` implementation.
-
-**Tests:** `npm test --workspace floe-ext-snowball` — 122 unit tests (card-file format + sidecar/column-contexts + gate enforcement + handler + overseer driver).
+**Tests:** `npm test --workspace floe-ext-snowball` — 170 unit tests (column-file format + sidecar/column-contexts + gate enforcement + handler + overseer driver + instructions endpoints).
 
 **Board live refresh (fm/board-refresh-fix):** Human mutations use `withReload()` in `BoardView.tsx` — every mutation calls `reload()` after the POST completes. Agent-driven moves are covered by a WS subscription to `ws://…/v1/events/stream`; when the bus broadcasts `event_submitted` for any `snowball.*` event with the matching `board_scope_id`, `reload()` is called automatically. The bus broadcasts `event_submitted` via `store.submitEvent` → `broadcast("event_submitted", { event })` at `floe-bus/src/store.ts:1352`.
 

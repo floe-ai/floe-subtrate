@@ -46,6 +46,7 @@ export function Board({ board, onMove, onSelectCard, onConfigColumn, onAddCard }
       order: 0,
       owner: col.owner,
       exitCriteria: col.exit_criteria,
+      instructions: col.instructions,
     };
   }
 
