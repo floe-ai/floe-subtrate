@@ -112,6 +112,22 @@ export function applyContextSchema(db: DatabaseSync): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_contexts_workspace_scope
       ON contexts(workspace_id, scope_id, created_at);
+
+    -- Slice 1 Track B: index for parent↔child context linking
+    CREATE INDEX IF NOT EXISTS idx_contexts_parent
+      ON contexts(parent_context_id, created_at);
+
+    -- Slice 2: per-actor, per-context, per-event-type subscriptions
+    CREATE TABLE IF NOT EXISTS context_subscriptions (
+      context_id   TEXT NOT NULL,
+      endpoint_id  TEXT NOT NULL,
+      event_types  TEXT NOT NULL DEFAULT '["*"]',
+      subscribed_at TEXT NOT NULL,
+      PRIMARY KEY (context_id, endpoint_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_context_subscriptions_endpoint
+      ON context_subscriptions(endpoint_id, context_id);
   `);
 }
 
@@ -174,6 +190,59 @@ export class ContextStore implements ContextStoreReader {
       .prepare("SELECT 1 AS x FROM context_participants WHERE context_id = ? AND endpoint_id = ?")
       .get(context_id, endpoint_id);
     return !!row;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slice 1 Track A — Dynamic participants
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Add an endpoint as a participant in a context (idempotent — INSERT OR IGNORE).
+   * Returns true when the endpoint was newly added, false when it was already present.
+   */
+  addParticipant(context_id: string, endpoint_id: string): boolean {
+    const ts = nowIso();
+    const result = this.db
+      .prepare("INSERT OR IGNORE INTO context_participants (context_id, endpoint_id, joined_at) VALUES (?, ?, ?)")
+      .run(context_id, endpoint_id, ts);
+    return Number(result.changes ?? 0) > 0;
+  }
+
+  /**
+   * Remove an endpoint from a context's participant list (idempotent).
+   * Returns true when the endpoint was removed, false when it was not present.
+   * Does NOT affect the endpoint's subscription record — that is managed
+   * separately via unsubscribeFromContext.
+   */
+  removeParticipant(context_id: string, endpoint_id: string): boolean {
+    const result = this.db
+      .prepare("DELETE FROM context_participants WHERE context_id = ? AND endpoint_id = ?")
+      .run(context_id, endpoint_id);
+    return Number(result.changes ?? 0) > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slice 1 Track B — Context linking
+  // ---------------------------------------------------------------------------
+
+  /**
+   * List direct children of a parent context (contexts whose parent_context_id
+   * equals the given parentId).  Ordered by created_at ascending.
+   */
+  listContextsForParent(parentId: string): ContextListRow[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT c.*, MAX(e.created_at) AS last_event_at
+        FROM contexts c
+        LEFT JOIN events e ON e.context_id = c.context_id
+        WHERE c.parent_context_id = ?
+        GROUP BY c.context_id
+        ORDER BY c.created_at ASC
+      `
+      )
+      .all(parentId) as any[];
+    return rows.map((row) => this.mapContextListRow(row));
   }
 
   setContextScope(context_id: string, scope_id: string): ContextRecord | null {

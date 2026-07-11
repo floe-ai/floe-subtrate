@@ -951,6 +951,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       context_id: z.string().min(1).optional(),
       created_by_endpoint_id: z.string().min(1).nullable().optional(),
       title: z.string().min(1).nullable().optional(),
+      // Slice 1 Track B — parent context linking
+      parent_context_id: z.string().min(1).nullable().optional(),
     });
     const parsed = bodySchema.safeParse(request.body);
     if (!parsed.success) {
@@ -964,6 +966,10 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
+    // Guard: self-reference on parent_context_id
+    if (body.parent_context_id && body.context_id && body.parent_context_id === body.context_id) {
+      return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id must not equal the context's own id" }] });
+    }
     const contextId = store.contextStore.createContext({
       workspace_id: params.workspace_id,
       scope_id: body.scope_id ?? null,
@@ -971,7 +977,13 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       created_by_endpoint_id: body.created_by_endpoint_id ?? null,
       context_id: body.context_id,
       title: body.title ?? null,
+      parent_context_id: body.parent_context_id ?? null,
     });
+    // Post-insert self-reference guard (when context_id was auto-generated)
+    if (body.parent_context_id && body.parent_context_id === contextId) {
+      store.contextStore.db.prepare("DELETE FROM contexts WHERE context_id = ?").run(contextId);
+      return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id must not equal the context's own id" }] });
+    }
     const ctx = store.contextStore.getContext(contextId)!;
     const participants = store.contextStore.getContextParticipants(contextId);
     const serialized = serializeContextListRow({
@@ -1043,7 +1055,40 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return result;
   });
 
-  // Slice 0 — context compaction + clear-history
+  // Slice 1 Track A — dynamic participants
+  app.post("/v1/contexts/:id/participants", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({ endpoint_id: z.string().min(1) }).parse(request.body);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const added = store.contextStore.addParticipant(params.id, body.endpoint_id);
+    broadcast("participant_added", { workspace_id: ctx.workspace_id, context_id: params.id, endpoint_id: body.endpoint_id });
+    return { ok: true, context_id: params.id, endpoint_id: body.endpoint_id, added };
+  });
+
+  app.delete("/v1/contexts/:id/participants/:endpoint_id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), endpoint_id: z.string().min(1) }).parse(request.params);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const removed = store.contextStore.removeParticipant(params.id, params.endpoint_id);
+    broadcast("participant_removed", { workspace_id: ctx.workspace_id, context_id: params.id, endpoint_id: params.endpoint_id });
+    return { ok: true, context_id: params.id, endpoint_id: params.endpoint_id, removed };
+  });
+
+  // Slice 1 Track B — context linking (children query)
+  app.get("/v1/contexts/:id/children", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    if (!store.contextStore.getContext(params.id)) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const rows = store.contextStore.listContextsForParent(params.id);
+    return { contexts: rows.map(serializeContextListRow) };
+  });
+
   app.post("/v1/contexts/:id/compact", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = z.object({
