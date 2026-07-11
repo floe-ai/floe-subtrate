@@ -467,6 +467,8 @@ export class BusStore {
     this.addColumnIfMissing("pulses", "persistence", "TEXT NOT NULL DEFAULT 'local'");
     this.addColumnIfMissing("pulses", "scope_id", "TEXT");
     this.relaxPulseScopeColumn();
+    // Slice 3 — human actor identity: actor_kind distinguishes backing type
+    this.addColumnIfMissing("endpoints", "actor_kind", "TEXT NOT NULL DEFAULT 'agent'");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_pulses_workspace_scope
         ON pulses(workspace_id, scope_id, status);
@@ -1109,20 +1111,35 @@ export class BusStore {
     bridge_id?: string | null;
     status?: string;
     metadata?: Record<string, unknown>;
+    /**
+     * Slice 3 — actor backing kind.
+     *
+     * - 'agent' (default): LLM-backed; receives delivery bundles when queued
+     *   events are available and a bridge is attached.
+     * - 'human': human-backed; can participate and emit like any actor but
+     *   is NEVER auto-woken by a delivery bundle (tryCreateDeliveryForEndpoint
+     *   returns null for human endpoints).
+     *
+     * Both kinds are first-class participants in contexts, uniformly indexed
+     * as actors in the bus.  The distinction is purely about delivery.
+     */
+    actor_kind?: "agent" | "human";
   }, broadcast: Broadcast): unknown {
     const timestamp = now();
+    const actorKind = input.actor_kind ?? "agent";
     this.db.prepare(`
       INSERT INTO endpoints (
         endpoint_id, workspace_id, name, agent_id, bridge_id, status,
-        metadata_json, created_at, updated_at
+        actor_kind, metadata_json, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(endpoint_id) DO UPDATE SET
         workspace_id = excluded.workspace_id,
         name = excluded.name,
         agent_id = excluded.agent_id,
         bridge_id = excluded.bridge_id,
         status = excluded.status,
+        actor_kind = excluded.actor_kind,
         metadata_json = excluded.metadata_json,
         updated_at = excluded.updated_at
     `).run(
@@ -1132,6 +1149,7 @@ export class BusStore {
       input.agent_id ?? null,
       input.bridge_id ?? null,
       input.status ?? "idle",
+      actorKind,
       json(input.metadata ?? {}),
       timestamp,
       timestamp
@@ -2225,6 +2243,8 @@ export class BusStore {
   private tryCreateDeliveryForEndpoint(endpointId: string, broadcast: Broadcast): DeliveryBundle | null {
     const endpoint = this.getEndpoint(endpointId);
     if (!endpoint || !endpoint.bridge_id) return null;
+    // Slice 3 — human actors are never auto-woken by a delivery bundle
+    if (String(endpoint.actor_kind ?? "agent") === "human") return null;
     if (endpoint.status === "active" || endpoint.status === "error" || endpoint.status === "runtime_unconfigured") return null;
 
     const queuedRows = this.db.prepare(`
