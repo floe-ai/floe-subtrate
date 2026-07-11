@@ -1089,6 +1089,40 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { contexts: rows.map(serializeContextListRow) };
   });
 
+  // Slice 2 — per-actor, per-context, per-event-type subscriptions
+  app.post("/v1/contexts/:id/subscriptions", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      endpoint_id: z.string().min(1),
+      event_types: z.array(z.string().min(1)).optional().default(["*"]),
+    }).parse(request.body);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    store.contextStore.subscribeToContext(params.id, body.endpoint_id, body.event_types);
+    return { ok: true, context_id: params.id, endpoint_id: body.endpoint_id, event_types: body.event_types };
+  });
+
+  app.delete("/v1/contexts/:id/subscriptions/:endpoint_id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), endpoint_id: z.string().min(1) }).parse(request.params);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    store.contextStore.unsubscribeFromContext(params.id, params.endpoint_id);
+    return { ok: true, context_id: params.id, endpoint_id: params.endpoint_id };
+  });
+
+  app.get("/v1/contexts/:id/subscriptions", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    if (!store.contextStore.getContext(params.id)) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    return { subscriptions: store.contextStore.getContextSubscriptions(params.id) };
+  });
+
+  // Slice 0 — context compaction + clear-history
   app.post("/v1/contexts/:id/compact", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = z.object({

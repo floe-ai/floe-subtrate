@@ -505,4 +505,77 @@ export class ContextStore implements ContextStoreReader {
       .all(workspace_id, scope_id) as any[];
     return rows.map((row) => this.mapContextListRow(row));
   }
+
+  // ---------------------------------------------------------------------------
+  // Slice 2 — Per-actor, per-context, per-event-type subscriptions
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Subscribe an endpoint to events in a context.
+   *
+   * `eventTypes` is a JSON-serialisable array of event type strings.  The
+   * special value `["*"]` (the default) means "all event types".
+   *
+   * Idempotent: if a subscription already exists it is replaced (UPSERT).
+   */
+  subscribeToContext(
+    contextId: string,
+    endpointId: string,
+    eventTypes: string[] = ["*"]
+  ): void {
+    const ts = nowIso();
+    this.db.prepare(`
+      INSERT INTO context_subscriptions (context_id, endpoint_id, event_types, subscribed_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(context_id, endpoint_id) DO UPDATE SET
+        event_types  = excluded.event_types,
+        subscribed_at = excluded.subscribed_at
+    `).run(contextId, endpointId, JSON.stringify(eventTypes), ts);
+  }
+
+  /**
+   * Remove a subscription for an endpoint from a context (idempotent).
+   */
+  unsubscribeFromContext(contextId: string, endpointId: string): void {
+    this.db.prepare(
+      "DELETE FROM context_subscriptions WHERE context_id = ? AND endpoint_id = ?"
+    ).run(contextId, endpointId);
+  }
+
+  /**
+   * Return all active subscriptions for a context.
+   */
+  getContextSubscriptions(contextId: string): Array<{
+    endpoint_id: string;
+    event_types: string[];
+    subscribed_at: string;
+  }> {
+    const rows = this.db
+      .prepare(
+        "SELECT endpoint_id, event_types, subscribed_at FROM context_subscriptions WHERE context_id = ? ORDER BY subscribed_at ASC"
+      )
+      .all(contextId) as Array<{ endpoint_id: string; event_types: string; subscribed_at: string }>;
+    return rows.map((r) => ({
+      endpoint_id: r.endpoint_id,
+      event_types: JSON.parse(r.event_types) as string[],
+      subscribed_at: r.subscribed_at,
+    }));
+  }
+
+  /**
+   * Check whether an endpoint's subscription matches a given event type.
+   *
+   * Returns false when no subscription row exists.
+   * Returns true when the subscription covers `"*"` or the exact eventType.
+   */
+  isSubscribed(contextId: string, endpointId: string, eventType: string): boolean {
+    const row = this.db
+      .prepare(
+        "SELECT event_types FROM context_subscriptions WHERE context_id = ? AND endpoint_id = ?"
+      )
+      .get(contextId, endpointId) as { event_types: string } | undefined;
+    if (!row) return false;
+    const types = JSON.parse(row.event_types) as string[];
+    return types.includes("*") || types.includes(eventType);
+  }
 }

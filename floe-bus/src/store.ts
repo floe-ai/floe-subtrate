@@ -102,6 +102,12 @@ export class PulseNotFoundError extends Error {
 export type DestinationSelector =
   | { kind: "endpoint"; endpoint_id: string }
   | { kind: "context"; context_id: string }
+  /**
+   * Slice 2 — context_fan_out: fan-out to all participants whose subscription
+   * matches the event type.  Does NOT change the semantics of
+   * { kind: "context" } (which remains a history-record, zero-delivery path).
+   */
+  | { kind: "context_fan_out"; context_id: string }
   | {
       kind: "broadcast";
       scope: "workspace";
@@ -2064,6 +2070,8 @@ export class BusStore {
         ? input.destination.endpoint_id
         : input.destination.kind === "context"
         ? `context:${input.destination.context_id}`
+        : input.destination.kind === "context_fan_out"
+        ? `context_fan_out:${input.destination.context_id}`
         : `broadcast:${input.destination.scope}:${input.destination.target}`;
     // Legacy thread_id storage: write the resolved context_id so the existing
     // NOT NULL column is satisfied. No new flow reads thread_id.
@@ -2111,8 +2119,17 @@ export class BusStore {
 
   private resolveDestinations(event: EventEnvelope): string[] {
     const destination = event.destination_json;
+    // history-record path — intentionally zero deliveries (unchanged)
     if (destination.kind === "context") return [];
     if (destination.kind === "endpoint") return [destination.endpoint_id];
+    // Slice 2 — fan-out to subscribed participants
+    if (destination.kind === "context_fan_out") {
+      const subs = this.contextStore.getContextSubscriptions(destination.context_id);
+      const eventType = event.type;
+      return subs
+        .filter((sub) => sub.event_types.includes("*") || sub.event_types.includes(eventType))
+        .map((sub) => sub.endpoint_id);
+    }
     const target = destination.target;
     const query = `
       SELECT endpoint_id
