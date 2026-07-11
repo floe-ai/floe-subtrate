@@ -268,6 +268,159 @@ export class ContextStore implements ContextStoreReader {
     return rows.map((row) => this.mapContextListRow(row));
   }
 
+  // ---------------------------------------------------------------------------
+  // Slice 0 — Context compaction + clear-history
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Delete all events for a context without deleting the context itself.
+   *
+   * Replicates the delivery-bundle cleanup from deleteContext so in-flight
+   * bundles are kept consistent.  Must NOT be called while a delivery is
+   * `active` — callers should check first.
+   *
+   * Keeps: contexts row, context_participants rows, pulse_subscribers rows.
+   * Deletes: events, queued event_queue rows, pending_responses, and
+   *          delivery_bundles whose events are all from this context.
+   */
+  clearContextHistory(contextId: string): { events_deleted: number } {
+    const eventIds = (this.db
+      .prepare("SELECT event_id FROM events WHERE context_id = ?")
+      .all(contextId) as Array<{ event_id: string }>).map((r) => r.event_id);
+
+    if (eventIds.length === 0) return { events_deleted: 0 };
+
+    // Patch/delete delivery bundles that reference this context's events.
+    const bundles = this.db
+      .prepare("SELECT delivery_id, events_json FROM delivery_bundles")
+      .all() as Array<{ delivery_id: string; events_json: string }>;
+
+    const eventSet = new Set(eventIds);
+    const bundlesToDelete = new Set<string>();
+    const bundlesPatched = new Set<string>();
+
+    for (const bundle of bundles) {
+      const events = JSON.parse(bundle.events_json) as Array<{ event_id: string }>;
+      const remaining = events.filter((e) => !eventSet.has(e.event_id));
+      if (remaining.length === events.length) continue;
+      bundlesPatched.add(bundle.delivery_id);
+      if (remaining.length === 0) {
+        bundlesToDelete.add(bundle.delivery_id);
+        this.db.prepare("DELETE FROM delivery_bundles WHERE delivery_id = ?").run(bundle.delivery_id);
+      } else {
+        this.db.prepare(`
+          UPDATE delivery_bundles
+          SET trigger_event_id = ?, events_json = ?
+          WHERE delivery_id = ?
+        `).run(remaining[0].event_id, JSON.stringify(remaining), bundle.delivery_id);
+      }
+    }
+
+    for (const eventId of eventIds) {
+      this.db.prepare("DELETE FROM event_queue WHERE event_id = ?").run(eventId);
+      this.db.prepare("DELETE FROM pending_responses WHERE source_event_id = ?").run(eventId);
+      this.db.prepare("DELETE FROM events WHERE event_id = ?").run(eventId);
+    }
+
+    for (const deliveryId of bundlesPatched) {
+      this.db.prepare("DELETE FROM runtime_telemetry WHERE delivery_id = ?").run(deliveryId);
+    }
+    for (const deliveryId of bundlesToDelete) {
+      this.db.prepare("DELETE FROM event_queue WHERE delivery_id = ?").run(deliveryId);
+    }
+
+    return { events_deleted: eventIds.length };
+  }
+
+  /**
+   * Compact a context's history: delete events older than `before_event_id`
+   * (or all events when omitted), then insert one synthetic
+   * `context.compacted` event carrying `summary` as the record.
+   *
+   * Returns the summary event's id.
+   */
+  compactContext(contextId: string, summary: string, beforeEventId?: string): string {
+    const watermark = beforeEventId
+      ? (this.db
+          .prepare("SELECT created_at FROM events WHERE event_id = ? AND context_id = ?")
+          .get(beforeEventId, contextId) as { created_at: string } | undefined)
+        ?.created_at
+      : undefined;
+
+    // Determine events to delete.
+    const eventIds = ((
+      watermark
+        ? this.db
+            .prepare("SELECT event_id FROM events WHERE context_id = ? AND created_at < ?")
+            .all(contextId, watermark)
+        : this.db
+            .prepare("SELECT event_id FROM events WHERE context_id = ?")
+            .all(contextId)
+    ) as Array<{ event_id: string }>).map((r) => r.event_id);
+
+    // Patch/delete delivery bundles referencing removed events.
+    const bundles = this.db
+      .prepare("SELECT delivery_id, events_json FROM delivery_bundles")
+      .all() as Array<{ delivery_id: string; events_json: string }>;
+
+    const eventSet = new Set(eventIds);
+    const bundlesToDelete = new Set<string>();
+    const bundlesPatched = new Set<string>();
+
+    for (const bundle of bundles) {
+      const events = JSON.parse(bundle.events_json) as Array<{ event_id: string }>;
+      const remaining = events.filter((e) => !eventSet.has(e.event_id));
+      if (remaining.length === events.length) continue;
+      bundlesPatched.add(bundle.delivery_id);
+      if (remaining.length === 0) {
+        bundlesToDelete.add(bundle.delivery_id);
+        this.db.prepare("DELETE FROM delivery_bundles WHERE delivery_id = ?").run(bundle.delivery_id);
+      } else {
+        this.db.prepare(`
+          UPDATE delivery_bundles
+          SET trigger_event_id = ?, events_json = ?
+          WHERE delivery_id = ?
+        `).run(remaining[0].event_id, JSON.stringify(remaining), bundle.delivery_id);
+      }
+    }
+
+    for (const eventId of eventIds) {
+      this.db.prepare("DELETE FROM event_queue WHERE event_id = ?").run(eventId);
+      this.db.prepare("DELETE FROM pending_responses WHERE source_event_id = ?").run(eventId);
+      this.db.prepare("DELETE FROM events WHERE event_id = ?").run(eventId);
+    }
+
+    for (const deliveryId of bundlesPatched) {
+      this.db.prepare("DELETE FROM runtime_telemetry WHERE delivery_id = ?").run(deliveryId);
+    }
+    for (const deliveryId of bundlesToDelete) {
+      this.db.prepare("DELETE FROM event_queue WHERE delivery_id = ?").run(deliveryId);
+    }
+
+    // Insert the synthetic summary event.
+    const summaryEventId = `evt_${randomUUID()}`;
+    const ts = nowIso();
+    this.db.prepare(`
+      INSERT INTO events (
+        event_id, type, workspace_id, source_endpoint_id, context_id, thread_id, scope_id,
+        correlation_id, destination_json, content_json, response_json,
+        metadata_json, idempotency_key, created_at
+      )
+      SELECT
+        ?, 'context.compacted', c.workspace_id, NULL, ?, '', c.scope_id,
+        NULL,
+        json_object('kind','context','context_id',?),
+        json_object('summary',?),
+        json_object('expected', json('false')),
+        json_object('compacted_event_count',?),
+        NULL, ?
+      FROM contexts c
+      WHERE c.context_id = ?
+    `).run(summaryEventId, contextId, contextId, summary, eventIds.length, ts, contextId);
+
+    return summaryEventId;
+  }
+
   listContextsForScope(workspace_id: string, scope_id: string): ContextListRow[] {
     const rows = this.db
       .prepare(

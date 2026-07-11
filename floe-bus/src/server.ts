@@ -1043,6 +1043,45 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return result;
   });
 
+  // Slice 0 — context compaction + clear-history
+  app.post("/v1/contexts/:id/compact", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      summary: z.string().min(1),
+      before_event_id: z.string().min(1).optional(),
+    }).parse(request.body);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const activeCheck = store.db
+      .prepare("SELECT 1 AS x FROM delivery_bundles WHERE state = 'active' AND workspace_id = ? LIMIT 1")
+      .get(ctx.workspace_id);
+    if (activeCheck) {
+      return reply.code(409).send({ error: "active_delivery_in_progress", message: "Cannot compact while a delivery is active" });
+    }
+    const summary_event_id = store.contextStore.compactContext(params.id, body.summary, body.before_event_id);
+    broadcast("context_compacted", { context_id: params.id, summary_event_id });
+    return { ok: true, context_id: params.id, summary_event_id };
+  });
+
+  app.post("/v1/contexts/:id/clear-history", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const activeCheck = store.db
+      .prepare("SELECT 1 AS x FROM delivery_bundles WHERE state = 'active' AND workspace_id = ? LIMIT 1")
+      .get(ctx.workspace_id);
+    if (activeCheck) {
+      return reply.code(409).send({ error: "active_delivery_in_progress", message: "Cannot clear history while a delivery is active" });
+    }
+    const result = store.contextStore.clearContextHistory(params.id);
+    broadcast("context_history_cleared", { context_id: params.id, events_deleted: result.events_deleted });
+    return { ok: true, context_id: params.id, events_deleted: result.events_deleted };
+  });
+
   app.get("/v1/delivery/claim", async (request) => {
     const query = z.object({
       bridge_id: z.string(),

@@ -128,6 +128,20 @@ export class BridgeDaemon {
     if (message.type === "event_submitted") {
       void this.fireWebhookReceived(message.payload?.event);
     }
+    // Slice 0 — context lifecycle hooks
+    if (message.type === "context_compacted" && message.payload?.context_id) {
+      void this.fireContextLifecycleHook("ContextCompacted", message.payload);
+    }
+    if (message.type === "context_history_cleared" && message.payload?.context_id) {
+      void this.fireContextLifecycleHook("ContextHistoryCleared", message.payload);
+    }
+    // Slice 1 — dynamic participant hooks
+    if (message.type === "participant_added" && message.payload?.context_id) {
+      void this.fireContextLifecycleHook("ParticipantAdded", message.payload);
+    }
+    if (message.type === "participant_removed" && message.payload?.context_id) {
+      void this.fireContextLifecycleHook("ParticipantRemoved", message.payload);
+    }
   }
 
   private async fireWebhookReceived(event: any): Promise<void> {
@@ -158,6 +172,33 @@ export class BridgeDaemon {
       const oldestEventId = this.firedWebhookEvents.keys().next().value;
       if (oldestEventId === undefined) break;
       this.firedWebhookEvents.delete(oldestEventId);
+    }
+  }
+
+  /**
+   * Fire a context-lifecycle hook workspace-wide (to every registered HookRegistry
+   * for the workspace identified by `payload.workspace_id`, if present; or all
+   * workspaces when the broadcast payload does not carry workspace_id).
+   */
+  private async fireContextLifecycleHook(hook: import("./hooks.js").HookName, payload: any): Promise<void> {
+    const workspaceId: string | undefined = payload?.workspace_id;
+    if (workspaceId) {
+      const hooks = this.workspaceHooks.get(workspaceId);
+      if (hooks) {
+        try {
+          await hooks.fire(hook as any, payload);
+        } catch (err) {
+          console.error(`[bridge] ${hook} hook failed`, err);
+        }
+      }
+    } else {
+      for (const [, hooks] of this.workspaceHooks) {
+        try {
+          await hooks.fire(hook as any, payload);
+        } catch (err) {
+          console.error(`[bridge] ${hook} hook failed`, err);
+        }
+      }
     }
   }
 
