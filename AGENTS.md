@@ -502,3 +502,53 @@ Solution: `floe-app/package.json` has a `tauri:attach` script (`tauri dev --conf
 - **Browser**: `BrowserAuthPillar` — fetches profiles from bus (`GET /v1/auth/profiles` via `getAuthProfiles()`), shows read-only list with a note to use CLI/desktop for writes.
 - **Desktop**: `TauriAuthPillar` — full read/write via Tauri `invoke`. No Tauri calls in the browser path.
 The nav "Substrate Settings" item is always visible (useful in both modes).
+
+---
+
+## Card = Context substrate primitives (fm/floe-ctx-primitives, PR #95)
+
+Four generic, extension-agnostic substrate primitives landed in this PR. All are in `floe-bus/` and `floe-bridge/`. No snowball vocabulary.
+
+### Core model invariants (captain-confirmed)
+- **Participation ≠ subscription.** Participation = context membership; any participant may ALWAYS emit (resolver rule 1 unchanged). Subscription = which event TYPES wake an actor (trigger a delivery/turn).
+- **No role enum.** "Assignee/watcher" is emergent from subscription `event_types`: subscribed to `["*"]` = woken by all events; subscribed to `[]` = silent watcher; no subscription row = not woken.
+- **`destination:{kind:"context"}` is ZERO deliveries** — it is a history-record path. Do not change its semantics. Use `{kind:"context_fan_out"}` for actual fan-out delivery.
+
+### Slice 0 — Context compaction + clear-history
+- `ContextStore.clearContextHistory(contextId)` — delete all events, keep context row + participants + pulse subscribers. Replicates `deleteContext`'s delivery-bundle cleanup. Do NOT call while `delivery_bundles.state='active'`.
+- `ContextStore.compactContext(contextId, summary, beforeEventId?)` — truncate history to watermark, insert synthetic `context.compacted` event.
+- Routes: `POST /v1/contexts/:id/compact` `{ summary, before_event_id? }` and `POST /v1/contexts/:id/clear-history`.
+- Hook events in `floe-bridge/src/hooks.ts`: `ContextCompacted`, `ContextHistoryCleared`, `ParticipantAdded`, `ParticipantRemoved`.
+- Bridge daemon fires these via `fireContextLifecycleHook()` when it receives the bus broadcasts.
+
+### Slice 1 — Dynamic participants + context linking
+- `ContextStore.addParticipant(contextId, endpointId)` — idempotent INSERT OR IGNORE; returns bool.
+- `ContextStore.removeParticipant(contextId, endpointId)` — idempotent DELETE; returns bool.
+- Routes: `POST /v1/contexts/:id/participants {endpoint_id}` and `DELETE /v1/contexts/:id/participants/:endpoint_id`.
+- `parent_context_id` is now exposed in `POST /v1/workspaces/:ws/contexts` body (field already existed in schema).
+- `ContextStore.listContextsForParent(parentId)` + `GET /v1/contexts/:id/children`.
+- Index `idx_contexts_parent ON contexts(parent_context_id, created_at)`.
+- Self-reference guard: `parent_context_id === own id` is rejected 400.
+- Integration test T10 updated: freeze-guard assertions removed; now positively asserts the dynamic API exists.
+
+### Slice 2 — Per-event-type subscriptions + context_fan_out
+- Table: `context_subscriptions(context_id, endpoint_id, event_types JSON, subscribed_at)` PK `(context_id, endpoint_id)`.
+- `ContextStore.subscribeToContext(contextId, endpointId, eventTypes?)` — UPSERT, default `["*"]`.
+- `ContextStore.unsubscribeFromContext(contextId, endpointId)` — idempotent.
+- `ContextStore.getContextSubscriptions(contextId)` and `isSubscribed(contextId, endpointId, eventType)`.
+- New `DestinationSelector` kind: `{ kind: "context_fan_out"; context_id: string }` in `floe-bus/src/store.ts`.
+- `resolveDestinations` fans out to subscribers whose `event_types` includes `"*"` or the exact event type. `[]` = never woken.
+- Routes: `POST/DELETE/GET /v1/contexts/:id/subscriptions`.
+
+### Slice 3 — First-class human actor identity
+- Column `actor_kind TEXT NOT NULL DEFAULT 'agent'` added to endpoints table (via `addColumnIfMissing`).
+- `registerEndpoint()` accepts `actor_kind: "agent" | "human"`; defaults to `"agent"` (backward-compatible).
+- `tryCreateDeliveryForEndpoint()` returns null for `actor_kind === "human"` — humans accumulate queued events (readable via event history) but are NEVER auto-woken by delivery bundles.
+- `POST /v1/endpoints/register` accepts `actor_kind` enum field.
+- **Deferred**: UI still uses 'speak-as-agent' impersonation; wiring to a real human `endpoint_id` is a product-layer change (bridge workspace attachment + floe-app update).
+
+### Test files added
+- `floe-bus/src/contexts/compaction.test.ts` — 9 tests
+- `floe-bus/src/contexts/participants.test.ts` — 12 tests  
+- `floe-bus/src/contexts/subscriptions.test.ts` — 19 tests
+- `floe-bus/src/contexts/human-actor.test.ts` — 7 tests
