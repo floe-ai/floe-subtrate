@@ -1,9 +1,9 @@
 /**
  * Slice 2 — Per-actor, per-context, per-event-type subscriptions +
- *            context_fan_out delivery routing.
+ *            context-addressed delivery routing (single path).
  *
- * Tests ContextStore subscription CRUD methods and the resolveDestinations
- * fan-out path via a BusStore integration test.
+ * Tests ContextStore subscription CRUD methods and the unified
+ * context-delivery routing path through BusStore.
  */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
@@ -164,13 +164,13 @@ describe("ContextStore — isSubscribed (Slice 2)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// BusStore integration — context_fan_out delivery routing
+// BusStore integration — context-addressed delivery routing (single path)
 // ---------------------------------------------------------------------------
 
 const noop = () => {};
 
 function makeStore(): { store: BusStore; cleanup: () => void } {
-  const tmp = mkdtempSync(join(tmpdir(), "floe-bus-fanout-"));
+  const tmp = mkdtempSync(join(tmpdir(), "floe-bus-ctx-routing-"));
   const cfgPath = join(tmp, "config.yaml");
   const cfg = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
@@ -212,7 +212,7 @@ function emitCommand(
   };
 }
 
-describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
+describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
   let store: BusStore;
   let cleanup: () => void;
 
@@ -223,7 +223,7 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
   });
   afterEach(() => cleanup());
 
-  it("context_fan_out fans out to all participants subscribed to '*'", () => {
+  it("delivers to all actors subscribed to '*' when emitting into a context", () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -237,7 +237,7 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
-        destination: { kind: "context_fan_out", context_id: ctx },
+        destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
       noop
@@ -250,7 +250,7 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
     expect(destinations).toEqual([E1, E2, E3].sort());
   });
 
-  it("context_fan_out delivers only to endpoints subscribed to the specific event type", () => {
+  it("delivers only to actors subscribed to the specific event type", () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -264,7 +264,7 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
-        destination: { kind: "context_fan_out", context_id: ctx },
+        destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
       noop
@@ -274,18 +274,17 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
       .prepare("SELECT destination_endpoint_id FROM event_queue WHERE event_id = ?")
       .all(result.event.event_id) as Array<{ destination_endpoint_id: string }>;
     const destinations = queued.map((r) => r.destination_endpoint_id).sort();
-    // E2 is subscribed to task.done, not message → not woken
+    // E2 subscribed to task.done, not message — not woken
     expect(destinations).toEqual([E1, E3].sort());
     expect(destinations).not.toContain(E2);
   });
 
-  it("context_fan_out delivers to zero endpoints when subscriptions are empty-event-types", () => {
+  it("delivers to zero actors when all subscriptions have empty event_types (silent watchers)", () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
       participants: [E1, E2],
     });
-    // Both subscribed with no event types — silent watchers
     store.contextStore.subscribeToContext(ctx, E1, []);
     store.contextStore.subscribeToContext(ctx, E2, []);
 
@@ -293,7 +292,7 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
-        destination: { kind: "context_fan_out", context_id: ctx },
+        destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
       noop
@@ -305,19 +304,19 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
     expect(queued).toHaveLength(0);
   });
 
-  it("context_fan_out delivers to zero endpoints when no subscriptions exist", () => {
+  it("records the event with zero deliveries when no subscriptions exist in the context", () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
       participants: [E1, E2],
     });
-    // No subscriptions — participants but silent watchers
+    // No subscriptions — participants present but none subscribed
 
     const result = store.submitEvent(
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
-        destination: { kind: "context_fan_out", context_id: ctx },
+        destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
       noop
@@ -327,18 +326,25 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
       .prepare("SELECT destination_endpoint_id FROM event_queue WHERE event_id = ?")
       .all(result.event.event_id) as Array<{ destination_endpoint_id: string }>;
     expect(queued).toHaveLength(0);
+    // But the event IS in the context history
+    const events = store.db
+      .prepare("SELECT event_id FROM events WHERE context_id = ? AND event_id = ?")
+      .get(ctx, result.event.event_id);
+    expect(events).not.toBeUndefined();
   });
 
-  it("destination:{kind:'context'} still returns zero deliveries (record-only path unchanged)", () => {
+  it("appendContextEvent (internal history writes) is always record-only — never queues deliveries regardless of subscriptions", () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
       participants: [E1, E2],
     });
+    // Even with "*" subscriptions, appendContextEvent bypasses resolveDestinations
+    // entirely: it writes directly to the events table and does NOT call queueEvent.
+    // This is by construction, not by subscription state.
     store.contextStore.subscribeToContext(ctx, E1, ["*"]);
     store.contextStore.subscribeToContext(ctx, E2, ["*"]);
 
-    // Use appendContextEvent which uses destination:{kind:"context"}
     const event = store.appendContextEvent(
       {
         type: "pulse.fired",
@@ -350,14 +356,42 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
       noop
     );
 
+    // Zero deliveries — appendContextEvent never routes, even with active subscriptions.
+    // The event IS in the history (events table), but nobody is queued.
     const queued = store.db
       .prepare("SELECT destination_endpoint_id FROM event_queue WHERE event_id = ?")
       .all(event.event_id) as Array<{ destination_endpoint_id: string }>;
-    // Must be zero — the existing context record-only path is NOT changed
+    expect(queued).toHaveLength(0);
+    // Confirm the event IS in history
+    const row = store.db
+      .prepare("SELECT event_id FROM events WHERE event_id = ?")
+      .get(event.event_id);
+    expect(row).not.toBeUndefined();
+  });
+
+  it("appendContextEvent in a context with NO subscriptions also creates zero deliveries", () => {
+    const ctx = store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: E1,
+      participants: [E1, E2],
+    });
+    const event = store.appendContextEvent(
+      {
+        type: "pulse.fired",
+        workspace_id: WS,
+        context_id: ctx,
+        content: { text: "tick" },
+        metadata: {},
+      },
+      noop
+    );
+    const queued = store.db
+      .prepare("SELECT destination_endpoint_id FROM event_queue WHERE event_id = ?")
+      .all(event.event_id) as Array<{ destination_endpoint_id: string }>;
     expect(queued).toHaveLength(0);
   });
 
-  it("a participant with no subscription is not woken by context_fan_out", () => {
+  it("an actor subscribed to nothing is a silent watcher — emitting into the context does not wake it", () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -370,7 +404,7 @@ describe("BusStore — context_fan_out destination routing (Slice 2)", () => {
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
-        destination: { kind: "context_fan_out", context_id: ctx },
+        destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
       noop

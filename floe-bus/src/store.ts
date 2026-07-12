@@ -101,13 +101,16 @@ export class PulseNotFoundError extends Error {
 
 export type DestinationSelector =
   | { kind: "endpoint"; endpoint_id: string }
-  | { kind: "context"; context_id: string }
   /**
-   * Slice 2 — context_fan_out: fan-out to all participants whose subscription
-   * matches the event type.  Does NOT change the semantics of
-   * { kind: "context" } (which remains a history-record, zero-delivery path).
+   * Context-addressed emit: records the event in the context log AND delivers
+   * it to every actor whose subscription in that context matches the event
+   * type.  If no actor is subscribed to the event type the event is recorded
+   * and delivered to no one — the natural "record-only" outcome.
+   *
+   * This is the single context-delivery path.  There is no separate fan-out
+   * kind; routing resolves via context_subscriptions.
    */
-  | { kind: "context_fan_out"; context_id: string }
+  | { kind: "context"; context_id: string }
   | {
       kind: "broadcast";
       scope: "workspace";
@@ -467,8 +470,6 @@ export class BusStore {
     this.addColumnIfMissing("pulses", "persistence", "TEXT NOT NULL DEFAULT 'local'");
     this.addColumnIfMissing("pulses", "scope_id", "TEXT");
     this.relaxPulseScopeColumn();
-    // Slice 3 — human actor identity: actor_kind distinguishes backing type
-    this.addColumnIfMissing("endpoints", "actor_kind", "TEXT NOT NULL DEFAULT 'agent'");
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_pulses_workspace_scope
         ON pulses(workspace_id, scope_id, status);
@@ -1111,35 +1112,20 @@ export class BusStore {
     bridge_id?: string | null;
     status?: string;
     metadata?: Record<string, unknown>;
-    /**
-     * Slice 3 — actor backing kind.
-     *
-     * - 'agent' (default): LLM-backed; receives delivery bundles when queued
-     *   events are available and a bridge is attached.
-     * - 'human': human-backed; can participate and emit like any actor but
-     *   is NEVER auto-woken by a delivery bundle (tryCreateDeliveryForEndpoint
-     *   returns null for human endpoints).
-     *
-     * Both kinds are first-class participants in contexts, uniformly indexed
-     * as actors in the bus.  The distinction is purely about delivery.
-     */
-    actor_kind?: "agent" | "human";
   }, broadcast: Broadcast): unknown {
     const timestamp = now();
-    const actorKind = input.actor_kind ?? "agent";
     this.db.prepare(`
       INSERT INTO endpoints (
         endpoint_id, workspace_id, name, agent_id, bridge_id, status,
-        actor_kind, metadata_json, created_at, updated_at
+        metadata_json, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(endpoint_id) DO UPDATE SET
         workspace_id = excluded.workspace_id,
         name = excluded.name,
         agent_id = excluded.agent_id,
         bridge_id = excluded.bridge_id,
         status = excluded.status,
-        actor_kind = excluded.actor_kind,
         metadata_json = excluded.metadata_json,
         updated_at = excluded.updated_at
     `).run(
@@ -1149,7 +1135,6 @@ export class BusStore {
       input.agent_id ?? null,
       input.bridge_id ?? null,
       input.status ?? "idle",
-      actorKind,
       json(input.metadata ?? {}),
       timestamp,
       timestamp
@@ -2088,8 +2073,6 @@ export class BusStore {
         ? input.destination.endpoint_id
         : input.destination.kind === "context"
         ? `context:${input.destination.context_id}`
-        : input.destination.kind === "context_fan_out"
-        ? `context_fan_out:${input.destination.context_id}`
         : `broadcast:${input.destination.scope}:${input.destination.target}`;
     // Legacy thread_id storage: write the resolved context_id so the existing
     // NOT NULL column is satisfied. No new flow reads thread_id.
@@ -2137,11 +2120,11 @@ export class BusStore {
 
   private resolveDestinations(event: EventEnvelope): string[] {
     const destination = event.destination_json;
-    // history-record path — intentionally zero deliveries (unchanged)
-    if (destination.kind === "context") return [];
     if (destination.kind === "endpoint") return [destination.endpoint_id];
-    // Slice 2 — fan-out to subscribed participants
-    if (destination.kind === "context_fan_out") {
+    // Single context-delivery path: record + route to subscribed actors.
+    // Actors subscribed to the event type (or "*") are delivered;
+    // a context with no matching subscriptions naturally yields zero deliveries.
+    if (destination.kind === "context") {
       const subs = this.contextStore.getContextSubscriptions(destination.context_id);
       const eventType = event.type;
       return subs
@@ -2243,8 +2226,6 @@ export class BusStore {
   private tryCreateDeliveryForEndpoint(endpointId: string, broadcast: Broadcast): DeliveryBundle | null {
     const endpoint = this.getEndpoint(endpointId);
     if (!endpoint || !endpoint.bridge_id) return null;
-    // Slice 3 — human actors are never auto-woken by a delivery bundle
-    if (String(endpoint.actor_kind ?? "agent") === "human") return null;
     if (endpoint.status === "active" || endpoint.status === "error" || endpoint.status === "runtime_unconfigured") return null;
 
     const queuedRows = this.db.prepare(`

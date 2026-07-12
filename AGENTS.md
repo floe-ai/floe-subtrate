@@ -512,7 +512,7 @@ Four generic, extension-agnostic substrate primitives landed in this PR. All are
 ### Core model invariants (captain-confirmed)
 - **Participation ≠ subscription.** Participation = context membership; any participant may ALWAYS emit (resolver rule 1 unchanged). Subscription = which event TYPES wake an actor (trigger a delivery/turn).
 - **No role enum.** "Assignee/watcher" is emergent from subscription `event_types`: subscribed to `["*"]` = woken by all events; subscribed to `[]` = silent watcher; no subscription row = not woken.
-- **`destination:{kind:"context"}` is ZERO deliveries** — it is a history-record path. Do not change its semantics. Use `{kind:"context_fan_out"}` for actual fan-out delivery.
+- **`destination:{kind:"context"}` is the single context-delivery path.** It records the event AND delivers to subscribed actors. Zero subscriptions = zero deliveries (natural record-only outcome). There is no separate `context_fan_out` kind — do not add one.
 
 ### Slice 0 — Context compaction + clear-history
 - `ContextStore.clearContextHistory(contextId)` — delete all events, keep context row + participants + pulse subscribers. Replicates `deleteContext`'s delivery-bundle cleanup. Do NOT call while `delivery_bundles.state='active'`.
@@ -531,24 +531,23 @@ Four generic, extension-agnostic substrate primitives landed in this PR. All are
 - Self-reference guard: `parent_context_id === own id` is rejected 400.
 - Integration test T10 updated: freeze-guard assertions removed; now positively asserts the dynamic API exists.
 
-### Slice 2 — Per-event-type subscriptions + context_fan_out
+### Slice 2 — Per-event-type subscriptions + single context-delivery path
 - Table: `context_subscriptions(context_id, endpoint_id, event_types JSON, subscribed_at)` PK `(context_id, endpoint_id)`.
 - `ContextStore.subscribeToContext(contextId, endpointId, eventTypes?)` — UPSERT, default `["*"]`.
 - `ContextStore.unsubscribeFromContext(contextId, endpointId)` — idempotent.
 - `ContextStore.getContextSubscriptions(contextId)` and `isSubscribed(contextId, endpointId, eventType)`.
-- New `DestinationSelector` kind: `{ kind: "context_fan_out"; context_id: string }` in `floe-bus/src/store.ts`.
-- `resolveDestinations` fans out to subscribers whose `event_types` includes `"*"` or the exact event type. `[]` = never woken.
+- **`destination:{kind:"context"}` is the single context-delivery path**: records event in context log AND delivers to actors whose subscription matches the event type. Zero subscriptions = zero deliveries (natural record-only outcome). No separate `context_fan_out` kind.
+- `appendContextEvent` (internal history writes) bypasses routing entirely — it never calls `resolveDestinations` or `queueEvent`, so it is always zero-delivery by construction regardless of subscription state.
 - Routes: `POST/DELETE/GET /v1/contexts/:id/subscriptions`.
 
-### Slice 3 — First-class human actor identity
-- Column `actor_kind TEXT NOT NULL DEFAULT 'agent'` added to endpoints table (via `addColumnIfMissing`).
-- `registerEndpoint()` accepts `actor_kind: "agent" | "human"`; defaults to `"agent"` (backward-compatible).
-- `tryCreateDeliveryForEndpoint()` returns null for `actor_kind === "human"` — humans accumulate queued events (readable via event history) but are NEVER auto-woken by delivery bundles.
-- `POST /v1/endpoints/register` accepts `actor_kind` enum field.
-- **Deferred**: UI still uses 'speak-as-agent' impersonation; wiring to a real human `endpoint_id` is a product-layer change (bridge workspace attachment + floe-app update).
+### Slice 3 — Runtime-based delivery gate (reworked from actor_kind)
+The substrate has exactly ONE actor abstraction. Delivery is gated on runtime attachment (`bridge_id` + `status`), never on a stored backing label. There is **no `actor_kind` column** and no human/agent distinction stored anywhere — peers cannot tell what backs an actor.
+- An actor with no live agent runtime (`bridge_id = null`) queues events as readable context history but never receives a delivery bundle. The `tryCreateDeliveryForEndpoint` `!endpoint.bridge_id` gate handles this.
+- An actor with a live agent runtime attached gets delivered normally (unchanged behaviour).
+- `registerEndpoint()` has no `actor_kind` param. `POST /v1/endpoints/register` has no `actor_kind` field.
 
 ### Test files added
 - `floe-bus/src/contexts/compaction.test.ts` — 9 tests
 - `floe-bus/src/contexts/participants.test.ts` — 12 tests  
 - `floe-bus/src/contexts/subscriptions.test.ts` — 19 tests
-- `floe-bus/src/contexts/human-actor.test.ts` — 7 tests
+- `floe-bus/src/contexts/runtime-delivery.test.ts` — 4 tests

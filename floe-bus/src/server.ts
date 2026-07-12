@@ -723,8 +723,6 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       bridge_id: z.string().nullable().optional(),
       status: z.string().optional(),
       metadata: z.record(z.unknown()).optional(),
-      // Slice 3 — human actor identity
-      actor_kind: z.enum(["agent", "human"]).optional(),
     }).parse(request.body);
     return reply.code(201).send({ endpoint: store.registerEndpoint(body, broadcast) });
   });
