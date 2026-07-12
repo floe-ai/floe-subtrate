@@ -101,6 +101,15 @@ export class PulseNotFoundError extends Error {
 
 export type DestinationSelector =
   | { kind: "endpoint"; endpoint_id: string }
+  /**
+   * Context-addressed emit: records the event in the context log AND delivers
+   * it to every actor whose subscription in that context matches the event
+   * type.  If no actor is subscribed to the event type the event is recorded
+   * and delivered to no one — the natural "record-only" outcome.
+   *
+   * This is the single context-delivery path.  There is no separate fan-out
+   * kind; routing resolves via context_subscriptions.
+   */
   | { kind: "context"; context_id: string }
   | {
       kind: "broadcast";
@@ -2111,8 +2120,17 @@ export class BusStore {
 
   private resolveDestinations(event: EventEnvelope): string[] {
     const destination = event.destination_json;
-    if (destination.kind === "context") return [];
     if (destination.kind === "endpoint") return [destination.endpoint_id];
+    // Single context-delivery path: record + route to subscribed actors.
+    // Actors subscribed to the event type (or "*") are delivered;
+    // a context with no matching subscriptions naturally yields zero deliveries.
+    if (destination.kind === "context") {
+      const subs = this.contextStore.getContextSubscriptions(destination.context_id);
+      const eventType = event.type;
+      return subs
+        .filter((sub) => sub.event_types.includes("*") || sub.event_types.includes(eventType))
+        .map((sub) => sub.endpoint_id);
+    }
     const target = destination.target;
     const query = `
       SELECT endpoint_id

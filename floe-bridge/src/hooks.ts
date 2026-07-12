@@ -19,7 +19,13 @@ export type HookName =
   | "SessionEnd"
   | "Pulse"
   | "WebhookReceived"
-  | "Error";
+  | "Error"
+  // Slice 0 — context lifecycle
+  | "ContextCompacted"
+  | "ContextHistoryCleared"
+  // Slice 1 — dynamic participants
+  | "ParticipantAdded"
+  | "ParticipantRemoved";
 
 type RuntimeSessionSummary = {
   provider: string;
@@ -89,6 +95,28 @@ export type HookPayloadByName = {
   };
   Error: EndpointDeliveryPayload & {
     error: string;
+  };
+  // Slice 0 — context lifecycle hooks
+  ContextCompacted: {
+    workspace_id: string;
+    context_id: string;
+    summary_event_id: string;
+  };
+  ContextHistoryCleared: {
+    workspace_id: string;
+    context_id: string;
+    events_deleted: number;
+  };
+  // Slice 1 — dynamic participant hooks
+  ParticipantAdded: {
+    workspace_id: string;
+    context_id: string;
+    endpoint_id: string;
+  };
+  ParticipantRemoved: {
+    workspace_id: string;
+    context_id: string;
+    endpoint_id: string;
   };
 };
 

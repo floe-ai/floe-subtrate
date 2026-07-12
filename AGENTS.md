@@ -502,3 +502,52 @@ Solution: `floe-app/package.json` has a `tauri:attach` script (`tauri dev --conf
 - **Browser**: `BrowserAuthPillar` — fetches profiles from bus (`GET /v1/auth/profiles` via `getAuthProfiles()`), shows read-only list with a note to use CLI/desktop for writes.
 - **Desktop**: `TauriAuthPillar` — full read/write via Tauri `invoke`. No Tauri calls in the browser path.
 The nav "Substrate Settings" item is always visible (useful in both modes).
+
+---
+
+## Card = Context substrate primitives (fm/floe-ctx-primitives, PR #95)
+
+Four generic, extension-agnostic substrate primitives landed in this PR. All are in `floe-bus/` and `floe-bridge/`. No snowball vocabulary.
+
+### Core model invariants (captain-confirmed)
+- **Participation ≠ subscription.** Participation = context membership; any participant may ALWAYS emit (resolver rule 1 unchanged). Subscription = which event TYPES wake an actor (trigger a delivery/turn).
+- **No role enum.** "Assignee/watcher" is emergent from subscription `event_types`: subscribed to `["*"]` = woken by all events; subscribed to `[]` = silent watcher; no subscription row = not woken.
+- **`destination:{kind:"context"}` is the single context-delivery path.** It records the event AND delivers to subscribed actors. Zero subscriptions = zero deliveries (natural record-only outcome). There is no separate `context_fan_out` kind — do not add one.
+
+### Slice 0 — Context compaction + clear-history
+- `ContextStore.clearContextHistory(contextId)` — delete all events, keep context row + participants + pulse subscribers. Replicates `deleteContext`'s delivery-bundle cleanup. Do NOT call while `delivery_bundles.state='active'`.
+- `ContextStore.compactContext(contextId, summary, beforeEventId?)` — truncate history to watermark, insert synthetic `context.compacted` event.
+- Routes: `POST /v1/contexts/:id/compact` `{ summary, before_event_id? }` and `POST /v1/contexts/:id/clear-history`.
+- Hook events in `floe-bridge/src/hooks.ts`: `ContextCompacted`, `ContextHistoryCleared`, `ParticipantAdded`, `ParticipantRemoved`.
+- Bridge daemon fires these via `fireContextLifecycleHook()` when it receives the bus broadcasts.
+
+### Slice 1 — Dynamic participants + context linking
+- `ContextStore.addParticipant(contextId, endpointId)` — idempotent INSERT OR IGNORE; returns bool.
+- `ContextStore.removeParticipant(contextId, endpointId)` — idempotent DELETE; returns bool.
+- Routes: `POST /v1/contexts/:id/participants {endpoint_id}` and `DELETE /v1/contexts/:id/participants/:endpoint_id`.
+- `parent_context_id` is now exposed in `POST /v1/workspaces/:ws/contexts` body (field already existed in schema).
+- `ContextStore.listContextsForParent(parentId)` + `GET /v1/contexts/:id/children`.
+- Index `idx_contexts_parent ON contexts(parent_context_id, created_at)`.
+- Self-reference guard: `parent_context_id === own id` is rejected 400.
+- Integration test T10 updated: freeze-guard assertions removed; now positively asserts the dynamic API exists.
+
+### Slice 2 — Per-event-type subscriptions + single context-delivery path
+- Table: `context_subscriptions(context_id, endpoint_id, event_types JSON, subscribed_at)` PK `(context_id, endpoint_id)`.
+- `ContextStore.subscribeToContext(contextId, endpointId, eventTypes?)` — UPSERT, default `["*"]`.
+- `ContextStore.unsubscribeFromContext(contextId, endpointId)` — idempotent.
+- `ContextStore.getContextSubscriptions(contextId)` and `isSubscribed(contextId, endpointId, eventType)`.
+- **`destination:{kind:"context"}` is the single context-delivery path**: records event in context log AND delivers to actors whose subscription matches the event type. Zero subscriptions = zero deliveries (natural record-only outcome). No separate `context_fan_out` kind.
+- `appendContextEvent` (internal history writes) bypasses routing entirely — it never calls `resolveDestinations` or `queueEvent`, so it is always zero-delivery by construction regardless of subscription state.
+- Routes: `POST/DELETE/GET /v1/contexts/:id/subscriptions`.
+
+### Slice 3 — Runtime-based delivery gate (reworked from actor_kind)
+The substrate has exactly ONE actor abstraction. Delivery is gated on runtime attachment (`bridge_id` + `status`), never on a stored backing label. There is **no `actor_kind` column** and no human/agent distinction stored anywhere — peers cannot tell what backs an actor.
+- An actor with no live agent runtime (`bridge_id = null`) queues events as readable context history but never receives a delivery bundle. The `tryCreateDeliveryForEndpoint` `!endpoint.bridge_id` gate handles this.
+- An actor with a live agent runtime attached gets delivered normally (unchanged behaviour).
+- `registerEndpoint()` has no `actor_kind` param. `POST /v1/endpoints/register` has no `actor_kind` field.
+
+### Test files added
+- `floe-bus/src/contexts/compaction.test.ts` — 9 tests
+- `floe-bus/src/contexts/participants.test.ts` — 12 tests  
+- `floe-bus/src/contexts/subscriptions.test.ts` — 19 tests
+- `floe-bus/src/contexts/runtime-delivery.test.ts` — 4 tests

@@ -258,7 +258,7 @@ describe("submitEvent context wiring", () => {
     expect(bEvents.map((e) => e.event_id)).toContain(r2.event.event_id);
   });
 
-  it("T10: no add/remove participant API exists; participants frozen across emit cycle", () => {
+  it("T10: participants are stable across the emit cycle (implicit routing does not mutate membership)", () => {
     const r1 = store.submitEvent(
       emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
       noop
@@ -285,8 +285,9 @@ describe("submitEvent context wiring", () => {
     );
     const after = store.contextStore.getContextParticipants(ctxA).sort();
     expect(after).toEqual(before);
-    expect((store as any).addParticipant).toBeUndefined();
-    expect((store as any).removeParticipant).toBeUndefined();
+    // Dynamic participant API now exists on contextStore (Slice 1)
+    expect(typeof store.contextStore.addParticipant).toBe("function");
+    expect(typeof store.contextStore.removeParticipant).toBe("function");
   });
 
   it("T12: emit with context_id where source ∈ A → succeeds", () => {

@@ -722,7 +722,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       agent_id: z.string().nullable().optional(),
       bridge_id: z.string().nullable().optional(),
       status: z.string().optional(),
-      metadata: z.record(z.unknown()).optional()
+      metadata: z.record(z.unknown()).optional(),
     }).parse(request.body);
     return reply.code(201).send({ endpoint: store.registerEndpoint(body, broadcast) });
   });
@@ -951,6 +951,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       context_id: z.string().min(1).optional(),
       created_by_endpoint_id: z.string().min(1).nullable().optional(),
       title: z.string().min(1).nullable().optional(),
+      // Slice 1 Track B — parent context linking
+      parent_context_id: z.string().min(1).nullable().optional(),
     });
     const parsed = bodySchema.safeParse(request.body);
     if (!parsed.success) {
@@ -964,6 +966,10 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
+    // Guard: self-reference on parent_context_id
+    if (body.parent_context_id && body.context_id && body.parent_context_id === body.context_id) {
+      return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id must not equal the context's own id" }] });
+    }
     const contextId = store.contextStore.createContext({
       workspace_id: params.workspace_id,
       scope_id: body.scope_id ?? null,
@@ -971,7 +977,13 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       created_by_endpoint_id: body.created_by_endpoint_id ?? null,
       context_id: body.context_id,
       title: body.title ?? null,
+      parent_context_id: body.parent_context_id ?? null,
     });
+    // Post-insert self-reference guard (when context_id was auto-generated)
+    if (body.parent_context_id && body.parent_context_id === contextId) {
+      store.contextStore.db.prepare("DELETE FROM contexts WHERE context_id = ?").run(contextId);
+      return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id must not equal the context's own id" }] });
+    }
     const ctx = store.contextStore.getContext(contextId)!;
     const participants = store.contextStore.getContextParticipants(contextId);
     const serialized = serializeContextListRow({
@@ -1041,6 +1053,112 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       return reply.code(404).send({ error: "context_not_found", context_id: params.id });
     }
     return result;
+  });
+
+  // Slice 1 Track A — dynamic participants
+  app.post("/v1/contexts/:id/participants", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({ endpoint_id: z.string().min(1) }).parse(request.body);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const added = store.contextStore.addParticipant(params.id, body.endpoint_id);
+    broadcast("participant_added", { workspace_id: ctx.workspace_id, context_id: params.id, endpoint_id: body.endpoint_id });
+    return { ok: true, context_id: params.id, endpoint_id: body.endpoint_id, added };
+  });
+
+  app.delete("/v1/contexts/:id/participants/:endpoint_id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), endpoint_id: z.string().min(1) }).parse(request.params);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const removed = store.contextStore.removeParticipant(params.id, params.endpoint_id);
+    broadcast("participant_removed", { workspace_id: ctx.workspace_id, context_id: params.id, endpoint_id: params.endpoint_id });
+    return { ok: true, context_id: params.id, endpoint_id: params.endpoint_id, removed };
+  });
+
+  // Slice 1 Track B — context linking (children query)
+  app.get("/v1/contexts/:id/children", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    if (!store.contextStore.getContext(params.id)) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const rows = store.contextStore.listContextsForParent(params.id);
+    return { contexts: rows.map(serializeContextListRow) };
+  });
+
+  // Slice 2 — per-actor, per-context, per-event-type subscriptions
+  app.post("/v1/contexts/:id/subscriptions", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      endpoint_id: z.string().min(1),
+      event_types: z.array(z.string().min(1)).optional().default(["*"]),
+    }).parse(request.body);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    store.contextStore.subscribeToContext(params.id, body.endpoint_id, body.event_types);
+    return { ok: true, context_id: params.id, endpoint_id: body.endpoint_id, event_types: body.event_types };
+  });
+
+  app.delete("/v1/contexts/:id/subscriptions/:endpoint_id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), endpoint_id: z.string().min(1) }).parse(request.params);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    store.contextStore.unsubscribeFromContext(params.id, params.endpoint_id);
+    return { ok: true, context_id: params.id, endpoint_id: params.endpoint_id };
+  });
+
+  app.get("/v1/contexts/:id/subscriptions", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    if (!store.contextStore.getContext(params.id)) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    return { subscriptions: store.contextStore.getContextSubscriptions(params.id) };
+  });
+
+  // Slice 0 — context compaction + clear-history
+  app.post("/v1/contexts/:id/compact", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      summary: z.string().min(1),
+      before_event_id: z.string().min(1).optional(),
+    }).parse(request.body);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const activeCheck = store.db
+      .prepare("SELECT 1 AS x FROM delivery_bundles WHERE state = 'active' AND workspace_id = ? LIMIT 1")
+      .get(ctx.workspace_id);
+    if (activeCheck) {
+      return reply.code(409).send({ error: "active_delivery_in_progress", message: "Cannot compact while a delivery is active" });
+    }
+    const summary_event_id = store.contextStore.compactContext(params.id, body.summary, body.before_event_id);
+    broadcast("context_compacted", { context_id: params.id, summary_event_id });
+    return { ok: true, context_id: params.id, summary_event_id };
+  });
+
+  app.post("/v1/contexts/:id/clear-history", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const activeCheck = store.db
+      .prepare("SELECT 1 AS x FROM delivery_bundles WHERE state = 'active' AND workspace_id = ? LIMIT 1")
+      .get(ctx.workspace_id);
+    if (activeCheck) {
+      return reply.code(409).send({ error: "active_delivery_in_progress", message: "Cannot clear history while a delivery is active" });
+    }
+    const result = store.contextStore.clearContextHistory(params.id);
+    broadcast("context_history_cleared", { context_id: params.id, events_deleted: result.events_deleted });
+    return { ok: true, context_id: params.id, events_deleted: result.events_deleted };
   });
 
   app.get("/v1/delivery/claim", async (request) => {
