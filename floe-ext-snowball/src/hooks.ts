@@ -138,7 +138,7 @@ export function registerHooks(ctx: ExtensionContext): void {
               });
               if (uncheckedCriteria.length > 0) {
                 lines.push(
-                  `    Unchecked criteria (call check_criteria for each):`
+                  `    Unchecked criteria (call snowball_check_criteria for each):`
                 );
                 for (const ec of uncheckedCriteria) {
                   lines.push(`      criterion_id="${ec.id}" — ${ec.description}`);

@@ -63,14 +63,18 @@ export const DEFAULT_DONE_PROTOCOL = `## Done Protocol
 When you have completed the work for a card in your column:
 
 1. **Check criteria**: For each exit criterion that is now satisfied, call
-   \`check_criteria\` with the criterion ID and a concrete evidence note (e.g.
+   \`snowball_check_criteria\` with the criterion ID and a concrete evidence note (e.g.
    "Tests pass — all 47 assertions green", "Output reviewed and matches spec",
    "PR merged and deployed to staging").
 
 2. **Advance the card**: Once all exit criteria are satisfied — or the column
-   has none — call \`move_card\` to advance the card to the next column.
+   has none — call \`snowball_move_card\` to advance the card to the next column.
 
-**Rule**: Do the work first, verify it, then advance. Never call \`move_card\`
+3. **If unclear**: If you are unsure about board behavior, criteria IDs, or whether
+   a card should be moved, emit a message to the \`snowball-overseer\` actor asking
+   for clarification before acting. Do not guess at exit criteria or skip the gate.
+
+**Rule**: Do the work first, verify it, then advance. Never call \`snowball_move_card\`
 before the work is genuinely complete. If a card's exit criteria cannot be
 satisfied (blocked or out of scope), surface this in the context thread rather
 than moving the card.`;
