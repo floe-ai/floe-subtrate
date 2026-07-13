@@ -12,9 +12,9 @@
   ],
   "agents": [
     {
-      "agent_id": "snowball-overseer",
-      "label": "Snowball Overseer",
-      "instructions_path": "./overseer-instructions.md",
+      "agent_id": "snowball",
+      "label": "Snowball",
+      "instructions_path": "./snowball-instructions.md",
       "runtime": { "engine": "pi" },
       "extensions": ["snowball"],
       "pulse": { "inherit": true }

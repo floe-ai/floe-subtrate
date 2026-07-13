@@ -10,7 +10,7 @@
  *   column-file.ts is deleted; findBoardScopesForAgentFromFiles moved to board-file.ts.
  *
  * BeforeTurn injection:
- *  - Overseer: full board snapshot + all column instructions
+ *  - Snowball (system steward): full board snapshot + all column instructions
  *  - Column workers: done protocol + column instructions + cards with unchecked criteria
  *  - Agents without board context receive no injection
  */
@@ -24,7 +24,7 @@ import {
   ensureBoardFile,
 } from "./board-file.js";
 
-const OVERSEER_AGENT_ID = "snowball-overseer";
+const SNOWBALL_AGENT_ID = "snowball";
 
 function agentIdFromEndpoint(endpointId: string): string {
   const parts = endpointId.split(":");
@@ -39,7 +39,7 @@ export function registerHooks(ctx: ExtensionContext): void {
     if (!endpointId) return;
     const agentId = agentIdFromEndpoint(endpointId);
 
-    const scopes = findBoardScopesForAgentFromFiles(workspacePath, agentId, OVERSEER_AGENT_ID);
+    const scopes = findBoardScopesForAgentFromFiles(workspacePath, agentId, SNOWBALL_AGENT_ID);
     if (scopes.length === 0) return;
 
     const lines: string[] = [];
@@ -51,7 +51,7 @@ export function registerHooks(ctx: ExtensionContext): void {
 
       const snapshot = buildBoardSnapshot(workspacePath, scopeId, workspaceId, columns);
 
-      if (agentId === OVERSEER_AGENT_ID) {
+      if (agentId === SNOWBALL_AGENT_ID) {
         lines.push(renderCompactBoardSnapshot(snapshot));
         const colsWithInstructions = columns.filter((c) => c.instructions.trim().length > 0);
         if (colsWithInstructions.length > 0) {

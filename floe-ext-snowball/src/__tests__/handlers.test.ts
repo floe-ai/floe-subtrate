@@ -1023,12 +1023,12 @@ describe("POST /move — advance-on-conclusion behavior", () => {
     );
     expect(routingEvent).toBeDefined();
 
-    // No overseer-sourced advance event should have fired.
-    const overseerAdvance = bus.emittedEvents.filter(
+    // No system-sourced advance event should have fired.
+    const systemAdvance = bus.emittedEvents.filter(
       (e) =>
         e.type === "snowball.card.moved" &&
-        (e.content.data as Record<string, unknown>)?.source === "overseer"
+        (e.content.data as Record<string, unknown>)?.source === "snowball"
     );
-    expect(overseerAdvance).toHaveLength(0);
+    expect(systemAdvance).toHaveLength(0);
   });
 });

@@ -11,7 +11,7 @@
  *
  * Contract sections implemented:
  *  §1 — extension manifest (extension.json)
- *  §2 — overseer agent bundling (overseer-instructions.md)
+ *  §2 — snowball system steward agent bundling (snowball-instructions.md)
  *  §3 — board state management (board-file.ts, board-snapshot.ts)
  *  §4 — event routing (hooks.ts, tools/index.ts)
  *  §5 — tool surface (tools/index.ts)

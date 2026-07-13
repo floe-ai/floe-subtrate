@@ -359,7 +359,7 @@ export function ColumnConfigPanel({
                   style={inputStyle}
                   value={agentId}
                   onChange={(e) => setAgentId(e.target.value)}
-                  placeholder="e.g. snowball-overseer"
+                  placeholder="e.g. snowball"
                 />
               </div>
             )}
