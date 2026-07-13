@@ -42,6 +42,10 @@ const EventCommandSchema = z.object({
       scope: z.literal("workspace"),
       target: z.enum(BROADCAST_TARGETS),
       exclude_source: z.boolean().optional()
+    }),
+    z.object({
+      kind: z.literal("context"),
+      context_id: z.string().min(1)
     })
   ]),
   thread_id: z.string().min(1).optional(),

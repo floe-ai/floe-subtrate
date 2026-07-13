@@ -154,11 +154,12 @@ export type VisibleOutputPolicy = "emit_as_message" | "telemetry_only" | "suppre
 export type EmitContract = {
   type: string;
   destination?: {
-    kind: "endpoint" | "broadcast";
+    kind: "endpoint" | "broadcast" | "context";
     endpoint_id?: string;
     scope?: "workspace";
     target?: string;
     exclude_source?: boolean;
+    context_id?: string;
   };
   text: string;
   response_expected?: boolean;

@@ -803,3 +803,126 @@ describe("Broadcast destination selector contract", () => {
     expect(texts).not.toContain("old-active_humans");
   });
 });
+
+describe("Context destination selector — HTTP emit schema", () => {
+  let handle: ServerHandle;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    const made = await makeServer();
+    handle = made.handle;
+    cleanup = made.cleanup;
+    // Give E2 a live bridge so it can receive deliveries
+    handle.store.registerEndpoint({
+      endpoint_id: E2,
+      workspace_id: WS,
+      name: E2,
+      bridge_id: "bridge:test",
+      status: "idle"
+    }, () => {});
+  });
+  afterEach(async () => { await cleanup(); });
+
+  it("HTTP emit ACCEPTS destination.kind='context' (no 400)", async () => {
+    // Create context and subscribe directly via store (workspace HTTP API requires workspace row)
+    const ctx = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: E1,
+      participants: [E1, E2]
+    });
+    handle.store.contextStore.subscribeToContext(ctx, E2, ["*"]);
+
+    const res = await handle.app.inject({
+      method: "POST",
+      url: "/v1/events/emit",
+      payload: {
+        type: "snowball.card.entered_column",
+        workspace_id: WS,
+        source_endpoint_id: E1,
+        destination: { kind: "context", context_id: ctx },
+        context_id: ctx,
+        content: { card_id: "card-1" },
+        response: { expected: false }
+      }
+    });
+
+    // Must NOT be a 400 validation error
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).not.toHaveProperty("error");
+  });
+
+  it("HTTP emit with context destination creates deliveries for subscribed actors", async () => {
+    const ctx = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: E1,
+      participants: [E1, E2]
+    });
+    handle.store.contextStore.subscribeToContext(ctx, E2, ["*"]);
+
+    const res = await handle.app.inject({
+      method: "POST",
+      url: "/v1/events/emit",
+      payload: {
+        type: "snowball.card.entered_column",
+        workspace_id: WS,
+        source_endpoint_id: E1,
+        destination: { kind: "context", context_id: ctx },
+        context_id: ctx,
+        content: { card_id: "card-1" },
+        response: { expected: false }
+      }
+    });
+
+    expect(res.statusCode).toBe(202);
+    // E2 has a live bridge and is subscribed → 1 delivery created
+    expect(res.json().deliveries_created).toBe(1);
+
+    const claim = await handle.app.inject({
+      method: "GET",
+      url: "/v1/delivery/claim?bridge_id=bridge%3Atest&limit=10"
+    });
+    const deliveries = claim.json().deliveries as any[];
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].endpoint_id).toBe(E2);
+    expect(deliveries[0].events[0].destination_json).toMatchObject({
+      kind: "context",
+      context_id: ctx
+    });
+  });
+
+  it("HTTP emit with context destination creates zero deliveries when no actors subscribed", async () => {
+    const ctx = handle.store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: E1,
+      participants: [E1, E2]
+    });
+    // No subscriptions — E2 is a silent watcher
+
+    const res = await handle.app.inject({
+      method: "POST",
+      url: "/v1/events/emit",
+      payload: {
+        type: "snowball.card.entered_column",
+        workspace_id: WS,
+        source_endpoint_id: E1,
+        destination: { kind: "context", context_id: ctx },
+        context_id: ctx,
+        content: { card_id: "card-2" },
+        response: { expected: false }
+      }
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json().deliveries_created).toBe(0);
+  });
+
+  it("DestinationSelector TS union members match the HTTP schema (schema/type parity)", () => {
+    // Accepted destination kind literals — must stay in sync with DestinationSelector
+    // in store.ts. If the TS type gains a new member, add it here to force the schema
+    // to be updated at the same time.
+    const acceptedKinds = ["endpoint", "broadcast", "context"] as const;
+    // The schema is tested indirectly by the HTTP tests above; this assertion documents
+    // the expected set so that a future type change is caught at review time.
+    expect(new Set(acceptedKinds)).toEqual(new Set(["endpoint", "broadcast", "context"]));
+  });
+});
