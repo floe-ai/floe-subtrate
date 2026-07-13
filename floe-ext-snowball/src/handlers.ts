@@ -1,6 +1,11 @@
 /**
  * HTTP handlers for the Snowball extension relay.
  *
+ * Slice 6 (fm/snowball-ctx-retire):
+ *   Sidecar eliminated. board init = ensure board.md exists (no bus contexts).
+ *   initialized flag = board file exists.
+ *   No column contexts created anywhere.
+ *
  * Slice 5 (fm/snowball-col-board-s5):
  *   Column definitions relocated from individual column files into board.md.
  *   All column I/O now goes through board-file.ts functions.
@@ -27,15 +32,7 @@
  */
 
 import type { ExtensionContext } from "./stub/extension-context.js";
-import {
-  loadSidecar,
-  saveSidecar,
-  sidecarExists,
-  slugify,
-  buildBoardSnapshot,
-  getUncheckedCriteria,
-  initBoardContexts,
-} from "./sidecar.js";
+import { slugify } from "./board-file.js";
 import {
   ensureBoardFile,
   readBoardFile,
@@ -51,6 +48,7 @@ import {
   defaultColumnFiles,
   type BoardFile,
 } from "./board-file.js";
+import { buildBoardSnapshot } from "./board-snapshot.js";
 import { asBusClient } from "./stub/bus-client.js";
 import {
   readCard,
@@ -61,6 +59,7 @@ import {
   appendCarryForward,
   cardCountsByColumnFromFiles,
   cardPath,
+  getUncheckedCriteriaForCard,
 } from "./card-file.js";
 import {
   applyColumnAssignment,
@@ -114,18 +113,18 @@ function loadColumns(workspacePath: string, scopeSlug: string, scopeId: string):
 // ---------------------------------------------------------------------------
 
 function handleGetBoard(
-  workspacePath: string
+  ctx: ExtensionContext
 ): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
     const scope_id = req.query["scope_id"];
     if (!scope_id) return jsonResponse(400, { error: "scope_id query parameter required" });
 
     try {
+      const { workspacePath, workspaceId } = ctx;
       const slug = slugify(scope_id);
-      const { columns } = loadColumns(workspacePath, slug, scope_id);
-      const initialized = sidecarExists(workspacePath, scope_id);
-      const sidecar = loadSidecar(workspacePath, scope_id);
-      const snapshot = buildBoardSnapshot(workspacePath, sidecar, columns);
+      const { columns, boardFile } = loadColumns(workspacePath, slug, scope_id);
+      const initialized = boardFile !== null;
+      const snapshot = buildBoardSnapshot(workspacePath, scope_id, workspaceId, columns);
       return jsonResponse(200, { ...snapshot, initialized });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
@@ -148,7 +147,7 @@ function handlePostBoardInit(
     try {
       const slug = slugify(scope_id);
 
-      // 1. Ensure board.md with columns (creates with defaults if absent).
+      // Ensure board.md with columns (creates with defaults if absent). No bus contexts.
       const boardFile = ensureBoardFile(ctx.workspacePath, slug, scope_id);
       const columns = boardFile.columns.length > 0
         ? boardFile.columns
@@ -157,18 +156,7 @@ function handlePostBoardInit(
         writeBoardFile(ctx.workspacePath, slug, { ...boardFile, columns });
       }
 
-      // 2. Load sidecar and set workspace_id.
-      const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      if (!sidecar.workspace_id) sidecar.workspace_id = ctx.workspaceId;
-
-      // 3. Create column contexts (dormant since Slice 4; kept for compat).
-      const bus = asBusClient(ctx.busClient);
-      const { changed } = await initBoardContexts(sidecar, ctx.workspaceId, bus, columns);
-      if (changed || !sidecarExists(ctx.workspacePath, scope_id)) {
-        saveSidecar(ctx.workspacePath, scope_id, sidecar);
-      }
-
-      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, scope_id, ctx.workspaceId, columns);
       return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: true } });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
@@ -201,8 +189,6 @@ function handlePostColumns(
 
     try {
       const slug = slugify(scope_id);
-      const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      if (!sidecar.workspace_id) sidecar.workspace_id = ctx.workspaceId;
 
       // Load or bootstrap board file
       let boardFile = readBoardFile(ctx.workspacePath, slug);
@@ -231,24 +217,7 @@ function handlePostColumns(
           instructions: "",
         };
         writeColumnToBoard(ctx.workspacePath, slug, newCol);
-
-        // Create column context (dormant; kept for compat).
-        const bus = asBusClient(ctx.busClient);
-        try {
-          const participants = newCol.assigned_actors.map(
-            (a) => `actor:${ctx.workspaceId}:${a.actor_ref}`
-          );
-          const contextId = await bus.createContext({
-            workspace_id: ctx.workspaceId,
-            scope_id,
-            participants,
-            title: `Column: ${name}`,
-          });
-          sidecar.column_contexts[newCol.id] = contextId;
-          saveSidecar(ctx.workspacePath, scope_id, sidecar);
-        } catch (err) {
-          console.warn(`[snowball] Failed to create column context for "${name}": ${err}`);
-        }
+        // No column context created (Slice 6: column contexts retired)
       } else if (action === "update") {
         if (!body.column_id)
           return jsonResponse(400, { error: "column_id required for action:update" });
@@ -262,12 +231,7 @@ function handlePostColumns(
         if (body.assigned_actors !== undefined) updates.assigned_actors = body.assigned_actors;
         if (body.exit_criteria !== undefined) updates.exit_criteria = body.exit_criteria;
         updateColumnInBoard(ctx.workspacePath, slug, body.column_id, updates);
-
-        // Evict sidecar entry when assigned_actors changes.
-        if (body.assigned_actors !== undefined && sidecar.column_contexts[body.column_id]) {
-          delete sidecar.column_contexts[body.column_id];
-          saveSidecar(ctx.workspacePath, scope_id, sidecar);
-        }
+        // No sidecar eviction needed (Slice 6: sidecar gone)
       } else if (action === "delete") {
         if (!body.column_id)
           return jsonResponse(400, { error: "column_id required for action:delete" });
@@ -290,8 +254,6 @@ function handlePostColumns(
             });
           }
         }
-        delete sidecar.column_contexts[body.column_id];
-        saveSidecar(ctx.workspacePath, scope_id, sidecar);
         deleteColumnFromBoard(ctx.workspacePath, slug, body.column_id);
       } else if (action === "reorder") {
         const ids = body.column_ids;
@@ -318,10 +280,12 @@ function handlePostColumns(
       // Reload after mutation
       const updatedColumns = listColumnsFromBoard(ctx.workspacePath, slug);
       const effectiveColumns = updatedColumns.length > 0 ? updatedColumns : defaultColumnFiles(scope_id);
-      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, effectiveColumns);
+      const updatedBoard = readBoardFile(ctx.workspacePath, slug);
+      const initialized = updatedBoard !== null;
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, scope_id, ctx.workspaceId, effectiveColumns);
       return jsonResponse(200, {
         ok: true,
-        board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) },
+        board: { ...snapshot, initialized },
       });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
@@ -459,9 +423,6 @@ function handlePostCard(ctx: ExtensionContext): (req: RelayRequest) => Promise<R
       const slug = slugify(scope_id);
       const { columns } = loadColumns(ctx.workspacePath, slug, scope_id);
 
-      const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      if (!sidecar.workspace_id) sidecar.workspace_id = ctx.workspaceId;
-
       const targetColId = column_id ?? columns[0]?.id;
       if (!targetColId) return jsonResponse(400, { error: "Board has no columns" });
       const targetCol = columns.find((c) => c.id === targetColId);
@@ -511,10 +472,11 @@ function handlePostCard(ctx: ExtensionContext): (req: RelayRequest) => Promise<R
         bus,
       });
 
-      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
+      const boardFile = readBoardFile(ctx.workspacePath, slug);
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, scope_id, ctx.workspaceId, columns);
       return jsonResponse(201, {
         ok: true, card_id: cardId, context_id,
-        board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) },
+        board: { ...snapshot, initialized: boardFile !== null },
       });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
@@ -539,10 +501,9 @@ function handlePostCardDelete(ctx: ExtensionContext): (req: RelayRequest) => Pro
         return jsonResponse(500, { error: `Failed to delete card file: ${err}` });
       }
       const slug = slugify(scope_id);
-      const { columns } = loadColumns(ctx.workspacePath, slug, scope_id);
-      const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
-      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) } });
+      const { columns, boardFile } = loadColumns(ctx.workspacePath, slug, scope_id);
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, scope_id, ctx.workspaceId, columns);
+      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: boardFile !== null } });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -564,10 +525,9 @@ function handlePostCardRename(ctx: ExtensionContext): (req: RelayRequest) => Pro
       if (!card) return jsonResponse(404, { error: "card_not_found", card_id });
       updateCardFrontmatter(ctx.workspacePath, card_id, { title: title.trim() });
       const slug = slugify(scope_id);
-      const { columns } = loadColumns(ctx.workspacePath, slug, scope_id);
-      const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
-      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) } });
+      const { columns, boardFile } = loadColumns(ctx.workspacePath, slug, scope_id);
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, scope_id, ctx.workspaceId, columns);
+      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: boardFile !== null } });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -600,10 +560,9 @@ function handlePostCardCriteria(ctx: ExtensionContext): (req: RelayRequest) => P
         },
       });
       const slug = slugify(scope_id);
-      const { columns } = loadColumns(ctx.workspacePath, slug, scope_id);
-      const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
-      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) } });
+      const { columns, boardFile } = loadColumns(ctx.workspacePath, slug, scope_id);
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, scope_id, ctx.workspaceId, columns);
+      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: boardFile !== null } });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -629,7 +588,6 @@ function handlePostMove(ctx: ExtensionContext): (req: RelayRequest) => Promise<R
     const { workspacePath, workspaceId } = ctx;
     const slug = slugify(scope_id);
     const { columns: effectiveColumns } = loadColumns(workspacePath, slug, scope_id);
-    const sidecar = loadSidecar(workspacePath, scope_id);
 
     const card = readCard(workspacePath, card_id);
     if (!card) return jsonResponse(404, { error: "card_not_found", card_id });
@@ -642,7 +600,7 @@ function handlePostMove(ctx: ExtensionContext): (req: RelayRequest) => Promise<R
 
     // Exit criteria gate
     const exitCriteria = fromColumn?.exit_criteria ?? [];
-    const unchecked = getUncheckedCriteria(card, card.column, exitCriteria);
+    const unchecked = getUncheckedCriteriaForCard(card, exitCriteria);
     if (unchecked.length > 0 && !force)
       return jsonResponse(422, {
         ok: false, error: "gate_blocked",
@@ -690,7 +648,7 @@ function handlePostMove(ctx: ExtensionContext): (req: RelayRequest) => Promise<R
 // ---------------------------------------------------------------------------
 
 export function registerHttpHandlers(ctx: ExtensionContext): void {
-  ctx.registerHttpHandler("GET", "/board", handleGetBoard(ctx.workspacePath));
+  ctx.registerHttpHandler("GET", "/board", handleGetBoard(ctx));
   ctx.registerHttpHandler("POST", "/board/init", handlePostBoardInit(ctx));
   ctx.registerHttpHandler("POST", "/columns", handlePostColumns(ctx));
   ctx.registerHttpHandler("GET", "/column/instructions", handleGetColumnInstructions(ctx.workspacePath));

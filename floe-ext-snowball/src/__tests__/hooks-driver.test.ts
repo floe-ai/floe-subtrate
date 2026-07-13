@@ -21,14 +21,13 @@ import { join } from "node:path";
 import { mkdirSync, rmSync } from "node:fs";
 import { createTools } from "../tools/index.js";
 import { advanceCardIfReady } from "../overseer.js";
-import { saveSidecar, slugify } from "../sidecar.js";
+import { slugify } from "../board-file.js";
 import { writeCard, readCard } from "../card-file.js";
 import { writeColumnToBoard as writeColumnFile } from "../board-file.js";
 import type { ColumnFile } from "../types.js";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext } from "../stub/extension-context.js";
-import { SIDECAR_SCHEMA } from "../types.js";
-import type { BoardSidecar, CardFile } from "../types.js";
+import type { CardFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -46,18 +45,6 @@ function makeToolCtx(tmpDir: string, bus: StubBusClient): ExtensionContext {
 }
 
 const AGENT_SCOPE = "scope:ws:test";
-
-/** Slim v3 sidecar — no columns field. */
-function makeAgentBoardSidecar(
-  column_contexts: Record<string, string> = {}
-): BoardSidecar {
-  return {
-    schema: SIDECAR_SCHEMA,
-    scope_id: AGENT_SCOPE,
-    workspace_id: "ws:test",
-    column_contexts,
-  };
-}
 
 /**
  * Write the standard 3-column agent board to tmpDir:
@@ -155,7 +142,6 @@ describe("Part B — routing event on agent-column entry", () => {
   });
 
   it("emits snowball.card.entered_column when move_card targets agent-owned column", async () => {
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
     writeCard(tmpDir, makeCardFile({ id: "ctx_card1", title: "Feature A", column: "todo" }));
 
@@ -181,7 +167,6 @@ describe("Part B — routing event on agent-column entry", () => {
 
   it("does NOT emit entered_column when destination is human-owned", async () => {
     const now = new Date().toISOString();
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
     writeCard(tmpDir, makeCardFile({
       id: "ctx_card2",
@@ -239,7 +224,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("advances card when all exit criteria are satisfied", async () => {
     const now = new Date().toISOString();
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
     writeCard(tmpDir, makeCardFile({
       id: "ctx_ready",
@@ -266,7 +250,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("advance appends carry-forward comment to card body", async () => {
     const now = new Date().toISOString();
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
     writeCard(tmpDir, makeCardFile({
       id: "ctx_ready",
@@ -288,7 +271,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
   });
 
   it("holds card when exit criteria are NOT satisfied (hard gate)", async () => {
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
     writeCard(tmpDir, makeCardFile({
       id: "ctx_blocked",
@@ -308,7 +290,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("holds criteria-met card when destination is at WIP limit (hard block)", async () => {
     const now = new Date().toISOString();
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     // Write columns with done having wip_limit=2
     const slug = slugify(AGENT_SCOPE);
     const cols = writeAgentBoardColumns(tmpDir);
@@ -339,7 +320,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
   });
 
   it("does nothing when card is in a human-owned column", async () => {
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
     writeCard(tmpDir, makeCardFile({
       id: "ctx_human",
@@ -357,7 +337,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
   });
 
   it("does not advance card that is already in the last column (agent-owned)", async () => {
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     // Make done column agent-owned
     const slug = slugify(AGENT_SCOPE);
     const cols = writeAgentBoardColumns(tmpDir);
@@ -376,7 +355,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
   it("advances multiple ready cards independently", async () => {
     const now = new Date().toISOString();
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
 
     const checks = {
@@ -403,13 +381,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     const now = new Date().toISOString();
     const cascadeScope = "scope:ws:test";
     const slug = slugify(cascadeScope);
-    const sidecar: BoardSidecar = {
-      schema: SIDECAR_SCHEMA,
-      scope_id: cascadeScope,
-      workspace_id: "ws:test",
-      column_contexts: {},
-    };
-    saveSidecar(tmpDir, cascadeScope, sidecar);
 
     // 4-column cascade board: todo → agent-col-1 → agent-col-2 → done
     const cascadeCols: ColumnFile[] = [
@@ -472,7 +443,6 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
       status: "idle",
     });
 
-    saveSidecar(tmpDir, AGENT_SCOPE, makeAgentBoardSidecar());
     writeAgentBoardColumns(tmpDir);
 
     // Even with all criteria pre-checked, the card must NOT auto-advance

@@ -78,7 +78,6 @@ export interface BusClient {
 
   /**
    * List all Contexts for a given scope.
-   * Used by the reconciler on sidecar load.
    */
   listContextsForScope(
     workspaceId: string,

@@ -18,14 +18,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, rmSync } from "node:fs";
 import { createTools } from "../tools/index.js";
-import { saveSidecar, slugify } from "../sidecar.js";
+import { slugify } from "../board-file.js";
 import { writeCard } from "../card-file.js";
 import { writeColumnToBoard as writeColumnFile, defaultColumnFiles } from "../board-file.js";
 import type { ColumnFile } from "../types.js";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext } from "../stub/extension-context.js";
-import { SIDECAR_SCHEMA } from "../types.js";
-import type { BoardSidecar, CardFile } from "../types.js";
+import type { CardFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -43,18 +42,6 @@ function makeCtx(tmpDir: string, bus: StubBusClient): ExtensionContext {
 }
 
 const SCOPE = "scope:ws:test";
-
-/** v3 slim sidecar — no columns field. */
-function makeSidecar(
-  column_contexts: Record<string, string> = {}
-): BoardSidecar {
-  return {
-    schema: SIDECAR_SCHEMA,
-    scope_id: SCOPE,
-    workspace_id: "ws:test",
-    column_contexts,
-  };
-}
 
 /**
  * Write column files for the standard gate-enforcement test board:
@@ -124,7 +111,6 @@ describe("move_card gate enforcement", () => {
 
   it("hard blocks AI move when exit criteria unchecked (no force)", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "ctx_card", column: "in-progress" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
@@ -144,7 +130,6 @@ describe("move_card gate enforcement", () => {
   it("allows AI move when all criteria are checked", async () => {
     const now = new Date().toISOString();
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({
       id: "ctx_card",
       column: "in-progress",
@@ -169,7 +154,6 @@ describe("move_card gate enforcement", () => {
 
   it("allows human move with force=true even when criteria unchecked", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "ctx_card", column: "in-progress", checks: {} }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
@@ -188,7 +172,6 @@ describe("move_card gate enforcement", () => {
   it("hard blocks WIP limit regardless of force", async () => {
     const now = new Date().toISOString();
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     // Fill in-progress to WIP limit of 2
     writeCard(tmpDir, makeCardFile({
       id: "existing-1",
@@ -221,7 +204,6 @@ describe("move_card gate enforcement", () => {
 
   it("reports card_not_found for missing card", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "move_card", {
@@ -239,7 +221,6 @@ describe("move_card gate enforcement", () => {
     const { readCard } = await import("../card-file.js");
     const now = new Date().toISOString();
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({
       id: "ctx_card",
       column: "in-progress",
@@ -266,7 +247,6 @@ describe("move_card gate enforcement", () => {
     const { readCard } = await import("../card-file.js");
     const now = new Date().toISOString();
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({
       id: "ctx_card",
       column: "in-progress",
@@ -310,7 +290,6 @@ describe("create_card tool", () => {
   it("creates a card file in tasks/", async () => {
     const { listCards } = await import("../card-file.js");
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "create_card", {
@@ -332,7 +311,6 @@ describe("create_card tool", () => {
   it("places card in specified column", async () => {
     const { listCards } = await import("../card-file.js");
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "create_card", {
@@ -351,7 +329,6 @@ describe("create_card tool", () => {
 
   it("returns column_not_found for invalid column", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "create_card", {
@@ -387,7 +364,6 @@ describe("check_criteria tool", () => {
   it("marks criterion as checked in card file", async () => {
     const { readCard } = await import("../card-file.js");
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "test-card", column: "in-progress" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
@@ -410,7 +386,6 @@ describe("check_criteria tool", () => {
     const { readCard } = await import("../card-file.js");
     const now = new Date().toISOString();
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({
       id: "test-card",
       column: "in-progress",
@@ -433,7 +408,6 @@ describe("check_criteria tool", () => {
 
   it("returns card_not_found for missing card", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "check_criteria", {
@@ -469,7 +443,6 @@ describe("list_cards / list_columns / get_board_state tools", () => {
 
   it("list_cards returns all cards from task files", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "A", column: "todo" }));
     writeCard(tmpDir, makeCardFile({ id: "card-b", title: "B", column: "in-progress" }));
 
@@ -481,7 +454,6 @@ describe("list_cards / list_columns / get_board_state tools", () => {
 
   it("list_cards filters by column_id", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "A", column: "todo" }));
     writeCard(tmpDir, makeCardFile({ id: "card-b", title: "B", column: "in-progress" }));
 
@@ -497,7 +469,6 @@ describe("list_cards / list_columns / get_board_state tools", () => {
 
   it("list_columns returns card counts from files", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "card-a", column: "todo" }));
     writeCard(tmpDir, makeCardFile({ id: "card-b", column: "todo" }));
 
@@ -517,7 +488,6 @@ describe("list_cards / list_columns / get_board_state tools", () => {
     writeColumnFile(tmpDir, slug, todoWithInstructions);
     writeColumnFile(tmpDir, slug, defaults[1]);
     writeColumnFile(tmpDir, slug, defaults[2]);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "list_columns", { scope_id: SCOPE });
@@ -528,7 +498,6 @@ describe("list_cards / list_columns / get_board_state tools", () => {
 
   it("get_board_state includes cards and columns", async () => {
     setupBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Task A", column: "todo" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
@@ -549,7 +518,6 @@ describe("list_cards / list_columns / get_board_state tools", () => {
     writeColumnFile(tmpDir, slug, todoWithInstructions);
     writeColumnFile(tmpDir, slug, defaults[1]);
     writeColumnFile(tmpDir, slug, defaults[2]);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
 
     const tools = createTools(makeCtx(tmpDir, bus));
     const result = await callTool(tools, "get_board_state", { scope_id: SCOPE });

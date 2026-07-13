@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { mkdirSync, rmSync } from "node:fs";
 import { registerHooks } from "../hooks.js";
 import { createTools } from "../tools/index.js";
-import { saveSidecar, slugify } from "../sidecar.js";
+import { slugify } from "../board-file.js";
 import { writeCard, readCard } from "../card-file.js";
 import {
   writeColumnToBoard as writeColumnFile,
@@ -24,8 +24,7 @@ import {
 import { writeBoardFile } from "../board-file.js";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext, HookResult, HookName, HookHandler } from "../stub/extension-context.js";
-import { SIDECAR_SCHEMA } from "../types.js";
-import type { BoardSidecar, CardFile, ColumnFile } from "../types.js";
+import type { CardFile, ColumnFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -43,17 +42,6 @@ function makeCtx(tmpDir: string, bus: StubBusClient): ExtensionContext {
     extensionName: "snowball",
     hooks: { on: () => {} },
     registerHttpHandler: () => {},
-  };
-}
-
-function makeSidecar(
-  column_contexts: Record<string, string> = {}
-): BoardSidecar {
-  return {
-    schema: SIDECAR_SCHEMA,
-    scope_id: SCOPE,
-    workspace_id: WS_ID,
-    column_contexts,
   };
 }
 
@@ -194,7 +182,6 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
 
   it("injects done protocol for column worker", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ column: "agent-col" }));
 
     const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
@@ -204,7 +191,6 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
 
   it("injects column instructions for column worker", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ column: "agent-col" }));
 
     const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
@@ -214,7 +200,6 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
 
   it("injects card list with criteria count", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "my-card", title: "My Task", column: "agent-col" }));
 
     const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
@@ -229,7 +214,6 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
     // get_board_state separately to discover the IDs. Now they are listed
     // inline so the agent can immediately call check_criteria.
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "my-card", title: "My Task", column: "agent-col" }));
 
     const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
@@ -244,7 +228,6 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
 
   it("does NOT list criteria IDs for already-checked criteria", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     const now = new Date().toISOString();
     // One criterion checked, one not
     writeCard(tmpDir, makeCardFile({
@@ -273,7 +256,6 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
     // ISSUE #1 FULL REGRESSION: agent calls check_criteria for all criteria,
     // then calls move_card. Card must advance to the next column.
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar({ "agent-col": "ctx-agent-col", "done": "ctx-done" }));
     writeCard(tmpDir, makeCardFile({ id: "loop-card", title: "Loop Card", column: "agent-col" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
@@ -320,7 +302,6 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
 
   it("returns null injection when agent has no board columns", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ column: "agent-col" }));
 
     // Different agent not owning any column → no injection
@@ -349,7 +330,6 @@ describe("Slice 4 regression — move_card tool uses stable card context", () =>
     // Legacy card (no context_id). First move to an agent column creates
     // the card context lazily and writes it to the card frontmatter.
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar({}));
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "todo" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
@@ -377,7 +357,6 @@ describe("Slice 4 regression — move_card tool uses stable card context", () =>
 
   it("stable context: two moves of the SAME card use the same card context_id", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar({}));
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "todo" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
@@ -409,7 +388,6 @@ describe("Slice 4 regression — move_card tool uses stable card context", () =>
 
   it("two different cards each get their own card context_id", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar({}));
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "todo" }));
     writeCard(tmpDir, makeCardFile({ id: "card-b", title: "Card B", column: "todo", order: 1 }));
 
@@ -428,7 +406,6 @@ describe("Slice 4 regression — move_card tool uses stable card context", () =>
 
   it("move_card tool works when card already has context_id (no double context creation)", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar({}));
     const existingCtxId = "ctx-pre-existing-card";
     bus.seedContext({
       context_id: existingCtxId,

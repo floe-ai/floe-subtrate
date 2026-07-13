@@ -5,9 +5,9 @@
  *   Uses applyColumnAssignment (card context) instead of column contexts.
  *   entered_column emitted into card context, not column context.
  *
- * Slice 2 (fm/snowball-col-instr-s2):
- *   Now reads column definitions from committed column files instead of sidecar.
- *   Minimal change to keep overseer working with the new file-first model.
+ * Slice 6 (fm/snowball-ctx-retire):
+ *   Sidecar eliminated; uses slugify from board-file.ts and
+ *   getUncheckedCriteriaForCard from card-file.ts.
  *
  * Provides a deterministic in-process evaluator that advances a card through
  * consecutive actor-assigned columns when its exit criteria are all satisfied.
@@ -17,14 +17,14 @@
 
 import {
   slugify,
-  getUncheckedCriteria,
-} from "./sidecar.js";
+} from "./board-file.js";
 import { listColumnsFromBoard } from "./board-file.js";
 import {
   readCard,
   updateCardFrontmatter,
   appendCarryForward,
   listCards,
+  getUncheckedCriteriaForCard,
 } from "./card-file.js";
 import { asBusClient } from "./stub/bus-client.js";
 import {
@@ -64,7 +64,7 @@ export async function advanceCardIfReady(
     if (!col || col.assigned_actors.length === 0) break;
 
     // Hard gate: all exit criteria in the current column must be satisfied.
-    const unchecked = getUncheckedCriteria(card, col.id, col.exit_criteria);
+    const unchecked = getUncheckedCriteriaForCard(card, col.exit_criteria);
     if (unchecked.length > 0) {
       console.info("[snowball:overseer] card held — unmet exit criteria", {
         card_id: cardId,

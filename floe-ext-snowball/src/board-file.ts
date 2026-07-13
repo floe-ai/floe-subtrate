@@ -59,6 +59,21 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ColumnFile, AssignedActor, SidecarExitCriterion } from "./types.js";
 
 // ---------------------------------------------------------------------------
+// Slug utility
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a scope_id to a safe filesystem slug.
+ * Characters illegal in filenames on Windows/Unix (: / \ * ? " < > |) are
+ * replaced with underscores. The result is stable: same input → same slug.
+ *
+ * Example: "scope:workspace_id:feature-planning" → "scope_workspace_id_feature-planning"
+ */
+export function slugify(scopeId: string): string {
+  return scopeId.replace(/[:/\\*?"<>|]/g, "_");
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 

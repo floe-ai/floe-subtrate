@@ -20,12 +20,11 @@ import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext } from "../stub/extension-context.js";
 import { registerHttpHandlers } from "../handlers.js";
 import { createTools } from "../tools/index.js";
-import { saveSidecar, slugify } from "../sidecar.js";
+import { slugify } from "../board-file.js";
 import { writeCard } from "../card-file.js";
 import { writeColumnToBoard as writeColumnFile, defaultColumnFiles } from "../board-file.js";
 import type { ColumnFile } from "../types.js";
-import { SIDECAR_SCHEMA } from "../types.js";
-import type { BoardSidecar, CardFile } from "../types.js";
+import type { CardFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -80,17 +79,6 @@ async function call(
   const handler = map.get(`${method} ${path}`);
   if (!handler) throw new Error(`No handler for ${method} ${path}`);
   return handler({ method, path, query: opts.query ?? {}, body: opts.body ?? null });
-}
-
-function makeSidecar(
-  column_contexts: Record<string, string> = {}
-): BoardSidecar {
-  return {
-    schema: SIDECAR_SCHEMA,
-    scope_id: SCOPE,
-    workspace_id: WS_ID,
-    column_contexts,
-  };
 }
 
 function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
@@ -151,7 +139,6 @@ afterEach(() => {
 describe("A: POST /card — card context created, no churn", () => {
   it("creates exactly ONE card context when creating a card in an unassigned column", async () => {
     setupDefaultColumns(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     const res = await call(handlers, "POST", "/card", {
@@ -171,7 +158,6 @@ describe("A: POST /card — card context created, no churn", () => {
 
   it("returns context_id in the response", async () => {
     setupDefaultColumns(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     const res = await call(handlers, "POST", "/card", {
@@ -186,7 +172,6 @@ describe("A: POST /card — card context created, no churn", () => {
 
   it("emits entered_column into card context when creating into an agent-assigned column", async () => {
     setupAgentColumn(tmpDir, "my-agent");
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     const res = await call(handlers, "POST", "/card", {
@@ -212,7 +197,6 @@ describe("A: POST /card — card context created, no churn", () => {
 describe("B: POST /move — no context churn, card context routing", () => {
   it("emits NO card.moved broadcast when moving to an unassigned column", async () => {
     setupDefaultColumns(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "c1", column: "todo" }));
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
@@ -230,7 +214,6 @@ describe("B: POST /move — no context churn, card context routing", () => {
 
   it("emits entered_column with destination.kind=context when moving to agent-assigned column", async () => {
     setupAgentColumn(tmpDir, "my-agent");
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     // Card already has a context (Slice 4 card)
     const cardContextId = "ctx_existing_card";
     bus.seedContext({
@@ -264,7 +247,6 @@ describe("B: POST /move — no context churn, card context routing", () => {
 
   it("creates no extra contexts when card already has context_id", async () => {
     setupAgentColumn(tmpDir, "my-agent");
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     const cardContextId = "ctx_pre_existing";
     bus.seedContext({
       context_id: cardContextId,
@@ -294,7 +276,6 @@ describe("B: POST /move — no context churn, card context routing", () => {
 describe("C: move_card tool — no context churn", () => {
   it("emits NO card.moved broadcast when moving to an unassigned column", async () => {
     setupDefaultColumns(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "t1", column: "todo" }));
     const ctx = makeCtx(tmpDir, bus);
     const tools = createTools(ctx);
@@ -321,7 +302,6 @@ describe("C: move_card tool — no context churn", () => {
 
   it("emits entered_column with destination.kind=context when moving to agent-assigned column", async () => {
     setupAgentColumn(tmpDir, "my-agent");
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     const cardContextId = "ctx_card_for_tool";
     bus.seedContext({
       context_id: cardContextId,
@@ -372,7 +352,6 @@ describe("D: check_criteria tool — no context churn", () => {
     writeColumnFile(tmpDir, slug, cols[0]);
     writeColumnFile(tmpDir, slug, colWithCriteria);
     writeColumnFile(tmpDir, slug, cols[2]);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "cr1", column: "in-progress" }));
 
     const ctx = makeCtx(tmpDir, bus);
@@ -408,7 +387,6 @@ describe("D: check_criteria tool — no context churn", () => {
     for (const col of [cols[0], colWithCriteria, cols[2]]) {
       writeColumnFile(tmpDir, slug, col);
     }
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({
       id: "cr2",
       column: "in-progress",
@@ -437,7 +415,6 @@ describe("D: check_criteria tool — no context churn", () => {
 describe("E: create_card tool — card context created, no churn", () => {
   it("creates exactly ONE card context, emits NO events for unassigned column", async () => {
     setupDefaultColumns(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar());
     const ctx = makeCtx(tmpDir, bus);
     const tools = createTools(ctx);
     const createCard = tools.find((t) => t.name === "create_card")!;
