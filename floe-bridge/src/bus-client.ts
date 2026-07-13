@@ -9,8 +9,9 @@ export type EventEnvelope = {
   context_id?: string | null;
   correlation_id: string | null;
   destination_json: {
-    kind: "endpoint" | "broadcast";
+    kind: "endpoint" | "broadcast" | "context";
     endpoint_id?: string;
+    context_id?: string;
     scope?: "workspace";
     target?:
       | "all"
