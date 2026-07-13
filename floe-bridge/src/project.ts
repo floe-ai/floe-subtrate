@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { readPromptAsset } from "./prompt-assets.js";
 
@@ -255,44 +255,143 @@ function parseAgentFile(content: string): { frontmatter: Record<string, unknown>
 }
 
 /**
- * Compute a config hash over DECLARED CONFIG FILES ONLY — an explicit allow-list.
+ * Hash the declared config surface.
  *
- * Included:
- *   floe.yaml                         workspace manifest
- *   agents/**\/\*.md                   agent definition files (any depth)
- *   extensions\/**\/extension.json    extension manifests (not extension data)
- *
- * Everything else is excluded: extension runtime data (boards, cards, …),
- * state, worklogs, skills, mcp, README files, etc.  A new file type can only
- * contribute to the hash if it is explicitly listed here — no accidental
- * hash pollution from extension data writes.
+ * Delegates to computeConfigSurface() so the set of hashed files is always
+ * exactly the set the loader declared as config — never more, never less.
  */
 function hashFloeDir(floeDir: string): string {
   const hash = createHash("sha256");
-  const files = listFiles(floeDir).filter((file) => isConfigFile(floeDir, file));
-  for (const file of files) {
-    const rel = relative(floeDir, file).replace(/\\/g, "/");
-    hash.update(rel);
-    hash.update("\0");
-    hash.update(readFileSync(file));
-    hash.update("\0");
+  for (const file of computeConfigSurface(floeDir)) {
+    try {
+      const rel = relative(floeDir, file).replace(/\\/g, "/");
+      hash.update(rel);
+      hash.update("\0");
+      hash.update(readFileSync(file));
+      hash.update("\0");
+    } catch { /* file disappeared between surface computation and hashing */ }
   }
   return `sha256:${hash.digest("hex")}`;
 }
 
 /**
- * Allow-list predicate: true iff the file is a declared config file that should
- * contribute to the project config hash.
+ * Compute the declared config surface for hashing.
+ *
+ * Returns a sorted, deduplicated list of absolute file paths that constitute
+ * the workspace configuration.  Only files in this set contribute to the
+ * config hash; everything else (extension runtime data, state, worklogs, …)
+ * is excluded.
+ *
+ * Surface composition:
+ *
+ * 1. Substrate-owned config
+ *    - floe.yaml
+ *    - agents/**   (all agent definition files at any depth)
+ *    - skills/**   (all skill files — a skill change should trigger reload)
+ *    - mcp/**      (all MCP config files — an MCP server change should trigger reload)
+ *
+ * 2. Per-extension declared config — for each extensions/<name>/extension.json:
+ *    - the extension.json file itself (local pointer or direct manifest)
+ *    - the resolved `entry` file, if it resolves under .floe
+ *    - each `agents[].instructions_path`, if it resolves under .floe
+ *
+ *    Pointer files (manifest_source) are followed so that instruction files
+ *    referenced by an external manifest are still captured when they happen to
+ *    live under .floe.  Everything else under extensions/<name>/ is treated as
+ *    extension runtime data and excluded — no glob over extension dirs.
+ *
+ * Note on skills/mcp inclusion: neither directory is currently read by
+ * loadProject() itself, but both are genuinely config — editing a skill
+ * instruction or an MCP server config changes agent behaviour.  Including them
+ * matches the principle that under-reloading is worse than over-reloading for
+ * infrequently-changing config directories.
  */
-function isConfigFile(floeDir: string, file: string): boolean {
-  const rel = relative(floeDir, file).replace(/\\/g, "/");
-  // Workspace manifest
-  if (rel === "floe.yaml") return true;
-  // Agent definition files: agents/**/*.md (any nesting depth)
-  if (/^agents\/.+\.md$/.test(rel)) return true;
-  // Extension manifests only — never extension data under the same tree
-  if (/^extensions\/.+\/extension\.json$/.test(rel)) return true;
-  return false;
+export function computeConfigSurface(floeDir: string): string[] {
+  const files = new Set<string>();
+
+  const addIfExists = (p: string) => {
+    const abs = resolve(p);
+    if (existsSync(abs)) files.add(abs);
+  };
+
+  const addAllUnder = (dir: string) => {
+    const abs = resolve(dir);
+    if (existsSync(abs)) {
+      for (const f of listFiles(abs)) files.add(f);
+    }
+  };
+
+  // 1. Workspace manifest
+  addIfExists(join(floeDir, "floe.yaml"));
+
+  // 2. Agent definition files
+  addAllUnder(join(floeDir, "agents"));
+
+  // 3. Skill files (changes here should trigger reload)
+  addAllUnder(join(floeDir, "skills"));
+
+  // 4. MCP config files (changes here should trigger reload)
+  addAllUnder(join(floeDir, "mcp"));
+
+  // 5. Extension declared surface
+  const extensionsDir = join(floeDir, "extensions");
+  let extEntries: string[];
+  try { extEntries = readdirSync(extensionsDir); } catch { extEntries = []; }
+
+  for (const dirName of extEntries) {
+    const extDir = join(extensionsDir, dirName);
+    try { if (!statSync(extDir).isDirectory()) continue; } catch { continue; }
+
+    const manifestPath = join(extDir, "extension.json");
+    if (!existsSync(manifestPath)) continue;
+
+    // Always include the local extension.json (pointer or direct manifest)
+    files.add(resolve(manifestPath));
+
+    // Parse to find referenced files
+    let rawManifest: Record<string, unknown>;
+    let manifestBaseDir = extDir;
+    try {
+      rawManifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>;
+    } catch { continue; }
+
+    // Follow pointer if present
+    if (rawManifest !== null && typeof rawManifest.manifest_source === "string") {
+      const sourcePath = resolve(extDir, rawManifest.manifest_source);
+      manifestBaseDir = dirname(sourcePath);
+      // Include canonical manifest if it resolves under .floe
+      if (isUnderDir(sourcePath, floeDir)) addIfExists(sourcePath);
+      // Re-read as the canonical manifest to find referenced files
+      try {
+        rawManifest = JSON.parse(readFileSync(sourcePath, "utf-8")) as Record<string, unknown>;
+      } catch { continue; }
+    }
+
+    // Include entry file if it resolves under .floe
+    if (typeof rawManifest.entry === "string") {
+      const entryPath = resolve(manifestBaseDir, rawManifest.entry);
+      if (isUnderDir(entryPath, floeDir)) addIfExists(entryPath);
+    }
+
+    // Include each bundled-agent instructions_path if it resolves under .floe
+    if (Array.isArray(rawManifest.agents)) {
+      for (const agent of rawManifest.agents) {
+        if (agent !== null && typeof agent === "object" &&
+            typeof (agent as Record<string, unknown>).instructions_path === "string") {
+          const instrPath = resolve(manifestBaseDir, (agent as Record<string, unknown>).instructions_path as string);
+          if (isUnderDir(instrPath, floeDir)) addIfExists(instrPath);
+        }
+      }
+    }
+  }
+
+  return [...files].sort();
+}
+
+/** Returns true iff `filePath` is at or below `dir` (both resolved). */
+function isUnderDir(filePath: string, dir: string): boolean {
+  const rel = relative(resolve(dir), resolve(filePath));
+  return !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 function listFiles(root: string): string[] {
