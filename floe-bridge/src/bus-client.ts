@@ -279,6 +279,95 @@ export class BusClient {
     await this.post("/v1/extensions/report", { workspace_id: workspaceId, extensions });
   }
 
+  /**
+   * Add an endpoint as a participant in a context (idempotent).
+   * Returns whether the participant was newly added.
+   */
+  async addParticipant(
+    contextId: string,
+    endpointId: string
+  ): Promise<{ added: boolean }> {
+    const result = await this.post(
+      `/v1/contexts/${encodeURIComponent(contextId)}/participants`,
+      { endpoint_id: endpointId }
+    ) as { ok: boolean; context_id: string; endpoint_id: string; added: boolean };
+    return { added: result.added };
+  }
+
+  /**
+   * Remove an endpoint from a context's participant list (idempotent).
+   * Returns whether the participant was removed.
+   */
+  async removeParticipant(
+    contextId: string,
+    endpointId: string
+  ): Promise<{ removed: boolean }> {
+    const result = await this._delete(
+      `/v1/contexts/${encodeURIComponent(contextId)}/participants/${encodeURIComponent(endpointId)}`
+    ) as { ok: boolean; context_id: string; endpoint_id: string; removed: boolean };
+    return { removed: result.removed };
+  }
+
+  /**
+   * Subscribe an endpoint to event types in a context (UPSERT, idempotent).
+   * eventTypes defaults to ["*"] (all events).
+   * Pass [] to create a silent watcher — still a participant, never woken.
+   */
+  async subscribeToContext(
+    contextId: string,
+    endpointId: string,
+    eventTypes: string[] = ["*"]
+  ): Promise<void> {
+    await this.post(
+      `/v1/contexts/${encodeURIComponent(contextId)}/subscriptions`,
+      { endpoint_id: endpointId, event_types: eventTypes }
+    );
+  }
+
+  /**
+   * Remove an endpoint's subscription from a context entirely.
+   * Does NOT remove the endpoint from participants.
+   */
+  async unsubscribeFromContext(
+    contextId: string,
+    endpointId: string
+  ): Promise<void> {
+    await this._delete(
+      `/v1/contexts/${encodeURIComponent(contextId)}/subscriptions/${encodeURIComponent(endpointId)}`
+    );
+  }
+
+  /**
+   * List all subscriptions for a context.
+   */
+  async listContextSubscriptions(
+    contextId: string
+  ): Promise<Array<{ endpoint_id: string; event_types: string[]; subscribed_at: string }>> {
+    const result = await this.get(
+      `/v1/contexts/${encodeURIComponent(contextId)}/subscriptions`
+    ) as { subscriptions: Array<{ endpoint_id: string; event_types: string[]; subscribed_at: string }> };
+    return result.subscriptions;
+  }
+
+  /**
+   * List child contexts whose parent_context_id equals contextId.
+   * Used for epic→card links.
+   */
+  async listChildContexts(
+    contextId: string
+  ): Promise<Array<{ context_id: string; workspace_id: string; scope_id: string | null; created_at: string; title: string | null; participants: string[] }>> {
+    const result = await this.get(
+      `/v1/contexts/${encodeURIComponent(contextId)}/children`
+    ) as { contexts: Array<{ context_id: string; workspace_id: string; scope_id: string | null; created_at: string; title: string | null; participants: string[] }> };
+    return result.contexts;
+  }
+
+  private async _delete(path: string): Promise<unknown> {
+    const response = await fetch(`${this.baseUrl}${path}`, { method: "DELETE" });
+    if (!response.ok) throw new Error(`DELETE ${path} failed: ${response.status} ${await response.text()}`);
+    return response.json();
+  }
+
   private async get(path: string): Promise<unknown> {
     const response = await fetch(`${this.baseUrl}${path}`);
     if (!response.ok) throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
