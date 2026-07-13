@@ -91,40 +91,33 @@ export async function applyColumnAssignment(
 
   if (!cardContextId) return;
 
-  // Step 1: Add acting actor as participant (idempotent).
-  // Required so the acting actor can emit into the card context (rule 1: only participants emit).
-  try {
-    await bus.addParticipant(cardContextId, actingActorEp);
-  } catch (err) {
-    console.warn(`[snowball] addParticipant(acting:${actingActorEp}) failed: ${err}`);
-  }
+  // Build one batch: acting actor as participant-only (must be able to emit,
+  // not subscribed); destination actors as participant + subscription;
+  // prior actors demoted to silent watchers (participant, event_types: []).
+  const entries: Array<{ endpoint_id: string; event_types: string[] }> = [];
 
-  // Step 2: Add destination column actors as participants + subscribe.
   for (const actor of destAssignedActors) {
-    const ep = actorEndpointId(workspaceId, actor.actor_ref);
-    try {
-      await bus.addParticipant(cardContextId, ep);
-      await bus.subscribeToContext(cardContextId, ep, actor.event_types);
-    } catch (err) {
-      console.warn(`[snowball] addParticipant/subscribe(${ep}) failed: ${err}`);
-    }
+    entries.push({
+      endpoint_id: actorEndpointId(workspaceId, actor.actor_ref),
+      event_types: actor.event_types,
+    });
   }
 
-  // Step 3: Demote prior column actors to silent watchers.
-  // They remain participants (can still emit), but will never be woken again.
   for (const actor of priorAssignedActors) {
-    const ep = actorEndpointId(workspaceId, actor.actor_ref);
-    try {
-      // Empty event_types UPSERT = "participant but never woken"
-      await bus.subscribeToContext(cardContextId, ep, []);
-    } catch (err) {
-      console.warn(`[snowball] demote-to-watcher(${ep}) failed: ${err}`);
-    }
+    entries.push({
+      endpoint_id: actorEndpointId(workspaceId, actor.actor_ref),
+      event_types: [], // silent watcher — remains participant, never woken
+    });
   }
 
-  // Step 4: Emit entered_column if the destination column has assigned actors.
-  // Uses destination: {kind:"context"} so the bus routes to subscribed actors.
-  // Source: acting actor (now a participant, so rule 1 passes).
+  try {
+    await bus.applyContextSubscriptions(cardContextId, entries, [actingActorEp]);
+  } catch (err) {
+    console.warn(`[snowball] applyContextSubscriptions failed: ${err}`);
+  }
+
+  // Emit entered_column only when the destination column has assigned actors.
+  // Uses destination:{kind:"context"} so the bus routes to subscribed actors.
   if (destAssignedActors.length === 0) return;
 
   try {

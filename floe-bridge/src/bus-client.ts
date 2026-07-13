@@ -339,6 +339,26 @@ export class BusClient {
   }
 
   /**
+   * Batch-apply participant + subscription changes in one atomic call.
+   *
+   * - `entries`: each endpoint is added as a participant AND gets its subscription
+   *   upserted with the given `event_types`. Pass `[]` to create a silent watcher.
+   * - `participantsOnly`: endpoints added as participants with no subscription change.
+   *
+   * Maps to `POST /v1/contexts/:id/subscriptions:batch`.
+   */
+  async applyContextSubscriptions(
+    contextId: string,
+    entries: Array<{ endpoint_id: string; event_types: string[] }>,
+    participantsOnly: string[] = []
+  ): Promise<void> {
+    await this.post(
+      `/v1/contexts/${encodeURIComponent(contextId)}/subscriptions:batch`,
+      { entries, participants_only: participantsOnly }
+    );
+  }
+
+  /**
    * List all subscriptions for a context.
    */
   async listContextSubscriptions(

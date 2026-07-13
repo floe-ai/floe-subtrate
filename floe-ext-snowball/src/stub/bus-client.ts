@@ -126,6 +126,19 @@ export interface BusClient {
   unsubscribeFromContext(contextId: string, endpointId: string): Promise<void>;
 
   /**
+   * Batch-apply participant + subscription changes in one atomic call.
+   *
+   * - `entries`: each endpoint is added as a participant AND gets its subscription
+   *   upserted with the given `event_types`. Pass `[]` to create a silent watcher.
+   * - `participantsOnly`: endpoints added as participants with no subscription change.
+   */
+  applyContextSubscriptions(
+    contextId: string,
+    entries: Array<{ endpoint_id: string; event_types: string[] }>,
+    participantsOnly?: string[]
+  ): Promise<void>;
+
+  /**
    * List all subscriptions for a context.
    */
   listContextSubscriptions(
@@ -224,6 +237,28 @@ export class StubBusClient implements BusClient {
   ): Promise<void> {
     this._subscriptions ??= new Map();
     this._subscriptions.set(`${contextId}::${endpointId}`, eventTypes);
+  }
+
+  async applyContextSubscriptions(
+    contextId: string,
+    entries: Array<{ endpoint_id: string; event_types: string[] }>,
+    participantsOnly: string[] = []
+  ): Promise<void> {
+    const ctx = this.contexts.find((c) => c.context_id === contextId);
+    this._subscriptions ??= new Map();
+    // participantsOnly: add as participant, no subscription change
+    for (const ep of participantsOnly) {
+      if (ctx && !ctx.participants.includes(ep)) {
+        ctx.participants.push(ep);
+      }
+    }
+    // entries: add as participant + upsert subscription
+    for (const entry of entries) {
+      if (ctx && !ctx.participants.includes(entry.endpoint_id)) {
+        ctx.participants.push(entry.endpoint_id);
+      }
+      this._subscriptions.set(`${contextId}::${entry.endpoint_id}`, entry.event_types);
+    }
   }
 
   async unsubscribeFromContext(
