@@ -178,6 +178,32 @@ export interface BoardSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Column definition (was in column-file.ts; relocated to board file in Slice 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * A column definition as stored inside board.md frontmatter (Slice 5).
+ *
+ * `scope_id` is populated from the board file's top-level scope_id when reading;
+ * it is NOT stored redundantly per-column in the YAML (only the board carries it).
+ * Callers receive it pre-populated for convenience.
+ *
+ * `instructions` is the agent instructions for this column (free-form markdown,
+ * injected into BeforeTurn). Stored inline in the YAML column record.
+ */
+export interface ColumnFile {
+  id: string;
+  name: string;
+  /** Populated from board scope_id at read time — not stored per-column. */
+  scope_id: string;
+  order: number;
+  wip_limit: number | null;
+  assigned_actors: AssignedActor[];
+  exit_criteria: SidecarExitCriterion[];
+  instructions: string;
+}
+
+// ---------------------------------------------------------------------------
 // Board move result (used internally by tools)
 // ---------------------------------------------------------------------------
 

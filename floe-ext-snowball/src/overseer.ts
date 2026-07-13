@@ -19,7 +19,7 @@ import {
   slugify,
   getUncheckedCriteria,
 } from "./sidecar.js";
-import { listColumnFiles } from "./column-file.js";
+import { listColumnsFromBoard } from "./board-file.js";
 import {
   readCard,
   updateCardFrontmatter,
@@ -55,7 +55,7 @@ export async function advanceCardIfReady(
 
   for (let depth = 0; depth < MAX_CASCADE; depth++) {
     // Reload column files and card each iteration for freshest state.
-    const columns = listColumnFiles(ctx.workspacePath, slug);
+    const columns = listColumnsFromBoard(ctx.workspacePath, slug);
     const card = readCard(ctx.workspacePath, cardId);
     if (!card) break;
 

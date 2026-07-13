@@ -5,7 +5,7 @@
  *   The sidecar has been slimmed to RUNTIME-ONLY state.
  *   Column DEFINITIONS (name, owner, exit_criteria, wip_limit, instructions)
  *   now live in committed markdown files at boards/<scopeSlug>/columns/<id>.md
- *   (see column-file.ts).
+ *   (see board-file.ts).
  *
  *   The sidecar now owns ONLY:
  *     column_contexts: column_id → bus Context id (created at board init)
@@ -33,7 +33,7 @@ import {
   cardCountsByColumnFromFiles,
   getUncheckedCriteriaForCard,
 } from "./card-file.js";
-import type { ColumnFile } from "./column-file.js";
+import type { ColumnFile } from "./types.js";
 import type { CardFile } from "./types.js";
 
 /**
@@ -68,7 +68,7 @@ function sidecarPath(workspacePath: string, scopeId: string): string {
  * runtime state with no column_contexts.
  *
  * Does NOT create column contexts — call initBoardContexts() separately.
- * Does NOT hold column definitions — those are in column-file.ts.
+ * Does NOT hold column definitions — those are in board-file.ts.
  */
 export function loadSidecar(
   workspacePath: string,
@@ -324,3 +324,4 @@ export function renderCompactBoardSnapshot(snapshot: BoardSnapshot): string {
 // ---------------------------------------------------------------------------
 
 export type { ColumnFile };
+// Note: ColumnFile is now defined in types.ts (column-file.ts removed in Slice 5)

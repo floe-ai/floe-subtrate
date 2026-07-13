@@ -20,14 +20,15 @@ import { registerHttpHandlers } from "../handlers.js";
 import { saveSidecar, loadSidecar, sidecarExists, slugify } from "../sidecar.js";
 import { writeCard, readCard, listCards } from "../card-file.js";
 import {
-  writeColumnFile,
+  writeColumnToBoard as writeColumnFile,
+  readColumnFromBoard as readColumnFile,
   defaultColumnFiles,
-  readColumnFile,
-  type ColumnFile,
-} from "../column-file.js";
-import { readBoardFile, DEFAULT_DONE_PROTOCOL } from "../board-file.js";
+  readBoardFile,
+  writeBoardFile,
+  DEFAULT_DONE_PROTOCOL,
+} from "../board-file.js";
 import { SIDECAR_SCHEMA } from "../types.js";
-import type { BoardSidecar, CardFile } from "../types.js";
+import type { BoardSidecar, CardFile, ColumnFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness

@@ -461,6 +461,14 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 - **Built-in operator**: reference `actor:<workspace_id>:operator` — never register a snowball-specific operator.
 - The overseer is NOT added to any card context (not even a watcher).
 
+**Slice 5 (fm/snowball-col-board-s5) — columns inside board file:**
+- **Column definitions relocated** from individual `boards/<slug>/columns/<id>.md` files INTO `boards/<slug>/board.md` frontmatter. `column-file.ts` is deleted.
+- **`BoardFile.columns: ColumnFile[]`** — board.md frontmatter now has `scope_id` + `columns` array. Body = done protocol unchanged.
+- **`ColumnFile` type** moved to `types.ts` (from `column-file.ts`). The `scope_id` field is populated from the board's `scope_id` at read time; not stored per-column in YAML.
+- **Board-file.ts** now owns all column I/O: `listColumnsFromBoard`, `readColumnFromBoard`, `writeColumnToBoard`, `updateColumnInBoard`, `updateColumnInstructions`, `deleteColumnFromBoard`, `findBoardScopesForAgentFromFiles`, `defaultColumnFiles`, `generateColumnId`.
+- **Column addressability**: column IDs are stable; future cross-board references use `<board_scope_id>/<column_id>`. The board file format does not hardcode single-board assumptions.
+- `ensureBoardFile` now creates board.md with default columns if absent.
+
 **Board live refresh (fm/board-refresh-fix, updated fm/floe-card-context-churn):** Human mutations use `withReload()` in `BoardView.tsx` — every mutation calls `reload()` after the POST completes. Agent-driven moves are covered by a WS subscription via `subscribeBusStream()` in `bus-stream.ts` (which provides automatic reconnect with exponential back-off — no reconnect storms). The bus broadcasts `event_submitted` via `store.submitEvent` → `broadcast("event_submitted", { event })` at `floe-bus/src/store.ts:1352`. **`snowball.card.moved`, `snowball.card.created`, `snowball.card.criteria_checked`, and `snowball.card.gate_overridden` broadcast events have been removed** — they used `target: "active_with_delivery_processor"` with no `context_id`, causing the bus resolver to create a throwaway context and trigger an agent-turn delivery for every card mutation. `snowball.card.entered_column` (into the CARD context with `destination:{kind:"context"}`) is now the sole canonical signal for both agent routing and WS-based UI refresh.
 
 **Board routing invariants (fm/floe-e2e-fix, updated fm/snowball-card-context):**

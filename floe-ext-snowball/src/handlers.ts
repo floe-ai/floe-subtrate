@@ -1,33 +1,29 @@
 /**
  * HTTP handlers for the Snowball extension relay.
  *
+ * Slice 5 (fm/snowball-col-board-s5):
+ *   Column definitions relocated from individual column files into board.md.
+ *   All column I/O now goes through board-file.ts functions.
+ *   column-file.ts is deleted.
+ *
  * Slice 4 (fm/snowball-card-context):
- *   - POST /card now creates a bus context for the card (card = context).
+ *   - POST /card creates a bus context for the card (card = context).
  *   - POST /move uses applyColumnAssignment (card context) instead of column contexts.
  *   - Columns use assigned_actors[] — no owner.kind branching.
- *   - UI handler path uses actor:<ws>:operator as the acting actor.
- *
- * Slice 2 (fm/snowball-col-instr-s2):
- *   - Column definitions now live in committed markdown files
- *     (boards/<scopeSlug>/columns/<id>.md) instead of the gitignored sidecar.
- *   - POST /board/init now creates column files (if absent) + column contexts.
- *   - POST /columns mutations write to/from column files.
- *   - GET  /column/instructions — read a column's instructions body
- *   - POST /column/instructions — write a column's instructions body
  *
  * Available at:
- *   GET  /v1/extensions/snowball/board?scope_id=<id>              -> board state JSON
- *   POST /v1/extensions/snowball/board/init                        -> init column files + contexts
- *   POST /v1/extensions/snowball/columns                           -> add/update/delete/reorder
+ *   GET  /v1/extensions/snowball/board?scope_id=<id>
+ *   POST /v1/extensions/snowball/board/init
+ *   POST /v1/extensions/snowball/columns
  *   GET  /v1/extensions/snowball/column/instructions?scope_id=<id>&column_id=<id>
- *   POST /v1/extensions/snowball/column/instructions               -> save instructions body
- *   GET  /v1/extensions/snowball/board/instructions?scope_id=<id>  -> read board done protocol
- *   POST /v1/extensions/snowball/board/instructions                -> save board done protocol
- *   POST /v1/extensions/snowball/card                              -> create card file + context
- *   POST /v1/extensions/snowball/card/delete                       -> remove card file
- *   POST /v1/extensions/snowball/card/rename                       -> rename card title
- *   POST /v1/extensions/snowball/card/criteria                     -> toggle exit-criterion check
- *   POST /v1/extensions/snowball/move                              -> move a card between columns
+ *   POST /v1/extensions/snowball/column/instructions
+ *   GET  /v1/extensions/snowball/board/instructions?scope_id=<id>
+ *   POST /v1/extensions/snowball/board/instructions
+ *   POST /v1/extensions/snowball/card
+ *   POST /v1/extensions/snowball/card/delete
+ *   POST /v1/extensions/snowball/card/rename
+ *   POST /v1/extensions/snowball/card/criteria
+ *   POST /v1/extensions/snowball/move
  */
 
 import type { ExtensionContext } from "./stub/extension-context.js";
@@ -41,20 +37,19 @@ import {
   initBoardContexts,
 } from "./sidecar.js";
 import {
-  listColumnFiles,
-  writeColumnFile,
-  readColumnFile,
-  deleteColumnFile,
-  updateColumnFileFrontmatter,
-  updateColumnFileInstructions,
-  generateColumnId,
-  defaultColumnFiles,
-  type ColumnFile,
-} from "./column-file.js";
-import {
   ensureBoardFile,
   readBoardFile,
+  writeBoardFile,
   updateBoardFileProtocol,
+  listColumnsFromBoard,
+  readColumnFromBoard,
+  writeColumnToBoard,
+  updateColumnInBoard,
+  updateColumnInstructions,
+  deleteColumnFromBoard,
+  generateColumnId,
+  defaultColumnFiles,
+  type BoardFile,
 } from "./board-file.js";
 import { asBusClient } from "./stub/bus-client.js";
 import {
@@ -72,6 +67,7 @@ import {
   createCardContext,
   operatorEndpointId,
 } from "./handoff.js";
+import type { ColumnFile } from "./types.js";
 import { rmSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
@@ -95,8 +91,26 @@ function jsonResponse(status: number, body: unknown): RelayResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Load effective columns for a board: board file columns or fallback defaults.
+ * Also returns the board file (may be null for uninitialised boards).
+ */
+function loadColumns(workspacePath: string, scopeSlug: string, scopeId: string): {
+  columns: ColumnFile[];
+  boardFile: BoardFile | null;
+} {
+  const boardFile = readBoardFile(workspacePath, scopeSlug);
+  const columns = boardFile?.columns.length
+    ? boardFile.columns
+    : defaultColumnFiles(scopeId);
+  return { columns, boardFile };
+}
+
+// ---------------------------------------------------------------------------
 // GET /board?scope_id=<id>
-// Returns board state + initialized flag.
 // ---------------------------------------------------------------------------
 
 function handleGetBoard(
@@ -104,17 +118,11 @@ function handleGetBoard(
 ): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
     const scope_id = req.query["scope_id"];
-    if (!scope_id) {
-      return jsonResponse(400, { error: "scope_id query parameter required" });
-    }
+    if (!scope_id) return jsonResponse(400, { error: "scope_id query parameter required" });
 
     try {
       const slug = slugify(scope_id);
-      let columns = listColumnFiles(workspacePath, slug);
-      // Fall back to defaults if no column files exist yet (pre-init)
-      if (columns.length === 0) {
-        columns = defaultColumnFiles(scope_id);
-      }
+      const { columns } = loadColumns(workspacePath, slug, scope_id);
       const initialized = sidecarExists(workspacePath, scope_id);
       const sidecar = loadSidecar(workspacePath, scope_id);
       const snapshot = buildBoardSnapshot(workspacePath, sidecar, columns);
@@ -127,7 +135,6 @@ function handleGetBoard(
 
 // ---------------------------------------------------------------------------
 // POST /board/init  { scope_id }
-// Creates committed column files (if absent) + column contexts (idempotent).
 // ---------------------------------------------------------------------------
 
 function handlePostBoardInit(
@@ -141,39 +148,28 @@ function handlePostBoardInit(
     try {
       const slug = slugify(scope_id);
 
-      // 1. Load existing column files or create defaults.
-      let columns = listColumnFiles(ctx.workspacePath, slug);
-      if (columns.length === 0) {
-        columns = defaultColumnFiles(scope_id);
-        for (const col of columns) {
-          writeColumnFile(ctx.workspacePath, slug, col);
-        }
+      // 1. Ensure board.md with columns (creates with defaults if absent).
+      const boardFile = ensureBoardFile(ctx.workspacePath, slug, scope_id);
+      const columns = boardFile.columns.length > 0
+        ? boardFile.columns
+        : defaultColumnFiles(scope_id);
+      if (!boardFile.columns.length) {
+        writeBoardFile(ctx.workspacePath, slug, { ...boardFile, columns });
       }
 
-      // 2. Ensure board.md exists (creates with default done protocol if absent).
-      ensureBoardFile(ctx.workspacePath, slug, scope_id);
-
-      // 3. Load sidecar (context map only) and set workspace_id.
+      // 2. Load sidecar and set workspace_id.
       const sidecar = loadSidecar(ctx.workspacePath, scope_id);
       if (!sidecar.workspace_id) sidecar.workspace_id = ctx.workspaceId;
 
-      // 4. Create column contexts in bus (dormant in Slice 4 but kept for compat).
+      // 3. Create column contexts (dormant since Slice 4; kept for compat).
       const bus = asBusClient(ctx.busClient);
-      const { changed } = await initBoardContexts(
-        sidecar,
-        ctx.workspaceId,
-        bus,
-        columns
-      );
+      const { changed } = await initBoardContexts(sidecar, ctx.workspaceId, bus, columns);
       if (changed || !sidecarExists(ctx.workspacePath, scope_id)) {
         saveSidecar(ctx.workspacePath, scope_id, sidecar);
       }
 
       const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
-      return jsonResponse(200, {
-        ok: true,
-        board: { ...snapshot, initialized: true },
-      });
+      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: true } });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -181,9 +177,7 @@ function handlePostBoardInit(
 }
 
 // ---------------------------------------------------------------------------
-// POST /columns
-// Manages board columns: add / update / delete / reorder.
-// All mutations write to/from committed column files.
+// POST /columns — add / update / delete / reorder
 // ---------------------------------------------------------------------------
 
 function handlePostColumns(
@@ -197,16 +191,11 @@ function handlePostColumns(
       name?: string;
       wip_limit?: number | null;
       assigned_actors?: Array<{ actor_ref: string; event_types: string[] }>;
-      exit_criteria?: Array<{
-        id: string;
-        description: string;
-        kind: "machine" | "human";
-      }>;
+      exit_criteria?: Array<{ id: string; description: string; kind: "machine" | "human" }>;
       column_ids?: string[];
     };
     const body = (req.body ?? {}) as Body;
     const { scope_id, action } = body;
-
     if (!scope_id) return jsonResponse(400, { error: "scope_id required" });
     if (!action) return jsonResponse(400, { error: "action required" });
 
@@ -215,20 +204,24 @@ function handlePostColumns(
       const sidecar = loadSidecar(ctx.workspacePath, scope_id);
       if (!sidecar.workspace_id) sidecar.workspace_id = ctx.workspaceId;
 
-      let columns = listColumnFiles(ctx.workspacePath, slug);
-      // If no column files exist, start from defaults (pre-init board)
-      if (columns.length === 0) {
-        columns = defaultColumnFiles(scope_id);
-        for (const col of columns) writeColumnFile(ctx.workspacePath, slug, col);
+      // Load or bootstrap board file
+      let boardFile = readBoardFile(ctx.workspacePath, slug);
+      if (!boardFile) {
+        boardFile = {
+          scope_id,
+          done_protocol: "",
+          columns: defaultColumnFiles(scope_id),
+        };
+        writeBoardFile(ctx.workspacePath, slug, boardFile);
       }
+      const columns = boardFile.columns;
 
       if (action === "add") {
         const name = body.name?.trim();
         if (!name) return jsonResponse(400, { error: "name required for action:add" });
 
-        const id = generateColumnId();
         const newCol: ColumnFile = {
-          id,
+          id: generateColumnId(),
           name,
           scope_id,
           wip_limit: body.wip_limit ?? null,
@@ -237,9 +230,9 @@ function handlePostColumns(
           exit_criteria: body.exit_criteria ?? [],
           instructions: "",
         };
-        writeColumnFile(ctx.workspacePath, slug, newCol);
+        writeColumnToBoard(ctx.workspacePath, slug, newCol);
 
-        // Create a column context for the new column (dormant in Slice 4 but kept for compat).
+        // Create column context (dormant; kept for compat).
         const bus = asBusClient(ctx.busClient);
         try {
           const participants = newCol.assigned_actors.map(
@@ -251,65 +244,43 @@ function handlePostColumns(
             participants,
             title: `Column: ${name}`,
           });
-          sidecar.column_contexts[id] = contextId;
+          sidecar.column_contexts[newCol.id] = contextId;
           saveSidecar(ctx.workspacePath, scope_id, sidecar);
         } catch (err) {
-          console.warn(
-            `[snowball] Failed to create column context for "${name}": ${err}`
-          );
+          console.warn(`[snowball] Failed to create column context for "${name}": ${err}`);
         }
       } else if (action === "update") {
         if (!body.column_id)
-          return jsonResponse(400, {
-            error: "column_id required for action:update",
-          });
+          return jsonResponse(400, { error: "column_id required for action:update" });
         const col = columns.find((c) => c.id === body.column_id);
         if (!col)
-          return jsonResponse(404, {
-            error: "column_not_found",
-            column_id: body.column_id,
-          });
+          return jsonResponse(404, { error: "column_not_found", column_id: body.column_id });
 
-        const updates: Partial<Omit<ColumnFile, "instructions">> = {};
+        const updates: Partial<Omit<ColumnFile, "instructions" | "scope_id">> = {};
         if (body.name !== undefined) updates.name = body.name.trim();
         if (body.wip_limit !== undefined) updates.wip_limit = body.wip_limit;
         if (body.assigned_actors !== undefined) updates.assigned_actors = body.assigned_actors;
-        if (body.exit_criteria !== undefined)
-          updates.exit_criteria = body.exit_criteria;
-        updateColumnFileFrontmatter(
-          ctx.workspacePath,
-          slug,
-          body.column_id,
-          updates
-        );
+        if (body.exit_criteria !== undefined) updates.exit_criteria = body.exit_criteria;
+        updateColumnInBoard(ctx.workspacePath, slug, body.column_id, updates);
 
-        // When assigned_actors changes, evict the column context from the sidecar
-        // so the next lazy init creates a context with the correct participants.
+        // Evict sidecar entry when assigned_actors changes.
         if (body.assigned_actors !== undefined && sidecar.column_contexts[body.column_id]) {
           delete sidecar.column_contexts[body.column_id];
           saveSidecar(ctx.workspacePath, scope_id, sidecar);
         }
       } else if (action === "delete") {
         if (!body.column_id)
-          return jsonResponse(400, {
-            error: "column_id required for action:delete",
-          });
+          return jsonResponse(400, { error: "column_id required for action:delete" });
         const colIdx = columns.findIndex((c) => c.id === body.column_id);
         if (colIdx === -1)
-          return jsonResponse(404, {
-            error: "column_not_found",
-            column_id: body.column_id,
-          });
-        if (columns.length <= 1) {
+          return jsonResponse(404, { error: "column_not_found", column_id: body.column_id });
+        if (columns.length <= 1)
           return jsonResponse(422, { error: "Cannot delete the last column" });
-        }
-        // Move any cards in this column to the first remaining column (file update)
+
         const remaining = columns.filter((_, i) => i !== colIdx);
         const fallbackCol = remaining[0];
         const allCards = listCards(ctx.workspacePath);
-        const currentCount = allCards.filter(
-          (c) => c.column === fallbackCol.id
-        ).length;
+        const currentCount = allCards.filter((c) => c.column === fallbackCol.id).length;
         let moveOrder = currentCount;
         for (const card of allCards) {
           if (card.column === body.column_id) {
@@ -321,49 +292,36 @@ function handlePostColumns(
         }
         delete sidecar.column_contexts[body.column_id];
         saveSidecar(ctx.workspacePath, scope_id, sidecar);
-        deleteColumnFile(ctx.workspacePath, slug, body.column_id);
+        deleteColumnFromBoard(ctx.workspacePath, slug, body.column_id);
       } else if (action === "reorder") {
         const ids = body.column_ids;
         if (!Array.isArray(ids))
-          return jsonResponse(400, {
-            error: "column_ids required for action:reorder",
-          });
-        // Update the order field in each column file
+          return jsonResponse(400, { error: "column_ids required for action:reorder" });
         const idOrder = new Map(ids.map((id, i) => [id, i]));
+        // Update each column's order field
         for (const col of columns) {
           const newOrder = idOrder.get(col.id);
           if (newOrder !== undefined && newOrder !== col.order) {
-            updateColumnFileFrontmatter(ctx.workspacePath, slug, col.id, {
-              order: newOrder,
-            });
+            updateColumnInBoard(ctx.workspacePath, slug, col.id, { order: newOrder });
           }
         }
-        // Handle columns not in the ids list (append at end)
         let extra = ids.length;
         for (const col of columns) {
           if (!idOrder.has(col.id)) {
-            updateColumnFileFrontmatter(ctx.workspacePath, slug, col.id, {
-              order: extra++,
-            });
+            updateColumnInBoard(ctx.workspacePath, slug, col.id, { order: extra++ });
           }
         }
       } else {
         return jsonResponse(400, { error: `Unknown action: ${String(action)}` });
       }
 
-      // Reload columns after mutation to get fresh state
-      const updatedColumns = listColumnFiles(ctx.workspacePath, slug);
-      const snapshot = buildBoardSnapshot(
-        ctx.workspacePath,
-        sidecar,
-        updatedColumns.length > 0 ? updatedColumns : defaultColumnFiles(scope_id)
-      );
+      // Reload after mutation
+      const updatedColumns = listColumnsFromBoard(ctx.workspacePath, slug);
+      const effectiveColumns = updatedColumns.length > 0 ? updatedColumns : defaultColumnFiles(scope_id);
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, effectiveColumns);
       return jsonResponse(200, {
         ok: true,
-        board: {
-          ...snapshot,
-          initialized: sidecarExists(ctx.workspacePath, scope_id),
-        },
+        board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) },
       });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
@@ -373,7 +331,6 @@ function handlePostColumns(
 
 // ---------------------------------------------------------------------------
 // GET /column/instructions?scope_id=<id>&column_id=<id>
-// Returns the instructions body of a column definition file.
 // ---------------------------------------------------------------------------
 
 function handleGetColumnInstructions(
@@ -381,26 +338,17 @@ function handleGetColumnInstructions(
 ): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
     const { scope_id, column_id } = req.query;
-    if (!scope_id || !column_id) {
-      return jsonResponse(400, {
-        error: "scope_id and column_id query parameters required",
-      });
-    }
+    if (!scope_id || !column_id)
+      return jsonResponse(400, { error: "scope_id and column_id query parameters required" });
     try {
       const slug = slugify(scope_id);
-      const col = readColumnFile(workspacePath, slug, column_id);
-      if (!col) {
+      const col = readColumnFromBoard(workspacePath, slug, column_id);
+      if (!col)
         return jsonResponse(404, {
-          error: "column_not_found",
-          column_id,
-          note: "Column file does not exist. Initialize the board first.",
+          error: "column_not_found", column_id,
+          note: "Column does not exist. Initialize the board first.",
         });
-      }
-      return jsonResponse(200, {
-        column_id: col.id,
-        column_name: col.name,
-        instructions: col.instructions,
-      });
+      return jsonResponse(200, { column_id: col.id, column_name: col.name, instructions: col.instructions });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -409,69 +357,45 @@ function handleGetColumnInstructions(
 
 // ---------------------------------------------------------------------------
 // POST /column/instructions  { scope_id, column_id, instructions }
-// Saves the instructions body of a column definition file.
-// The file body IS the instructions — this is the committed source of truth.
 // ---------------------------------------------------------------------------
 
 function handlePostColumnInstructions(
   workspacePath: string
 ): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
-    const body = (req.body ?? {}) as {
-      scope_id?: string;
-      column_id?: string;
-      instructions?: string;
-    };
+    const body = (req.body ?? {}) as { scope_id?: string; column_id?: string; instructions?: string };
     const { scope_id, column_id, instructions } = body;
-    if (!scope_id || !column_id || instructions === undefined) {
-      return jsonResponse(400, {
-        error: "scope_id, column_id, and instructions required",
-      });
-    }
+    if (!scope_id || !column_id || instructions === undefined)
+      return jsonResponse(400, { error: "scope_id, column_id, and instructions required" });
     try {
       const slug = slugify(scope_id);
 
-      // Issue #3 fix: if the column file doesn't exist yet (board using default
-      // in-memory columns, never persisted), auto-create the default column files
-      // so the instructions can be saved without a separate board-init step.
-      let existing = readColumnFile(workspacePath, slug, column_id);
+      // Auto-create board with defaults if absent (Issue #3 fix equivalent)
+      let existing = readColumnFromBoard(workspacePath, slug, column_id);
       if (!existing) {
         const defaults = defaultColumnFiles(scope_id);
         const defaultCol = defaults.find((c) => c.id === column_id);
-        if (!defaultCol) {
+        if (!defaultCol)
           return jsonResponse(404, {
-            error: "column_not_found",
-            column_id,
-            note: "Column does not exist and is not a known default. Initialize the board first.",
+            error: "column_not_found", column_id,
+            note: "Column does not exist and is not a known default.",
           });
-        }
-        // Persist all default column files so the board is now on disk.
-        for (const dc of defaults) {
-          writeColumnFile(workspacePath, slug, dc);
+        // Bootstrap board file with default columns
+        const bf = readBoardFile(workspacePath, slug);
+        if (!bf) {
+          writeBoardFile(workspacePath, slug, {
+            scope_id, done_protocol: "", columns: defaults,
+          });
+        } else {
+          for (const dc of defaults) writeColumnToBoard(workspacePath, slug, dc);
         }
         existing = defaultCol;
       }
 
-      const updated = updateColumnFileInstructions(
-        workspacePath,
-        slug,
-        column_id,
-        instructions
-      );
-      if (!updated) {
-        // Shouldn't happen after the ensure-defaults above, but guard defensively.
-        return jsonResponse(404, {
-          error: "column_not_found",
-          column_id,
-          note: "Column file does not exist. Initialize the board first.",
-        });
-      }
-      return jsonResponse(200, {
-        ok: true,
-        column_id: updated.id,
-        column_name: updated.name,
-        instructions: updated.instructions,
-      });
+      const updated = updateColumnInstructions(workspacePath, slug, column_id, instructions);
+      if (!updated)
+        return jsonResponse(404, { error: "column_not_found", column_id });
+      return jsonResponse(200, { ok: true, column_id: updated.id, column_name: updated.name, instructions: updated.instructions });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -480,7 +404,6 @@ function handlePostColumnInstructions(
 
 // ---------------------------------------------------------------------------
 // GET /board/instructions?scope_id=<id>
-// Returns the board's done protocol body from board.md.
 // ---------------------------------------------------------------------------
 
 function handleGetBoardInstructions(
@@ -488,18 +411,11 @@ function handleGetBoardInstructions(
 ): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
     const { scope_id } = req.query;
-    if (!scope_id) {
-      return jsonResponse(400, {
-        error: "scope_id query parameter required",
-      });
-    }
+    if (!scope_id) return jsonResponse(400, { error: "scope_id query parameter required" });
     try {
       const slug = slugify(scope_id);
       const bf = readBoardFile(workspacePath, slug);
-      return jsonResponse(200, {
-        scope_id,
-        done_protocol: bf?.done_protocol ?? "",
-      });
+      return jsonResponse(200, { scope_id, done_protocol: bf?.done_protocol ?? "" });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -508,37 +424,20 @@ function handleGetBoardInstructions(
 
 // ---------------------------------------------------------------------------
 // POST /board/instructions  { scope_id, done_protocol }
-// Saves the done protocol body of board.md.
-// The file body IS the done protocol — this is the committed source of truth.
 // ---------------------------------------------------------------------------
 
 function handlePostBoardInstructions(
   workspacePath: string
 ): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
-    const body = (req.body ?? {}) as {
-      scope_id?: string;
-      done_protocol?: string;
-    };
+    const body = (req.body ?? {}) as { scope_id?: string; done_protocol?: string };
     const { scope_id, done_protocol } = body;
-    if (!scope_id || done_protocol === undefined) {
-      return jsonResponse(400, {
-        error: "scope_id and done_protocol required",
-      });
-    }
+    if (!scope_id || done_protocol === undefined)
+      return jsonResponse(400, { error: "scope_id and done_protocol required" });
     try {
       const slug = slugify(scope_id);
-      const updated = updateBoardFileProtocol(
-        workspacePath,
-        slug,
-        scope_id,
-        done_protocol
-      );
-      return jsonResponse(200, {
-        ok: true,
-        scope_id: updated.scope_id,
-        done_protocol: updated.done_protocol,
-      });
+      const updated = updateBoardFileProtocol(workspacePath, slug, scope_id, done_protocol);
+      return jsonResponse(200, { ok: true, scope_id: updated.scope_id, done_protocol: updated.done_protocol });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -547,31 +446,18 @@ function handlePostBoardInstructions(
 
 // ---------------------------------------------------------------------------
 // POST /card  { scope_id, title, column_id?, description? }
-// Creates a card as a markdown file at tasks/<id>.md and a bus context.
 // ---------------------------------------------------------------------------
 
-function handlePostCard(
-  ctx: ExtensionContext
-): (req: RelayRequest) => Promise<RelayResponse> {
+function handlePostCard(ctx: ExtensionContext): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
-    const body = (req.body ?? {}) as {
-      scope_id?: string;
-      title?: string;
-      column_id?: string;
-      description?: string;
-    };
-
+    const body = (req.body ?? {}) as { scope_id?: string; title?: string; column_id?: string; description?: string };
     const { scope_id, title, column_id, description } = body;
     if (!scope_id) return jsonResponse(400, { error: "scope_id required" });
     if (!title?.trim()) return jsonResponse(400, { error: "title required" });
 
     try {
       const slug = slugify(scope_id);
-      let columns = listColumnFiles(ctx.workspacePath, slug);
-      if (columns.length === 0) {
-        columns = defaultColumnFiles(scope_id);
-        for (const col of columns) writeColumnFile(ctx.workspacePath, slug, col);
-      }
+      const { columns } = loadColumns(ctx.workspacePath, slug, scope_id);
 
       const sidecar = loadSidecar(ctx.workspacePath, scope_id);
       if (!sidecar.workspace_id) sidecar.workspace_id = ctx.workspaceId;
@@ -580,35 +466,22 @@ function handlePostCard(
       if (!targetColId) return jsonResponse(400, { error: "Board has no columns" });
       const targetCol = columns.find((c) => c.id === targetColId);
       if (!targetCol)
-        return jsonResponse(404, {
-          error: "column_not_found",
-          column_id: targetColId,
-        });
+        return jsonResponse(404, { error: "column_not_found", column_id: targetColId });
 
       // WIP limit check
       if (targetCol.wip_limit !== null) {
-        const counts = cardCountsByColumnFromFiles(ctx.workspacePath, [
-          targetColId,
-        ]);
+        const counts = cardCountsByColumnFromFiles(ctx.workspacePath, [targetColId]);
         const currentCount = counts[targetColId] ?? 0;
-        if (currentCount >= targetCol.wip_limit) {
-          return jsonResponse(422, {
-            ok: false,
-            error: "wip_limit_exceeded",
-            current: currentCount,
-            limit: targetCol.wip_limit,
-          });
-        }
+        if (currentCount >= targetCol.wip_limit)
+          return jsonResponse(422, { ok: false, error: "wip_limit_exceeded", current: currentCount, limit: targetCol.wip_limit });
       }
 
-      // Compute order (count of existing cards in target column)
       const allCards = listCards(ctx.workspacePath);
       const order = allCards.filter((c) => c.column === targetColId).length;
       const cardId = generateCardId(title.trim());
-
-      // Create card bus context — operator is creator for UI-initiated creates.
       const operatorEp = operatorEndpointId(ctx.workspaceId);
       const bus = asBusClient(ctx.busClient);
+
       const context_id = await createCardContext({
         workspaceId: ctx.workspaceId,
         scope_id,
@@ -617,25 +490,16 @@ function handlePostCard(
         bus,
       });
 
-      // Write card file (with context_id in frontmatter).
       writeCard(ctx.workspacePath, {
-        id: cardId,
-        title: title.trim(),
-        type: "task",
-        actor: null,
-        column: targetColId,
-        order,
-        created_at: new Date().toISOString(),
-        context_id,
-        checks: {},
-        body: description?.trim() ?? "",
+        id: cardId, title: title.trim(), type: "task", actor: null,
+        column: targetColId, order, created_at: new Date().toISOString(),
+        context_id, checks: {}, body: description?.trim() ?? "",
       });
 
-      // Apply destination column's actor assignments (idempotent; no-op if no actors).
       await applyColumnAssignment({
         cardContextId: context_id,
         destAssignedActors: targetCol.assigned_actors,
-        priorAssignedActors: [], // no prior column on create
+        priorAssignedActors: [],
         actingActorEp: operatorEp,
         workspaceId: ctx.workspaceId,
         scope_id,
@@ -649,13 +513,8 @@ function handlePostCard(
 
       const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
       return jsonResponse(201, {
-        ok: true,
-        card_id: cardId,
-        context_id,
-        board: {
-          ...snapshot,
-          initialized: sidecarExists(ctx.workspacePath, scope_id),
-        },
+        ok: true, card_id: cardId, context_id,
+        board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) },
       });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
@@ -667,42 +526,23 @@ function handlePostCard(
 // POST /card/delete  { scope_id, card_id }
 // ---------------------------------------------------------------------------
 
-function handlePostCardDelete(
-  ctx: ExtensionContext
-): (req: RelayRequest) => Promise<RelayResponse> {
+function handlePostCardDelete(ctx: ExtensionContext): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
     const body = (req.body ?? {}) as { scope_id?: string; card_id?: string };
     const { scope_id, card_id } = body;
-    if (!scope_id || !card_id) {
+    if (!scope_id || !card_id)
       return jsonResponse(400, { error: "scope_id and card_id required" });
-    }
-
     try {
       const card = readCard(ctx.workspacePath, card_id);
-      if (!card) {
-        return jsonResponse(404, { error: "card_not_found", card_id });
-      }
-      try {
-        rmSync(cardPath(ctx.workspacePath, card_id));
-      } catch (err) {
+      if (!card) return jsonResponse(404, { error: "card_not_found", card_id });
+      try { rmSync(cardPath(ctx.workspacePath, card_id)); } catch (err) {
         return jsonResponse(500, { error: `Failed to delete card file: ${err}` });
       }
-
       const slug = slugify(scope_id);
-      const columns = listColumnFiles(ctx.workspacePath, slug);
+      const { columns } = loadColumns(ctx.workspacePath, slug, scope_id);
       const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      const snapshot = buildBoardSnapshot(
-        ctx.workspacePath,
-        sidecar,
-        columns.length > 0 ? columns : defaultColumnFiles(scope_id)
-      );
-      return jsonResponse(200, {
-        ok: true,
-        board: {
-          ...snapshot,
-          initialized: sidecarExists(ctx.workspacePath, scope_id),
-        },
-      });
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
+      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) } });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -713,43 +553,21 @@ function handlePostCardDelete(
 // POST /card/rename  { scope_id, card_id, title }
 // ---------------------------------------------------------------------------
 
-function handlePostCardRename(
-  ctx: ExtensionContext
-): (req: RelayRequest) => Promise<RelayResponse> {
+function handlePostCardRename(ctx: ExtensionContext): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
-    const body = (req.body ?? {}) as {
-      scope_id?: string;
-      card_id?: string;
-      title?: string;
-    };
+    const body = (req.body ?? {}) as { scope_id?: string; card_id?: string; title?: string };
     const { scope_id, card_id, title } = body;
-    if (!scope_id || !card_id || !title?.trim()) {
-      return jsonResponse(400, {
-        error: "scope_id, card_id, title required",
-      });
-    }
-
+    if (!scope_id || !card_id || !title?.trim())
+      return jsonResponse(400, { error: "scope_id, card_id, title required" });
     try {
       const card = readCard(ctx.workspacePath, card_id);
       if (!card) return jsonResponse(404, { error: "card_not_found", card_id });
-      updateCardFrontmatter(ctx.workspacePath, card_id, {
-        title: title.trim(),
-      });
+      updateCardFrontmatter(ctx.workspacePath, card_id, { title: title.trim() });
       const slug = slugify(scope_id);
-      const columns = listColumnFiles(ctx.workspacePath, slug);
+      const { columns } = loadColumns(ctx.workspacePath, slug, scope_id);
       const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      const snapshot = buildBoardSnapshot(
-        ctx.workspacePath,
-        sidecar,
-        columns.length > 0 ? columns : defaultColumnFiles(scope_id)
-      );
-      return jsonResponse(200, {
-        ok: true,
-        board: {
-          ...snapshot,
-          initialized: sidecarExists(ctx.workspacePath, scope_id),
-        },
-      });
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
+      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) } });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -760,65 +578,32 @@ function handlePostCardRename(
 // POST /card/criteria  { scope_id, card_id, column_id, criterion_id, checked }
 // ---------------------------------------------------------------------------
 
-function handlePostCardCriteria(
-  ctx: ExtensionContext
-): (req: RelayRequest) => Promise<RelayResponse> {
+function handlePostCardCriteria(ctx: ExtensionContext): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
     const body = (req.body ?? {}) as {
-      scope_id?: string;
-      card_id?: string;
-      column_id?: string;
-      criterion_id?: string;
-      checked?: boolean;
+      scope_id?: string; card_id?: string; column_id?: string;
+      criterion_id?: string; checked?: boolean;
     };
     const { scope_id, card_id, column_id, criterion_id, checked } = body;
-    if (
-      !scope_id ||
-      !card_id ||
-      !column_id ||
-      !criterion_id ||
-      checked === undefined
-    ) {
-      return jsonResponse(400, {
-        error: "scope_id, card_id, column_id, criterion_id, checked required",
-      });
-    }
-
+    if (!scope_id || !card_id || !column_id || !criterion_id || checked === undefined)
+      return jsonResponse(400, { error: "scope_id, card_id, column_id, criterion_id, checked required" });
     try {
       const card = readCard(ctx.workspacePath, card_id);
       if (!card) return jsonResponse(404, { error: "card_not_found", card_id });
-
-      const updatedChecks = {
-        ...card.checks,
-        [column_id]: {
-          ...(card.checks[column_id] ?? {}),
-          [criterion_id]: {
-            checked,
-            checked_at: checked ? new Date().toISOString() : null,
-            checked_by: "human",
-            note: null,
+      updateCardFrontmatter(ctx.workspacePath, card_id, {
+        checks: {
+          ...card.checks,
+          [column_id]: {
+            ...(card.checks[column_id] ?? {}),
+            [criterion_id]: { checked, checked_at: checked ? new Date().toISOString() : null, checked_by: "human", note: null },
           },
         },
-      };
-      updateCardFrontmatter(ctx.workspacePath, card_id, {
-        checks: updatedChecks,
       });
-
       const slug = slugify(scope_id);
-      const columns = listColumnFiles(ctx.workspacePath, slug);
+      const { columns } = loadColumns(ctx.workspacePath, slug, scope_id);
       const sidecar = loadSidecar(ctx.workspacePath, scope_id);
-      const snapshot = buildBoardSnapshot(
-        ctx.workspacePath,
-        sidecar,
-        columns.length > 0 ? columns : defaultColumnFiles(scope_id)
-      );
-      return jsonResponse(200, {
-        ok: true,
-        board: {
-          ...snapshot,
-          initialized: sidecarExists(ctx.workspacePath, scope_id),
-        },
-      });
+      const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
+      return jsonResponse(200, { ok: true, board: { ...snapshot, initialized: sidecarExists(ctx.workspacePath, scope_id) } });
     } catch (err) {
       return jsonResponse(500, { error: String(err) });
     }
@@ -829,175 +614,93 @@ function handlePostCardCriteria(
 // POST /move  { card_id, to_column_id, scope_id, force? }
 // ---------------------------------------------------------------------------
 
-function handlePostMove(
-  ctx: ExtensionContext
-): (req: RelayRequest) => Promise<RelayResponse> {
+function handlePostMove(ctx: ExtensionContext): (req: RelayRequest) => Promise<RelayResponse> {
   return async (req) => {
     let body: Record<string, unknown>;
-    try {
-      body = (req.body ?? {}) as Record<string, unknown>;
-    } catch {
+    try { body = (req.body ?? {}) as Record<string, unknown>; } catch {
       return jsonResponse(400, { error: "Invalid JSON body" });
     }
-
     const { card_id, to_column_id, scope_id, force } = body as {
-      card_id?: string;
-      to_column_id?: string;
-      scope_id?: string;
-      force?: boolean;
+      card_id?: string; to_column_id?: string; scope_id?: string; force?: boolean;
     };
-
-    if (!card_id || !to_column_id || !scope_id) {
-      return jsonResponse(400, {
-        error: "card_id, to_column_id, and scope_id are required",
-      });
-    }
+    if (!card_id || !to_column_id || !scope_id)
+      return jsonResponse(400, { error: "card_id, to_column_id, and scope_id are required" });
 
     const { workspacePath, workspaceId } = ctx;
     const slug = slugify(scope_id);
-    const columns = listColumnFiles(workspacePath, slug);
-    const effectiveColumns =
-      columns.length > 0 ? columns : defaultColumnFiles(scope_id);
+    const { columns: effectiveColumns } = loadColumns(workspacePath, slug, scope_id);
     const sidecar = loadSidecar(workspacePath, scope_id);
 
     const card = readCard(workspacePath, card_id);
-    if (!card) {
-      return jsonResponse(404, { error: "card_not_found", card_id });
-    }
+    if (!card) return jsonResponse(404, { error: "card_not_found", card_id });
 
     const fromColumn = effectiveColumns.find((c) => c.id === card.column);
     const toColumn = effectiveColumns.find((c) => c.id === to_column_id);
-    if (!toColumn) {
-      return jsonResponse(404, { error: "column_not_found", to_column_id });
-    }
+    if (!toColumn) return jsonResponse(404, { error: "column_not_found", to_column_id });
+    if (card.column === to_column_id)
+      return jsonResponse(422, { ok: false, error: "already_in_column", card_id, column_id: to_column_id });
 
-    if (card.column === to_column_id) {
-      return jsonResponse(422, {
-        ok: false,
-        error: "already_in_column",
-        card_id,
-        column_id: to_column_id,
-      });
-    }
-
-    // Exit criteria gate (soft for human-initiated force=true)
+    // Exit criteria gate
     const exitCriteria = fromColumn?.exit_criteria ?? [];
     const unchecked = getUncheckedCriteria(card, card.column, exitCriteria);
-    if (unchecked.length > 0 && !force) {
+    if (unchecked.length > 0 && !force)
       return jsonResponse(422, {
-        ok: false,
-        error: "gate_blocked",
-        message:
-          "Exit criteria not satisfied. Pass force=true to override (human only).",
+        ok: false, error: "gate_blocked",
+        message: "Exit criteria not satisfied. Pass force=true to override (human only).",
         unchecked_criteria: unchecked,
       });
-    }
 
     // WIP limit check
     if (toColumn.wip_limit !== null) {
       const counts = cardCountsByColumnFromFiles(workspacePath, [to_column_id]);
       const current = counts[to_column_id] ?? 0;
-      if (current >= toColumn.wip_limit) {
-        return jsonResponse(422, {
-          ok: false,
-          error: "wip_limit_exceeded",
-          current,
-          limit: toColumn.wip_limit,
-        });
-      }
+      if (current >= toColumn.wip_limit)
+        return jsonResponse(422, { ok: false, error: "wip_limit_exceeded", current, limit: toColumn.wip_limit });
     }
 
-    // Perform move
     const previousColumnId = card.column;
     const previousColumnName = fromColumn?.name ?? previousColumnId;
-    const newOrder = listCards(workspacePath).filter(
-      (c) => c.column === to_column_id
-    ).length;
-
-    updateCardFrontmatter(workspacePath, card_id, {
-      column: to_column_id,
-      order: newOrder,
-    });
+    const newOrder = listCards(workspacePath).filter((c) => c.column === to_column_id).length;
+    updateCardFrontmatter(workspacePath, card_id, { column: to_column_id, order: newOrder });
     appendCarryForward(workspacePath, card_id, previousColumnName);
 
-    // Lazy card context creation for legacy cards (created before Slice 4).
     const bus = asBusClient(ctx.busClient);
     const operatorEp = operatorEndpointId(workspaceId);
     let cardContextId = card.context_id;
     if (!cardContextId) {
-      cardContextId = await createCardContext({
-        workspaceId,
-        scope_id,
-        cardTitle: card.title,
-        creatorEp: operatorEp,
-        bus,
-      });
-      if (cardContextId) {
-        updateCardFrontmatter(workspacePath, card_id, { context_id: cardContextId });
-      }
+      cardContextId = await createCardContext({ workspaceId, scope_id, cardTitle: card.title, creatorEp: operatorEp, bus });
+      if (cardContextId) updateCardFrontmatter(workspacePath, card_id, { context_id: cardContextId });
     }
 
-    // Apply column assignment: add new actors, demote prior actors, emit entered_column.
-    // UI-initiated move: acting actor = operator.
     await applyColumnAssignment({
-      cardContextId,
-      destAssignedActors: toColumn.assigned_actors,
+      cardContextId, destAssignedActors: toColumn.assigned_actors,
       priorAssignedActors: fromColumn?.assigned_actors ?? [],
-      actingActorEp: operatorEp,
-      workspaceId,
-      scope_id,
-      cardId: card_id,
-      cardTitle: card.title,
-      toColumnId: to_column_id,
-      toColumnName: toColumn.name,
-      fromColumnId: previousColumnId,
+      actingActorEp: operatorEp, workspaceId, scope_id,
+      cardId: card_id, cardTitle: card.title,
+      toColumnId: to_column_id, toColumnName: toColumn.name, fromColumnId: previousColumnId,
       bus,
     });
 
-    return jsonResponse(200, {
-      ok: true,
-      card_id,
-      from_column_id: previousColumnId,
-      to_column_id,
-      forced: Boolean(force),
-    });
+    return jsonResponse(200, { ok: true, card_id, from_column_id: previousColumnId, to_column_id, forced: Boolean(force) });
   };
 }
 
 // ---------------------------------------------------------------------------
-// Register all handlers with the extension relay
+// Register all handlers
 // ---------------------------------------------------------------------------
 
 export function registerHttpHandlers(ctx: ExtensionContext): void {
   ctx.registerHttpHandler("GET", "/board", handleGetBoard(ctx.workspacePath));
   ctx.registerHttpHandler("POST", "/board/init", handlePostBoardInit(ctx));
   ctx.registerHttpHandler("POST", "/columns", handlePostColumns(ctx));
-  ctx.registerHttpHandler(
-    "GET",
-    "/column/instructions",
-    handleGetColumnInstructions(ctx.workspacePath)
-  );
-  ctx.registerHttpHandler(
-    "POST",
-    "/column/instructions",
-    handlePostColumnInstructions(ctx.workspacePath)
-  );
-  ctx.registerHttpHandler(
-    "GET",
-    "/board/instructions",
-    handleGetBoardInstructions(ctx.workspacePath)
-  );
-  ctx.registerHttpHandler(
-    "POST",
-    "/board/instructions",
-    handlePostBoardInstructions(ctx.workspacePath)
-  );
+  ctx.registerHttpHandler("GET", "/column/instructions", handleGetColumnInstructions(ctx.workspacePath));
+  ctx.registerHttpHandler("POST", "/column/instructions", handlePostColumnInstructions(ctx.workspacePath));
+  ctx.registerHttpHandler("GET", "/board/instructions", handleGetBoardInstructions(ctx.workspacePath));
+  ctx.registerHttpHandler("POST", "/board/instructions", handlePostBoardInstructions(ctx.workspacePath));
   ctx.registerHttpHandler("POST", "/card", handlePostCard(ctx));
   ctx.registerHttpHandler("POST", "/card/delete", handlePostCardDelete(ctx));
   ctx.registerHttpHandler("POST", "/card/rename", handlePostCardRename(ctx));
   ctx.registerHttpHandler("POST", "/card/criteria", handlePostCardCriteria(ctx));
   ctx.registerHttpHandler("POST", "/move", handlePostMove(ctx));
-  console.info(
-    "[snowball] HTTP handlers registered: GET /board, POST /board/init, POST /columns, GET /column/instructions, POST /column/instructions, GET /board/instructions, POST /board/instructions, POST /card, POST /card/delete, POST /card/rename, POST /card/criteria, POST /move"
-  );
+  console.info("[snowball] HTTP handlers registered: GET /board, POST /board/init, POST /columns, GET /column/instructions, POST /column/instructions, GET /board/instructions, POST /board/instructions, POST /card, POST /card/delete, POST /card/rename, POST /card/criteria, POST /move");
 }
