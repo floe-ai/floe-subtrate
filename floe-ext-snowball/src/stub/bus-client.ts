@@ -96,6 +96,48 @@ export interface BusClient {
    * Used to resolve agent_id → endpoint_id for routing events.
    */
   listEndpoints(workspaceId: string): Promise<EndpointRef[]>;
+
+  /**
+   * Add an endpoint as a participant in a context (idempotent).
+   * Returns whether the participant was newly added.
+   */
+  addParticipant(contextId: string, endpointId: string): Promise<{ added: boolean }>;
+
+  /**
+   * Remove an endpoint from a context's participant list (idempotent).
+   * Returns whether the participant was removed.
+   */
+  removeParticipant(contextId: string, endpointId: string): Promise<{ removed: boolean }>;
+
+  /**
+   * Subscribe an endpoint to event types in a context (UPSERT, idempotent).
+   * eventTypes defaults to ["*"] (all events).
+   * Pass [] to create a silent watcher — still a participant, never woken.
+   */
+  subscribeToContext(
+    contextId: string,
+    endpointId: string,
+    eventTypes?: string[]
+  ): Promise<void>;
+
+  /**
+   * Remove an endpoint's subscription from a context entirely.
+   * Does NOT remove the endpoint from participants.
+   */
+  unsubscribeFromContext(contextId: string, endpointId: string): Promise<void>;
+
+  /**
+   * List all subscriptions for a context.
+   */
+  listContextSubscriptions(
+    contextId: string
+  ): Promise<Array<{ endpoint_id: string; event_types: string[]; subscribed_at: string }>>;
+
+  /**
+   * List child contexts whose parent_context_id equals contextId.
+   * Used for epic→card links.
+   */
+  listChildContexts(contextId: string): Promise<ContextRef[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +193,74 @@ export class StubBusClient implements BusClient {
   async listEndpoints(workspaceId: string): Promise<EndpointRef[]> {
     return this.endpoints.filter((e) => e.endpoint_id.startsWith(`actor:${workspaceId}:`) || e.workspace_id === workspaceId);
   }
+
+  async addParticipant(
+    contextId: string,
+    endpointId: string
+  ): Promise<{ added: boolean }> {
+    const ctx = this.contexts.find((c) => c.context_id === contextId);
+    if (ctx && !ctx.participants.includes(endpointId)) {
+      ctx.participants.push(endpointId);
+      return { added: true };
+    }
+    return { added: false };
+  }
+
+  async removeParticipant(
+    contextId: string,
+    endpointId: string
+  ): Promise<{ removed: boolean }> {
+    const ctx = this.contexts.find((c) => c.context_id === contextId);
+    if (!ctx) return { removed: false };
+    const idx = ctx.participants.indexOf(endpointId);
+    if (idx === -1) return { removed: false };
+    ctx.participants.splice(idx, 1);
+    return { removed: true };
+  }
+
+  async subscribeToContext(
+    contextId: string,
+    endpointId: string,
+    eventTypes: string[] = ["*"]
+  ): Promise<void> {
+    this._subscriptions ??= new Map();
+    this._subscriptions.set(`${contextId}::${endpointId}`, eventTypes);
+  }
+
+  async unsubscribeFromContext(
+    contextId: string,
+    endpointId: string
+  ): Promise<void> {
+    this._subscriptions?.delete(`${contextId}::${endpointId}`);
+  }
+
+  async listContextSubscriptions(
+    contextId: string
+  ): Promise<Array<{ endpoint_id: string; event_types: string[]; subscribed_at: string }>> {
+    if (!this._subscriptions) return [];
+    const result: Array<{ endpoint_id: string; event_types: string[]; subscribed_at: string }> = [];
+    const prefix = `${contextId}::`;
+    for (const [key, eventTypes] of this._subscriptions.entries()) {
+      if (key.startsWith(prefix)) {
+        const endpointId = key.slice(prefix.length);
+        result.push({ endpoint_id: endpointId, event_types: eventTypes, subscribed_at: new Date().toISOString() });
+      }
+    }
+    return result;
+  }
+
+  async listChildContexts(contextId: string): Promise<ContextRef[]> {
+    return this._childContexts?.get(contextId) ?? [];
+  }
+
+  /** Subscription state keyed by "contextId::endpointId" — accessible in tests. */
+  public _subscriptions?: Map<string, string[]>;
+
+  /**
+   * Seed child-context relationships for test assertions.
+   * Key = parent context_id, value = array of child ContextRef.
+   */
+  public _childContexts?: Map<string, ContextRef[]>;
 }
 
 /**
