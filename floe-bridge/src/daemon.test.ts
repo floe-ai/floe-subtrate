@@ -488,3 +488,110 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ungating: every agent gets all workspace-loaded extension tools
+// ---------------------------------------------------------------------------
+
+describe("BridgeDaemon – extension tool ungating", () => {
+  it("passes all workspace extension tools to an agent with frontmatter extensions: []", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+
+      const capturedBundles: any[] = [];
+
+      // A mock adapter that captures the bundle context passed to handleBundle
+      (daemon as any).adapter = {
+        name: "test-capture-adapter",
+        async handleBundle(context: any) {
+          capturedBundles.push(context);
+        }
+      };
+
+      // Simulate a workspace that has loaded one extension with two tools
+      const mockExtension = {
+        name: "snowball",
+        errors: [],
+        tools: [
+          { name: "snowball_check_criteria", description: "check", parameters: {} },
+          { name: "snowball_move_card", description: "move", parameters: {} }
+        ],
+        pulses: [],
+        bundledAgents: [],
+        views: [],
+        httpHandlers: []
+      };
+      (daemon as any).workspaceExtensions.set("workspace:test", [mockExtension]);
+
+      // Register a column-worker agent whose frontmatter had extensions: [] (no extensions)
+      // After the ungating fix, EndpointEntry has no extensions field at all.
+      (daemon as any).endpointRuntime.set("actor:workspace:test:floe", {
+        config: { auth_profile: "test-profile", provider: "anthropic", model: "claude-haiku-4-5" },
+        instructions: "",
+        workspace_locator: undefined,
+        agent_id: "floe"
+      });
+
+      (daemon as any).bus = {
+        async emit() {},
+        async reportDeliveryStatus() {},
+        async reportTurnEnd() {},
+        async updateEndpointStatus() {},
+        async appendRuntimeTelemetry() {},
+        async resolveRuntimeBinding() {
+          return {
+            endpoint_auth_profile: "test-profile",
+            workspace_auth_profile: null,
+            global_auth_profile: null,
+            endpoint_model: null,
+            workspace_model: null,
+            global_model: null,
+            endpoint_thinking_level: null,
+            workspace_thinking_level: null,
+            global_thinking_level: null
+          };
+        }
+      };
+
+      const delivery = {
+        delivery_id: "del-ungate-1",
+        endpoint_id: "actor:workspace:test:floe",
+        workspace_id: "workspace:test",
+        trigger_event_id: "evt:del-ungate-1",
+        delivered_at: new Date().toISOString(),
+        events: [
+          {
+            event_id: "evt:del-ungate-1",
+            type: "message",
+            workspace_id: "workspace:test",
+            source_endpoint_id: "actor:workspace:test:operator",
+            thread_id: "thread:test:1",
+            context_id: "ctx:test:1",
+            correlation_id: null,
+            destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
+            content: { text: "do the task" },
+            response: { expected: false },
+            metadata: {},
+            created_at: new Date().toISOString()
+          }
+        ]
+      };
+
+      await (daemon as any).handleDelivery(delivery);
+
+      // The adapter must have been called with the workspace extension — not an empty list
+      expect(capturedBundles).toHaveLength(1);
+      const passedExtensions = capturedBundles[0].extensions;
+      expect(passedExtensions).toHaveLength(1);
+      expect(passedExtensions[0].name).toBe("snowball");
+      expect(passedExtensions[0].tools).toHaveLength(2);
+      expect(passedExtensions[0].tools.map((t: any) => t.name)).toContain("snowball_check_criteria");
+      expect(passedExtensions[0].tools.map((t: any) => t.name)).toContain("snowball_move_card");
+    } finally {
+      made.cleanup();
+    }
+  });
+});

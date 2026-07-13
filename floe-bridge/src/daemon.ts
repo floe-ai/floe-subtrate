@@ -27,7 +27,6 @@ type EndpointEntry = {
   instructions: string;
   workspace_locator?: string;
   agent_id?: string;
-  extensions?: string[];
 };
 
 export class BridgeDaemon {
@@ -287,7 +286,7 @@ export class BridgeDaemon {
       for (const agent of project.agents) {
         const endpointId = actorEndpointId(workspace.workspace_id, agent.agent_id);
         const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
-        this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body, workspace_locator: locator, agent_id: agent.agent_id, extensions: agent.extensions });
+        this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body, workspace_locator: locator, agent_id: agent.agent_id });
         const resolvedAuth = await this.resolveAuthProfile(workspace.workspace_id, endpointId, runtimeConfig);
         await this.bus.registerEndpoint({
           endpoint_id: endpointId,
@@ -356,7 +355,6 @@ export class BridgeDaemon {
               instructions: agent.body,
               workspace_locator: locator,
               agent_id: agent.agent_id,
-              extensions: agent.extensions ?? [ext.name]
             });
             const resolvedAuth = await this.resolveAuthProfile(workspace.workspace_id, endpointId, runtimeConfig);
             await this.bus.registerEndpoint({
@@ -371,7 +369,7 @@ export class BridgeDaemon {
                 runtime_adapter: this.adapter.name,
                 frontmatter: {
                   runtime: agent.runtime ?? { engine: "pi" },
-                  extensions: agent.extensions ?? [ext.name],
+
                   pulse: agent.pulse ?? { inherit: true }
                 },
                 runtime_auth_profile: resolvedAuth.auth_profile ?? null,
@@ -515,7 +513,7 @@ export class BridgeDaemon {
     for (const agent of project.agents) {
       const endpointId = actorEndpointId(workspaceId, agent.agent_id);
       const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
-      this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body, workspace_locator: locator, agent_id: agent.agent_id, extensions: agent.extensions });
+      this.endpointRuntime.set(endpointId, { config: runtimeConfig, instructions: agent.body, workspace_locator: locator, agent_id: agent.agent_id });
       const resolvedAuth = await this.resolveAuthProfile(workspaceId, endpointId, runtimeConfig);
       await this.bus.registerEndpoint({
         endpoint_id: endpointId,
@@ -597,10 +595,9 @@ export class BridgeDaemon {
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "injected_to_runtime");
       console.log("[bridge] delivery injected to runtime", { delivery_id: delivery.delivery_id, adapter: this.adapter.name });
 
-      // Resolve extension tools for this agent
-      const agentExtensionNames = endpointEntry?.extensions ?? [];
+      // Resolve extension tools for this agent — all workspace extensions reach every agent (no permission model)
       const workspaceExts = this.workspaceExtensions.get(delivery.workspace_id) ?? [];
-      const agentExtensions = workspaceExts.filter(ext => agentExtensionNames.includes(ext.name) && ext.errors.length === 0);
+      const agentExtensions = workspaceExts.filter(ext => ext.errors.length === 0);
 
       const hookRegistry = this.workspaceHooks.get(delivery.workspace_id);
 
