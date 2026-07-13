@@ -254,15 +254,22 @@ function parseAgentFile(content: string): { frontmatter: Record<string, unknown>
   };
 }
 
+/**
+ * Compute a config hash over DECLARED CONFIG FILES ONLY — an explicit allow-list.
+ *
+ * Included:
+ *   floe.yaml                         workspace manifest
+ *   agents/**\/\*.md                   agent definition files (any depth)
+ *   extensions\/**\/extension.json    extension manifests (not extension data)
+ *
+ * Everything else is excluded: extension runtime data (boards, cards, …),
+ * state, worklogs, skills, mcp, README files, etc.  A new file type can only
+ * contribute to the hash if it is explicitly listed here — no accidental
+ * hash pollution from extension data writes.
+ */
 function hashFloeDir(floeDir: string): string {
   const hash = createHash("sha256");
-  const files = listFiles(floeDir).filter((file) => {
-    const rel = relative(floeDir, file).replace(/\\/g, "/");
-    if (rel.startsWith("state/") && rel !== "state/README.md" && rel !== "state/.gitignore") return false;
-    // Exclude worklogs from config hash — they are runtime artefacts, not config
-    if (rel.includes("/worklogs/")) return false;
-    return true;
-  });
+  const files = listFiles(floeDir).filter((file) => isConfigFile(floeDir, file));
   for (const file of files) {
     const rel = relative(floeDir, file).replace(/\\/g, "/");
     hash.update(rel);
@@ -271,6 +278,21 @@ function hashFloeDir(floeDir: string): string {
     hash.update("\0");
   }
   return `sha256:${hash.digest("hex")}`;
+}
+
+/**
+ * Allow-list predicate: true iff the file is a declared config file that should
+ * contribute to the project config hash.
+ */
+function isConfigFile(floeDir: string, file: string): boolean {
+  const rel = relative(floeDir, file).replace(/\\/g, "/");
+  // Workspace manifest
+  if (rel === "floe.yaml") return true;
+  // Agent definition files: agents/**/*.md (any nesting depth)
+  if (/^agents\/.+\.md$/.test(rel)) return true;
+  // Extension manifests only — never extension data under the same tree
+  if (/^extensions\/.+\/extension\.json$/.test(rel)) return true;
+  return false;
 }
 
 function listFiles(root: string): string[] {

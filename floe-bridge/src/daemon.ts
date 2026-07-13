@@ -5,6 +5,7 @@
  */
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { Server } from "node:http";
 import type { AgentRuntimeConfig } from "./auth.js";
 import { RuntimeAuthError } from "./auth.js";
 import { createBridgeAuthRuntime } from "./auth.js";
@@ -36,6 +37,7 @@ export class BridgeDaemon {
   private endpointRuntime = new Map<string, EndpointEntry>();
   private workspaceExtensions = new Map<string, LoadedExtension[]>();
   private workspaceHooks = new Map<string, HookRegistry>();
+  private workspaceRelays = new Map<string, { server: Server; exitHandler: () => void }>();
   private timers: Timer[] = [];
   private attaching = false;
   private processing = false;
@@ -66,6 +68,12 @@ export class BridgeDaemon {
     for (const timer of this.timers) clearInterval(timer);
     this.timers = [];
     this.firedWebhookEvents.clear();
+    // Close all relay servers so ports are released on daemon shutdown
+    for (const [, relay] of this.workspaceRelays) {
+      process.off("exit", relay.exitHandler);
+      relay.server.close();
+    }
+    this.workspaceRelays.clear();
     await this.adapter.dispose?.("bridge_shutdown");
   }
 
@@ -409,12 +417,22 @@ export class BridgeDaemon {
         let relayBaseUrl: string | null = null;
         if (extensionsWithHandlers.length > 0) {
           try {
+            // Dispose the previous relay for this workspace before starting a new one.
+            // Without this, reimports (triggered by genuine config changes) leak servers
+            // and stack process.exit listeners.
+            const previousRelay = this.workspaceRelays.get(workspace.workspace_id);
+            if (previousRelay) {
+              process.off("exit", previousRelay.exitHandler);
+              previousRelay.server.close();
+              this.workspaceRelays.delete(workspace.workspace_id);
+            }
             const relay = await startExtensionRelayServer(
               extensionsWithHandlers.map(ext => ({ name: ext.name, handlers: ext.httpHandlers }))
             );
             relayBaseUrl = relay.baseUrl;
-            // Close the relay server on process exit
-            process.once("exit", () => relay.server.close());
+            const exitHandler = () => relay.server.close();
+            process.once("exit", exitHandler);
+            this.workspaceRelays.set(workspace.workspace_id, { server: relay.server, exitHandler });
           } catch (relayErr) {
             console.error("[bridge] extension relay server failed to start", relayErr);
           }
