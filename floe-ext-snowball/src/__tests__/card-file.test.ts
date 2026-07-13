@@ -119,9 +119,9 @@ describe("parseCardFile / serializeCardFile", () => {
   });
 
   it("handles non-null actor", () => {
-    const card = makeCard({ actor: "snowball-overseer" });
+    const card = makeCard({ actor: "snowball" });
     const parsed = parseCardFile(serializeCardFile(card), card.id);
-    expect(parsed!.actor).toBe("snowball-overseer");
+    expect(parsed!.actor).toBe("snowball");
   });
 
   it("handles body with carry-forward comments", () => {

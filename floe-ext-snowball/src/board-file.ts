@@ -25,7 +25,7 @@
  *     order: 1
  *     wip_limit: 5
  *     assigned_actors:
- *       - actor_ref: snowball-overseer
+ *       - actor_ref: snowball
  *         event_types: ["*"]
  *     exit_criteria:
  *       - id: ec-tests
@@ -110,7 +110,7 @@ When you have completed the work for a card in your column:
    has none — call \`snowball_move_card\` to advance the card to the next column.
 
 3. **If unclear**: If you are unsure about board behavior, criteria IDs, or whether
-   a card should be moved, emit a message to the \`snowball-overseer\` actor asking
+   a card should be moved, emit a message to the \`snowball\` actor asking
    for clarification before acting. Do not guess at exit criteria or skip the gate.
 
 **Rule**: Do the work first, verify it, then advance. Never call \`snowball_move_card\`
@@ -451,14 +451,14 @@ export function defaultColumnFiles(scopeId: string): ColumnFile[] {
  * Find all board scope_ids where the given agentId is associated.
  * Scans the committed `boards/` directory (reads board.md files).
  *
- * The overseer sees ALL boards.
+ * The snowball system steward sees ALL boards.
  * A column worker is associated with boards where their actor_ref appears
  * in any column's assigned_actors list.
  */
 export function findBoardScopesForAgentFromFiles(
   workspacePath: string,
   agentId: string,
-  overseerId: string
+  snowballId: string
 ): string[] {
   const boardsDir = join(workspacePath, ".floe", "extensions", "snowball", "boards");
   if (!existsSync(boardsDir)) return [];
@@ -476,7 +476,7 @@ export function findBoardScopesForAgentFromFiles(
     const bf = readBoardFile(workspacePath, slug);
     if (!bf?.scope_id) continue;
 
-    if (agentId === overseerId) {
+    if (agentId === snowballId) {
       scopes.push(bf.scope_id);
       continue;
     }

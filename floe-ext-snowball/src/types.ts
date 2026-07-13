@@ -44,7 +44,7 @@ export interface SidecarExitCriterion {
  */
 export interface AssignedActor {
   /**
-   * Actor slug, e.g. "snowball-overseer" or "operator".
+   * Actor slug, e.g. "snowball" or "operator".
    * Resolved to endpoint id: actor:<workspace_id>:<actor_ref>
    */
   actor_ref: string;

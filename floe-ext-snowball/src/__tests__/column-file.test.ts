@@ -88,7 +88,7 @@ columns:
     order: 1
     wip_limit: 5
     assigned_actors:
-      - actor_ref: snowball-overseer
+      - actor_ref: snowball
         event_types:
           - "*"
     exit_criteria:
@@ -104,7 +104,7 @@ columns:
     expect(col.id).toBe("in-progress");
     expect(col.scope_id).toBe("scope:ws:test"); // populated from board scope_id
     expect(col.assigned_actors).toHaveLength(1);
-    expect(col.assigned_actors[0].actor_ref).toBe("snowball-overseer");
+    expect(col.assigned_actors[0].actor_ref).toBe("snowball");
     expect(col.wip_limit).toBe(5);
     expect(col.exit_criteria[0].id).toBe("ec-tests");
   });
@@ -400,19 +400,19 @@ describe("findBoardScopesForAgentFromFiles", () => {
   afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
   it("returns empty when boards/ directory does not exist", () => {
-    expect(findBoardScopesForAgentFromFiles(tmpDir, "my-agent", "snowball-overseer")).toHaveLength(0);
+    expect(findBoardScopesForAgentFromFiles(tmpDir, "my-agent", "snowball")).toHaveLength(0);
   });
 
-  it("returns all boards for overseer agent", () => {
+  it("returns all boards for snowball steward agent", () => {
     writeBoardFile(tmpDir, "scope_ws_board1", { scope_id: "scope:ws:board1", done_protocol: "", columns: [makeColumn({ scope_id: "scope:ws:board1" })] });
     writeBoardFile(tmpDir, "scope_ws_board2", { scope_id: "scope:ws:board2", done_protocol: "", columns: [makeColumn({ scope_id: "scope:ws:board2" })] });
-    const scopes = findBoardScopesForAgentFromFiles(tmpDir, "snowball-overseer", "snowball-overseer");
+    const scopes = findBoardScopesForAgentFromFiles(tmpDir, "snowball", "snowball");
     expect(scopes).toHaveLength(2);
     expect(scopes).toContain("scope:ws:board1");
     expect(scopes).toContain("scope:ws:board2");
   });
 
-  it("returns only boards where non-overseer agent has an assigned_actors entry", () => {
+  it("returns only boards where non-snowball agent has an assigned_actors entry", () => {
     writeBoardFile(tmpDir, "scope_ws_board1", {
       scope_id: "scope:ws:board1", done_protocol: "",
       columns: [
@@ -424,7 +424,7 @@ describe("findBoardScopesForAgentFromFiles", () => {
       scope_id: "scope:ws:board2", done_protocol: "",
       columns: [makeColumn({ scope_id: "scope:ws:board2" })],
     });
-    const scopes = findBoardScopesForAgentFromFiles(tmpDir, "my-worker", "snowball-overseer");
+    const scopes = findBoardScopesForAgentFromFiles(tmpDir, "my-worker", "snowball");
     expect(scopes).toHaveLength(1);
     expect(scopes[0]).toBe("scope:ws:board1");
   });
@@ -433,6 +433,6 @@ describe("findBoardScopesForAgentFromFiles", () => {
     writeBoardFile(tmpDir, "scope_ws_board1", {
       scope_id: "scope:ws:board1", done_protocol: "", columns: [],
     });
-    expect(findBoardScopesForAgentFromFiles(tmpDir, "unknown-agent", "snowball-overseer")).toHaveLength(0);
+    expect(findBoardScopesForAgentFromFiles(tmpDir, "unknown-agent", "snowball")).toHaveLength(0);
   });
 });
