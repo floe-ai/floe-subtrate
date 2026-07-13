@@ -12,7 +12,7 @@
  * Contract sections implemented:
  *  §1 — extension manifest (extension.json)
  *  §2 — overseer agent bundling (overseer-instructions.md)
- *  §3 — sidecar state management (sidecar.ts)
+ *  §3 — board state management (board-file.ts, board-snapshot.ts)
  *  §4 — event routing (hooks.ts, tools/index.ts)
  *  §5 — tool surface (tools/index.ts)
  *  §6 — stub seam (stub/bus-client.ts, stub/extension-context.ts)

@@ -1,6 +1,9 @@
 /**
  * Snowball extension — shared domain types.
  *
+ * Slice 6 (fm/snowball-ctx-retire):
+ *   - BoardSidecar, SIDECAR_SCHEMA, SidecarColumn removed (sidecar eliminated).
+ *
  * Slice 4 (fm/snowball-card-context):
  *   - Card = context (context_id added to CardFile frontmatter)
  *   - Columns use assigned_actors[] replacing owner.kind model
@@ -14,18 +17,8 @@
  */
 
 // ---------------------------------------------------------------------------
-// Board sidecar schema v3
-// (.floe/extensions/snowball/runtime/<slug>.yaml)
-// Runtime-only: column_contexts map. DORMANT in Slice 4; removed in Slice 6.
+// Exit criterion definition for a column
 // ---------------------------------------------------------------------------
-
-/**
- * Slice 2 (fm/snowball-col-instr-s2):
- *   Bumped to v3 — `columns` field removed from sidecar.
- *   Column definitions now live in committed markdown files:
- *   boards/<scopeSlug>/columns/<id>.md
- */
-export const SIDECAR_SCHEMA = "floe.ext.snowball.board.v3" as const;
 
 /**
  * Exit criterion definition for a column.
@@ -34,18 +27,6 @@ export interface SidecarExitCriterion {
   id: string;
   description: string;
   kind: "machine" | "human";
-}
-
-/**
- * @deprecated Sidecar column shape kept only for backward-compat sidecar loading.
- * Will be removed in Slice 6.
- */
-export interface SidecarColumn {
-  id: string;
-  name: string;
-  wip_limit: number | null;
-  order: number;
-  exit_criteria: SidecarExitCriterion[];
 }
 
 /**
@@ -69,18 +50,6 @@ export interface AssignedActor {
   actor_ref: string;
   /** Event types that wake this actor in the card context. */
   event_types: string[];
-}
-
-export interface BoardSidecar {
-  schema: typeof SIDECAR_SCHEMA;
-  scope_id: string;
-  workspace_id: string;
-  /**
-   * Runtime map: column_id -> context_id (bus Context, created at board init).
-   * DORMANT in Slice 4: card contexts are the routing target.
-   * Retired and removed in Slice 6.
-   */
-  column_contexts: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------

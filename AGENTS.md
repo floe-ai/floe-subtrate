@@ -424,38 +424,32 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 
 **What it is:** The Snowball Kanban extension — exit-criteria-gated cards, column ownership, and agent routing — implemented as a floe extension that builds against the substrate contract (contract-w7).
 
-**Key invariants (post fm/snowball-col-instr-s2):**
-- Sidecar schema: `floe.ext.snowball.board.v3` at `.floe/extensions/snowball/runtime/<slug>.yaml` (GITIGNORED — runtime context map, regenerable)
-- Sidecar v3 owns ONLY: `column_contexts` map (`column_id → bus Context id`). No column definitions. No card state.
-- **Column = committed markdown file** at `.floe/extensions/snowball/boards/<slug>/columns/<id>.md`. Frontmatter: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner`, `exit_criteria`. Body = agent instructions (may be empty).
-- `slugify(scope_id)` replaces `:`, `/`, `\` with `_` for Windows-safe filenames (R8)
-- Column owner uses `agent_id` (not free-form `role`) matching `.floe/agents/<id>.md` (R5)
-- **Card = markdown file** at `tasks/<id>.md`. Identity = stable frontmatter `id` field. File NEVER moves (D1). Current column is a frontmatter field updated in-place on move.
-- **Column = bus Context** scoped to the board scope. Column owner actor + `snowball-overseer` are frozen participants.
-- `POST /board/init` creates column files (if absent) + one bus Context per column (idempotent). Stores context ids in `column_contexts` sidecar.
-- Board discovery in hooks: scans `.floe/extensions/snowball/boards/<slug>/columns/*.md` (committed files), NOT the gitignored sidecar. Works after a fresh clone with no sidecar present.
-- Card-move: rewrites `column` frontmatter → appends `<!-- carry-forward from "Name" at ISO -->` comment → emits `snowball.card.entered_column` into the column context.
-- BeforeTurn injection: **column workers get**: board-wide done protocol (from `board.md` body) + their column's instructions + card list (including **unchecked exit-criteria IDs and descriptions** for each card, so agents can call `check_criteria` directly). **Overseer gets**: full board snapshot + all columns' instructions. Done protocol is injected first so it takes precedence over column-specific instructions.
-- `GET /column/instructions?scope_id=<id>&column_id=<id>` — read column instructions.
-- `POST /column/instructions { scope_id, column_id, instructions }` — write column file body (file is source of truth). Auto-creates default column files if the column file doesn't exist yet (Issue #3 fix: allows saving instructions before explicit board init).
-- `GET /board/instructions?scope_id=<id>` — read board done protocol from `board.md`.
-- `POST /board/instructions { scope_id, done_protocol }` — write board done protocol (creates `board.md` if absent).
-- **Board definition file** (`.floe/extensions/snowball/boards/<slug>/board.md`, **committed**): frontmatter has `scope_id`; body = board-wide done protocol. Created on `POST /board/init` with `DEFAULT_DONE_PROTOCOL`; lazily created by BeforeTurn `ensureBoardFile()` if absent. Editable in UI via Board Settings panel.
-- **Advance-on-conclusion** (`fm/floe-advance-protocol`): `advanceCardIfReady` is NO LONGER called automatically when a card arrives in an agent column. It is kept as a utility (tests, explicit overseer calls). Cards stay in an agent column until the agent calls `move_card` after completing work. The done protocol instructs agents how to do this. The `snowball.card.entered_column` routing event is still emitted on arrival to wake the agent.
-- Columns are the context rows in `listContextsForScope` (not cards).
-- Participants are FROZEN — agents connect via `snowball.card.entered_column` routing events (R1)
-- AI `move_card` gate: HARD block when exit criteria unchecked; human `force=true` is soft-warn
-- WIP limit: hard block for both human and AI
-- `StubBusClient.createdContexts` captures `CreateContextInput[]` for test assertions on column context creation.
-- Test helpers: `setupBoard(tmpDir)` / `writeDefaultColumns(tmpDir, scopeId)` write column files for tests. Tests never put columns in the sidecar.
+**Key invariants (post fm/snowball-ctx-retire — Slice 6):**
+- **No sidecar.** The `.floe/extensions/snowball/runtime/` directory and all `<slug>.yaml` sidecar files are eliminated. There is no `column_contexts` map, no `initBoardContexts`, no `loadSidecar`/`saveSidecar`. The only persistent state is committed board files + card files.
+- `slugify(scope_id)` exported from `board-file.ts` (moved from sidecar.ts in Slice 6).
+- **Board snapshot** utilities (`buildBoardSnapshot`, `renderCompactBoardSnapshot`) live in `board-snapshot.ts` (relocated from sidecar.ts in Slice 6). `buildBoardSnapshot(workspacePath, scopeId, workspaceId, columns)` — no sidecar param.
+- `getUncheckedCriteriaForCard` is in `card-file.ts` (canonical home).
+- **`initialized` flag** on board API responses = board file exists (`readBoardFile(...) !== null`). Before `POST /board/init`, `initialized=false`.
+- `POST /board/init` = file-ensure only: calls `ensureBoardFile()` to create `board.md` with default columns if absent. Creates **ZERO bus contexts**. Pure file operation.
+- No column contexts are created anywhere. Column contexts were retired in Slice 6.
+- The overseer is NOT added to any card context (not even a watcher).
+- **Card = context**: every card has a `context_id` field in its frontmatter (null for legacy pre-Slice-4 cards). The card context is created at card creation time and its `context_id` written to frontmatter immediately.
+- **AssignedActor model** (`assigned_actors: Array<{actor_ref: string, event_types: string[]}>`) on columns. `actor_ref` resolves to `actor:<workspace_id>:<actor_ref>` at runtime. Empty `assigned_actors` = no actors assigned.
+- **Handoff** (`floe-ext-snowball/src/handoff.ts`): `applyColumnAssignment()` is the shared helper for both create and move.
+- **Routing**: `snowball.card.entered_column` uses `destination:{kind:"context",context_id:<card_context_id>}` — subscription-based routing to the card's context, never endpoint-targeted.
+- **UI handler acting actor**: operator endpoint `actor:<workspace_id>:operator`.
+- **Built-in operator**: reference `actor:<workspace_id>:operator` — never register a snowball-specific operator.
+- AI `move_card` gate: HARD block when exit criteria unchecked; human `force=true` is soft-warn.
+- WIP limit: hard block for both human and AI.
+- `StubBusClient.createdContexts` captures `CreateContextInput[]` for test assertions.
 
-**Tests:** `npm test --workspace floe-ext-snowball` — 237 unit tests (column-file format + sidecar/column-contexts + gate enforcement + handler + overseer driver + instructions endpoints + board-file + advance-on-conclusion timing + hooks BeforeTurn injection + Slice 4 card-context invariants).
+**Tests:** `npm test --workspace floe-ext-snowball` — 214 unit tests (board-snapshot utilities + gate enforcement + handler + overseer driver + instructions endpoints + board-file + advance-on-conclusion timing + hooks BeforeTurn injection + Slice 4 card-context invariants).
 
 **Slice 4 (fm/snowball-card-context) — card = context, uniform actor assignment:**
 - **Card = context**: every card has a `context_id` field in its frontmatter (null for legacy pre-Slice-4 cards). The card context is created at card creation time and its `context_id` written to frontmatter immediately.
 - **AssignedActor model** (`assigned_actors: Array<{actor_ref: string, event_types: string[]}>`) replaces the old `owner: {kind:"human"|"agent", agent_id}` model on column files. `actor_ref` is a slug resolved to `actor:<workspace_id>:<actor_ref>` at runtime. Empty `assigned_actors` = no actors assigned (equivalent to old "human"-owned). Any actor — operator or LLM — is handled by identical code.
 - **Handoff** (`floe-ext-snowball/src/handoff.ts`): `applyColumnAssignment()` is the shared helper for both create and move: adds acting actor as participant, adds destination column actors as participants + subscribes them, demotes prior column actors to `[]` subscription (silent watchers), emits `snowball.card.entered_column` into the card context with `destination:{kind:"context"}`. `createCardContext()` creates a bus context for a card with the creator as first participant.
-- **Routing**: `snowball.card.entered_column` uses `destination:{kind:"context",context_id:<card_context_id>}` — subscription-based routing to the card's context, never endpoint-targeted. No column contexts created on moves (only card contexts). Sidecar `column_contexts` is dormant (Slice 6 removes it).
+- **Routing**: `snowball.card.entered_column` uses `destination:{kind:"context",context_id:<card_context_id>}` — subscription-based routing to the card's context, never endpoint-targeted. No column contexts created on moves (only card contexts).
 - **UI handler acting actor**: operator endpoint `actor:<workspace_id>:operator`.
 - **Tool acting actor**: first assigned actor of the destination column (TODO: use calling agent endpoint when `ExtensionContext` exposes it).
 - **Built-in operator**: reference `actor:<workspace_id>:operator` — never register a snowball-specific operator.

@@ -1,6 +1,10 @@
 /**
  * Snowball extension hooks.
  *
+ * Slice 6 (fm/snowball-ctx-retire):
+ *   Sidecar eliminated. buildBoardSnapshot reads from board file + card files only.
+ *   No loadSidecar call. buildBoardSnapshot signature updated.
+ *
  * Slice 5 (fm/snowball-col-board-s5):
  *   Board discovery now reads board.md (via board-file.ts).
  *   column-file.ts is deleted; findBoardScopesForAgentFromFiles moved to board-file.ts.
@@ -12,11 +16,8 @@
  */
 
 import type { ExtensionContext, HookResult } from "./stub/extension-context.js";
-import {
-  slugify,
-  buildBoardSnapshot,
-  renderCompactBoardSnapshot,
-} from "./sidecar.js";
+import { slugify } from "./board-file.js";
+import { buildBoardSnapshot, renderCompactBoardSnapshot } from "./board-snapshot.js";
 import {
   listColumnsFromBoard,
   findBoardScopesForAgentFromFiles,
@@ -41,8 +42,6 @@ export function registerHooks(ctx: ExtensionContext): void {
     const scopes = findBoardScopesForAgentFromFiles(workspacePath, agentId, OVERSEER_AGENT_ID);
     if (scopes.length === 0) return;
 
-    // Sidecar still required for buildBoardSnapshot (dormant; removed in Slice 6)
-    const { loadSidecar } = await import("./sidecar.js");
     const lines: string[] = [];
 
     for (const scopeId of scopes) {
@@ -50,8 +49,7 @@ export function registerHooks(ctx: ExtensionContext): void {
       const columns = listColumnsFromBoard(workspacePath, slug);
       if (columns.length === 0) continue;
 
-      const sidecar = loadSidecar(workspacePath, scopeId);
-      const snapshot = buildBoardSnapshot(workspacePath, sidecar, columns);
+      const snapshot = buildBoardSnapshot(workspacePath, scopeId, workspaceId, columns);
 
       if (agentId === OVERSEER_AGENT_ID) {
         lines.push(renderCompactBoardSnapshot(snapshot));

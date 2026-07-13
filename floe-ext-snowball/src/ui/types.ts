@@ -1,7 +1,7 @@
 /**
  * UI types for the Snowball board view.
  *
- * These mirror the sidecar types but are React-friendly (camelCase).
+ * These mirror the board file types but are React-friendly (camelCase).
  *
  * Slice 4 (fm/snowball-card-context):
  *   UiColumn uses assignedActors[] instead of owner.kind.
@@ -50,7 +50,7 @@ export interface UiCard {
 export interface UiBoardState {
   scope_id: string;
   workspace_id: string;
-  /** True when the sidecar file exists on disk (column contexts created). */
+  /** True when the board file exists on disk (board has been initialized). */
   initialized: boolean;
   columns: Array<{
     id: string;

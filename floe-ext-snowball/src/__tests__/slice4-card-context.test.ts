@@ -20,12 +20,10 @@ import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext } from "../stub/extension-context.js";
 import { registerHttpHandlers } from "../handlers.js";
 import { createTools } from "../tools/index.js";
-import { saveSidecar, slugify } from "../sidecar.js";
+import { slugify } from "../board-file.js";
 import { writeCard, readCard } from "../card-file.js";
 import { writeColumnToBoard as writeColumnFile, defaultColumnFiles } from "../board-file.js";
-import type { ColumnFile } from "../types.js";
-import { SIDECAR_SCHEMA } from "../types.js";
-import type { BoardSidecar, CardFile } from "../types.js";
+import type { ColumnFile, CardFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -67,10 +65,6 @@ async function callHandler(
   const handler = map.get(`${method} ${path}`);
   if (!handler) throw new Error(`No handler for ${method} ${path}`);
   return handler({ method, path, query: opts.query ?? {}, body: opts.body ?? null });
-}
-
-function makeSidecar(): BoardSidecar {
-  return { schema: SIDECAR_SCHEMA, scope_id: SCOPE, workspace_id: WS_ID, column_contexts: {} };
 }
 
 function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
@@ -123,7 +117,6 @@ afterEach(() => {
 describe("(a) Card creation → card context with creator as participant", () => {
   it("POST /card creates a bus context scoped to the board scope", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     const res = await callHandler(handlers, "POST", "/card", {
@@ -139,7 +132,6 @@ describe("(a) Card creation → card context with creator as participant", () =>
 
   it("POST /card writes context_id into card frontmatter", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     const res = await callHandler(handlers, "POST", "/card", {
@@ -157,7 +149,6 @@ describe("(a) Card creation → card context with creator as participant", () =>
 
   it("POST /card: operator is added as participant (creator = operator for UI)", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     await callHandler(handlers, "POST", "/card", {
@@ -171,7 +162,6 @@ describe("(a) Card creation → card context with creator as participant", () =>
 
   it("create_card tool: first assigned actor added as participant (creator for tool path)", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const tools = createTools(makeCtx(tmpDir, bus));
     const createCard = tools.find((t) => t.name === "create_card")!;
 
@@ -198,7 +188,6 @@ describe("(a) Card creation → card context with creator as participant", () =>
 describe("(b) Column assignment → participants + subscriptions", () => {
   it("POST /move to agent column: assigned actor added as participant", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-card-1";
     bus.seedContext({ context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
       created_at: new Date().toISOString(), title: "Card 1", first_message_preview: null, participants: [] });
@@ -216,7 +205,6 @@ describe("(b) Column assignment → participants + subscriptions", () => {
 
   it("POST /move to agent column: assigned actor subscribed with correct event_types", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-card-2";
     bus.seedContext({ context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
       created_at: new Date().toISOString(), title: "Card 2", first_message_preview: null, participants: [] });
@@ -234,7 +222,6 @@ describe("(b) Column assignment → participants + subscriptions", () => {
 
   it("move_card tool: assigned actor added as participant and subscribed", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-card-tool";
     bus.seedContext({ context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
       created_at: new Date().toISOString(), title: "Tool Card", first_message_preview: null, participants: [] });
@@ -253,7 +240,6 @@ describe("(b) Column assignment → participants + subscriptions", () => {
 
   it("POST /card into agent column: column actor added as participant", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     await callHandler(handlers, "POST", "/card", {
@@ -280,7 +266,6 @@ describe("(b) Column assignment → participants + subscriptions", () => {
 describe("(c) Move → prior column actors become silent watchers", () => {
   it("prior column's assigned actor gets subscription=[] on move", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-card-move";
     bus.seedContext({
       context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
@@ -310,7 +295,6 @@ describe("(c) Move → prior column actors become silent watchers", () => {
 
   it("move_card tool: prior actor demoted to silent watcher", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-card-tool-move";
     bus.seedContext({
       context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
@@ -343,7 +327,6 @@ describe("(c) Move → prior column actors become silent watchers", () => {
 describe("(d) entered_column uses destination.kind=context", () => {
   it("POST /move to agent column: entered_column destination.kind === context", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-card-d1";
     bus.seedContext({ context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
       created_at: new Date().toISOString(), title: "Card D1", first_message_preview: null, participants: [] });
@@ -363,7 +346,6 @@ describe("(d) entered_column uses destination.kind=context", () => {
 
   it("move_card tool: entered_column destination.kind === context", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-card-d2";
     bus.seedContext({ context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
       created_at: new Date().toISOString(), title: "Card D2", first_message_preview: null, participants: [] });
@@ -382,7 +364,6 @@ describe("(d) entered_column uses destination.kind=context", () => {
 
   it("no entered_column when moving to a column with no assigned actors", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-card-d3";
     bus.seedContext({ context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
       created_at: new Date().toISOString(), title: "Card D3", first_message_preview: null, participants: [] });
@@ -405,7 +386,6 @@ describe("(d) entered_column uses destination.kind=context", () => {
 describe("(e) No column contexts created on card move", () => {
   it("POST /move creates no contexts when card already has context_id", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-existing";
     bus.seedContext({ context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
       created_at: new Date().toISOString(), title: "Existing Card", first_message_preview: null, participants: [] });
@@ -422,7 +402,6 @@ describe("(e) No column contexts created on card move", () => {
 
   it("POST /move creates exactly ONE card context for legacy card (lazy creation, not column ctx)", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     // Legacy card with context_id: null
     writeCard(tmpDir, makeCardFile({ id: "e2", column: "todo", context_id: null }));
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
@@ -442,7 +421,6 @@ describe("(e) No column contexts created on card move", () => {
 
   it("move_card tool: no column contexts created", async () => {
     writeBoardWithActors(tmpDir);
-    saveSidecar(tmpDir, makeSidecar().scope_id, makeSidecar());
     const cardCtxId = "ctx-tool-e3";
     bus.seedContext({ context_id: cardCtxId, workspace_id: WS_ID, scope_id: SCOPE,
       created_at: new Date().toISOString(), title: "Tool Card", first_message_preview: null, participants: [] });

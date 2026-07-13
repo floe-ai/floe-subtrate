@@ -16,11 +16,9 @@
 import type { ExtensionContext } from "../stub/extension-context.js";
 import { asBusClient } from "../stub/bus-client.js";
 import {
-  loadSidecar,
   slugify,
-  getUncheckedCriteria,
-  buildBoardSnapshot,
-} from "../sidecar.js";
+} from "../board-file.js";
+import { buildBoardSnapshot } from "../board-snapshot.js";
 import {
   listColumnsFromBoard,
   defaultColumnFiles,
@@ -33,6 +31,7 @@ import {
   updateCardFrontmatter,
   appendCarryForward,
   cardCountsByColumnFromFiles,
+  getUncheckedCriteriaForCard,
 } from "../card-file.js";
 import {
   applyColumnAssignment,
@@ -209,7 +208,7 @@ export function createTools(ctx: ExtensionContext) {
         if (card.column === to_column_id) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "already_in_column", card_id, column_id: to_column_id }) }] };
 
         // Exit criteria gate
-        const unchecked = getUncheckedCriteria(card, card.column, fromColumn?.exit_criteria ?? []);
+        const unchecked = getUncheckedCriteriaForCard(card, fromColumn?.exit_criteria ?? []);
         if (unchecked.length > 0 && !force)
           return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "gate_blocked", message: "Exit criteria not satisfied. Check all criteria before moving.", unchecked_criteria: unchecked, from_column_id: card.column, to_column_id }) }] };
 
@@ -314,8 +313,7 @@ export function createTools(ctx: ExtensionContext) {
         const scope_id = params.scope_id as string;
         const slug = slugify(scope_id);
         const columns = getEffectiveColumns(workspacePath, slug, scope_id);
-        const sidecar = loadSidecar(workspacePath, scope_id);
-        const snapshot = buildBoardSnapshot(workspacePath, sidecar, columns);
+        const snapshot = buildBoardSnapshot(workspacePath, scope_id, workspaceId, columns);
         return { content: [{ type: "text", text: JSON.stringify(snapshot) }] };
       },
     },

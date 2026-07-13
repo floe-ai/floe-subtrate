@@ -29,7 +29,7 @@ import {
   boardDir,
   type BoardFile,
 } from "../board-file.js";
-import { slugify } from "../sidecar.js";
+import { slugify } from "../board-file.js";
 import type { ColumnFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
