@@ -562,6 +562,54 @@ export class ContextStore implements ContextStoreReader {
     }));
   }
 
+  // ---------------------------------------------------------------------------
+  // Batch apply — participants + subscriptions in one atomic transaction
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Atomically apply a set of participant + subscription changes to a context.
+   *
+   * - `entries`: each entry idempotently adds `endpoint_id` as a participant
+   *   AND upserts its subscription with the given `event_types`.
+   *   `event_types: []` means "participant but never woken" (silent watcher).
+   * - `participantsOnly`: endpoints added as participants with NO subscription
+   *   change — useful for acting actors who must be able to emit but are not
+   *   subscribed to any event type.
+   *
+   * All changes are applied in a single SQLite transaction.
+   */
+  applyContextSubscriptions(
+    contextId: string,
+    entries: Array<{ endpoint_id: string; event_types: string[] }>,
+    participantsOnly: string[] = []
+  ): void {
+    const ts = nowIso();
+    const insertParticipant = this.db.prepare(
+      "INSERT OR IGNORE INTO context_participants (context_id, endpoint_id, joined_at) VALUES (?, ?, ?)"
+    );
+    const upsertSubscription = this.db.prepare(`
+      INSERT INTO context_subscriptions (context_id, endpoint_id, event_types, subscribed_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(context_id, endpoint_id) DO UPDATE SET
+        event_types   = excluded.event_types,
+        subscribed_at = excluded.subscribed_at
+    `);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const ep of participantsOnly) {
+        insertParticipant.run(contextId, ep, ts);
+      }
+      for (const entry of entries) {
+        insertParticipant.run(contextId, entry.endpoint_id, ts);
+        upsertSubscription.run(contextId, entry.endpoint_id, JSON.stringify(entry.event_types), ts);
+      }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
   /**
    * Check whether an endpoint's subscription matches a given event type.
    *

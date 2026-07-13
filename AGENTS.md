@@ -448,7 +448,7 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 **Slice 4 (fm/snowball-card-context) — card = context, uniform actor assignment:**
 - **Card = context**: every card has a `context_id` field in its frontmatter (null for legacy pre-Slice-4 cards). The card context is created at card creation time and its `context_id` written to frontmatter immediately.
 - **AssignedActor model** (`assigned_actors: Array<{actor_ref: string, event_types: string[]}>`) replaces the old `owner: {kind:"human"|"agent", agent_id}` model on column files. `actor_ref` is a slug resolved to `actor:<workspace_id>:<actor_ref>` at runtime. Empty `assigned_actors` = no actors assigned (equivalent to old "human"-owned). Any actor — operator or LLM — is handled by identical code.
-- **Handoff** (`floe-ext-snowball/src/handoff.ts`): `applyColumnAssignment()` is the shared helper for both create and move: adds acting actor as participant, adds destination column actors as participants + subscribes them, demotes prior column actors to `[]` subscription (silent watchers), emits `snowball.card.entered_column` into the card context with `destination:{kind:"context"}`. `createCardContext()` creates a bus context for a card with the creator as first participant.
+- **Handoff** (`floe-ext-snowball/src/handoff.ts`): `applyColumnAssignment()` is the shared helper for both create and move. It builds a single `applyContextSubscriptions` batch call: acting actor → `participants_only`, destination column actors → entries with their `event_types`, prior column actors → entries with `event_types:[]` (silent watcher). Then emits `snowball.card.entered_column` into the card context with `destination:{kind:"context"}` if the destination has assigned actors. `createCardContext()` creates a bus context for a card with the creator as first participant.
 - **Routing**: `snowball.card.entered_column` uses `destination:{kind:"context",context_id:<card_context_id>}` — subscription-based routing to the card's context, never endpoint-targeted. No column contexts created on moves (only card contexts).
 - **UI handler acting actor**: operator endpoint `actor:<workspace_id>:operator`.
 - **Tool acting actor**: first assigned actor of the destination column (TODO: use calling agent endpoint when `ExtensionContext` exposes it).
@@ -469,7 +469,7 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 - **All snowball emits must include `scope_id`** so any fallback-created contexts are scoped to the board scope, never stray no-scope contexts.
 - **Card contexts are stable**: each card has ONE stable context from creation. Moving a card from column A to column B reuses the same card context. No new context is created on move when `context_id` is already set.
 - **Lazy card context creation**: legacy cards (pre-Slice-4, `context_id:null`) get a card context created on first move. Written to frontmatter immediately.
-- **Prior actor demotion**: when a card moves from column A (with actors) to column B (with different actors), column A's actors get `subscribeToContext(cardCtxId, ep, [])` — still participants (can emit), never woken again.
+- **Prior actor demotion**: when a card moves from column A (with actors) to column B (with different actors), column A's actors get `event_types:[]` in the batch call — still participants (can emit), never woken again.
 - **Endpoint status gate**: the `snowball-overseer` endpoint starts as `runtime_unconfigured` (no auth profile). The bus does NOT create delivery bundles for `runtime_unconfigured` endpoints (`tryCreateDeliveryForEndpoint` returns null). A workspace runtime binding must be set before the overseer can process deliveries.
 
 **Board UI entry point:** `floe-ext-snowball/src/ui/BoardView.tsx` exported at `package.json exports['./BoardView']` for Track S's static import into `ScopeDetail.tsx`.
@@ -552,6 +552,14 @@ Four generic, extension-agnostic substrate primitives landed in this PR. All are
 - `appendContextEvent` (internal history writes) bypasses routing entirely — it never calls `resolveDestinations` or `queueEvent`, so it is always zero-delivery by construction regardless of subscription state.
 - Routes: `POST/DELETE/GET /v1/contexts/:id/subscriptions`.
 
+### Batch subscriptions (fm/floe-batch-subs)
+- `ContextStore.applyContextSubscriptions(contextId, entries, participantsOnly?)` — applies participant + subscription changes atomically in a single SQLite transaction.
+  - `entries`: each endpoint is idempotently added as participant AND has its subscription upserted. `event_types:[]` = silent watcher.
+  - `participantsOnly`: endpoints added as participants with NO subscription change (for acting actors who must emit but are not subscribed).
+- Route: `POST /v1/contexts/:id/subscriptions:batch` body `{ entries, participants_only? }`.
+- Both `floe-bridge/src/bus-client.ts` and `floe-ext-snowball/src/stub/bus-client.ts` expose `applyContextSubscriptions(contextId, entries, participantsOnly?)`.
+- `applyColumnAssignment` in `floe-ext-snowball/src/handoff.ts` collapses 6+ sequential bus calls into one batch call + one emit.
+
 ### Slice 3 — Runtime-based delivery gate (reworked from actor_kind)
 The substrate has exactly ONE actor abstraction. Delivery is gated on runtime attachment (`bridge_id` + `status`), never on a stored backing label. There is **no `actor_kind` column** and no human/agent distinction stored anywhere — peers cannot tell what backs an actor.
 - An actor with no live agent runtime (`bridge_id = null`) queues events as readable context history but never receives a delivery bundle. The `tryCreateDeliveryForEndpoint` `!endpoint.bridge_id` gate handles this.
@@ -563,3 +571,5 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - `floe-bus/src/contexts/participants.test.ts` — 12 tests  
 - `floe-bus/src/contexts/subscriptions.test.ts` — 19 tests
 - `floe-bus/src/contexts/runtime-delivery.test.ts` — 4 tests
+- `floe-bus/src/contexts/batch-subscriptions.test.ts` — 8 tests
+- `floe-ext-snowball/src/__tests__/handoff.test.ts` — 8 tests

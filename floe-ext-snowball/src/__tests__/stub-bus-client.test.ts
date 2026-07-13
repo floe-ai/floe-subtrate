@@ -119,6 +119,73 @@ describe("StubBusClient — subscriptions", () => {
   });
 });
 
+describe("StubBusClient — applyContextSubscriptions", () => {
+  let client: StubBusClient;
+
+  beforeEach(() => {
+    client = new StubBusClient();
+    client.seedContext(makeCtx("ctx:1"));
+  });
+
+  it("adds participants and subscriptions from entries", async () => {
+    await client.applyContextSubscriptions("ctx:1", [
+      { endpoint_id: "actor:ws:1:agent-a", event_types: ["*"] },
+      { endpoint_id: "actor:ws:1:agent-b", event_types: ["message"] },
+    ]);
+
+    const ctx = (await client.listContextsForScope("ws:1", "scope:1"))[0];
+    expect(ctx.participants).toContain("actor:ws:1:agent-a");
+    expect(ctx.participants).toContain("actor:ws:1:agent-b");
+
+    const subs = await client.listContextSubscriptions("ctx:1");
+    expect(subs.find((s) => s.endpoint_id === "actor:ws:1:agent-a")?.event_types).toEqual(["*"]);
+    expect(subs.find((s) => s.endpoint_id === "actor:ws:1:agent-b")?.event_types).toEqual(["message"]);
+  });
+
+  it("event_types:[] creates a silent watcher", async () => {
+    await client.applyContextSubscriptions("ctx:1", [
+      { endpoint_id: "actor:ws:1:agent-prior", event_types: [] },
+    ]);
+
+    const ctx = (await client.listContextsForScope("ws:1", "scope:1"))[0];
+    expect(ctx.participants).toContain("actor:ws:1:agent-prior");
+
+    const subs = await client.listContextSubscriptions("ctx:1");
+    expect(subs.find((s) => s.endpoint_id === "actor:ws:1:agent-prior")?.event_types).toEqual([]);
+  });
+
+  it("participantsOnly adds participant without subscription", async () => {
+    await client.applyContextSubscriptions("ctx:1", [], ["actor:ws:1:operator"]);
+
+    const ctx = (await client.listContextsForScope("ws:1", "scope:1"))[0];
+    expect(ctx.participants).toContain("actor:ws:1:operator");
+
+    const subs = await client.listContextSubscriptions("ctx:1");
+    expect(subs.find((s) => s.endpoint_id === "actor:ws:1:operator")).toBeUndefined();
+  });
+
+  it("participantsOnly does not overwrite an existing subscription", async () => {
+    await client.subscribeToContext("ctx:1", "actor:ws:1:agent-x", ["message"]);
+    await client.applyContextSubscriptions("ctx:1", [], ["actor:ws:1:agent-x"]);
+
+    const subs = await client.listContextSubscriptions("ctx:1");
+    expect(subs.find((s) => s.endpoint_id === "actor:ws:1:agent-x")?.event_types).toEqual(["message"]);
+  });
+
+  it("is idempotent on re-application", async () => {
+    const batch = [{ endpoint_id: "actor:ws:1:agent-a", event_types: ["*"] }];
+    await client.applyContextSubscriptions("ctx:1", batch, ["actor:ws:1:operator"]);
+    await client.applyContextSubscriptions("ctx:1", batch, ["actor:ws:1:operator"]);
+
+    const ctx = (await client.listContextsForScope("ws:1", "scope:1"))[0];
+    expect(ctx.participants.filter((p) => p === "actor:ws:1:agent-a")).toHaveLength(1);
+    expect(ctx.participants.filter((p) => p === "actor:ws:1:operator")).toHaveLength(1);
+
+    const subs = await client.listContextSubscriptions("ctx:1");
+    expect(subs.filter((s) => s.endpoint_id === "actor:ws:1:agent-a")).toHaveLength(1);
+  });
+});
+
 describe("StubBusClient — listChildContexts", () => {
   let client: StubBusClient;
 

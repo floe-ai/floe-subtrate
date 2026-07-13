@@ -1126,6 +1126,26 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { subscriptions: store.contextStore.getContextSubscriptions(params.id) };
   });
 
+  // Batch apply — participants + subscriptions in one atomic operation
+  app.post("/v1/contexts/:id/subscriptions:batch", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      entries: z.array(
+        z.object({
+          endpoint_id: z.string().min(1),
+          event_types: z.array(z.string()),
+        })
+      ),
+      participants_only: z.array(z.string().min(1)).optional().default([]),
+    }).parse(request.body);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    store.contextStore.applyContextSubscriptions(params.id, body.entries, body.participants_only);
+    return { ok: true, context_id: params.id };
+  });
+
   // Slice 0 — context compaction + clear-history
   app.post("/v1/contexts/:id/compact", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
