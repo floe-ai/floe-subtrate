@@ -181,3 +181,121 @@ describe("materializeSavedConfig – agent runtime block (Issue 1)", () => {
     expect(content).not.toContain("runtime-backed endpoint");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests - config hash allow-list (Fix 1: deny-list to allow-list)
+// ---------------------------------------------------------------------------
+
+describe("hashFloeDir allow-list (Fix 1: extension data must not change config hash)", () => {
+  it("extension data write does NOT change the config hash", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    // Add an extension manifest to the workspace
+    const extDir = join(workspace, ".floe", "extensions", "testExt");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(join(extDir, "extension.json"), JSON.stringify({ name: "testExt", version: "1.0.0" }), "utf8");
+
+    const before = loadProject(workspace).config_hash;
+
+    // Write extension runtime data (board.md under a boards subdir)
+    const boardsDir = join(extDir, "boards", "scope-abc");
+    mkdirSync(boardsDir, { recursive: true });
+    writeFileSync(join(boardsDir, "board.md"), "# Board\n\nsome card data", "utf8");
+
+    // Write a card file inside the same extension data tree
+    const cardsDir = join(extDir, "boards", "scope-abc", "cards");
+    mkdirSync(cardsDir, { recursive: true });
+    writeFileSync(join(cardsDir, "card-1.md"), "# Card 1\n\nfrontmatter stuff", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).toBe(before);
+  });
+
+  it("changing floe.yaml DOES change the config hash", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const before = loadProject(workspace).config_hash;
+
+    const yamlPath = join(workspace, ".floe", "floe.yaml");
+    const original = readFileSync(yamlPath, "utf8");
+    writeFileSync(yamlPath, original + "# extra comment\n", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).not.toBe(before);
+  });
+
+  it("changing an agent definition file DOES change the config hash", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const before = loadProject(workspace).config_hash;
+
+    const agentPath = join(workspace, ".floe", "agents", "floe.md");
+    const original = readFileSync(agentPath, "utf8");
+    writeFileSync(agentPath, original + "\n\n# extra section", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).not.toBe(before);
+  });
+
+  it("changing an extension manifest DOES change the config hash", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const extDir = join(workspace, ".floe", "extensions", "testExt");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(join(extDir, "extension.json"), JSON.stringify({ name: "testExt", version: "1.0.0" }), "utf8");
+
+    const before = loadProject(workspace).config_hash;
+
+    writeFileSync(join(extDir, "extension.json"), JSON.stringify({ name: "testExt", version: "2.0.0" }), "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).not.toBe(before);
+  });
+
+  it("writing non-config files (README, skills, state, mcp) does NOT change the config hash", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const before = loadProject(workspace).config_hash;
+
+    // Overwrite README (not a config file)
+    writeFileSync(join(workspace, ".floe", "extensions", "README.md"), "# Changed\n", "utf8");
+    // Overwrite skill file
+    writeFileSync(join(workspace, ".floe", "skills", "substrate-build", "SKILL.md"), "# Changed skill\n", "utf8");
+    // Write a new file into state
+    writeFileSync(join(workspace, ".floe", "state", "some-runtime.json"), "{}", "utf8");
+    // Write a file into mcp
+    writeFileSync(join(workspace, ".floe", "mcp", "README.md"), "# Changed mcp\n", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).toBe(before);
+  });
+
+  it("extension entry-point source files are NOT in the config hash (only extension.json is)", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const extDir = join(workspace, ".floe", "extensions", "testExt");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(join(extDir, "extension.json"), JSON.stringify({ name: "testExt", entry: "./index.ts" }), "utf8");
+    writeFileSync(join(extDir, "index.ts"), "export default () => [];", "utf8");
+
+    const before = loadProject(workspace).config_hash;
+
+    // Changing the entry-point source must NOT change the hash
+    writeFileSync(join(extDir, "index.ts"), "export default () => []; // v2", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).toBe(before);
+  });
+});
