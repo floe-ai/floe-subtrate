@@ -1,12 +1,16 @@
 /**
  * Column file unit tests — parse/serialize, read/write, update, discovery.
  *
+ * Slice 4 (fm/snowball-card-context):
+ *   Column files now use assigned_actors[] instead of owner.kind.
+ *   Legacy `owner` YAML is converted to assigned_actors on parse.
+ *
  * Slice 2 (fm/snowball-col-instr-s2):
  *   Column definitions are committed markdown files at:
  *   boards/<scopeSlug>/columns/<id>.md
  *
  *   Invariants:
- *   - Frontmatter is the source of truth for column config (name, owner, etc.)
+ *   - Frontmatter is the source of truth for column config (name, assigned_actors, etc.)
  *   - Body is the agent instructions (may be empty)
  *   - updateColumnFileFrontmatter preserves instructions body
  *   - updateColumnFileInstructions preserves frontmatter
@@ -45,7 +49,7 @@ function makeColumn(overrides: Partial<ColumnFile> = {}): ColumnFile {
     scope_id: "scope:ws:test",
     order: 0,
     wip_limit: null,
-    owner: { kind: "human" },
+    assigned_actors: [],
     exit_criteria: [],
     instructions: "",
     ...overrides,
@@ -60,15 +64,14 @@ const SCOPE_SLUG = "scope_ws_test";
 // ---------------------------------------------------------------------------
 
 describe("parseColumnFile", () => {
-  it("parses a minimal column file", () => {
+  it("parses a minimal column file with assigned_actors", () => {
     const raw = `---
 id: todo
 name: To Do
 scope_id: scope:ws:test
 order: 0
 wip_limit: null
-owner:
-  kind: human
+assigned_actors: []
 exit_criteria: []
 ---
 `;
@@ -79,7 +82,7 @@ exit_criteria: []
     expect(col!.scope_id).toBe("scope:ws:test");
     expect(col!.order).toBe(0);
     expect(col!.wip_limit).toBeNull();
-    expect(col!.owner).toEqual({ kind: "human" });
+    expect(col!.assigned_actors).toEqual([]);
     expect(col!.exit_criteria).toEqual([]);
     expect(col!.instructions).toBe("");
   });
@@ -91,8 +94,7 @@ name: To Do
 scope_id: scope:ws:test
 order: 0
 wip_limit: null
-owner:
-  kind: human
+assigned_actors: []
 exit_criteria: []
 ---
 
@@ -104,7 +106,34 @@ Check that PR is linked.
     expect(col!.instructions).toContain("Check that PR is linked.");
   });
 
-  it("parses agent owner", () => {
+  it("parses assigned_actors from new-format column file", () => {
+    const raw = `---
+id: in-progress
+name: In Progress
+scope_id: scope:ws:test
+order: 1
+wip_limit: 5
+assigned_actors:
+  - actor_ref: snowball-overseer
+    event_types:
+      - "*"
+exit_criteria:
+  - id: ec-tests
+    description: Tests pass
+    kind: machine
+---
+`;
+    const col = parseColumnFile(raw, "in-progress");
+    expect(col!.assigned_actors).toHaveLength(1);
+    expect(col!.assigned_actors[0].actor_ref).toBe("snowball-overseer");
+    expect(col!.assigned_actors[0].event_types).toEqual(["*"]);
+    expect(col!.wip_limit).toBe(5);
+    expect(col!.exit_criteria).toHaveLength(1);
+    expect(col!.exit_criteria[0].id).toBe("ec-tests");
+  });
+
+  it("converts legacy owner.kind=agent to assigned_actors on parse", () => {
+    // Legacy column files may have `owner:` field — convert transparently
     const raw = `---
 id: in-progress
 name: In Progress
@@ -121,10 +150,28 @@ exit_criteria:
 ---
 `;
     const col = parseColumnFile(raw, "in-progress");
-    expect(col!.owner).toEqual({ kind: "agent", agent_id: "snowball-overseer" });
+    // Legacy `owner.agent` converts to assigned_actors with event_types=["*"]
+    expect(col!.assigned_actors).toHaveLength(1);
+    expect(col!.assigned_actors[0].actor_ref).toBe("snowball-overseer");
+    expect(col!.assigned_actors[0].event_types).toEqual(["*"]);
     expect(col!.wip_limit).toBe(5);
     expect(col!.exit_criteria).toHaveLength(1);
-    expect(col!.exit_criteria[0].id).toBe("ec-tests");
+  });
+
+  it("converts legacy owner.kind=human to empty assigned_actors", () => {
+    const raw = `---
+id: todo
+name: To Do
+scope_id: scope:ws:test
+order: 0
+wip_limit: null
+owner:
+  kind: human
+exit_criteria: []
+---
+`;
+    const col = parseColumnFile(raw, "todo");
+    expect(col!.assigned_actors).toEqual([]);
   });
 
   it("returns null when frontmatter is missing", () => {
@@ -143,8 +190,7 @@ name: Fallback
 scope_id: scope:ws:test
 order: 0
 wip_limit: null
-owner:
-  kind: human
+assigned_actors: []
 exit_criteria: []
 ---
 `;
@@ -161,7 +207,7 @@ describe("serializeColumnFile", () => {
       scope_id: "scope:ws:test",
       order: 1,
       wip_limit: 5,
-      owner: { kind: "agent", agent_id: "my-worker" },
+      assigned_actors: [{ actor_ref: "my-worker", event_types: ["*"] }],
       exit_criteria: [
         { id: "ec-1", description: "Tests pass", kind: "machine" },
       ],
@@ -176,7 +222,7 @@ describe("serializeColumnFile", () => {
     expect(parsed!.scope_id).toBe(original.scope_id);
     expect(parsed!.order).toBe(original.order);
     expect(parsed!.wip_limit).toBe(original.wip_limit);
-    expect(parsed!.owner).toEqual(original.owner);
+    expect(parsed!.assigned_actors).toEqual(original.assigned_actors);
     expect(parsed!.exit_criteria).toHaveLength(1);
     expect(parsed!.instructions).toContain("Do this when a card arrives.");
   });
@@ -197,6 +243,7 @@ describe("serializeColumnFile", () => {
     expect(raw).toContain("My instructions.");
   });
 });
+
 
 // ---------------------------------------------------------------------------
 // Read / Write / List
@@ -312,14 +359,14 @@ describe("updateColumnFileFrontmatter", () => {
     expect(updated!.exit_criteria).toHaveLength(1);
   });
 
-  it("updates owner", () => {
-    const col = makeColumn({ id: "todo", owner: { kind: "human" } });
+  it("updates assigned_actors", () => {
+    const col = makeColumn({ id: "todo", assigned_actors: [] });
     writeColumnFile(tmpDir, SCOPE_SLUG, col);
 
     const updated = updateColumnFileFrontmatter(tmpDir, SCOPE_SLUG, "todo", {
-      owner: { kind: "agent", agent_id: "my-agent" },
+      assigned_actors: [{ actor_ref: "my-agent", event_types: ["*"] }],
     });
-    expect(updated!.owner).toEqual({ kind: "agent", agent_id: "my-agent" });
+    expect(updated!.assigned_actors).toEqual([{ actor_ref: "my-agent", event_types: ["*"] }]);
   });
 
   it("returns null when column file does not exist", () => {
@@ -398,6 +445,7 @@ describe("deleteColumnFile", () => {
   });
 });
 
+
 // ---------------------------------------------------------------------------
 // generateColumnId / defaultColumnFiles
 // ---------------------------------------------------------------------------
@@ -423,6 +471,7 @@ describe("defaultColumnFiles", () => {
     for (const col of cols) {
       expect(col.scope_id).toBe(SCOPE_ID);
       expect(col.instructions).toBe("");
+      expect(col.assigned_actors).toEqual([]); // Default columns have no assigned actors
     }
   });
 
@@ -472,26 +521,27 @@ describe("findBoardScopesForAgentFromFiles", () => {
     expect(scopes).toContain("scope:ws:board2");
   });
 
-  it("returns only boards where non-overseer agent owns a column", () => {
+  it("returns only boards where non-overseer agent has an assigned_actors entry", () => {
     const slug = "scope_ws_board1";
     const cols: ColumnFile[] = [
-      makeColumn({ id: "todo", scope_id: "scope:ws:board1", owner: { kind: "human" } }),
-      makeColumn({ id: "work", scope_id: "scope:ws:board1", order: 1, owner: { kind: "agent", agent_id: "my-worker" } }),
+      makeColumn({ id: "todo", scope_id: "scope:ws:board1", assigned_actors: [] }),
+      makeColumn({ id: "work", scope_id: "scope:ws:board1", order: 1,
+        assigned_actors: [{ actor_ref: "my-worker", event_types: ["*"] }] }),
     ];
     for (const col of cols) writeColumnFile(tmpDir, slug, col);
 
     // Board 2 — my-worker does NOT own any column
     const slug2 = "scope_ws_board2";
-    writeColumnFile(tmpDir, slug2, makeColumn({ id: "todo", scope_id: "scope:ws:board2", owner: { kind: "human" } }));
+    writeColumnFile(tmpDir, slug2, makeColumn({ id: "todo", scope_id: "scope:ws:board2", assigned_actors: [] }));
 
     const scopes = findBoardScopesForAgentFromFiles(tmpDir, "my-worker", "snowball-overseer");
     expect(scopes).toHaveLength(1);
     expect(scopes[0]).toBe("scope:ws:board1");
   });
 
-  it("returns empty when agent does not own any column", () => {
+  it("returns empty when agent does not appear in any column's assigned_actors", () => {
     const slug = "scope_ws_board1";
-    writeColumnFile(tmpDir, slug, makeColumn({ id: "todo", scope_id: "scope:ws:board1", owner: { kind: "human" } }));
+    writeColumnFile(tmpDir, slug, makeColumn({ id: "todo", scope_id: "scope:ws:board1", assigned_actors: [] }));
 
     const scopes = findBoardScopesForAgentFromFiles(tmpDir, "unknown-agent", "snowball-overseer");
     expect(scopes).toHaveLength(0);

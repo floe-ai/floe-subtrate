@@ -114,8 +114,9 @@ export function Column({
             {column.name}
           </h2>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {column.owner.kind === "agent" && (
+            {column.assignedActors.map((actor) => (
               <span
+                key={actor.actor_ref}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -129,9 +130,9 @@ export function Column({
                 }}
               >
                 <BotIcon size={10} />
-                {column.owner.agent_id ?? "agent"}
+                {actor.actor_ref}
               </span>
-            )}
+            ))}
             <button
               type="button"
               onClick={() => onConfigColumn(column)}

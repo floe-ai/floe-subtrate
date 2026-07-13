@@ -5,6 +5,11 @@
  *   Column definitions move from the gitignored sidecar YAML to committed
  *   markdown files, mirroring the card-file pattern.
  *
+ * Slice 4 (fm/snowball-card-context):
+ *   `owner: { kind, agent_id }` replaced with `assigned_actors: AssignedActor[]`.
+ *   Actors are uniform: operator and LLM agents use identical code.
+ *   A column with no assigned actors is equivalent to the old "human-owned" column.
+ *
  * Columns live at:
  *   {workspacePath}/boards/<scopeSlug>/columns/<id>.md
  *
@@ -16,9 +21,9 @@
  * scope_id: "scope:ws:project"
  * order: 1
  * wip_limit: 5
- * owner:
- *   kind: agent
- *   agent_id: snowball-overseer
+ * assigned_actors:
+ *   - actor_ref: snowball-overseer
+ *     event_types: ["*"]
  * exit_criteria:
  *   - id: ec-tests
  *     description: Tests pass
@@ -46,7 +51,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import type { SidecarColumnOwner, SidecarExitCriterion } from "./types.js";
+import type { AssignedActor, SidecarExitCriterion } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,7 +68,13 @@ export interface ColumnFile {
   scope_id: string;
   order: number;
   wip_limit: number | null;
-  owner: SidecarColumnOwner;
+  /**
+   * Uniform actor assignments for this column.
+   * Each actor is added as a participant of landing cards and subscribed
+   * to their specified event types.
+   * Empty = no assigned actors (equivalent to old "human-owned" column).
+   */
+  assigned_actors: AssignedActor[];
   exit_criteria: SidecarExitCriterion[];
   /** Agent instructions for this column — editable by the user, injected by BeforeTurn. */
   instructions: string;
@@ -119,6 +130,20 @@ export function parseColumnFile(raw: string, columnId: string): ColumnFile | nul
   }
   if (!fm || typeof fm !== "object") return null;
 
+  // Parse assigned_actors (Slice 4 model).
+  // Legacy column files may have `owner` instead — migrate transparently.
+  let assigned_actors: AssignedActor[] = [];
+  if (Array.isArray(fm["assigned_actors"])) {
+    assigned_actors = fm["assigned_actors"] as AssignedActor[];
+  } else if (fm["owner"] && typeof fm["owner"] === "object") {
+    // Legacy: convert owner.kind="agent" + owner.agent_id -> assigned_actors
+    const owner = fm["owner"] as { kind?: string; agent_id?: string };
+    if (owner.kind === "agent" && owner.agent_id) {
+      assigned_actors = [{ actor_ref: owner.agent_id, event_types: ["*"] }];
+    }
+    // owner.kind="human" -> empty assigned_actors (already default)
+  }
+
   return {
     id: (fm["id"] as string | undefined) ?? columnId,
     name: (fm["name"] as string | undefined) ?? columnId,
@@ -127,7 +152,7 @@ export function parseColumnFile(raw: string, columnId: string): ColumnFile | nul
     wip_limit: fm["wip_limit"] !== undefined && fm["wip_limit"] !== null
       ? Number(fm["wip_limit"])
       : null,
-    owner: (fm["owner"] as SidecarColumnOwner | undefined) ?? { kind: "human" },
+    assigned_actors,
     exit_criteria: Array.isArray(fm["exit_criteria"])
       ? (fm["exit_criteria"] as SidecarExitCriterion[])
       : [],
@@ -145,7 +170,7 @@ export function serializeColumnFile(col: ColumnFile): string {
     scope_id: col.scope_id,
     order: col.order,
     wip_limit: col.wip_limit,
-    owner: col.owner,
+    assigned_actors: col.assigned_actors,
     exit_criteria: col.exit_criteria,
   };
   const yamlStr = stringifyYaml(fm).trimEnd();
@@ -286,6 +311,7 @@ export function generateColumnId(): string {
 /**
  * Return default column definitions for a new board.
  * Column files are written to disk during board init (POST /board/init).
+ * Default columns have no assigned actors (no agent auto-assigned).
  */
 export function defaultColumnFiles(scopeId: string): ColumnFile[] {
   return [
@@ -295,7 +321,7 @@ export function defaultColumnFiles(scopeId: string): ColumnFile[] {
       scope_id: scopeId,
       order: 0,
       wip_limit: null,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "",
     },
@@ -305,7 +331,7 @@ export function defaultColumnFiles(scopeId: string): ColumnFile[] {
       scope_id: scopeId,
       order: 1,
       wip_limit: 5,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "",
     },
@@ -315,7 +341,7 @@ export function defaultColumnFiles(scopeId: string): ColumnFile[] {
       scope_id: scopeId,
       order: 2,
       wip_limit: null,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "",
     },
@@ -331,7 +357,8 @@ export function defaultColumnFiles(scopeId: string): ColumnFile[] {
  * Scans the committed `boards/` directory (not the gitignored sidecar directory).
  *
  * The overseer is associated with ALL boards.
- * A column worker is associated with any board where their agent_id is a column owner.
+ * A column worker is associated with any board where their actor_ref appears
+ * in any column's assigned_actors list.
  */
 export function findBoardScopesForAgentFromFiles(
   workspacePath: string,
@@ -375,7 +402,7 @@ export function findBoardScopesForAgentFromFiles(
           // Overseer sees all boards — just need to find one column to get scope_id
           matched = true;
           break;
-        } else if (col.owner.kind === "agent" && col.owner.agent_id === agentId) {
+        } else if (col.assigned_actors.some((a) => a.actor_ref === agentId)) {
           matched = true;
           break;
         }

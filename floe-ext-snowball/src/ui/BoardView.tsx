@@ -666,7 +666,7 @@ export function SnowballBoard({
           action: "add",
           name: payload.name,
           wip_limit: payload.wip_limit,
-          owner: payload.owner,
+          assigned_actors: payload.assigned_actors,
           exit_criteria: payload.exit_criteria,
         });
       });
@@ -679,7 +679,7 @@ export function SnowballBoard({
           column_id: columnId,
           name: payload.name,
           wip_limit: payload.wip_limit,
-          owner: payload.owner,
+          assigned_actors: payload.assigned_actors,
           exit_criteria: payload.exit_criteria,
         });
       });

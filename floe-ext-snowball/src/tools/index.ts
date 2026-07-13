@@ -1,6 +1,14 @@
 /**
  * Snowball extension tools.
  *
+ * Slice 4 (fm/snowball-card-context):
+ *   - create_card now creates a bus context for the card (card = context).
+ *   - move_card uses applyColumnAssignment (card context) instead of column contexts.
+ *   - Columns use assigned_actors[] — no owner.kind branching.
+ *   - Tool path acting actor: first assigned actor of destination column.
+ *     (The calling agent's endpoint is not available in ExtensionContext; using
+ *     destination actor as source is pragmatic — they just became a participant.)
+ *
  * Slice 2 (fm/snowball-col-instr-s2):
  *   - Column definitions now read from committed column files instead of sidecar.
  *   - list_columns returns column definitions from column files.
@@ -16,11 +24,9 @@ import type { ExtensionContext } from "../stub/extension-context.js";
 import { asBusClient } from "../stub/bus-client.js";
 import {
   loadSidecar,
-  saveSidecar,
   slugify,
   getUncheckedCriteria,
   buildBoardSnapshot,
-  initBoardContexts,
 } from "../sidecar.js";
 import {
   listColumnFiles,
@@ -35,18 +41,12 @@ import {
   appendCarryForward,
   cardCountsByColumnFromFiles,
 } from "../card-file.js";
-
-// ---------------------------------------------------------------------------
-// Routing helpers
-// ---------------------------------------------------------------------------
-
-function overseerId(workspaceId: string): string {
-  return `actor:${workspaceId}:snowball-overseer`;
-}
-
-function agentEndpointId(workspaceId: string, agentId: string): string {
-  return `actor:${workspaceId}:${agentId}`;
-}
+import {
+  applyColumnAssignment,
+  createCardContext,
+  actorEndpointId,
+  operatorEndpointId,
+} from "../handoff.js";
 
 // ---------------------------------------------------------------------------
 // Tool factory
@@ -61,7 +61,7 @@ export function createTools(ctx: ExtensionContext) {
       name: "list_columns",
       label: "List Board Columns",
       description:
-        "List board columns with their config (WIP limit, owner, exit criteria, agent instructions) for a scope. Returns current card counts per column.",
+        "List board columns with their config (WIP limit, assigned_actors, exit criteria, agent instructions) for a scope. Returns current card counts per column.",
       parameters: {
         type: "object",
         properties: {
@@ -218,6 +218,26 @@ export function createTools(ctx: ExtensionContext) {
           (c) => c.column === targetColumn.id
         ).length;
         const cardId = generateCardId(title);
+        const bus = asBusClient(ctx.busClient);
+
+        // The calling agent is the creator. We use the destination column's first
+        // assigned actor as the acting endpoint if available; else the operator.
+        // TODO: replace with actual calling-agent endpoint when ExtensionContext
+        // exposes the current endpoint_id.
+        const firstAssignedEp =
+          targetColumn.assigned_actors.length > 0
+            ? actorEndpointId(workspaceId, targetColumn.assigned_actors[0].actor_ref)
+            : operatorEndpointId(workspaceId);
+
+        // Create card bus context — the creating actor becomes first participant.
+        const context_id = await createCardContext({
+          workspaceId,
+          scope_id,
+          cardTitle: title,
+          creatorEp: firstAssignedEp,
+          bus,
+        });
+
         writeCard(workspacePath, {
           id: cardId,
           title,
@@ -226,14 +246,26 @@ export function createTools(ctx: ExtensionContext) {
           column: targetColumn.id,
           order,
           created_at: new Date().toISOString(),
+          context_id,
           checks: {},
           body: description ?? "",
         });
 
-        // NOTE: card.created broadcast intentionally omitted — broadcasting to
-        // active_with_delivery_processor with no context_id creates a throwaway
-        // context per card and triggers spurious agent turns. entered_column
-        // is the canonical routing signal for agent work.
+        // Apply column assignment for the destination column.
+        await applyColumnAssignment({
+          cardContextId: context_id,
+          destAssignedActors: targetColumn.assigned_actors,
+          priorAssignedActors: [],
+          actingActorEp: firstAssignedEp,
+          workspaceId,
+          scope_id,
+          cardId,
+          cardTitle: title,
+          toColumnId: targetColumn.id,
+          toColumnName: targetColumn.name,
+          fromColumnId: "",
+          bus,
+        });
 
         return {
           content: [
@@ -242,6 +274,7 @@ export function createTools(ctx: ExtensionContext) {
               text: JSON.stringify({
                 ok: true,
                 card_id: cardId,
+                context_id,
                 column_id: targetColumn.id,
                 title,
               }),
@@ -290,7 +323,6 @@ export function createTools(ctx: ExtensionContext) {
         const columns = listColumnFiles(workspacePath, slug);
         const effectiveColumns =
           columns.length > 0 ? columns : defaultColumnFiles(scope_id);
-        const sidecar = loadSidecar(workspacePath, scope_id);
 
         const card = readCard(workspacePath, card_id);
         if (!card) {
@@ -402,76 +434,50 @@ export function createTools(ctx: ExtensionContext) {
         appendCarryForward(workspacePath, card_id, previousColumnName);
 
         const bus = asBusClient(ctx.busClient);
-        const overseer = overseerId(workspaceId);
 
-        // Lazy board init: ensure the destination column context exists in the sidecar
-        // before emitting the routing event. Without this, every agent-initiated move
-        // to an agent-owned column would create a FRESH context instead of reusing the
-        // column's stable persistent context. (Issue #2 fix)
-        if (toColumn.owner.kind === "agent" && !sidecar.column_contexts[to_column_id]) {
-          try {
-            const { changed } = await initBoardContexts(
-              sidecar,
-              workspaceId,
-              bus,
-              effectiveColumns
-            );
-            if (changed) saveSidecar(workspacePath, scope_id, sidecar);
-          } catch (err) {
-            console.warn(`[snowball] Lazy board init failed in move_card tool: ${err}`);
+        // Lazy card context creation for legacy cards (created before Slice 4).
+        let cardContextId = card.context_id;
+        if (!cardContextId) {
+          // Destination actor becomes the creator for legacy cards.
+          const creatorEp =
+            toColumn.assigned_actors.length > 0
+              ? actorEndpointId(workspaceId, toColumn.assigned_actors[0].actor_ref)
+              : operatorEndpointId(workspaceId);
+          cardContextId = await createCardContext({
+            workspaceId,
+            scope_id,
+            cardTitle: card.title,
+            creatorEp,
+            bus,
+          });
+          if (cardContextId) {
+            updateCardFrontmatter(workspacePath, card_id, { context_id: cardContextId });
           }
         }
 
-        const columnContextId = sidecar.column_contexts[to_column_id];
+        // The acting actor for tool-initiated moves is the destination column's first
+        // assigned actor (they are about to become a participant and take ownership).
+        // TODO: replace with actual calling-agent endpoint when available in ExtensionContext.
+        const actingActorEp =
+          toColumn.assigned_actors.length > 0
+            ? actorEndpointId(workspaceId, toColumn.assigned_actors[0].actor_ref)
+            : operatorEndpointId(workspaceId);
 
-        // NOTE: card.moved broadcast intentionally omitted — see card.created note
-        // above. The entered_column routing event below carries the stable
-        // column context_id and is the canonical signal for both agent routing
-        // and WS-based UI refresh.
-
-        // If destination is agent-owned, emit routing event to column context
-        if (toColumn.owner.kind === "agent" && toColumn.owner.agent_id) {
-          const agentEp = agentEndpointId(workspaceId, toColumn.owner.agent_id);
-          try {
-            await bus.emit({
-              type: "snowball.card.entered_column",
-              workspace_id: workspaceId,
-              source_endpoint_id: overseer,
-              scope_id,
-              ...(columnContextId ? { context_id: columnContextId } : {}),
-              destination: {
-                kind: "endpoint" as const,
-                endpoint_id: agentEp,
-              },
-              content: {
-                text: `Card "${card.title}" has entered column "${toColumn.name}"`,
-                data: {
-                  card_id,
-                  card_title: card.title,
-                  column_id: to_column_id,
-                  column_name: toColumn.name,
-                  from_column_id: previousColumnId,
-                  board_scope_id: scope_id,
-                },
-              },
-              response: { expected: true },
-              metadata: { source: "snowball-extension" },
-            });
-          } catch (err) {
-            console.warn(`[snowball] Failed to emit routing event: ${err}`);
-          }
-
-          // NOTE: advanceCardIfReady is intentionally NOT called here.
-          // This agent just moved the card, completing work in its source column.
-          // The destination agent column must do ITS OWN work (triggered by the
-          // entered_column routing event above) before advancing further.
-          // See fm/floe-advance-protocol for the advance-on-conclusion design.
-        }
-
-        // NOTE: gate_overridden broadcast intentionally omitted — same pattern
-        // as card.created: no context_id + active_with_delivery_processor creates
-        // a throwaway context and triggers spurious agent turns.
-        // The audit trail is the carry-forward comment written to the card file.
+        // Apply column assignment: add new actors, demote prior actors, emit entered_column.
+        await applyColumnAssignment({
+          cardContextId,
+          destAssignedActors: toColumn.assigned_actors,
+          priorAssignedActors: fromColumn?.assigned_actors ?? [],
+          actingActorEp,
+          workspaceId,
+          scope_id,
+          cardId: card_id,
+          cardTitle: card.title,
+          toColumnId: to_column_id,
+          toColumnName: toColumn.name,
+          fromColumnId: previousColumnId,
+          bus,
+        });
 
         return {
           content: [
@@ -560,12 +566,6 @@ export function createTools(ctx: ExtensionContext) {
         updateCardFrontmatter(workspacePath, card_id, {
           checks: updatedChecks,
         });
-
-        // NOTE: criteria_checked broadcast intentionally omitted — same reason
-        // as card.created: no context_id + active_with_delivery_processor creates
-        // a throwaway context and triggers agent turns for a pure state update.
-        // The agent always follows check_criteria with move_card, which emits
-        // entered_column → the canonical routing + UI-refresh signal.
 
         return {
           content: [

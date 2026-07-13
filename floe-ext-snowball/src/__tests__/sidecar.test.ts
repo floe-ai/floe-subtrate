@@ -194,19 +194,20 @@ describe("initBoardContexts", () => {
     }
   });
 
-  it("includes overseer as participant in all column contexts", async () => {
+  it("creates one context per column with no participants for unassigned columns", async () => {
     const scopeId = "scope:ws:test";
     const sidecar = makeEmptySidecar(scopeId, "ws:test");
     const columns = writeDefaultColumns(tmpDir, scopeId);
 
     await initBoardContexts(sidecar, "ws:test", bus, columns);
 
+    // Default columns have no assigned_actors => empty participants
     for (const ctx of bus.createdContexts) {
-      expect(ctx.participants).toContain("actor:ws:test:snowball-overseer");
+      expect(ctx.participants).toEqual([]);
     }
   });
 
-  it("includes column owner agent as participant for agent-owned columns", async () => {
+  it("includes assigned actors as participants for actor-assigned columns", async () => {
     const scopeId = "scope:ws:test";
     const sidecar = makeEmptySidecar(scopeId, "ws:test");
     const agentCol: ColumnFile = {
@@ -215,7 +216,7 @@ describe("initBoardContexts", () => {
       scope_id: scopeId,
       wip_limit: null,
       order: 0,
-      owner: { kind: "agent", agent_id: "my-worker" },
+      assigned_actors: [{ actor_ref: "my-worker", event_types: ["*"] }],
       exit_criteria: [],
       instructions: "",
     };
@@ -226,7 +227,6 @@ describe("initBoardContexts", () => {
 
     const ctx = bus.createdContexts.find((c) => c.title === "Column: Agent Work");
     expect(ctx).toBeDefined();
-    expect(ctx!.participants).toContain("actor:ws:test:snowball-overseer");
     expect(ctx!.participants).toContain("actor:ws:test:my-worker");
   });
 
@@ -294,9 +294,9 @@ describe("cardCountsByColumnFromFiles", () => {
 
   it("counts cards from task files", () => {
     const now = new Date().toISOString();
-    writeCard(tmpDir, { id: "a", title: "A", type: "task", actor: null, column: "todo", order: 0, created_at: now, checks: {}, body: "" });
-    writeCard(tmpDir, { id: "b", title: "B", type: "task", actor: null, column: "todo", order: 1, created_at: now, checks: {}, body: "" });
-    writeCard(tmpDir, { id: "c", title: "C", type: "task", actor: null, column: "in-progress", order: 0, created_at: now, checks: {}, body: "" });
+    writeCard(tmpDir, { id: "a", title: "A", type: "task", actor: null, column: "todo", order: 0, created_at: now, context_id: null, checks: {}, body: "" });
+    writeCard(tmpDir, { id: "b", title: "B", type: "task", actor: null, column: "todo", order: 1, created_at: now, context_id: null, checks: {}, body: "" });
+    writeCard(tmpDir, { id: "c", title: "C", type: "task", actor: null, column: "in-progress", order: 0, created_at: now, context_id: null, checks: {}, body: "" });
 
     const counts = cardCountsByColumnFromFiles(tmpDir, ["todo", "in-progress", "done"]);
     expect(counts["todo"]).toBe(2);
@@ -325,7 +325,7 @@ describe("buildBoardSnapshot", () => {
     const scopeId = "scope:ws:test";
     const now = new Date().toISOString();
     const columns = writeDefaultColumns(tmpDir, scopeId);
-    writeCard(tmpDir, { id: "card-1", title: "Task 1", type: "task", actor: null, column: "todo", order: 0, created_at: now, checks: {}, body: "" });
+    writeCard(tmpDir, { id: "card-1", title: "Task 1", type: "task", actor: null, column: "todo", order: 0, created_at: now, context_id: null, checks: {}, body: "" });
 
     const sidecar = makeEmptySidecar(scopeId, "ws:test", { todo: "ctx-todo" });
     const snapshot = buildBoardSnapshot(tmpDir, sidecar, columns);
@@ -345,7 +345,7 @@ describe("buildBoardSnapshot", () => {
       scope_id: scopeId,
       order: 0,
       wip_limit: null,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "Work on tasks here.",
     };
@@ -368,6 +368,7 @@ describe("buildBoardSnapshot", () => {
         column: "in-progress",
         order: i,
         created_at: now,
+        context_id: null,
         checks: {},
         body: "",
       });
@@ -391,6 +392,7 @@ describe("buildBoardSnapshot", () => {
       column: "in-progress",
       order: 0,
       created_at: now,
+      context_id: null,
       checks: {
         "in-progress": {
           "ec-1": { checked: true, checked_at: now, checked_by: "machine" },
@@ -420,6 +422,7 @@ describe("getUncheckedCriteria", () => {
       column: "in-progress",
       order: 0,
       created_at: new Date().toISOString(),
+      context_id: null,
       checks: {},
       body: "",
     };
@@ -438,6 +441,7 @@ describe("getUncheckedCriteria", () => {
       column: "in-progress",
       order: 0,
       created_at: now,
+      context_id: null,
       checks: {
         "in-progress": {
           "ec-1": { checked: true, checked_at: now, checked_by: null },
@@ -467,7 +471,7 @@ describe("renderCompactBoardSnapshot", () => {
           wip_limit: null,
           card_count: 1,
           wip_exceeded: false,
-          owner: { kind: "human" as const },
+          assigned_actors: [],
           exit_criteria: [],
           instructions: "",
         },
@@ -486,6 +490,6 @@ describe("renderCompactBoardSnapshot", () => {
     const rendered = renderCompactBoardSnapshot(snapshot);
     expect(rendered).toContain("To Do");
     expect(rendered).toContain("My task");
-    expect(rendered).toContain("[human]");
+    expect(rendered).toContain("[unassigned]");
   });
 });

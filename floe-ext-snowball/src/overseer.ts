@@ -1,24 +1,21 @@
 /**
  * Snowball overseer — mechanical card advance driver.
  *
+ * Slice 4 (fm/snowball-card-context):
+ *   Uses applyColumnAssignment (card context) instead of column contexts.
+ *   entered_column emitted into card context, not column context.
+ *
  * Slice 2 (fm/snowball-col-instr-s2):
  *   Now reads column definitions from committed column files instead of sidecar.
  *   Minimal change to keep overseer working with the new file-first model.
  *
  * Provides a deterministic in-process evaluator that advances a card through
- * consecutive agent-owned columns when its exit criteria are all satisfied.
+ * consecutive actor-assigned columns when its exit criteria are all satisfied.
  *
- * Evaluation is triggered synchronously from the move path (handlePostMove,
- * move_card tool) whenever a card enters an agent-owned column, and cascades
- * through further agent columns in the same call with no timer involved.
- *
- * Accepted limitation (Captain-approved): if exit criteria become satisfied
- * while a card is already sitting in an agent column with no card-move event,
- * the overseer will NOT wake and the card stays put.
+ * All emits are best-effort; a failed emit does not roll back the card file.
  */
 
 import {
-  loadSidecar,
   slugify,
   getUncheckedCriteria,
 } from "./sidecar.js";
@@ -30,32 +27,23 @@ import {
   listCards,
 } from "./card-file.js";
 import { asBusClient } from "./stub/bus-client.js";
+import {
+  applyColumnAssignment,
+  createCardContext,
+  actorEndpointId,
+} from "./handoff.js";
 
 /** Maximum cascade depth guard against infinite column loops. */
 const MAX_CASCADE = 20;
 
-function overseerId(workspaceId: string): string {
-  return `actor:${workspaceId}:snowball-overseer`;
-}
-
-function agentEndpointId(workspaceId: string, agentId: string): string {
-  return `actor:${workspaceId}:${agentId}`;
-}
-
 /**
  * Run the overseer's advance evaluation for a single card.
  *
- * The card must currently be in an agent-owned column.  If its exit criteria
+ * The card must currently be in an actor-assigned column.  If its exit criteria
  * are all satisfied and the next column has room (WIP), the card is advanced.
- * If the next column is also agent-owned, evaluation cascades synchronously
- * until a human-owned column is reached, a WIP limit blocks the advance, an
- * exit criterion is unmet, or the card is in the last column.
- *
- * Emits `snowball.card.moved` for every mechanical advance and
- * `snowball.card.entered_column` when an advance lands in a further
- * agent-owned column (for routing / telemetry).
- *
- * All emits are best-effort; a failed emit does not roll back the card file.
+ * If the next column is also actor-assigned, evaluation cascades synchronously
+ * until a column with no assigned actors is reached, a WIP limit blocks the
+ * advance, an exit criterion is unmet, or the card is in the last column.
  */
 export async function advanceCardIfReady(
   ctx: { workspacePath: string; workspaceId: string; busClient: unknown },
@@ -63,19 +51,17 @@ export async function advanceCardIfReady(
   cardId: string
 ): Promise<void> {
   const bus = asBusClient(ctx.busClient);
-  const overseer = overseerId(ctx.workspaceId);
   const slug = slugify(scopeId);
 
   for (let depth = 0; depth < MAX_CASCADE; depth++) {
-    // Reload column files, sidecar, and card each iteration for freshest state.
-    const sidecar = loadSidecar(ctx.workspacePath, scopeId);
+    // Reload column files and card each iteration for freshest state.
     const columns = listColumnFiles(ctx.workspacePath, slug);
     const card = readCard(ctx.workspacePath, cardId);
     if (!card) break;
 
     const col = columns.find((c) => c.id === card.column);
-    // Stop if card is in a human-owned column (or column is missing).
-    if (!col || col.owner.kind !== "agent") break;
+    // Stop if card is in a column with no assigned actors (or column is missing).
+    if (!col || col.assigned_actors.length === 0) break;
 
     // Hard gate: all exit criteria in the current column must be satisfied.
     const unchecked = getUncheckedCriteria(card, col.id, col.exit_criteria);
@@ -138,48 +124,45 @@ export async function advanceCardIfReady(
       scope_id: scopeId,
     });
 
-    const columnContextId = sidecar.column_contexts[nextCol.id];
+    // If destination is an actor-assigned column, apply column assignment and continue cascade.
+    if (nextCol.assigned_actors.length > 0) {
+      const primaryActor = nextCol.assigned_actors[0];
+      const actingEp = actorEndpointId(ctx.workspaceId, primaryActor.actor_ref);
 
-    // NOTE: card.moved broadcast intentionally omitted — see handlers.ts
-    // handlePostCard comment. The entered_column routing event below is the
-    // canonical signal for both agent routing and WS-based UI refresh.
-
-    // If destination is agent-owned, emit routing event and continue cascade.
-    if (nextCol.owner.kind === "agent" && nextCol.owner.agent_id) {
-      const agentEp = agentEndpointId(ctx.workspaceId, nextCol.owner.agent_id);
-      try {
-        await bus.emit({
-          type: "snowball.card.entered_column",
-          workspace_id: ctx.workspaceId,
-          source_endpoint_id: overseer,
+      // Lazy card context creation for legacy cards.
+      const freshCard = readCard(ctx.workspacePath, cardId);
+      let cardContextId = freshCard?.context_id ?? null;
+      if (!cardContextId) {
+        cardContextId = await createCardContext({
+          workspaceId: ctx.workspaceId,
           scope_id: scopeId,
-          ...(columnContextId ? { context_id: columnContextId } : {}),
-          destination: {
-            kind: "endpoint" as const,
-            endpoint_id: agentEp,
-          },
-          content: {
-            text: `Card "${card.title}" has entered column "${nextCol.name}" (overseer advance)`,
-            data: {
-              card_id: cardId,
-              card_title: card.title,
-              column_id: nextCol.id,
-              column_name: nextCol.name,
-              from_column_id: fromColumnId,
-              board_scope_id: scopeId,
-            },
-          },
-          response: { expected: true },
-          metadata: { source: "snowball-overseer" },
+          cardTitle: card.title,
+          creatorEp: actingEp,
+          bus,
         });
-      } catch (err) {
-        console.warn("[snowball:overseer] failed to emit routing event", {
-          error: String(err),
-        });
+        if (cardContextId) {
+          updateCardFrontmatter(ctx.workspacePath, cardId, { context_id: cardContextId });
+        }
       }
-      // Loop continues: re-evaluate the card in the new agent-owned column.
+
+      await applyColumnAssignment({
+        cardContextId,
+        destAssignedActors: nextCol.assigned_actors,
+        priorAssignedActors: col.assigned_actors,
+        actingActorEp: actingEp,
+        workspaceId: ctx.workspaceId,
+        scope_id: scopeId,
+        cardId,
+        cardTitle: card.title,
+        toColumnId: nextCol.id,
+        toColumnName: nextCol.name,
+        fromColumnId,
+        bus,
+      });
+
+      // Loop continues: re-evaluate the card in the new actor-assigned column.
     } else {
-      // Destination is human-owned; mechanical advance is complete.
+      // Destination has no assigned actors; mechanical advance is complete.
       break;
     }
   }

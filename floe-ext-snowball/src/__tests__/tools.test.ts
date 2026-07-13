@@ -86,6 +86,7 @@ function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
     column: "todo",
     order: 0,
     created_at: new Date().toISOString(),
+    context_id: null,
     checks: {},
     body: "",
     ...overrides,

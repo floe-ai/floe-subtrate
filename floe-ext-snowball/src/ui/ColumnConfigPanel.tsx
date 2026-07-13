@@ -22,7 +22,11 @@ import type { UiColumn, UiExitCriterion } from "./types.ts";
 export interface ColumnConfigPayload {
   name: string;
   wip_limit: number | null;
-  owner: { kind: "human" | "agent"; agent_id?: string };
+  /**
+   * Uniform actor assignments. An empty array = no assigned actors (was: owner.kind="human").
+   * A single-element array with event_types=["*"] = primary actor (was: owner.kind="agent").
+   */
+  assigned_actors: Array<{ actor_ref: string; event_types: string[] }>;
   exit_criteria: UiExitCriterion[];
 }
 
@@ -60,10 +64,13 @@ export function ColumnConfigPanel({
   const isAddMode = column === null;
 
   const [name, setName] = useState(column?.name ?? "");
+  // Derive human/agent UI toggle from assigned_actors.
+  // Agent = at least one actor with event_types=["*"]; Human = no assigned actors.
+  const primaryActor = column?.assignedActors.find((a) => a.event_types.includes("*"));
   const [ownerKind, setOwnerKind] = useState<"human" | "agent">(
-    column?.owner.kind ?? "human"
+    primaryActor ? "agent" : "human"
   );
-  const [agentId, setAgentId] = useState(column?.owner.agent_id ?? "");
+  const [agentId, setAgentId] = useState(primaryActor?.actor_ref ?? "");
   const [wipLimit, setWipLimit] = useState(
     column?.wipLimit !== null && column?.wipLimit !== undefined
       ? String(column.wipLimit)
@@ -81,8 +88,9 @@ export function ColumnConfigPanel({
   // Sync state when column prop changes (e.g. switching which column to edit)
   useEffect(() => {
     setName(column?.name ?? "");
-    setOwnerKind(column?.owner.kind ?? "human");
-    setAgentId(column?.owner.agent_id ?? "");
+    const pa = column?.assignedActors.find((a) => a.event_types.includes("*"));
+    setOwnerKind(pa ? "agent" : "human");
+    setAgentId(pa?.actor_ref ?? "");
     setWipLimit(
       column?.wipLimit !== null && column?.wipLimit !== undefined
         ? String(column.wipLimit)
@@ -150,10 +158,10 @@ export function ColumnConfigPanel({
       const payload: ColumnConfigPayload = {
         name: name.trim(),
         wip_limit: parsedWip ?? null,
-        owner:
-          ownerKind === "agent"
-            ? { kind: "agent", agent_id: agentId.trim() || undefined }
-            : { kind: "human" },
+        assigned_actors:
+          ownerKind === "agent" && agentId.trim()
+            ? [{ actor_ref: agentId.trim(), event_types: ["*"] }]
+            : [],
         exit_criteria: criteria.filter((c) => c.description.trim() !== ""),
       };
       await onSave(column?.id ?? null, payload);

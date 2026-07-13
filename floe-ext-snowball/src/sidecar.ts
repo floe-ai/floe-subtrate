@@ -147,21 +147,18 @@ export function saveSidecar(
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the snowball overseer endpoint id for a workspace.
+ * Compute the endpoint id for a workspace + actor ref.
  */
-function overseerId(workspaceId: string): string {
-  return `actor:${workspaceId}:snowball-overseer`;
-}
-
-/**
- * Compute the agent endpoint id for a workspace + agent.
- */
-function agentEndpointId(workspaceId: string, agentId: string): string {
-  return `actor:${workspaceId}:${agentId}`;
+function agentEndpointId(workspaceId: string, actorRef: string): string {
+  return `actor:${workspaceId}:${actorRef}`;
 }
 
 /**
  * Initialise column contexts in the bus and persist context_ids to sidecar.
+ *
+ * DORMANT since Slice 4: card contexts are now the routing target.
+ * Column contexts are still created for backward compat but not used for routing.
+ * Retired and removed in Slice 6.
  *
  * Takes the column definitions from committed column files (not the sidecar).
  * Creates one bus Context per column (scoped to the board scope_id) if the
@@ -176,7 +173,6 @@ export async function initBoardContexts(
   columns: ColumnFile[]
 ): Promise<{ changed: boolean }> {
   let changed = false;
-  const overseer = overseerId(workspaceId);
 
   for (const col of columns) {
     if (sidecar.column_contexts[col.id]) {
@@ -184,11 +180,9 @@ export async function initBoardContexts(
       continue;
     }
 
-    const participants: string[] = [overseer];
-    if (col.owner.kind === "agent" && col.owner.agent_id) {
-      const agent = agentEndpointId(workspaceId, col.owner.agent_id);
-      if (!participants.includes(agent)) participants.push(agent);
-    }
+    // Include all assigned actors as participants (uniform actor model)
+    const participants: string[] = col.assigned_actors
+      .map((a) => agentEndpointId(workspaceId, a.actor_ref));
 
     try {
       const contextId = await busClient.createContext({
@@ -239,7 +233,7 @@ export function buildBoardSnapshot(
     card_count: counts[col.id] ?? 0,
     wip_exceeded:
       col.wip_limit !== null && (counts[col.id] ?? 0) > col.wip_limit,
-    owner: col.owner,
+    assigned_actors: col.assigned_actors,
     exit_criteria: col.exit_criteria,
     instructions: col.instructions,
   }));
@@ -294,13 +288,12 @@ export function renderCompactBoardSnapshot(snapshot: BoardSnapshot): string {
   for (const col of snapshot.columns) {
     const wipStr =
       col.wip_limit !== null
-        ? ` (${col.card_count}/${col.wip_limit} WIP${col.wip_exceeded ? " ⚠ EXCEEDED" : ""})`
+        ? ` (${col.card_count}/${col.wip_limit} WIP${col.wip_exceeded ? " \u26a0 EXCEEDED" : ""})`
         : ` (${col.card_count} cards)`;
-    const ownerStr =
-      col.owner.kind === "agent"
-        ? ` [agent:${col.owner.agent_id ?? "?"}]`
-        : " [human]";
-    lines.push(`## ${col.name}${wipStr}${ownerStr}`);
+    const actorsStr = col.assigned_actors.length > 0
+      ? ` [${col.assigned_actors.map((a) => a.actor_ref).join(", ")}]`
+      : " [unassigned]";
+    lines.push(`## ${col.name}${wipStr}${actorsStr}`);
 
     const colCards = snapshot.cards.filter((c) => c.column_id === col.id);
     if (colCards.length === 0) {

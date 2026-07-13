@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { mkdirSync, rmSync } from "node:fs";
 import { registerHooks } from "../hooks.js";
 import { createTools } from "../tools/index.js";
-import { saveSidecar, slugify, loadSidecar } from "../sidecar.js";
+import { saveSidecar, slugify } from "../sidecar.js";
 import { writeCard, readCard } from "../card-file.js";
 import {
   writeColumnFile,
@@ -67,6 +67,7 @@ function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
     column: "todo",
     order: 0,
     created_at: new Date().toISOString(),
+    context_id: null,
     checks: {},
     body: "",
     ...overrides,
@@ -74,7 +75,7 @@ function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
 }
 
 /**
- * Standard 3-column board: todo (human) → agent-col (agent, AGENT_ID, ec-tests) → done (human).
+ * Standard 3-column board: todo (no actors) → agent-col (AGENT_ID assigned, ec-tests) → done (no actors).
  */
 function writeBoard(tmpDir: string): ColumnFile[] {
   const slug = slugify(SCOPE);
@@ -85,7 +86,7 @@ function writeBoard(tmpDir: string): ColumnFile[] {
       scope_id: SCOPE,
       wip_limit: null,
       order: 0,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "",
     },
@@ -95,7 +96,7 @@ function writeBoard(tmpDir: string): ColumnFile[] {
       scope_id: SCOPE,
       wip_limit: null,
       order: 1,
-      owner: { kind: "agent", agent_id: AGENT_ID },
+      assigned_actors: [{ actor_ref: AGENT_ID, event_types: ["*"] }],
       exit_criteria: [
         { id: "ec-tests", description: "Tests pass", kind: "machine" },
         { id: "ec-review", description: "Code reviewed", kind: "human" },
@@ -108,7 +109,7 @@ function writeBoard(tmpDir: string): ColumnFile[] {
       scope_id: SCOPE,
       wip_limit: null,
       order: 2,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "",
     },
@@ -329,10 +330,8 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
 });
 
 // ---------------------------------------------------------------------------
-// Issue #2 regression: stable column context across moves (tools path)
-// ---------------------------------------------------------------------------
 
-describe("Issue #2 regression — move_card tool reuses stable column context", () => {
+describe("Slice 4 regression — move_card tool uses stable card context", () => {
   let tmpDir: string;
   let bus: StubBusClient;
 
@@ -346,12 +345,10 @@ describe("Issue #2 regression — move_card tool reuses stable column context", 
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("lazy init: move_card tool creates and persists context_id on first move", async () => {
-    // ISSUE #2 REGRESSION: Before fix, move_card tool read an empty sidecar and
-    // emitted entered_column WITHOUT context_id → a NEW context was created every
-    // time. Fix: tool now does lazy board init, writes context_id to sidecar.
+  it("lazy init: move_card tool creates and persists card context_id on first move", async () => {
+    // Legacy card (no context_id). First move to an agent column creates
+    // the card context lazily and writes it to the card frontmatter.
     writeBoard(tmpDir);
-    // Empty sidecar — no column contexts pre-created
     saveSidecar(tmpDir, SCOPE, makeSidecar({}));
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "todo" }));
 
@@ -363,25 +360,25 @@ describe("Issue #2 regression — move_card tool reuses stable column context", 
     });
     expect(JSON.parse(result.content[0].text).ok).toBe(true);
 
-    // entered_column event must have context_id set
+    // entered_column event must use destination.kind="context"
     const routingEvent = bus.emittedEvents.find(
       (e) => e.type === "snowball.card.entered_column"
     );
     expect(routingEvent).toBeDefined();
-    expect(routingEvent!.context_id).toBeDefined();
-    expect(typeof routingEvent!.context_id).toBe("string");
+    expect(routingEvent!.destination?.kind).toBe("context");
+    const cardCtxId = routingEvent!.destination?.context_id;
+    expect(cardCtxId).toBeDefined();
+    expect(typeof cardCtxId).toBe("string");
 
-    // Sidecar must now have the context_id persisted
-    const sidecar = loadSidecar(tmpDir, SCOPE);
-    expect(sidecar.column_contexts["agent-col"]).toBeDefined();
-    expect(sidecar.column_contexts["agent-col"]).toBe(routingEvent!.context_id);
+    // Card frontmatter must have context_id written
+    const card = readCard(tmpDir, "card-a");
+    expect(card!.context_id).toBe(cardCtxId);
   });
 
-  it("stable context: two moves to same agent column use the same context_id", async () => {
+  it("stable context: two moves of the SAME card use the same card context_id", async () => {
     writeBoard(tmpDir);
     saveSidecar(tmpDir, SCOPE, makeSidecar({}));
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "todo" }));
-    writeCard(tmpDir, makeCardFile({ id: "card-b", title: "Card B", column: "todo", order: 1 }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
 
@@ -392,31 +389,25 @@ describe("Issue #2 regression — move_card tool reuses stable column context", 
       scope_id: SCOPE,
     });
 
-    const firstRouting = bus.emittedEvents.find(
-      (e) => e.type === "snowball.card.entered_column" &&
-        (e.content.data as Record<string, unknown>)?.card_id === "card-a"
-    );
-    expect(firstRouting?.context_id).toBeDefined();
+    const firstCtxId = (bus.emittedEvents.find(
+      (e) => e.type === "snowball.card.entered_column"
+    ))?.destination?.context_id;
+    expect(firstCtxId).toBeDefined();
 
-    // Move card-b to agent-col
-    bus.emittedEvents.length = 0; // reset to make filtering easy
-    await callTool(tools, "move_card", {
-      card_id: "card-b",
-      to_column_id: "agent-col",
-      scope_id: SCOPE,
-    });
+    // Check all criteria so the move gate passes
+    await callTool(tools, "check_criteria", { card_id: "card-a", scope_id: SCOPE, criterion_id: "ec-tests", checked: true });
+    await callTool(tools, "check_criteria", { card_id: "card-a", scope_id: SCOPE, criterion_id: "ec-review", checked: true });
 
-    const secondRouting = bus.emittedEvents.find(
-      (e) => e.type === "snowball.card.entered_column" &&
-        (e.content.data as Record<string, unknown>)?.card_id === "card-b"
-    );
-    expect(secondRouting?.context_id).toBeDefined();
+    // Move card-a to done
+    bus.emittedEvents.length = 0;
+    await callTool(tools, "move_card", { card_id: "card-a", to_column_id: "done", scope_id: SCOPE });
 
-    // Both routing events must use the SAME context_id (the stable column context)
-    expect(secondRouting!.context_id).toBe(firstRouting!.context_id);
+    // "done" has no assigned actors — no entered_column. Card context_id should persist.
+    const card = readCard(tmpDir, "card-a");
+    expect(card!.context_id).toBe(firstCtxId);
   });
 
-  it("only ONE createContext call for a given agent column across multiple moves", async () => {
+  it("two different cards each get their own card context_id", async () => {
     writeBoard(tmpDir);
     saveSidecar(tmpDir, SCOPE, makeSidecar({}));
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "todo" }));
@@ -424,41 +415,38 @@ describe("Issue #2 regression — move_card tool reuses stable column context", 
 
     const tools = createTools(makeCtx(tmpDir, bus));
 
-    await callTool(tools, "move_card", {
-      card_id: "card-a",
-      to_column_id: "agent-col",
-      scope_id: SCOPE,
-    });
-    await callTool(tools, "move_card", {
-      card_id: "card-b",
-      to_column_id: "agent-col",
-      scope_id: SCOPE,
-    });
+    await callTool(tools, "move_card", { card_id: "card-a", to_column_id: "agent-col", scope_id: SCOPE });
+    await callTool(tools, "move_card", { card_id: "card-b", to_column_id: "agent-col", scope_id: SCOPE });
 
-    // Only 1 createContext for agent-col (lazy init on first move; reused on second)
-    const agentColContexts = bus.createdContexts.filter(
-      (c) => c.title === "Column: Agent Work"
-    );
-    expect(agentColContexts).toHaveLength(1);
+    const cardA = readCard(tmpDir, "card-a");
+    const cardB = readCard(tmpDir, "card-b");
+    expect(cardA!.context_id).toBeDefined();
+    expect(cardB!.context_id).toBeDefined();
+    // Each card has its OWN context (not shared)
+    expect(cardA!.context_id).not.toBe(cardB!.context_id);
   });
 
-  it("move_card tool still works when board was pre-initialized (sidecar has contexts)", async () => {
+  it("move_card tool works when card already has context_id (no double context creation)", async () => {
     writeBoard(tmpDir);
-    saveSidecar(tmpDir, SCOPE, makeSidecar({ "agent-col": "ctx-pre-existing", "done": "ctx-done" }));
-    writeCard(tmpDir, makeCardFile({ id: "card-c", title: "Card C", column: "todo" }));
+    saveSidecar(tmpDir, SCOPE, makeSidecar({}));
+    const existingCtxId = "ctx-pre-existing-card";
+    bus.seedContext({
+      context_id: existingCtxId,
+      workspace_id: WS_ID,
+      scope_id: SCOPE,
+      created_at: new Date().toISOString(),
+      title: "Card C",
+      first_message_preview: null,
+      participants: [],
+    });
+    writeCard(tmpDir, makeCardFile({ id: "card-c", title: "Card C", column: "todo", context_id: existingCtxId }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
-    await callTool(tools, "move_card", {
-      card_id: "card-c",
-      to_column_id: "agent-col",
-      scope_id: SCOPE,
-    });
+    await callTool(tools, "move_card", { card_id: "card-c", to_column_id: "agent-col", scope_id: SCOPE });
 
-    const routing = bus.emittedEvents.find(
-      (e) => e.type === "snowball.card.entered_column"
-    );
-    // Must reuse pre-existing context, not create a new one
-    expect(routing?.context_id).toBe("ctx-pre-existing");
+    const routing = bus.emittedEvents.find((e) => e.type === "snowball.card.entered_column");
+    // Must reuse existing card context, not create a new one
+    expect(routing?.destination?.context_id).toBe(existingCtxId);
     expect(bus.createdContexts).toHaveLength(0);
   });
 });

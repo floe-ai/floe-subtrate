@@ -37,6 +37,7 @@ function makeCard(overrides: Partial<CardFile> = {}): CardFile {
     column: "todo",
     order: 0,
     created_at: "2024-01-15T10:00:00.000Z",
+    context_id: null,
     checks: {},
     body: "Description of the task.",
     ...overrides,

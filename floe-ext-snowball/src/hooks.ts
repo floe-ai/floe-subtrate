@@ -93,7 +93,7 @@ export function registerHooks(ctx: ExtensionContext): void {
 
         const ownedColumns = columns.filter(
           (col) =>
-            col.owner.kind === "agent" && col.owner.agent_id === agentId
+            col.assigned_actors.some((a) => a.actor_ref === agentId)
         );
         const ownedColumnIds = new Set(ownedColumns.map((c) => c.id));
         const myCards = snapshot.cards.filter((c) =>
