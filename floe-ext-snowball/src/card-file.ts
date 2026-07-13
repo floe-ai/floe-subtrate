@@ -110,6 +110,7 @@ export function parseCardFile(raw: string, id: string): CardFile | null {
     column: (fm["column"] as string | undefined) ?? "",
     order: typeof fm["order"] === "number" ? fm["order"] : 0,
     created_at: (fm["created_at"] as string | undefined) ?? new Date().toISOString(),
+    context_id: (fm["context_id"] as string | null | undefined) ?? null,
     checks: (fm["checks"] as Record<string, Record<string, CriterionCheckState>> | undefined) ?? {},
     body,
   };
@@ -127,6 +128,7 @@ export function serializeCardFile(card: CardFile): string {
     column: card.column,
     order: card.order,
     created_at: card.created_at,
+    context_id: card.context_id ?? null,
     checks: card.checks,
   };
   const yamlStr = stringifyYaml(fm).trimEnd();

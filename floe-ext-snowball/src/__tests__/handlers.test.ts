@@ -121,6 +121,7 @@ function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
     column: "todo",
     order: 0,
     created_at: new Date().toISOString(),
+    context_id: null,
     checks: {},
     body: "",
     ...overrides,
@@ -205,7 +206,7 @@ describe("GET /board", () => {
       scope_id: SCOPE,
       order: 0,
       wip_limit: null,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "Review tasks carefully.",
     };
@@ -258,7 +259,7 @@ describe("POST /board/init", () => {
       scope_id: SCOPE,
       order: 0,
       wip_limit: null,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "Do this.",
     };
@@ -291,7 +292,7 @@ describe("GET /column/instructions", () => {
       scope_id: SCOPE,
       order: 0,
       wip_limit: null,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "Work on tasks here.",
     };
@@ -335,7 +336,7 @@ describe("POST /column/instructions", () => {
       scope_id: SCOPE,
       order: 0,
       wip_limit: null,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "",
     };
@@ -739,19 +740,18 @@ describe("POST /move", () => {
     expect(body.error).toBe("already_in_column");
   });
 
-  it("routes event to agent endpoint when destination is agent-owned", async () => {
+  it("routes entered_column into card context when destination has assigned actors", async () => {
     const slug = slugify(SCOPE);
     const cols = defaultColumnFiles(SCOPE);
-    // in-progress owned by my-worker
+    // in-progress assigned to my-worker
     const inProgressCol: ColumnFile = {
       ...cols[1],
-      owner: { kind: "agent", agent_id: "my-worker" },
+      assigned_actors: [{ actor_ref: "my-worker", event_types: ["*"] }],
     };
     writeColumnFile(tmpDir, slug, cols[0]);
     writeColumnFile(tmpDir, slug, inProgressCol);
     writeColumnFile(tmpDir, slug, cols[2]);
-    const sidecar = makeSidecar(SCOPE, "ws-test", { "in-progress": "ctx-inprogress" });
-    saveSidecar(tmpDir, SCOPE, sidecar);
+    saveSidecar(tmpDir, SCOPE, makeSidecar(SCOPE, "ws-test"));
     writeCard(tmpDir, makeCardFile({ id: "my-card", column: "todo" }));
 
     await call(handlers, "POST", "/move", {
@@ -762,8 +762,16 @@ describe("POST /move", () => {
       (e) => e.type === "snowball.card.entered_column"
     );
     expect(routingEvent).toBeDefined();
-    expect(routingEvent!.destination?.endpoint_id).toBe("actor:ws-test:my-worker");
-    expect(routingEvent!.context_id).toBe("ctx-inprogress");
+    // Routed into card context (not endpoint-targeted)
+    expect(routingEvent!.destination?.kind).toBe("context");
+    // Card context id is set (not a column context)
+    const cardContextId = routingEvent!.destination?.context_id;
+    expect(cardContextId).toBeDefined();
+    expect(typeof cardContextId).toBe("string");
+    // Content references the card and column
+    const data = routingEvent!.content.data as Record<string, unknown>;
+    expect(data.card_id).toBe("my-card");
+    expect(data.column_id).toBe("in-progress");
   });
 });
 
@@ -810,7 +818,7 @@ describe("POST /columns", () => {
       scope_id: SCOPE,
       order: 0,
       wip_limit: null,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "These are my instructions.",
     };
@@ -1023,7 +1031,7 @@ describe("POST /move — advance-on-conclusion behavior", () => {
     // Make in-progress agent-owned with no exit criteria
     const agentCol: ColumnFile = {
       ...cols[1],
-      owner: { kind: "agent", agent_id: "my-worker" },
+      assigned_actors: [{ actor_ref: "my-worker", event_types: ["*"] }],
       exit_criteria: [],
     };
     writeColumnFile(tmpDir, slug, cols[0]);

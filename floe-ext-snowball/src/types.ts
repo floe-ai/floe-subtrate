@@ -1,19 +1,22 @@
 /**
  * Snowball extension — shared domain types.
  *
+ * Slice 4 (fm/snowball-card-context):
+ *   - Card = context (context_id added to CardFile frontmatter)
+ *   - Columns use assigned_actors[] replacing owner.kind model
+ *   - Actors are uniform: no human/machine distinction in column config
+ *
  * Foundation Slice 1 (fm/snowball-found-s1):
- *   - Column = Context (bus Context per column, owner actor frozen participant)
  *   - Card = Markdown file at tasks/<id>.md (frontmatter + body + carry-forward comments)
  *   - Card-move = event delivered to destination column's Context
  *
- * Owner identity uses `agent_id` (contract R5) not free-form `role`.
+ * Owner identity uses actor_ref slugs (contract R5).
  */
 
 // ---------------------------------------------------------------------------
-// Board sidecar schema v2
-// (.floe/extensions/snowball/boards/<slug>.yaml)
-// Now owns column definitions + column_contexts map only.
-// Cards are files in tasks/; the sidecar no longer holds card state.
+// Board sidecar schema v3
+// (.floe/extensions/snowball/runtime/<slug>.yaml)
+// Runtime-only: column_contexts map. DORMANT in Slice 4; removed in Slice 6.
 // ---------------------------------------------------------------------------
 
 /**
@@ -24,25 +27,48 @@
  */
 export const SIDECAR_SCHEMA = "floe.ext.snowball.board.v3" as const;
 
-export interface SidecarColumnOwner {
-  kind: "human" | "agent";
-  /** Only when kind === "agent". Matches the agent_id in .floe/agents/<agent_id>.md */
-  agent_id?: string;
-}
-
+/**
+ * Exit criterion definition for a column.
+ */
 export interface SidecarExitCriterion {
   id: string;
   description: string;
   kind: "machine" | "human";
 }
 
+/**
+ * @deprecated Sidecar column shape kept only for backward-compat sidecar loading.
+ * Will be removed in Slice 6.
+ */
 export interface SidecarColumn {
   id: string;
   name: string;
   wip_limit: number | null;
   order: number;
-  owner: SidecarColumnOwner;
   exit_criteria: SidecarExitCriterion[];
+}
+
+/**
+ * Uniform actor assignment on a column.
+ *
+ * Replaces the old `owner: { kind: "human"|"agent", agent_id? }` model.
+ * Any actor — operator or LLM agent — is represented identically.
+ *
+ * `actor_ref` is the actor slug resolved at runtime to `actor:<workspace_id>:<actor_ref>`.
+ *
+ * event_types:
+ *   ["*"]  = woken by all events (primary/owner behaviour)
+ *   ["x"]  = woken only by specific event type
+ *   []     = silent watcher: never woken, still a participant, can still emit
+ */
+export interface AssignedActor {
+  /**
+   * Actor slug, e.g. "snowball-overseer" or "operator".
+   * Resolved to endpoint id: actor:<workspace_id>:<actor_ref>
+   */
+  actor_ref: string;
+  /** Event types that wake this actor in the card context. */
+  event_types: string[];
 }
 
 export interface BoardSidecar {
@@ -50,13 +76,9 @@ export interface BoardSidecar {
   scope_id: string;
   workspace_id: string;
   /**
-   * Runtime map: column_id → context_id (bus Context, created at board init).
-   *
-   * Column DEFINITIONS no longer live here — they are committed markdown files
-   * at boards/<scopeSlug>/columns/<id>.md (see column-file.ts).
-   *
-   * This map is populated by POST /board/init (idempotent) and lives in the
-   * gitignored sidecar location (.floe/extensions/snowball/boards/).
+   * Runtime map: column_id -> context_id (bus Context, created at board init).
+   * DORMANT in Slice 4: card contexts are the routing target.
+   * Retired and removed in Slice 6.
    */
   column_contexts: Record<string, string>;
 }
@@ -93,47 +115,19 @@ export interface CardFile {
   order: number;
   created_at: string;
   /**
+   * Bus context id for this card (card = context, 1:1).
+   * Created when the card is first written. Null only for legacy cards
+   * created before Slice 4 (lazy-created on first move to an agent column).
+   * This context is the routing target for agent handoff events.
+   */
+  context_id: string | null;
+  /**
    * Exit-criteria check state per column.
-   * checks[column_id][criterion_id] → CriterionCheckState
+   * checks[column_id][criterion_id] -> CriterionCheckState
    */
   checks: Record<string, Record<string, CriterionCheckState>>;
   /** Markdown body text (everything after the YAML frontmatter block). */
   body: string;
-}
-
-// ---------------------------------------------------------------------------
-// Default columns — kept for test helpers and tooling that need raw column
-// definitions without a workspace path.  For runtime use, prefer
-// defaultColumnFiles() from column-file.ts.
-// ---------------------------------------------------------------------------
-
-export function defaultColumns(): SidecarColumn[] {
-  return [
-    {
-      id: "todo",
-      name: "To Do",
-      wip_limit: null,
-      order: 0,
-      owner: { kind: "human" },
-      exit_criteria: [],
-    },
-    {
-      id: "in-progress",
-      name: "In Progress",
-      wip_limit: 5,
-      order: 1,
-      owner: { kind: "human" },
-      exit_criteria: [],
-    },
-    {
-      id: "done",
-      name: "Done",
-      wip_limit: null,
-      order: 2,
-      owner: { kind: "human" },
-      exit_criteria: [],
-    },
-  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -144,19 +138,6 @@ export interface ExitCriterion {
   id: string;
   description: string;
   kind: "machine" | "human";
-}
-
-export interface ColumnOwner {
-  kind: "human" | "agent";
-  agent_id?: string;
-}
-
-export interface Column {
-  id: string;
-  name: string;
-  wipLimit: number | null;
-  owner: ColumnOwner;
-  exitCriteria: ExitCriterion[];
 }
 
 export interface CardCriterionCheck {
@@ -187,7 +168,8 @@ export interface BoardSnapshot {
     wip_limit: number | null;
     card_count: number;
     wip_exceeded: boolean;
-    owner: SidecarColumnOwner;
+    /** Uniform actor assignments for this column. Replaces owner.kind model. */
+    assigned_actors: AssignedActor[];
     exit_criteria: SidecarExitCriterion[];
     /** Agent instructions from the column definition file body. */
     instructions: string;

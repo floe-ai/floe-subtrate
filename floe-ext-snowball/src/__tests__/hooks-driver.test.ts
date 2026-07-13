@@ -60,7 +60,7 @@ function makeAgentBoardSidecar(
 
 /**
  * Write the standard 3-column agent board to tmpDir:
- *   todo (human) → agent-col (agent, overseer, ec-done) → done (human)
+ *   todo (no actors) → agent-col (snowball-overseer assigned, ec-done) → done (no actors)
  */
 function writeAgentBoardColumns(tmpDir: string): ColumnFile[] {
   const slug = slugify(AGENT_SCOPE);
@@ -71,7 +71,7 @@ function writeAgentBoardColumns(tmpDir: string): ColumnFile[] {
       scope_id: AGENT_SCOPE,
       wip_limit: null,
       order: 0,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "",
     },
@@ -81,7 +81,7 @@ function writeAgentBoardColumns(tmpDir: string): ColumnFile[] {
       scope_id: AGENT_SCOPE,
       wip_limit: null,
       order: 1,
-      owner: { kind: "agent", agent_id: "snowball-overseer" },
+      assigned_actors: [{ actor_ref: "snowball-overseer", event_types: ["*"] }],
       exit_criteria: [
         { id: "ec-done", description: "Work completed", kind: "machine" },
       ],
@@ -93,7 +93,7 @@ function writeAgentBoardColumns(tmpDir: string): ColumnFile[] {
       scope_id: AGENT_SCOPE,
       wip_limit: null,
       order: 2,
-      owner: { kind: "human" },
+      assigned_actors: [],
       exit_criteria: [],
       instructions: "",
     },
@@ -111,6 +111,7 @@ function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
     column: "todo",
     order: 0,
     created_at: new Date().toISOString(),
+    context_id: null,
     checks: {},
     body: "",
     ...overrides,
@@ -171,10 +172,9 @@ describe("Part B — routing event on agent-column entry", () => {
       (e) => e.type === "snowball.card.entered_column"
     );
     expect(routingEvent).toBeDefined();
-    expect(routingEvent!.destination?.kind).toBe("endpoint");
-    expect(routingEvent!.destination?.endpoint_id).toBe(
-      "actor:ws:test:snowball-overseer"
-    );
+    // Slice 4: routes into card context (not endpoint-targeted)
+    expect(routingEvent!.destination?.kind).toBe("context");
+    // Card data is in the event
     expect((routingEvent!.content.data as Record<string, unknown>)?.card_id).toBe("ctx_card1");
   });
 
@@ -360,7 +360,7 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
     // Make done column agent-owned
     const slug = slugify(AGENT_SCOPE);
     const cols = writeAgentBoardColumns(tmpDir);
-    const doneCol: ColumnFile = { ...cols[2], owner: { kind: "agent", agent_id: "snowball-overseer" } };
+    const doneCol: ColumnFile = { ...cols[2], assigned_actors: [{ actor_ref: "snowball-overseer", event_types: ["*"] }] };
     writeColumnFile(tmpDir, slug, doneCol);
     writeCard(tmpDir, makeCardFile({ id: "ctx_done", title: "Done card", column: "done" }));
 
@@ -412,20 +412,20 @@ describe("Part C — event-driven advance driver (advanceCardIfReady)", () => {
 
     // 4-column cascade board: todo → agent-col-1 → agent-col-2 → done
     const cascadeCols: ColumnFile[] = [
-      { id: "todo", name: "To Do", scope_id: cascadeScope, wip_limit: null, order: 0, owner: { kind: "human" }, exit_criteria: [], instructions: "" },
+      { id: "todo", name: "To Do", scope_id: cascadeScope, wip_limit: null, order: 0, assigned_actors: [], exit_criteria: [], instructions: "" },
       {
         id: "agent-col-1", name: "Agent Stage 1", scope_id: cascadeScope, wip_limit: null, order: 1,
-        owner: { kind: "agent", agent_id: "snowball-overseer" },
+        assigned_actors: [{ actor_ref: "snowball-overseer", event_types: ["*"] }],
         exit_criteria: [{ id: "stage1-done", description: "Stage 1 complete", kind: "machine" }],
         instructions: "",
       },
       {
         id: "agent-col-2", name: "Agent Stage 2", scope_id: cascadeScope, wip_limit: null, order: 2,
-        owner: { kind: "agent", agent_id: "snowball-overseer" },
+        assigned_actors: [{ actor_ref: "snowball-overseer", event_types: ["*"] }],
         exit_criteria: [], // No criteria — passes through immediately
         instructions: "",
       },
-      { id: "done", name: "Done", scope_id: cascadeScope, wip_limit: null, order: 3, owner: { kind: "human" }, exit_criteria: [], instructions: "" },
+      { id: "done", name: "Done", scope_id: cascadeScope, wip_limit: null, order: 3, assigned_actors: [], exit_criteria: [], instructions: "" },
     ];
     for (const col of cascadeCols) writeColumnFile(tmpDir, slug, col);
 

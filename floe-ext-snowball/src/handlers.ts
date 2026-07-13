@@ -1,6 +1,12 @@
 /**
  * HTTP handlers for the Snowball extension relay.
  *
+ * Slice 4 (fm/snowball-card-context):
+ *   - POST /card now creates a bus context for the card (card = context).
+ *   - POST /move uses applyColumnAssignment (card context) instead of column contexts.
+ *   - Columns use assigned_actors[] — no owner.kind branching.
+ *   - UI handler path uses actor:<ws>:operator as the acting actor.
+ *
  * Slice 2 (fm/snowball-col-instr-s2):
  *   - Column definitions now live in committed markdown files
  *     (boards/<scopeSlug>/columns/<id>.md) instead of the gitignored sidecar.
@@ -10,18 +16,18 @@
  *   - POST /column/instructions — write a column's instructions body
  *
  * Available at:
- *   GET  /v1/extensions/snowball/board?scope_id=<id>              → board state JSON
- *   POST /v1/extensions/snowball/board/init                        → init column files + contexts
- *   POST /v1/extensions/snowball/columns                           → add/update/delete/reorder
+ *   GET  /v1/extensions/snowball/board?scope_id=<id>              -> board state JSON
+ *   POST /v1/extensions/snowball/board/init                        -> init column files + contexts
+ *   POST /v1/extensions/snowball/columns                           -> add/update/delete/reorder
  *   GET  /v1/extensions/snowball/column/instructions?scope_id=<id>&column_id=<id>
- *   POST /v1/extensions/snowball/column/instructions               → save instructions body
- *   GET  /v1/extensions/snowball/board/instructions?scope_id=<id>  → read board done protocol
- *   POST /v1/extensions/snowball/board/instructions                → save board done protocol
- *   POST /v1/extensions/snowball/card                              → create card file
- *   POST /v1/extensions/snowball/card/delete                       → remove card file
- *   POST /v1/extensions/snowball/card/rename                       → rename card title
- *   POST /v1/extensions/snowball/card/criteria                     → toggle exit-criterion check
- *   POST /v1/extensions/snowball/move                              → move a card between columns
+ *   POST /v1/extensions/snowball/column/instructions               -> save instructions body
+ *   GET  /v1/extensions/snowball/board/instructions?scope_id=<id>  -> read board done protocol
+ *   POST /v1/extensions/snowball/board/instructions                -> save board done protocol
+ *   POST /v1/extensions/snowball/card                              -> create card file + context
+ *   POST /v1/extensions/snowball/card/delete                       -> remove card file
+ *   POST /v1/extensions/snowball/card/rename                       -> rename card title
+ *   POST /v1/extensions/snowball/card/criteria                     -> toggle exit-criterion check
+ *   POST /v1/extensions/snowball/move                              -> move a card between columns
  */
 
 import type { ExtensionContext } from "./stub/extension-context.js";
@@ -61,6 +67,11 @@ import {
   cardCountsByColumnFromFiles,
   cardPath,
 } from "./card-file.js";
+import {
+  applyColumnAssignment,
+  createCardContext,
+  operatorEndpointId,
+} from "./handoff.js";
 import { rmSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
@@ -81,18 +92,6 @@ interface RelayResponse {
 
 function jsonResponse(status: number, body: unknown): RelayResponse {
   return { status, body };
-}
-
-// ---------------------------------------------------------------------------
-// Routing helpers
-// ---------------------------------------------------------------------------
-
-function overseerId(workspaceId: string): string {
-  return `actor:${workspaceId}:snowball-overseer`;
-}
-
-function agentEndpointId(workspaceId: string, agentId: string): string {
-  return `actor:${workspaceId}:${agentId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +157,7 @@ function handlePostBoardInit(
       const sidecar = loadSidecar(ctx.workspacePath, scope_id);
       if (!sidecar.workspace_id) sidecar.workspace_id = ctx.workspaceId;
 
-      // 4. Create column contexts in bus (idempotent).
+      // 4. Create column contexts in bus (dormant in Slice 4 but kept for compat).
       const bus = asBusClient(ctx.busClient);
       const { changed } = await initBoardContexts(
         sidecar,
@@ -197,7 +196,7 @@ function handlePostColumns(
       column_id?: string;
       name?: string;
       wip_limit?: number | null;
-      owner?: { kind: "human" | "agent"; agent_id?: string };
+      assigned_actors?: Array<{ actor_ref: string; event_types: string[] }>;
       exit_criteria?: Array<{
         id: string;
         description: string;
@@ -234,20 +233,18 @@ function handlePostColumns(
           scope_id,
           wip_limit: body.wip_limit ?? null,
           order: columns.length,
-          owner: body.owner ?? { kind: "human" },
+          assigned_actors: body.assigned_actors ?? [],
           exit_criteria: body.exit_criteria ?? [],
           instructions: "",
         };
         writeColumnFile(ctx.workspacePath, slug, newCol);
 
-        // Create a column context for the new column (best-effort)
+        // Create a column context for the new column (dormant in Slice 4 but kept for compat).
         const bus = asBusClient(ctx.busClient);
         try {
-          const participants: string[] = [overseerId(ctx.workspaceId)];
-          if (newCol.owner.kind === "agent" && newCol.owner.agent_id) {
-            const ep = agentEndpointId(ctx.workspaceId, newCol.owner.agent_id);
-            if (!participants.includes(ep)) participants.push(ep);
-          }
+          const participants = newCol.assigned_actors.map(
+            (a) => `actor:${ctx.workspaceId}:${a.actor_ref}`
+          );
           const contextId = await bus.createContext({
             workspace_id: ctx.workspaceId,
             scope_id,
@@ -276,7 +273,7 @@ function handlePostColumns(
         const updates: Partial<Omit<ColumnFile, "instructions">> = {};
         if (body.name !== undefined) updates.name = body.name.trim();
         if (body.wip_limit !== undefined) updates.wip_limit = body.wip_limit;
-        if (body.owner !== undefined) updates.owner = body.owner;
+        if (body.assigned_actors !== undefined) updates.assigned_actors = body.assigned_actors;
         if (body.exit_criteria !== undefined)
           updates.exit_criteria = body.exit_criteria;
         updateColumnFileFrontmatter(
@@ -286,21 +283,11 @@ function handlePostColumns(
           updates
         );
 
-        // When the column owner changes to an agent, evict the existing context
-        // from the sidecar so the next card move triggers a lazy re-init with
-        // the new agent as a participant.  The old context remains in the bus
-        // DB (historical events are preserved) but is no longer the routing
-        // target.  Only evict when the owner was NOT already the same agent to
-        // avoid unnecessary churn.
-        if (body.owner?.kind === "agent" && body.owner.agent_id) {
-          const previousOwner = col.owner;
-          const ownerChanged =
-            previousOwner.kind !== "agent" ||
-            previousOwner.agent_id !== body.owner.agent_id;
-          if (ownerChanged && sidecar.column_contexts[body.column_id]) {
-            delete sidecar.column_contexts[body.column_id];
-            saveSidecar(ctx.workspacePath, scope_id, sidecar);
-          }
+        // When assigned_actors changes, evict the column context from the sidecar
+        // so the next lazy init creates a context with the correct participants.
+        if (body.assigned_actors !== undefined && sidecar.column_contexts[body.column_id]) {
+          delete sidecar.column_contexts[body.column_id];
+          saveSidecar(ctx.workspacePath, scope_id, sidecar);
         }
       } else if (action === "delete") {
         if (!body.column_id)
@@ -560,7 +547,7 @@ function handlePostBoardInstructions(
 
 // ---------------------------------------------------------------------------
 // POST /card  { scope_id, title, column_id?, description? }
-// Creates a card as a markdown file at tasks/<id>.md.
+// Creates a card as a markdown file at tasks/<id>.md and a bus context.
 // ---------------------------------------------------------------------------
 
 function handlePostCard(
@@ -617,9 +604,20 @@ function handlePostCard(
       // Compute order (count of existing cards in target column)
       const allCards = listCards(ctx.workspacePath);
       const order = allCards.filter((c) => c.column === targetColId).length;
-
-      // Write card file
       const cardId = generateCardId(title.trim());
+
+      // Create card bus context — operator is creator for UI-initiated creates.
+      const operatorEp = operatorEndpointId(ctx.workspaceId);
+      const bus = asBusClient(ctx.busClient);
+      const context_id = await createCardContext({
+        workspaceId: ctx.workspaceId,
+        scope_id,
+        cardTitle: title.trim(),
+        creatorEp: operatorEp,
+        bus,
+      });
+
+      // Write card file (with context_id in frontmatter).
       writeCard(ctx.workspacePath, {
         id: cardId,
         title: title.trim(),
@@ -628,20 +626,32 @@ function handlePostCard(
         column: targetColId,
         order,
         created_at: new Date().toISOString(),
+        context_id,
         checks: {},
         body: description?.trim() ?? "",
       });
 
-      // NOTE: card.created broadcast intentionally omitted — broadcasting to
-      // active_with_delivery_processor with no context_id creates a throwaway
-      // context per card and triggers agent turns for a pure state notification.
-      // Human mutations use withReload() for UI refresh; agent mutations emit
-      // entered_column which triggers event_submitted → WS-based board refresh.
+      // Apply destination column's actor assignments (idempotent; no-op if no actors).
+      await applyColumnAssignment({
+        cardContextId: context_id,
+        destAssignedActors: targetCol.assigned_actors,
+        priorAssignedActors: [], // no prior column on create
+        actingActorEp: operatorEp,
+        workspaceId: ctx.workspaceId,
+        scope_id,
+        cardId,
+        cardTitle: title.trim(),
+        toColumnId: targetColId,
+        toColumnName: targetCol.name,
+        fromColumnId: "",
+        bus,
+      });
 
       const snapshot = buildBoardSnapshot(ctx.workspacePath, sidecar, columns);
       return jsonResponse(201, {
         ok: true,
         card_id: cardId,
+        context_id,
         board: {
           ...snapshot,
           initialized: sidecarExists(ctx.workspacePath, scope_id),
@@ -910,73 +920,39 @@ function handlePostMove(
     });
     appendCarryForward(workspacePath, card_id, previousColumnName);
 
-    // Emit events (best-effort)
+    // Lazy card context creation for legacy cards (created before Slice 4).
     const bus = asBusClient(ctx.busClient);
-    const overseer = overseerId(workspaceId);
-
-    // Lazy board init: if the destination column is agent-owned but has no column
-    // context yet (board never initialised, or context was evicted after an owner
-    // change), create it now so the routing event lands in the right context.
-    if (toColumn.owner.kind === "agent" && !sidecar.column_contexts[to_column_id]) {
-      try {
-        const { changed } = await initBoardContexts(
-          sidecar,
-          workspaceId,
-          bus,
-          effectiveColumns
-        );
-        if (changed) saveSidecar(workspacePath, scope_id, sidecar);
-      } catch (err) {
-        console.warn(`[snowball] Lazy board init failed: ${err}`);
+    const operatorEp = operatorEndpointId(workspaceId);
+    let cardContextId = card.context_id;
+    if (!cardContextId) {
+      cardContextId = await createCardContext({
+        workspaceId,
+        scope_id,
+        cardTitle: card.title,
+        creatorEp: operatorEp,
+        bus,
+      });
+      if (cardContextId) {
+        updateCardFrontmatter(workspacePath, card_id, { context_id: cardContextId });
       }
     }
 
-    const columnContextId = sidecar.column_contexts[to_column_id];
-
-    // NOTE: card.moved broadcast intentionally omitted — see card.created note
-    // in handlePostCard. The entered_column routing event below is the
-    // canonical signal; it uses a stable column context and does not create
-    // throwaway contexts or spurious agent turns.
-
-    // If destination is agent-owned, emit routing event into column context
-    if (toColumn.owner.kind === "agent" && toColumn.owner.agent_id) {
-      const agentEp = agentEndpointId(workspaceId, toColumn.owner.agent_id);
-      try {
-        await bus.emit({
-          type: "snowball.card.entered_column",
-          workspace_id: workspaceId,
-          source_endpoint_id: overseer,
-          scope_id,
-          ...(columnContextId ? { context_id: columnContextId } : {}),
-          destination: {
-            kind: "endpoint" as const,
-            endpoint_id: agentEp,
-          },
-          content: {
-            text: `Card "${card.title}" has entered column "${toColumn.name}"`,
-            data: {
-              card_id,
-              card_title: card.title,
-              column_id: to_column_id,
-              column_name: toColumn.name,
-              from_column_id: previousColumnId,
-              board_scope_id: scope_id,
-            },
-          },
-          response: { expected: true },
-          metadata: { source: "snowball-extension" },
-        });
-      } catch (err) {
-        console.warn(`[snowball] Routing event failed: ${err}`);
-      }
-
-      // NOTE: advanceCardIfReady is intentionally NOT called here.
-      // The card has just arrived in an agent-owned column; the agent must do
-      // its work (triggered by the entered_column routing event above) before
-      // the card advances. Advance happens when the agent concludes its work
-      // and calls move_card (or check_criteria + move_card for criteria columns).
-      // See fm/floe-advance-protocol for the advance-on-conclusion design.
-    }
+    // Apply column assignment: add new actors, demote prior actors, emit entered_column.
+    // UI-initiated move: acting actor = operator.
+    await applyColumnAssignment({
+      cardContextId,
+      destAssignedActors: toColumn.assigned_actors,
+      priorAssignedActors: fromColumn?.assigned_actors ?? [],
+      actingActorEp: operatorEp,
+      workspaceId,
+      scope_id,
+      cardId: card_id,
+      cardTitle: card.title,
+      toColumnId: to_column_id,
+      toColumnName: toColumn.name,
+      fromColumnId: previousColumnId,
+      bus,
+    });
 
     return jsonResponse(200, {
       ok: true,

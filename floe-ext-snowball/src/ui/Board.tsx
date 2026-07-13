@@ -44,7 +44,7 @@ export function Board({ board, onMove, onSelectCard, onConfigColumn, onAddCard }
       name: col.name,
       wipLimit: col.wip_limit,
       order: 0,
-      owner: col.owner,
+      assignedActors: col.assigned_actors,
       exitCriteria: col.exit_criteria,
       instructions: col.instructions,
     };

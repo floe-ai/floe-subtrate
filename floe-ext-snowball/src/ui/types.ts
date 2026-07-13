@@ -2,6 +2,10 @@
  * UI types for the Snowball board view.
  *
  * These mirror the sidecar types but are React-friendly (camelCase).
+ *
+ * Slice 4 (fm/snowball-card-context):
+ *   UiColumn uses assignedActors[] instead of owner.kind.
+ *   A column with no assignedActors is equivalent to the old "human-owned".
  */
 
 export interface UiExitCriterion {
@@ -10,9 +14,10 @@ export interface UiExitCriterion {
   kind: "machine" | "human";
 }
 
-export interface UiColumnOwner {
-  kind: "human" | "agent";
-  agent_id?: string;
+/** Uniform actor assignment on a column (mirrors AssignedActor from types.ts). */
+export interface UiAssignedActor {
+  actor_ref: string;
+  event_types: string[];
 }
 
 export interface UiColumn {
@@ -20,7 +25,7 @@ export interface UiColumn {
   name: string;
   wipLimit: number | null;
   order: number;
-  owner: UiColumnOwner;
+  assignedActors: UiAssignedActor[];
   exitCriteria: UiExitCriterion[];
   /** Agent instructions for this column — editable, injected via BeforeTurn. */
   instructions: string;
@@ -53,7 +58,7 @@ export interface UiBoardState {
     wip_limit: number | null;
     card_count: number;
     wip_exceeded: boolean;
-    owner: UiColumnOwner;
+    assigned_actors: UiAssignedActor[];
     exit_criteria: UiExitCriterion[];
     /** Agent instructions from the column definition file body. */
     instructions: string;

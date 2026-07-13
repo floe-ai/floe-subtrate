@@ -1,25 +1,15 @@
 /**
- * Regression tests for context-churn fix (fm/floe-card-context-churn).
+ * Tests for context-churn fix (fm/floe-card-context-churn) and Slice 4
+ * (fm/snowball-card-context) behavior.
  *
- * Root cause: snowball.card.created / card.moved / card.criteria_checked were
- * broadcast with `target: "active_with_delivery_processor"` and no context_id.
- * resolveContext() always creates a NEW context for broadcast events with no
- * supplied context_id (destEndpoint is null for broadcasts → created: true).
- * This produced one throwaway context AND one agent-turn delivery per card
- * mutation per active AI agent endpoint.
- *
- * Fix: removed all three (plus gate_overridden) pure-notification broadcasts.
- * The entered_column routing event (which carries a stable column context_id)
- * is the canonical signal for agent routing AND WS-based UI refresh.
- *
- * These tests verify:
- *  A. POST /card emits NO bus events at all (no card.created broadcast).
- *  B. POST /move emits NO card.moved broadcast; entered_column IS emitted when
- *     the destination column is agent-owned.
- *  C. move_card tool emits NO card.moved broadcast; entered_column IS emitted.
- *  D. check_criteria tool emits NO criteria_checked broadcast.
- *  E. No additional contexts are created by card mutations (only the
- *     board-init contexts, created explicitly by POST /board/init).
+ * Slice 4 invariants:
+ *   - Every card creation creates exactly ONE card context (card = context).
+ *   - `snowball.card.entered_column` uses destination:{kind:"context"} (card context),
+ *     never a per-broadcast throwaway context or endpoint destination.
+ *   - Columns with no assigned actors: no `entered_column` emitted.
+ *   - Columns with assigned actors: `entered_column` emitted into card context.
+ *   - `snowball.card.created`, `snowball.card.moved`, `snowball.card.criteria_checked`
+ *     are never emitted (they were the source of context churn).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -111,13 +101,14 @@ function makeCardFile(overrides: Partial<CardFile> = {}): CardFile {
     column: "todo",
     order: 0,
     created_at: new Date().toISOString(),
+    context_id: null,
     checks: {},
     body: "",
     ...overrides,
   };
 }
 
-/** Write default 3-column setup (todo / in-progress / done). */
+/** Write default 3-column setup (todo / in-progress / done) with no assigned actors. */
 function setupDefaultColumns(tmpDir: string): ColumnFile[] {
   const slug = slugify(SCOPE);
   const cols = defaultColumnFiles(SCOPE);
@@ -125,19 +116,18 @@ function setupDefaultColumns(tmpDir: string): ColumnFile[] {
   return cols;
 }
 
-/** Write a column with an agent owner. */
+/** Write a column with an assigned actor (replaces old owner.kind=agent). */
 function setupAgentColumn(tmpDir: string, agentId: string): void {
   const slug = slugify(SCOPE);
   const cols = defaultColumnFiles(SCOPE);
-  // Make "in-progress" agent-owned
   const agentCol: ColumnFile = {
     ...cols[1],
-    owner: { kind: "agent", agent_id: agentId },
+    assigned_actors: [{ actor_ref: agentId, event_types: ["*"] }],
     exit_criteria: [{ id: "ec1", description: "Tests pass", kind: "machine" }],
   };
-  writeColumnFile(tmpDir, slug, cols[0]); // todo (human)
-  writeColumnFile(tmpDir, slug, agentCol); // in-progress (agent)
-  writeColumnFile(tmpDir, slug, cols[2]); // done (human)
+  writeColumnFile(tmpDir, slug, cols[0]); // todo (no actors)
+  writeColumnFile(tmpDir, slug, agentCol); // in-progress (agent-assigned)
+  writeColumnFile(tmpDir, slug, cols[2]); // done (no actors)
 }
 
 let tmpDir: string;
@@ -154,11 +144,11 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// A. POST /card — no bus events emitted
+// A. POST /card — creates card context, no card.created broadcast
 // ---------------------------------------------------------------------------
 
-describe("A: POST /card — no context churn", () => {
-  it("emits NO bus events when creating a card in a human-owned column", async () => {
+describe("A: POST /card — card context created, no churn", () => {
+  it("creates exactly ONE card context when creating a card in an unassigned column", async () => {
     setupDefaultColumns(tmpDir);
     saveSidecar(tmpDir, SCOPE, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
@@ -168,35 +158,58 @@ describe("A: POST /card — no context churn", () => {
     });
 
     expect(res.status).toBe(201);
-    // No events emitted at all — no card.created broadcast
+    // Exactly one context created for the card
+    expect(bus.createdContexts).toHaveLength(1);
+    expect(bus.createdContexts[0].title).toBe("New task");
+    expect(bus.createdContexts[0].scope_id).toBe(SCOPE);
+    // No events emitted (no assigned actors in "todo")
     expect(bus.emittedEvents).toHaveLength(0);
-    // No contexts created by card creation
-    expect(bus.createdContexts).toHaveLength(0);
+    // No card.created broadcast
+    expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.created")).toHaveLength(0);
   });
 
-  it("emits no snowball.card.created event even with scope + column specified", async () => {
+  it("returns context_id in the response", async () => {
     setupDefaultColumns(tmpDir);
     saveSidecar(tmpDir, SCOPE, makeSidecar());
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     const res = await call(handlers, "POST", "/card", {
-      body: { scope_id: SCOPE, title: "Done task", column_id: "done" },
+      body: { scope_id: SCOPE, title: "My task" },
     });
 
     expect(res.status).toBe(201);
-    const cardCreatedEvents = bus.emittedEvents.filter(
-      (e) => e.type === "snowball.card.created"
-    );
-    expect(cardCreatedEvents).toHaveLength(0);
+    const body = res.body as Record<string, unknown>;
+    expect(body.context_id).toBeDefined();
+    expect(typeof body.context_id).toBe("string");
+  });
+
+  it("emits entered_column into card context when creating into an agent-assigned column", async () => {
+    setupAgentColumn(tmpDir, "my-agent");
+    saveSidecar(tmpDir, SCOPE, makeSidecar());
+    const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
+
+    const res = await call(handlers, "POST", "/card", {
+      body: { scope_id: SCOPE, title: "Agent task", column_id: "in-progress" },
+    });
+
+    // WIP gate is checked on in-progress (exit_criteria), but no unchecked to block
+    // Actually in-progress has exit_criteria but we're creating, not moving past it
+    expect(res.status).toBe(201);
+    // One context created (card context)
+    expect(bus.createdContexts).toHaveLength(1);
+    // entered_column emitted into card context
+    const entered = bus.emittedEvents.filter((e) => e.type === "snowball.card.entered_column");
+    expect(entered).toHaveLength(1);
+    expect(entered[0].destination?.kind).toBe("context");
   });
 });
 
 // ---------------------------------------------------------------------------
-// B. POST /move — no card.moved broadcast; entered_column for agent columns
+// B. POST /move — no card.moved broadcast; entered_column into card context
 // ---------------------------------------------------------------------------
 
-describe("B: POST /move — no context churn", () => {
-  it("emits NO card.moved broadcast when moving to a human-owned column", async () => {
+describe("B: POST /move — no context churn, card context routing", () => {
+  it("emits NO card.moved broadcast when moving to an unassigned column", async () => {
     setupDefaultColumns(tmpDir);
     saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "c1", column: "todo" }));
@@ -207,29 +220,28 @@ describe("B: POST /move — no context churn", () => {
     });
 
     expect(res.status).toBe(200);
-    const movedEvents = bus.emittedEvents.filter(
-      (e) => e.type === "snowball.card.moved"
-    );
-    expect(movedEvents).toHaveLength(0);
-    expect(bus.createdContexts).toHaveLength(0);
+    expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.moved")).toHaveLength(0);
+    // No entered_column either (done has no assigned actors)
+    expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.entered_column")).toHaveLength(0);
+    // One card context created lazily (legacy card with context_id:null)
+    expect(bus.createdContexts).toHaveLength(1);
   });
 
-  it("emits entered_column (not card.moved broadcast) when moving to an agent-owned column", async () => {
+  it("emits entered_column with destination.kind=context when moving to agent-assigned column", async () => {
     setupAgentColumn(tmpDir, "my-agent");
-    // Pre-seed a column context so entered_column carries the stable context_id
-    const ctx = `ctx_agent_col`;
-    saveSidecar(tmpDir, SCOPE, makeSidecar({ "in-progress": ctx }));
-    // Seed the bus context so the sidecar lookup resolves
+    saveSidecar(tmpDir, SCOPE, makeSidecar());
+    // Card already has a context (Slice 4 card)
+    const cardContextId = "ctx_existing_card";
     bus.seedContext({
-      context_id: ctx,
+      context_id: cardContextId,
       workspace_id: WS_ID,
       scope_id: SCOPE,
       created_at: new Date().toISOString(),
-      title: null,
+      title: "Test card",
       first_message_preview: null,
-      participants: [`actor:${WS_ID}:my-agent`, `actor:${WS_ID}:snowball-overseer`],
+      participants: [],
     });
-    writeCard(tmpDir, makeCardFile({ id: "c2", column: "todo" }));
+    writeCard(tmpDir, makeCardFile({ id: "c2", column: "todo", context_id: cardContextId }));
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     const res = await call(handlers, "POST", "/move", {
@@ -237,51 +249,49 @@ describe("B: POST /move — no context churn", () => {
     });
 
     expect(res.status).toBe(200);
-
-    // No card.moved broadcast
     expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.moved")).toHaveLength(0);
 
-    // entered_column IS emitted (the routing signal that actually engages the agent)
+    // entered_column IS emitted using card context, not column context
     const enteredEvents = bus.emittedEvents.filter(
       (e) => e.type === "snowball.card.entered_column"
     );
     expect(enteredEvents).toHaveLength(1);
-    expect(enteredEvents[0].context_id).toBe(ctx); // uses the stable column context
-    expect(enteredEvents[0].destination?.kind).toBe("endpoint"); // targeted, not broadcast
+    expect(enteredEvents[0].destination?.kind).toBe("context"); // context routing, not endpoint
+    expect(enteredEvents[0].destination?.context_id).toBe(cardContextId); // the CARD context
     expect(enteredEvents[0].response?.expected).toBe(true);
   });
 
-  it("creates NO new contexts (only the pre-existing column context used)", async () => {
+  it("creates no extra contexts when card already has context_id", async () => {
     setupAgentColumn(tmpDir, "my-agent");
-    const ctx = `ctx_agent_col`;
-    saveSidecar(tmpDir, SCOPE, makeSidecar({ "in-progress": ctx }));
+    saveSidecar(tmpDir, SCOPE, makeSidecar());
+    const cardContextId = "ctx_pre_existing";
     bus.seedContext({
-      context_id: ctx,
+      context_id: cardContextId,
       workspace_id: WS_ID,
       scope_id: SCOPE,
       created_at: new Date().toISOString(),
-      title: null,
+      title: "Test card",
       first_message_preview: null,
-      participants: [`actor:${WS_ID}:my-agent`, `actor:${WS_ID}:snowball-overseer`],
+      participants: [],
     });
-    writeCard(tmpDir, makeCardFile({ id: "c3", column: "todo" }));
+    writeCard(tmpDir, makeCardFile({ id: "c3", column: "todo", context_id: cardContextId }));
     const handlers = buildHandlerMap(makeCtx(tmpDir, bus));
 
     await call(handlers, "POST", "/move", {
       body: { scope_id: SCOPE, card_id: "c3", to_column_id: "in-progress" },
     });
 
-    // No new contexts created by the move (stable context reused)
+    // No new contexts created (card already has context_id)
     expect(bus.createdContexts).toHaveLength(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// C. move_card tool — no card.moved broadcast; entered_column for agent columns
+// C. move_card tool — no card.moved broadcast; entered_column into card context
 // ---------------------------------------------------------------------------
 
 describe("C: move_card tool — no context churn", () => {
-  it("emits NO card.moved broadcast when moving to a human-owned column", async () => {
+  it("emits NO card.moved broadcast when moving to an unassigned column", async () => {
     setupDefaultColumns(tmpDir);
     saveSidecar(tmpDir, SCOPE, makeSidecar());
     writeCard(tmpDir, makeCardFile({ id: "t1", column: "todo" }));
@@ -295,7 +305,6 @@ describe("C: move_card tool — no context churn", () => {
       to_column_id: "done",
     });
 
-    // Should succeed
     const body = JSON.parse(
       (result.content[0] as { type: "text"; text: string }).text
     );
@@ -305,29 +314,24 @@ describe("C: move_card tool — no context churn", () => {
     expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.moved")).toHaveLength(0);
     // No criteria_checked broadcast
     expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.criteria_checked")).toHaveLength(0);
+    // No entered_column (done has no assigned actors)
+    expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.entered_column")).toHaveLength(0);
   });
 
-  it("emits entered_column (not card.moved) when moving to an agent-owned column", async () => {
+  it("emits entered_column with destination.kind=context when moving to agent-assigned column", async () => {
     setupAgentColumn(tmpDir, "my-agent");
-    const ctx = `ctx_agent_col`;
-    saveSidecar(tmpDir, SCOPE, makeSidecar({ "in-progress": ctx }));
+    saveSidecar(tmpDir, SCOPE, makeSidecar());
+    const cardContextId = "ctx_card_for_tool";
     bus.seedContext({
-      context_id: ctx,
+      context_id: cardContextId,
       workspace_id: WS_ID,
       scope_id: SCOPE,
       created_at: new Date().toISOString(),
-      title: null,
+      title: "Test card",
       first_message_preview: null,
-      participants: [`actor:${WS_ID}:my-agent`, `actor:${WS_ID}:snowball-overseer`],
+      participants: [],
     });
-    bus.seedEndpoint({
-      endpoint_id: `actor:${WS_ID}:my-agent`,
-      workspace_id: WS_ID,
-      agent_id: "my-agent",
-      name: "my-agent",
-      status: "idle",
-    });
-    writeCard(tmpDir, makeCardFile({ id: "t2", column: "todo" }));
+    writeCard(tmpDir, makeCardFile({ id: "t2", column: "todo", context_id: cardContextId }));
     const extCtx = makeCtx(tmpDir, bus);
     const tools = createTools(extCtx);
     const moveCard = tools.find((t) => t.name === "move_card")!;
@@ -341,13 +345,13 @@ describe("C: move_card tool — no context churn", () => {
     // No card.moved broadcast
     expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.moved")).toHaveLength(0);
 
-    // entered_column IS emitted
+    // entered_column IS emitted into the card context
     const entered = bus.emittedEvents.filter(
       (e) => e.type === "snowball.card.entered_column"
     );
     expect(entered).toHaveLength(1);
-    expect(entered[0].context_id).toBe(ctx);
-    expect(entered[0].destination?.kind).toBe("endpoint");
+    expect(entered[0].destination?.kind).toBe("context"); // context routing, not endpoint
+    expect(entered[0].destination?.context_id).toBe(cardContextId);
     expect(entered[0].response?.expected).toBe(true);
   });
 });
@@ -426,20 +430,13 @@ describe("D: check_criteria tool — no context churn", () => {
 });
 
 // ---------------------------------------------------------------------------
-// E. create_card tool — no card.created broadcast
+// E. create_card tool — creates card context, no card.created broadcast
 // ---------------------------------------------------------------------------
 
-describe("E: create_card tool — no context churn", () => {
-  it("emits NO bus events when creating a card via the tool", async () => {
+describe("E: create_card tool — card context created, no churn", () => {
+  it("creates exactly ONE card context, emits NO events for unassigned column", async () => {
     setupDefaultColumns(tmpDir);
     saveSidecar(tmpDir, SCOPE, makeSidecar());
-    bus.seedEndpoint({
-      endpoint_id: `actor:${WS_ID}:snowball-overseer`,
-      workspace_id: WS_ID,
-      agent_id: "snowball-overseer",
-      name: "snowball-overseer",
-      status: "idle",
-    });
     const ctx = makeCtx(tmpDir, bus);
     const tools = createTools(ctx);
     const createCard = tools.find((t) => t.name === "create_card")!;
@@ -454,12 +451,15 @@ describe("E: create_card tool — no context churn", () => {
       (result.content[0] as { type: "text"; text: string }).text
     );
     expect(body.ok).toBe(true);
+    // context_id returned in response
+    expect(body.context_id).toBeDefined();
 
     // No card.created broadcast
     expect(bus.emittedEvents.filter((e) => e.type === "snowball.card.created")).toHaveLength(0);
-    // No contexts created by card creation alone
-    expect(bus.createdContexts).toHaveLength(0);
-    // No events at all
+    // Exactly one context created (card context)
+    expect(bus.createdContexts).toHaveLength(1);
+    expect(bus.createdContexts[0].title).toBe("Agent-created task");
+    // No events (no assigned actors in todo)
     expect(bus.emittedEvents).toHaveLength(0);
   });
 });
