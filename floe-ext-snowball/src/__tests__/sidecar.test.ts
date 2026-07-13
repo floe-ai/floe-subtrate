@@ -24,11 +24,11 @@ import {
 } from "../sidecar.js";
 import { writeCard, cardCountsByColumnFromFiles } from "../card-file.js";
 import {
-  writeColumnFile,
-  listColumnFiles,
+  writeColumnToBoard as writeColumnFile,
+  listColumnsFromBoard as listColumnFiles,
   defaultColumnFiles,
-  type ColumnFile,
-} from "../column-file.js";
+} from "../board-file.js";
+import type { ColumnFile } from "../types.js";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { BoardSidecar } from "../types.js";
 import { SIDECAR_SCHEMA } from "../types.js";

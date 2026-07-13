@@ -19,14 +19,13 @@ import { createTools } from "../tools/index.js";
 import { saveSidecar, slugify } from "../sidecar.js";
 import { writeCard, readCard } from "../card-file.js";
 import {
-  writeColumnFile,
-  type ColumnFile,
-} from "../column-file.js";
+  writeColumnToBoard as writeColumnFile,
+} from "../board-file.js";
 import { writeBoardFile } from "../board-file.js";
 import { StubBusClient } from "../stub/bus-client.js";
 import type { ExtensionContext, HookResult, HookName, HookHandler } from "../stub/extension-context.js";
 import { SIDECAR_SCHEMA } from "../types.js";
-import type { BoardSidecar, CardFile } from "../types.js";
+import type { BoardSidecar, CardFile, ColumnFile } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -118,6 +117,7 @@ function writeBoard(tmpDir: string): ColumnFile[] {
   writeBoardFile(tmpDir, slug, {
     scope_id: SCOPE,
     done_protocol: "## Done Protocol\nCheck criteria, then call move_card.",
+    columns: cols,
   });
   return cols;
 }

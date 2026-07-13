@@ -22,7 +22,8 @@ import { registerHttpHandlers } from "../handlers.js";
 import { createTools } from "../tools/index.js";
 import { saveSidecar, slugify } from "../sidecar.js";
 import { writeCard, readCard } from "../card-file.js";
-import { writeColumnFile, defaultColumnFiles, type ColumnFile } from "../column-file.js";
+import { writeColumnToBoard as writeColumnFile, defaultColumnFiles } from "../board-file.js";
+import type { ColumnFile } from "../types.js";
 import { SIDECAR_SCHEMA } from "../types.js";
 import type { BoardSidecar, CardFile } from "../types.js";
 

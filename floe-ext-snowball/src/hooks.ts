@@ -1,80 +1,61 @@
 /**
  * Snowball extension hooks.
  *
- * Slice 2 (fm/snowball-col-instr-s2):
- *   - Board discovery now reads committed column files (boards/<slug>/columns/)
- *     instead of the gitignored sidecar directory.
- *   - BeforeTurn injection now includes the column's agent instructions:
- *       - Column workers: their column's instructions + their cards
- *       - Overseer: full board snapshot + all columns' instructions
+ * Slice 5 (fm/snowball-col-board-s5):
+ *   Board discovery now reads board.md (via board-file.ts).
+ *   column-file.ts is deleted; findBoardScopesForAgentFromFiles moved to board-file.ts.
  *
- * BeforeTurn (§4.3, R7):
- *  - Overseer receives full board snapshot (all columns + all cards + all instructions)
- *  - Column workers receive only the cards in their owned columns + column instructions
- *  - Agents without a board context receive no injection
+ * BeforeTurn injection:
+ *  - Overseer: full board snapshot + all column instructions
+ *  - Column workers: done protocol + column instructions + cards with unchecked criteria
+ *  - Agents without board context receive no injection
  */
 
 import type { ExtensionContext, HookResult } from "./stub/extension-context.js";
 import {
-  loadSidecar,
   slugify,
   buildBoardSnapshot,
   renderCompactBoardSnapshot,
 } from "./sidecar.js";
 import {
-  listColumnFiles,
+  listColumnsFromBoard,
   findBoardScopesForAgentFromFiles,
-} from "./column-file.js";
-import { ensureBoardFile } from "./board-file.js";
+  ensureBoardFile,
+} from "./board-file.js";
 
 const OVERSEER_AGENT_ID = "snowball-overseer";
 
-/** Extract the agent_id from an endpoint_id (last colon-segment). */
 function agentIdFromEndpoint(endpointId: string): string {
   const parts = endpointId.split(":");
   return parts[parts.length - 1] ?? endpointId;
 }
 
-// ---------------------------------------------------------------------------
-// Hook registration
-// ---------------------------------------------------------------------------
-
 export function registerHooks(ctx: ExtensionContext): void {
   const { workspacePath, workspaceId } = ctx;
 
-  // ── BeforeTurn ────────────────────────────────────────────────────────
   ctx.hooks.on("BeforeTurn", async (payload): Promise<HookResult | void> => {
     const endpointId = (payload.endpoint_id as string | undefined) ?? "";
     if (!endpointId) return;
-
     const agentId = agentIdFromEndpoint(endpointId);
 
-    // Board discovery: scan committed boards/<slug>/columns/ directory.
-    // Works after a fresh clone (no sidecar needed).
-    const scopes = findBoardScopesForAgentFromFiles(
-      workspacePath,
-      agentId,
-      OVERSEER_AGENT_ID
-    );
+    const scopes = findBoardScopesForAgentFromFiles(workspacePath, agentId, OVERSEER_AGENT_ID);
     if (scopes.length === 0) return;
 
+    // Sidecar still required for buildBoardSnapshot (dormant; removed in Slice 6)
+    const { loadSidecar } = await import("./sidecar.js");
     const lines: string[] = [];
+
     for (const scopeId of scopes) {
       const slug = slugify(scopeId);
-      const columns = listColumnFiles(workspacePath, slug);
+      const columns = listColumnsFromBoard(workspacePath, slug);
       if (columns.length === 0) continue;
 
       const sidecar = loadSidecar(workspacePath, scopeId);
       const snapshot = buildBoardSnapshot(workspacePath, sidecar, columns);
 
       if (agentId === OVERSEER_AGENT_ID) {
-        // Overseer: full board snapshot + all column instructions
         lines.push(renderCompactBoardSnapshot(snapshot));
-
-        // Append column instructions for any column that has them
-        const colsWithInstructions = columns.filter(
-          (c) => c.instructions.trim().length > 0
-        );
+        const colsWithInstructions = columns.filter((c) => c.instructions.trim().length > 0);
         if (colsWithInstructions.length > 0) {
           lines.push("## Column Instructions");
           for (const col of colsWithInstructions) {
@@ -83,8 +64,6 @@ export function registerHooks(ctx: ExtensionContext): void {
           }
         }
       } else {
-        // Column worker: board done protocol + per-column instructions + cards (R7)
-        // Load board done protocol (lazily creates board.md with defaults if absent).
         const boardFile = ensureBoardFile(workspacePath, slug, scopeId);
         if (boardFile.done_protocol.trim().length > 0) {
           lines.push(boardFile.done_protocol.trim());
@@ -92,15 +71,11 @@ export function registerHooks(ctx: ExtensionContext): void {
         }
 
         const ownedColumns = columns.filter(
-          (col) =>
-            col.assigned_actors.some((a) => a.actor_ref === agentId)
+          (col) => col.assigned_actors.some((a) => a.actor_ref === agentId)
         );
         const ownedColumnIds = new Set(ownedColumns.map((c) => c.id));
-        const myCards = snapshot.cards.filter((c) =>
-          ownedColumnIds.has(c.column_id)
-        );
+        const myCards = snapshot.cards.filter((c) => ownedColumnIds.has(c.column_id));
 
-        // Inject column instructions first
         for (const col of ownedColumns) {
           if (col.instructions.trim().length > 0) {
             lines.push(`## Column Instructions: ${col.name}`);
@@ -109,7 +84,6 @@ export function registerHooks(ctx: ExtensionContext): void {
           }
         }
 
-        // Then inject card list
         if (myCards.length === 0) {
           lines.push(`Board ${scopeId}: no cards in your columns.`);
         } else {
@@ -117,29 +91,16 @@ export function registerHooks(ctx: ExtensionContext): void {
           for (const card of myCards) {
             const col = columns.find((c) => c.id === card.column_id);
             const totalCriteria = col?.exit_criteria.length ?? 0;
-            const checkedCount = card.criteria_checks.filter(
-              (c) => c.checked
-            ).length;
-            const criteriaStr =
-              totalCriteria > 0
-                ? ` [${checkedCount}/${totalCriteria} criteria]`
-                : "";
-            lines.push(
-              `  - [${col?.name ?? card.column_id}] ${card.title}${criteriaStr} (${card.card_id})`
-            );
-            // Issue #1 fix: list unchecked criteria IDs so the agent can call
-            // check_criteria without needing a separate get_board_state call.
+            const checkedCount = card.criteria_checks.filter((c) => c.checked).length;
+            const criteriaStr = totalCriteria > 0 ? ` [${checkedCount}/${totalCriteria} criteria]` : "";
+            lines.push(`  - [${col?.name ?? card.column_id}] ${card.title}${criteriaStr} (${card.card_id})`);
             if (col && col.exit_criteria.length > 0) {
               const uncheckedCriteria = col.exit_criteria.filter((ec) => {
-                const check = card.criteria_checks.find(
-                  (c) => c.criterionId === ec.id
-                );
+                const check = card.criteria_checks.find((c) => c.criterionId === ec.id);
                 return !check?.checked;
               });
               if (uncheckedCriteria.length > 0) {
-                lines.push(
-                  `    Unchecked criteria (call snowball_check_criteria for each):`
-                );
+                lines.push(`    Unchecked criteria (call snowball_check_criteria for each):`);
                 for (const ec of uncheckedCriteria) {
                   lines.push(`      criterion_id="${ec.id}" — ${ec.description}`);
                 }
@@ -152,12 +113,6 @@ export function registerHooks(ctx: ExtensionContext): void {
 
     const content = lines.join("\n").slice(0, 3800);
     if (!content) return;
-
-    return {
-      inject: {
-        source: "snowball",
-        content,
-      },
-    };
+    return { inject: { source: "snowball", content } };
   });
 }
