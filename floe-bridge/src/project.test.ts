@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it, expect, afterEach } from "vitest";
 import YAML from "yaml";
-import { ensureProjectTemplate, loadProject, materializeSavedConfig } from "./project.js";
+import { ensureProjectTemplate, loadProject, materializeSavedConfig, computeConfigSurface } from "./project.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -260,42 +260,202 @@ describe("hashFloeDir allow-list (Fix 1: extension data must not change config h
     expect(after).not.toBe(before);
   });
 
-  it("writing non-config files (README, skills, state, mcp) does NOT change the config hash", () => {
+  it("writing non-config runtime files (extensions/README.md, state) does NOT change the config hash", () => {
     const workspace = makeTmp();
     ensureProjectTemplate(workspace, "Test");
 
     const before = loadProject(workspace).config_hash;
 
-    // Overwrite README (not a config file)
+    // Overwrite README at extensions root (not inside any extension's declared surface)
     writeFileSync(join(workspace, ".floe", "extensions", "README.md"), "# Changed\n", "utf8");
-    // Overwrite skill file
-    writeFileSync(join(workspace, ".floe", "skills", "substrate-build", "SKILL.md"), "# Changed skill\n", "utf8");
-    // Write a new file into state
+    // Write a new file into state (ephemeral runtime state, not config)
     writeFileSync(join(workspace, ".floe", "state", "some-runtime.json"), "{}", "utf8");
-    // Write a file into mcp
-    writeFileSync(join(workspace, ".floe", "mcp", "README.md"), "# Changed mcp\n", "utf8");
 
     const after = loadProject(workspace).config_hash;
 
     expect(after).toBe(before);
   });
 
-  it("extension entry-point source files are NOT in the config hash (only extension.json is)", () => {
+});
+
+// ---------------------------------------------------------------------------
+// Tests — regression: declared config surface (fixes #102 regression)
+// ---------------------------------------------------------------------------
+
+describe("computeConfigSurface — declared surface regression tests", () => {
+  it("changing a skill file DOES change the config hash", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const before = loadProject(workspace).config_hash;
+
+    const skillPath = join(workspace, ".floe", "skills", "substrate-build", "SKILL.md");
+    const original = readFileSync(skillPath, "utf8");
+    writeFileSync(skillPath, original + "\n\n# extra section", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).not.toBe(before);
+  });
+
+  it("changing an MCP config file DOES change the config hash", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const before = loadProject(workspace).config_hash;
+
+    const mcpPath = join(workspace, ".floe", "mcp", "README.md");
+    const original = readFileSync(mcpPath, "utf8");
+    writeFileSync(mcpPath, original + "\n# extra", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).not.toBe(before);
+  });
+
+  it("extension entry-point file (under .floe) IS in the config hash", () => {
     const workspace = makeTmp();
     ensureProjectTemplate(workspace, "Test");
 
     const extDir = join(workspace, ".floe", "extensions", "testExt");
     mkdirSync(extDir, { recursive: true });
-    writeFileSync(join(extDir, "extension.json"), JSON.stringify({ name: "testExt", entry: "./index.ts" }), "utf8");
+    writeFileSync(
+      join(extDir, "extension.json"),
+      JSON.stringify({ schema: "floe.extension.v1", name: "testExt", entry: "./index.ts" }),
+      "utf8"
+    );
     writeFileSync(join(extDir, "index.ts"), "export default () => [];", "utf8");
 
     const before = loadProject(workspace).config_hash;
 
-    // Changing the entry-point source must NOT change the hash
+    // Changing the local entry-point file DOES change the hash
     writeFileSync(join(extDir, "index.ts"), "export default () => []; // v2", "utf8");
 
     const after = loadProject(workspace).config_hash;
 
+    expect(after).not.toBe(before);
+  });
+
+  it("extension entry-point that resolves OUTSIDE .floe does NOT change the config hash", () => {
+    // Simulates a pointer-extension whose source package lives outside .floe
+    // (e.g. the snowball pattern).  The pointer file itself is already in the
+    // surface; we must not pull in outside files.
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const extDir = join(workspace, ".floe", "extensions", "externalExt");
+    mkdirSync(extDir, { recursive: true });
+    // Write a pointer: manifest_source outside .floe (non-existent OK — we just test hash stability)
+    writeFileSync(
+      join(extDir, "extension.json"),
+      JSON.stringify({ manifest_source: "../../../../some-pkg/extension.json" }),
+      "utf8"
+    );
+
+    const before = loadProject(workspace).config_hash;
+
+    // Re-writing the pointer file itself DOES change the hash (manifest changed)
+    writeFileSync(
+      join(extDir, "extension.json"),
+      JSON.stringify({ manifest_source: "../../../../some-pkg/extension.json", comment: "updated" }),
+      "utf8"
+    );
+    const afterPointerChange = loadProject(workspace).config_hash;
+    expect(afterPointerChange).not.toBe(before);
+  });
+
+  it("changing an extension instructions_path file DOES change the config hash (regression: #102)", () => {
+    // This is the key regression introduced by #102's allow-list: editing an
+    // agent's instruction file referenced via instructions_path should trigger
+    // a reload, but the hardcoded allow-list excluded it.
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const extDir = join(workspace, ".floe", "extensions", "myExt");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(join(extDir, "overseer-instructions.md"), "# Instructions v1\n", "utf8");
+    writeFileSync(
+      join(extDir, "extension.json"),
+      JSON.stringify({
+        schema: "floe.extension.v1",
+        name: "myExt",
+        entry: "./index.ts",
+        agents: [{
+          agent_id: "overseer",
+          label: "Overseer",
+          instructions_path: "./overseer-instructions.md"
+        }]
+      }),
+      "utf8"
+    );
+
+    const before = loadProject(workspace).config_hash;
+
+    // Edit the referenced instructions file
+    writeFileSync(join(extDir, "overseer-instructions.md"), "# Instructions v2 — changed\n", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
+    expect(after).not.toBe(before);
+  });
+
+  it("extension data files (board.md, cards) under an extension with agents are NOT in the hash", () => {
+    // The declared surface only includes manifest-referenced files;
+    // nothing else under the extension dir is config.
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const extDir = join(workspace, ".floe", "extensions", "myExt");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(join(extDir, "overseer-instructions.md"), "# Instructions\n", "utf8");
+    writeFileSync(
+      join(extDir, "extension.json"),
+      JSON.stringify({
+        schema: "floe.extension.v1",
+        name: "myExt",
+        entry: "./index.ts",
+        agents: [{
+          agent_id: "overseer",
+          label: "Overseer",
+          instructions_path: "./overseer-instructions.md"
+        }]
+      }),
+      "utf8"
+    );
+
+    const before = loadProject(workspace).config_hash;
+
+    // Write board and card data under the same extension dir
+    const boardsDir = join(extDir, "boards", "scope-xyz");
+    mkdirSync(boardsDir, { recursive: true });
+    writeFileSync(join(boardsDir, "board.md"), "# Board\n", "utf8");
+    const cardsDir = join(boardsDir, "cards");
+    mkdirSync(cardsDir, { recursive: true });
+    writeFileSync(join(cardsDir, "card-1.md"), "# Card 1\n", "utf8");
+
+    const after = loadProject(workspace).config_hash;
+
     expect(after).toBe(before);
+  });
+
+  it("computeConfigSurface contains the expected substrate files after ensureProjectTemplate", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const floeDir = join(workspace, ".floe");
+    const surface = computeConfigSurface(floeDir);
+    const relPaths = surface.map((f) =>
+      f.replace(/\\/g, "/").slice(floeDir.replace(/\\/g, "/").length + 1)
+    );
+
+    // Must include substrate config
+    expect(relPaths).toContain("floe.yaml");
+    expect(relPaths.some((p) => p.startsWith("agents/"))).toBe(true);
+    expect(relPaths.some((p) => p.startsWith("skills/"))).toBe(true);
+    expect(relPaths.some((p) => p.startsWith("mcp/"))).toBe(true);
+
+    // Must NOT include state or extensions root README
+    expect(relPaths.some((p) => p.startsWith("state/"))).toBe(false);
+    expect(relPaths).not.toContain("extensions/README.md");
   });
 });
