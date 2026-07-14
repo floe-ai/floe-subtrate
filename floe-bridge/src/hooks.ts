@@ -48,6 +48,17 @@ export type HookPayloadByName = {
   SessionStart: RuntimeSessionPayload & { reason: "session_created" };
   BeforeTurn: EndpointDeliveryPayload & {
     thread_id?: string | null;
+    /**
+     * Typed reference to the delivery origin — symmetric with the emit destination.
+     * kind="context" when the trigger event belongs to a specific context thread.
+     * kind="thread"  when the trigger event has only a thread_id (no context).
+     * Undefined when neither is present (e.g. bare endpoint delivery).
+     *
+     * Hooks use this to scope their view to a single thread without coupling to
+     * event-type identity. Snowball BeforeTurn narrows to the card whose
+     * context_id === origin.id when origin.kind === "context".
+     */
+    origin?: { id: string; kind: "context" | "thread" };
   };
   TurnEnd: EndpointDeliveryPayload & {
     visible_output: string;
