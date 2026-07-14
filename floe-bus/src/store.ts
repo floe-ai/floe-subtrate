@@ -259,6 +259,10 @@ export class BusStore {
   readonly contextStore: ContextStore;
   readonly scopeStore: ScopeStore;
   readonly endpointWatermarkStore: EndpointWatermarkStore;
+  /** Broadcast function injected by the server after initialisation. */
+  private broadcastFn: Broadcast | null = null;
+  /** Single-shot timer scheduled to fire at the next lease expiry time (D5). */
+  private leaseExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(configPath: string, readonly config: LocalConfig) {
     const dataDir = resolveLocalPath(configPath, config.home, config.bus.data_dir);
@@ -272,7 +276,21 @@ export class BusStore {
     this.endpointWatermarkStore = new EndpointWatermarkStore(this.db);
   }
 
+  /**
+   * Inject the broadcast function so the store can drive lease-expiry requeue
+   * without being handed `broadcast` on every call (D5).
+   */
+  setBroadcast(fn: Broadcast): void {
+    this.broadcastFn = fn;
+    // Start the lease-expiry scheduler now that we have broadcast available.
+    this.scheduleNextLeaseExpiryCheck();
+  }
+
   close(): void {
+    if (this.leaseExpiryTimer !== null) {
+      clearTimeout(this.leaseExpiryTimer);
+      this.leaseExpiryTimer = null;
+    }
     this.db.close();
   }
 
@@ -1417,7 +1435,6 @@ export class BusStore {
   }
 
   claimDeliveries(bridgeId: string, limit: number, broadcast: Broadcast): DeliveryBundle[] {
-    this.requeueExpiredDeliveryLeases(broadcast);
     const rows = this.db.prepare(`
       SELECT db.*
       FROM delivery_bundles db
@@ -2282,6 +2299,8 @@ export class BusStore {
     this.db.prepare("UPDATE endpoints SET status = 'active', updated_at = ? WHERE endpoint_id = ?")
       .run(now(), endpointId);
     broadcast("delivery_bundle_available", { delivery: bundle });
+    // Schedule the lease-expiry check so this bundle's lease is covered (D5).
+    this.scheduleNextLeaseExpiryCheck();
     return bundle;
   }
 
@@ -2314,8 +2333,45 @@ export class BusStore {
         delivery_id: row.delivery_id,
         error: "delivery lease expired"
       });
-      if (queueState === "queued") this.tryCreateDeliveryForEndpoint(row.endpoint_id, broadcast);
+      if (queueState === "queued") {
+        // Reset the endpoint to idle so the requeued events are immediately re-delivered.
+        // updateEndpointStatus("idle") internally calls tryCreateDeliveryForEndpoint.
+        this.updateEndpointStatus(row.endpoint_id, "idle", broadcast);
+      }
     }
+    // After requeue, reschedule for any remaining active leases.
+    this.scheduleNextLeaseExpiryCheck();
+  }
+
+  /**
+   * Schedule a single-shot timer to fire at the earliest active lease-expiry time.
+   * When the timer fires it calls requeueExpiredDeliveryLeases and reschedules.
+   * This is NOT a recurring poll — it fires exactly once at the next deadline (D5).
+   */
+  private scheduleNextLeaseExpiryCheck(): void {
+    // Clear any existing timer before rescheduLing.
+    if (this.leaseExpiryTimer !== null) {
+      clearTimeout(this.leaseExpiryTimer);
+      this.leaseExpiryTimer = null;
+    }
+    if (!this.broadcastFn) return; // broadcast not yet injected
+
+    const row = this.db.prepare(`
+      SELECT MIN(lease_expires_at) AS next_expiry
+      FROM delivery_bundles
+      WHERE state IN ('reserved', 'delivered_to_bridge', 'injected_to_runtime')
+        AND lease_expires_at IS NOT NULL
+    `).get() as { next_expiry: string | null };
+
+    if (!row.next_expiry) return; // no active leases — nothing to schedule
+
+    const delay = Math.max(0, Date.parse(row.next_expiry) - Date.now());
+    const broadcast = this.broadcastFn;
+    this.leaseExpiryTimer = setTimeout(() => {
+      this.leaseExpiryTimer = null;
+      this.requeueExpiredDeliveryLeases(broadcast);
+      // requeueExpiredDeliveryLeases calls scheduleNextLeaseExpiryCheck() at the end
+    }, delay);
   }
 
   private rowToEvent(row: any): EventEnvelope {

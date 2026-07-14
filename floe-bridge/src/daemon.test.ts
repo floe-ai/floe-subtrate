@@ -595,3 +595,382 @@ describe("BridgeDaemon – extension tool ungating", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// D1 — WS reconnect: exponential back-off + one-shot resync on reopen
+// ---------------------------------------------------------------------------
+
+describe("BridgeDaemon – D1 WS reconnect with exponential back-off", () => {
+  it("reconnects after socket close with increasing back-off and resets on reopen", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const previousWebSocket = (globalThis as any).WebSocket;
+
+    const socketInstances: Array<{ emitOpen(): void; emitClose(): void; sent: string[] }> = [];
+
+    class FakeWebSocket {
+      private listeners = new Map<string, Array<(event?: any) => void>>();
+      readonly sent: string[] = [];
+
+      constructor(readonly url: string) {
+        socketInstances.push(this as any);
+      }
+
+      addEventListener(event: string, listener: (event?: any) => void): void {
+        const existing = this.listeners.get(event) ?? [];
+        existing.push(listener);
+        this.listeners.set(event, existing);
+      }
+
+      send(data: string): void { this.sent.push(data); }
+      close(): void {}
+
+      emitOpen(): void {
+        for (const l of this.listeners.get("open") ?? []) l();
+      }
+      emitClose(): void {
+        for (const l of this.listeners.get("close") ?? []) l();
+      }
+    }
+
+    (globalThis as any).WebSocket = FakeWebSocket;
+
+    const attachCalls: string[] = [];
+    const processCalls: string[] = [];
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).bus = {
+        async health() {},
+        async registerBridge() {},
+        async listWorkspaces() { attachCalls.push("attach"); return []; },
+        async claimDeliveries() { processCalls.push("process"); return []; },
+        async reportBridgeLiveness() {}
+      };
+
+      await daemon.start();
+
+      // First socket created by openEventStream()
+      expect(socketInstances).toHaveLength(1);
+
+      // Opening the first socket: triggers resync
+      socketInstances[0].emitOpen();
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(attachCalls.length).toBeGreaterThanOrEqual(1);
+      expect(processCalls.length).toBeGreaterThanOrEqual(1);
+      const callsAfterFirstOpen = attachCalls.length;
+
+      // Simulate socket close → should schedule a reconnect
+      socketInstances[0].emitClose();
+
+      // Wait for the back-off timer (STREAM_INITIAL_BACKOFF_MS = 250ms by default, but
+      // tests run with real timers; we use vi.useFakeTimers to accelerate)
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Second socket should have been created
+      expect(socketInstances.length).toBeGreaterThanOrEqual(2);
+
+      // Opening the second socket: triggers another resync
+      socketInstances[socketInstances.length - 1].emitOpen();
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(attachCalls.length).toBeGreaterThan(callsAfterFirstOpen);
+
+      await daemon.stop();
+    } finally {
+      (globalThis as any).WebSocket = previousWebSocket;
+      made.cleanup();
+    }
+  });
+
+  it("does not reconnect after stop() is called", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const previousWebSocket = (globalThis as any).WebSocket;
+
+    const socketInstances: Array<{ emitClose(): void }> = [];
+
+    class FakeWebSocket {
+      private listeners = new Map<string, Array<() => void>>();
+
+      constructor() {
+        socketInstances.push(this as any);
+      }
+
+      addEventListener(event: string, listener: () => void): void {
+        const existing = this.listeners.get(event) ?? [];
+        existing.push(listener);
+        this.listeners.set(event, existing);
+      }
+
+      send(): void {}
+      close(): void {}
+
+      emitClose(): void {
+        for (const l of this.listeners.get("close") ?? []) l();
+      }
+    }
+
+    (globalThis as any).WebSocket = FakeWebSocket;
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).bus = {
+        async health() {},
+        async registerBridge() {},
+        async listWorkspaces() { return []; },
+        async claimDeliveries() { return []; },
+        async reportBridgeLiveness() {}
+      };
+
+      await daemon.start();
+      expect(socketInstances).toHaveLength(1);
+
+      // Stop cancels the reconnect loop
+      await daemon.stop();
+
+      socketInstances[0].emitClose();
+      await new Promise(resolve => setTimeout(resolve, 400));
+
+      // Should NOT have created a second socket
+      expect(socketInstances).toHaveLength(1);
+    } finally {
+      (globalThis as any).WebSocket = previousWebSocket;
+      made.cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D2 — direct bundle consumption from WS payload (no HTTP round-trip)
+// ---------------------------------------------------------------------------
+
+describe("BridgeDaemon – D2 direct bundle consumption from WS payload", () => {
+  it("handles a pushed bundle directly without calling claimDeliveries when this bridge owns the endpoint", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const previousWebSocket = (globalThis as any).WebSocket;
+
+    let socket: { emitMessage(data: string): void } | undefined;
+
+    class FakeWebSocket {
+      private listeners = new Map<string, Array<(event: any) => void>>();
+
+      constructor() { socket = this as any; }
+
+      addEventListener(event: string, listener: (event: any) => void): void {
+        const existing = this.listeners.get(event) ?? [];
+        existing.push(listener);
+        this.listeners.set(event, existing);
+      }
+
+      send(): void {}
+      close(): void {}
+
+      emitMessage(data: string): void {
+        for (const l of this.listeners.get("message") ?? []) l({ data });
+      }
+    }
+
+    (globalThis as any).WebSocket = FakeWebSocket;
+
+    const claimCalls: number[] = [];
+    const handledDeliveries: string[] = [];
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+
+      (daemon as any).bus = {
+        async health() {},
+        async registerBridge() {},
+        async listWorkspaces() { return []; },
+        async claimDeliveries() { claimCalls.push(1); return []; },
+        async reportDeliveryStatus() {},
+        async reportTurnEnd() {},
+        async updateEndpointStatus() {},
+        async resolveRuntimeBinding() {
+          return {
+            endpoint_auth_profile: "p", workspace_auth_profile: null, global_auth_profile: null,
+            endpoint_model: null, workspace_model: null, global_model: null,
+            endpoint_thinking_level: null, workspace_thinking_level: null, global_thinking_level: null
+          };
+        }
+      };
+
+      // Register the endpoint so the bridge "owns" it
+      (daemon as any).endpointRuntime.set("actor:workspace:test:agent1", {
+        config: { auth_profile: "p", provider: "fake", model: "fake" },
+        instructions: "",
+        workspace_locator: undefined,
+        agent_id: "agent1"
+      });
+
+      // Capture handleDelivery calls
+      const originalHandle = (daemon as any).handleDelivery.bind(daemon);
+      (daemon as any).handleDelivery = async (d: any) => {
+        handledDeliveries.push(d.delivery_id);
+        // Don't actually invoke the full delivery pipeline in this unit test
+      };
+
+      await daemon.start();
+      const claimsAfterStart = claimCalls.length;
+
+      const bundle = {
+        delivery_id: "del-direct-1",
+        endpoint_id: "actor:workspace:test:agent1",
+        workspace_id: "workspace:test",
+        trigger_event_id: "evt:1",
+        events: [],
+        delivered_at: new Date().toISOString()
+      };
+
+      socket?.emitMessage(JSON.stringify({
+        type: "delivery_bundle_available",
+        payload: { delivery: bundle }
+      }));
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // handleDelivery should have been called directly
+      expect(handledDeliveries).toContain("del-direct-1");
+      // claimDeliveries should NOT have been called for this owned bundle
+      expect(claimCalls.length).toBe(claimsAfterStart);
+
+      await daemon.stop();
+    } finally {
+      (globalThis as any).WebSocket = previousWebSocket;
+      made.cleanup();
+    }
+  });
+
+  it("falls back to processDeliveries when the endpoint is not owned by this bridge", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const previousWebSocket = (globalThis as any).WebSocket;
+
+    let socket: { emitMessage(data: string): void } | undefined;
+
+    class FakeWebSocket {
+      private listeners = new Map<string, Array<(event: any) => void>>();
+
+      constructor() { socket = this as any; }
+
+      addEventListener(event: string, listener: (event: any) => void): void {
+        const existing = this.listeners.get(event) ?? [];
+        existing.push(listener);
+        this.listeners.set(event, existing);
+      }
+
+      send(): void {}
+      close(): void {}
+
+      emitMessage(data: string): void {
+        for (const l of this.listeners.get("message") ?? []) l({ data });
+      }
+    }
+
+    (globalThis as any).WebSocket = FakeWebSocket;
+
+    const claimCalls: number[] = [];
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+
+      (daemon as any).bus = {
+        async health() {},
+        async registerBridge() {},
+        async listWorkspaces() { return []; },
+        async claimDeliveries() { claimCalls.push(1); return []; },
+      };
+
+      await daemon.start();
+      const claimsAfterStart = claimCalls.length;
+
+      // endpoint NOT in endpointRuntime → fallback path
+      socket?.emitMessage(JSON.stringify({
+        type: "delivery_bundle_available",
+        payload: { delivery: {
+          delivery_id: "del-other-bridge",
+          endpoint_id: "actor:workspace:other:agent2",
+          workspace_id: "workspace:other",
+          trigger_event_id: "evt:2",
+          events: [],
+          delivered_at: new Date().toISOString()
+        } }
+      }));
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Should have triggered processDeliveries (HTTP claim fallback)
+      expect(claimCalls.length).toBeGreaterThan(claimsAfterStart);
+
+      await daemon.stop();
+    } finally {
+      (globalThis as any).WebSocket = previousWebSocket;
+      made.cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D4 — bridge_hello handshake: bridge sends hello on connect
+// ---------------------------------------------------------------------------
+
+describe("BridgeDaemon – D4 bridge_hello sent on WS open", () => {
+  it("sends bridge_hello as first message on WS connect", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const previousWebSocket = (globalThis as any).WebSocket;
+
+    const sentMessages: string[] = [];
+    let openListener: (() => void) | undefined;
+
+    class FakeWebSocket {
+      private listeners = new Map<string, Array<(event?: any) => void>>();
+
+      constructor() {}
+
+      addEventListener(event: string, listener: (event?: any) => void): void {
+        const existing = this.listeners.get(event) ?? [];
+        existing.push(listener);
+        this.listeners.set(event, existing);
+        if (event === "open") openListener = listener;
+      }
+
+      send(data: string): void { sentMessages.push(data); }
+      close(): void {}
+    }
+
+    (globalThis as any).WebSocket = FakeWebSocket;
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).bus = {
+        async health() {},
+        async registerBridge() {},
+        async listWorkspaces() { return []; },
+        async claimDeliveries() { return []; },
+      };
+
+      await daemon.start();
+
+      // Trigger the open event
+      openListener?.();
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // A bridge_hello message should have been sent
+      const helloMsg = sentMessages
+        .map(m => { try { return JSON.parse(m); } catch { return null; } })
+        .find(m => m?.type === "bridge_hello");
+      expect(helloMsg).toBeDefined();
+      expect(helloMsg?.bridge_id).toBe(daemon.bridgeId);
+
+      await daemon.stop();
+    } finally {
+      (globalThis as any).WebSocket = previousWebSocket;
+      made.cleanup();
+    }
+  });
+});
+

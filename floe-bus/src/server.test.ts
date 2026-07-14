@@ -547,11 +547,21 @@ describe("Runtime config truth and auth registry routes", () => {
     });
     expect(register.statusCode).toBe(201);
 
-    const liveness = await handle.app.inject({
-      method: "POST",
-      url: "/v1/bridges/bridge%3Aruntime/liveness"
+    // D4: liveness is socket-based. Open a WS and send bridge_hello to mark the bridge online.
+    const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
+    const wsUrl = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const wsMod = await import("ws" as any);
+    const WsCtor = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const ws = new WsCtor(wsUrl);
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ type: "bridge_hello", bridge_id: "bridge:runtime" }));
+        resolve();
+      });
+      ws.on("error", (err: any) => reject(err));
     });
-    expect(liveness.statusCode).toBe(200);
+    // Give the server a tick to process the bridge_hello message.
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     const res = await handle.app.inject({ method: "GET", url: "/v1/runtime/status" });
     expect(res.statusCode).toBe(200);
@@ -561,6 +571,13 @@ describe("Runtime config truth and auth registry routes", () => {
         runtime_adapter: "pi-agent-core"
       }
     });
+
+    ws.close();
+    // Give the server a tick to process the socket close (marks bridge offline).
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    const res2 = await handle.app.inject({ method: "GET", url: "/v1/runtime/status" });
+    expect(res2.json()).toMatchObject({ bridge: { online: false } });
   });
 
   it("serves auth models merged from local overlays", async () => {
