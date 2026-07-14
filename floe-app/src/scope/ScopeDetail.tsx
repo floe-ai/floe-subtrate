@@ -475,6 +475,25 @@ export function ScopeDetail({
     loadContexts();
   }, [loadContexts]);
 
+  // Auto-refresh contexts list on push: context_created (new context in this scope)
+  // or event_submitted (updates last_event_at on a context, changing sort order).
+  useEffect(() => {
+    const unsub = subscribeEvents((msg) => {
+      if (msg.type === "context_created") {
+        const ctx = (msg.payload as { context?: { scope_id?: string; workspace_id?: string } }).context;
+        if (ctx?.workspace_id === workspaceId && ctx?.scope_id === scope.scope_id) {
+          loadContexts();
+        }
+      } else if (msg.type === "event_submitted") {
+        const event = (msg.payload as { event?: { scope_id?: string; workspace_id?: string } }).event;
+        if (event?.workspace_id === workspaceId && event?.scope_id === scope.scope_id) {
+          loadContexts();
+        }
+      }
+    });
+    return unsub;
+  }, [workspaceId, scope.scope_id, loadContexts]);
+
   async function handleDeleteContext(ctx: ContextRef, e: React.MouseEvent) {
     e.stopPropagation();
     setDeletingContextId(ctx.context_id);
