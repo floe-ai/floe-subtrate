@@ -573,3 +573,18 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - `floe-bus/src/contexts/runtime-delivery.test.ts` — 4 tests
 - `floe-bus/src/contexts/batch-subscriptions.test.ts` — 8 tests
 - `floe-ext-snowball/src/__tests__/handoff.test.ts` — 8 tests
+
+---
+
+## Zero-poll delivery invariant (fm/floe-zeropoll-core)
+
+**The substrate is push-only. No recurring polling anywhere.**
+
+- **Delivery rides the bridge↔bus WebSocket** (`/v1/events/stream`). The bus broadcasts `delivery_bundle_available` with the full `DeliveryBundle` in the payload; the bridge consumes it directly (no HTTP round-trip) when it owns the endpoint.
+- **WS reconnect is mandatory** (`floe-bridge/src/daemon.ts` `openEventStream()`). The bridge reconnects with exponential back-off (250ms → 16s cap) on socket close. Cancelled on `stop()`.
+- **Recovery is one-shot resync, not a poll.** On the `open` event, the bridge runs `attachKnownWorkspaces()` + `processDeliveries()` exactly once. There is no 30-second reconcile timer.
+- **Liveness is socket-presence** (D4). The bridge sends `{ type: "bridge_hello", bridge_id }` as its first WS message; the bus associates the socket with the bridge and removes it from `bridgeSockets` on close. `/v1/runtime/status` checks `bridgeSockets.has(bridge_id) && readyState === 1`. There is no 10-second liveness ping.
+- **Lease-expiry requeue uses a scheduled single-shot timer** (D5 / Pulse pattern). `BusStore` maintains one `setTimeout` that fires at the next lease-expiry deadline (queried from the DB). On fire, it calls `requeueExpiredDeliveryLeases` and reschedules for the next deadline. No `setInterval` scan. The timer is seeded via `store.setBroadcast(fn)` (called by the server immediately after creating the broadcast function).
+- **`requeueExpiredDeliveryLeases` resets endpoint status** to `idle` (not just requeuing events) so `tryCreateDeliveryForEndpoint` can create a new delivery bundle immediately.
+- **Multi-bridge fallback**: when `delivery_bundle_available` carries an endpoint not in `endpointRuntime`, the bridge falls through to `processDeliveries()` (HTTP claim). This handles the multi-bridge / race case only.
+- **`processDeliveries()` uses per-endpoint locks** (`processingEndpoints: Set<string>`) so concurrent deliveries to different endpoints are handled in parallel without a coarse global lock.

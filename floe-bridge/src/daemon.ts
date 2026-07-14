@@ -20,8 +20,9 @@ import { loadExtensions, type LoadedExtension } from "./extension-loader.js";
 import { HookRegistry } from "./hooks.js";
 import { startExtensionRelayServer } from "./extension-relay.js";
 
-type Timer = ReturnType<typeof setInterval>;
 const WEBHOOK_DEDUPE_MAX_EVENTS = 10_000;
+const STREAM_INITIAL_BACKOFF_MS = 250;
+const STREAM_MAX_BACKOFF_MS = 16_000;
 
 type EndpointEntry = {
   config: AgentRuntimeConfig;
@@ -38,11 +39,15 @@ export class BridgeDaemon {
   private workspaceExtensions = new Map<string, LoadedExtension[]>();
   private workspaceHooks = new Map<string, HookRegistry>();
   private workspaceRelays = new Map<string, { server: Server; exitHandler: () => void }>();
-  private timers: Timer[] = [];
   private attaching = false;
-  private processing = false;
+  private processingEndpoints = new Set<string>();
   private reportedAttachments = new Map<string, string>();
   private firedWebhookEvents = new Set<string>();
+  // D1: reconnect state
+  private streamCancelled = false;
+  private streamSocket: { close(): void; send(data: string): void } | null = null;
+  private streamRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamBackoffMs = STREAM_INITIAL_BACKOFF_MS;
 
   constructor(readonly configPath: string, readonly config: LocalConfig) {
     this.bridgeId = process.env.FLOE_BRIDGE_ID ?? "bridge:local";
@@ -60,13 +65,19 @@ export class BridgeDaemon {
     this.openEventStream();
     await this.attachKnownWorkspaces();
     await this.processDeliveries();
-    this.timers.push(setInterval(() => void this.safeLivenessPing(), 10_000));
-    this.timers.push(setInterval(() => void this.reconcileFromBus(), 30_000));
   }
 
   async stop(): Promise<void> {
-    for (const timer of this.timers) clearInterval(timer);
-    this.timers = [];
+    // D1: cancel the event stream reconnect loop.
+    this.streamCancelled = true;
+    if (this.streamRetryTimer !== null) {
+      clearTimeout(this.streamRetryTimer);
+      this.streamRetryTimer = null;
+    }
+    if (this.streamSocket !== null) {
+      try { this.streamSocket.close(); } catch { /* ignore */ }
+      this.streamSocket = null;
+    }
     this.firedWebhookEvents.clear();
     // Close all relay servers so ports are released on daemon shutdown
     for (const [, relay] of this.workspaceRelays) {
@@ -93,22 +104,69 @@ export class BridgeDaemon {
   }
 
   private openEventStream(): void {
-    const WebSocketCtor = (globalThis as any).WebSocket;
+    const WebSocketCtor = (globalThis as any).WebSocket as (new (url: string) => any) | undefined;
     if (!WebSocketCtor) return;
-    const url = `${bridgeWsBase(this.config).replace(/\/$/, "")}/v1/events/stream`;
-    try {
-      const socket = new WebSocketCtor(url);
-      socket.addEventListener("message", (event: MessageEvent) => {
+
+    const connect = (): void => {
+      if (this.streamCancelled) return;
+      const url = `${bridgeWsBase(this.config).replace(/\/$/, "")}/v1/events/stream`;
+      let socket: any = null;
+      try {
+        socket = new WebSocketCtor(url);
+      } catch {
+        // WebSocket unavailable — schedule retry.
+        this.scheduleStreamRetry(connect);
+        return;
+      }
+      this.streamSocket = socket as { close(): void; send(data: string): void };
+
+      socket.addEventListener("open", () => {
+        if (this.streamCancelled) { try { socket?.close(); } catch { /* ignore */ } return; }
+        // D4: send bridge_hello so the bus associates this socket with our bridge_id.
+        try {
+          socket?.send(JSON.stringify({ type: "bridge_hello", bridge_id: this.bridgeId }));
+        } catch { /* ignore */ }
+        // D1: reset backoff on successful connection.
+        this.streamBackoffMs = STREAM_INITIAL_BACKOFF_MS;
+        // D1: one-shot resync to pick up anything queued while disconnected.
+        void this.attachKnownWorkspaces();
+        void this.processDeliveries();
+      });
+
+      socket.addEventListener("message", (event: { data: string }) => {
+        if (this.streamCancelled) return;
         try {
           const message = JSON.parse(String(event.data));
           this.handleEventStreamMessage(message);
         } catch {
-          // Event stream is the normal control path. Reconciliation timers are bounded recovery only.
+          // ignore malformed frames
         }
       });
-    } catch {
-      // Startup reconciliation and bounded recovery timers handle degraded socket availability.
-    }
+
+      socket.addEventListener("close", () => {
+        this.streamSocket = null;
+        if (this.streamCancelled) return;
+        // D1: reconnect with exponential back-off.
+        this.scheduleStreamRetry(connect);
+      });
+
+      socket.addEventListener("error", () => {
+        // `close` fires after `error`, reconnect is handled there.
+      });
+    };
+
+    connect();
+  }
+
+  /** Schedule the next WS reconnect attempt with exponential back-off (D1). */
+  private scheduleStreamRetry(connect: () => void): void {
+    if (this.streamCancelled) return;
+    const delay = this.streamBackoffMs;
+    this.streamBackoffMs = Math.min(this.streamBackoffMs * 2, STREAM_MAX_BACKOFF_MS);
+    this.streamRetryTimer = setTimeout(() => {
+      this.streamRetryTimer = null;
+      connect();
+    }, delay);
   }
 
   private handleEventStreamMessage(message: any): void {
@@ -127,7 +185,28 @@ export class BridgeDaemon {
       void this.applySavedConfig(String(message.payload.workspace_id), message.payload?.config_id ? String(message.payload.config_id) : null);
     }
     if (message.type === "delivery_bundle_available") {
-      void this.processDeliveries();
+      // D2: consume the pushed bundle directly when this bridge owns the endpoint.
+      // The bus broadcasts the full DeliveryBundle at creation time with the lease
+      // set server-side — no HTTP round-trip needed for the single-bridge case.
+      const delivery = message.payload?.delivery as DeliveryBundle | undefined;
+      if (
+        delivery &&
+        typeof delivery.endpoint_id === "string" &&
+        this.endpointRuntime.has(delivery.endpoint_id) &&
+        !this.processingEndpoints.has(delivery.endpoint_id)
+      ) {
+        this.processingEndpoints.add(delivery.endpoint_id);
+        void (async () => {
+          try {
+            await this.handleDelivery(delivery);
+          } finally {
+            this.processingEndpoints.delete(delivery.endpoint_id);
+          }
+        })();
+      } else {
+        // Multi-bridge / race fallback: let the HTTP claim path sort it out.
+        void this.processDeliveries();
+      }
     }
     if (message.type === "config_snapshot_requested" && message.payload?.workspace_id) {
       void this.returnSnapshot(String(message.payload.workspace_id));
@@ -207,19 +286,6 @@ export class BridgeDaemon {
         }
       }
     }
-  }
-
-  private async safeLivenessPing(): Promise<void> {
-    try {
-      await this.bus.reportBridgeLiveness(this.bridgeId);
-    } catch (error) {
-      console.error("[bridge] liveness ping failed", error);
-    }
-  }
-
-  private async reconcileFromBus(): Promise<void> {
-    await this.attachKnownWorkspaces();
-    await this.processDeliveries();
   }
 
   private async attachKnownWorkspaces(): Promise<void> {
@@ -565,17 +631,24 @@ export class BridgeDaemon {
   }
 
   private async processDeliveries(): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
+    // HTTP-claim fallback path (multi-bridge / race case, startup resync).
+    // Per-endpoint locking handled in the direct-consume path; here we just process
+    // whatever the claim endpoint returns, skipping any endpoint already in-flight.
     try {
       const deliveries = await this.bus.claimDeliveries(this.bridgeId);
       for (const delivery of deliveries) {
-        await this.handleDelivery(delivery);
+        if (this.processingEndpoints.has(delivery.endpoint_id)) continue;
+        this.processingEndpoints.add(delivery.endpoint_id);
+        void (async () => {
+          try {
+            await this.handleDelivery(delivery);
+          } finally {
+            this.processingEndpoints.delete(delivery.endpoint_id);
+          }
+        })();
       }
     } catch (error) {
       console.error("[bridge] delivery processing failed", error);
-    } finally {
-      this.processing = false;
     }
   }
 

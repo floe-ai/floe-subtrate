@@ -96,6 +96,7 @@ type SocketLike = {
   send(data: string): void;
   close(): void;
   on(event: "close" | "error", listener: () => void): void;
+  on(event: "message", listener: (data: Buffer | string) => void): void;
 };
 
 export async function createBusServer(configPath: string, config: LocalConfig): Promise<{
@@ -107,6 +108,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   const app = Fastify({ logger: true });
   const store = new BusStore(configPath, config);
   const sockets = new Set<SocketLike>();
+  /** Maps bridge_id → the WS socket it opened; used for socket-presence liveness (D4). */
+  const bridgeSockets = new Map<string, SocketLike>();
 
   function broadcast(type: string, payload: Record<string, unknown> = {}): void {
     const message = JSON.stringify({
@@ -123,12 +126,16 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
   }
 
+  // Inject broadcast into the store so lease-expiry requeue can self-schedule (D5).
+  store.setBroadcast(broadcast);
+
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
   app.addHook("onClose", async () => {
     clearInterval(timer);
     for (const socket of sockets) socket.close();
+    bridgeSockets.clear();
     store.close();
   });
 
@@ -150,10 +157,11 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   }));
 
   app.get("/v1/runtime/status", async () => {
-    const nowMs = Date.now();
+    // D4: liveness is determined by socket presence, not a time-window check.
+    // A bridge is online if and only if its WS socket is currently connected.
     const onlineBridges = store.listBridges().filter((bridge) => {
-      const seenAt = Date.parse(bridge.last_seen_at);
-      return Number.isFinite(seenAt) && nowMs - seenAt <= BRIDGE_LIVENESS_MS;
+      const s = bridgeSockets.get(bridge.bridge_id);
+      return s !== undefined && s.readyState === 1;
     });
     const runtimeAdapter = onlineBridges
       .flatMap((bridge) => {
@@ -173,13 +181,39 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   app.get("/v1/events/stream", { websocket: true }, (socket) => {
     const client = socket as unknown as SocketLike;
     sockets.add(client);
+    let connectedBridgeId: string | null = null;
     client.send(JSON.stringify({
       type: "hello",
       payload: { service: "floe-bus" },
       at: new Date().toISOString()
     }));
-    client.on("close", () => sockets.delete(client));
-    client.on("error", () => sockets.delete(client));
+    // D4: handle bridge_hello from the connecting bridge to establish WS-based liveness.
+    client.on("message", (raw) => {
+      try {
+        const msg = JSON.parse(typeof raw === "string" ? raw : raw.toString()) as Record<string, unknown>;
+        if (msg.type === "bridge_hello" && typeof msg.bridge_id === "string") {
+          const bridgeId = msg.bridge_id;
+          connectedBridgeId = bridgeId;
+          bridgeSockets.set(bridgeId, client);
+          // Also update the DB last_seen_at so stored timestamps stay fresh.
+          store.reportBridgeLiveness(bridgeId);
+        }
+      } catch {
+        // ignore malformed frames
+      }
+    });
+    client.on("close", () => {
+      sockets.delete(client);
+      if (connectedBridgeId !== null && bridgeSockets.get(connectedBridgeId) === client) {
+        bridgeSockets.delete(connectedBridgeId);
+      }
+    });
+    client.on("error", () => {
+      sockets.delete(client);
+      if (connectedBridgeId !== null && bridgeSockets.get(connectedBridgeId) === client) {
+        bridgeSockets.delete(connectedBridgeId);
+      }
+    });
   });
 
   app.get("/v1/workspaces", async () => ({
