@@ -443,7 +443,7 @@ Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown fil
 - WIP limit: hard block for both human and AI.
 - `StubBusClient.createdContexts` captures `CreateContextInput[]` for test assertions.
 
-**Tests:** `npm test --workspace floe-ext-snowball` — 214 unit tests (board-snapshot utilities + gate enforcement + handler + overseer driver + instructions endpoints + board-file + advance-on-conclusion timing + hooks BeforeTurn injection + Slice 4 card-context invariants).
+**Tests:** `npm test --workspace floe-ext-snowball` — 221 unit tests (board-snapshot utilities + gate enforcement + handler + overseer driver + instructions endpoints + board-file + advance-on-conclusion timing + hooks BeforeTurn injection + Slice 4 card-context invariants + context isolation D-A).
 
 **Slice 4 (fm/snowball-card-context) — card = context, uniform actor assignment:**
 - **Card = context**: every card has a `context_id` field in its frontmatter (null for legacy pre-Slice-4 cards). The card context is created at card creation time and its `context_id` written to frontmatter immediately.
@@ -588,3 +588,26 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - **`requeueExpiredDeliveryLeases` resets endpoint status** to `idle` (not just requeuing events) so `tryCreateDeliveryForEndpoint` can create a new delivery bundle immediately.
 - **Multi-bridge fallback**: when `delivery_bundle_available` carries an endpoint not in `endpointRuntime`, the bridge falls through to `processDeliveries()` (HTTP claim). This handles the multi-bridge / race case only.
 - **`processDeliveries()` uses per-endpoint locks** (`processingEndpoints: Set<string>`) so concurrent deliveries to different endpoints are handled in parallel without a coarse global lock.
+
+## Context isolation invariant (fm/floe-ctx-iso)
+
+**A turn is built from exactly ONE context — the delivery's origin context. No bleed from other contexts.**
+
+### Typed origin reference (D-A/D-B fix)
+
+- `BeforeTurn` hook payload now carries `origin?: { id: string; kind: "context" | "thread" }` — a typed reference symmetric with the emit `destination` (`{kind, id}`). Set from the trigger event's `context_id` (kind=`"context"`) or `thread_id` (kind=`"thread"`).
+- Source: `floe-bridge/src/hooks.ts` `HookPayloadByName.BeforeTurn`; set in `floe-bridge/src/adapters/pi-agent-core-adapter.ts` before firing the hook.
+
+### Emit defaults to origin context (D-B fix)
+
+- The `emit` tool in `pi-agent-core-adapter.ts` now defaults `context_id` to `turn.context_id` (the delivery origin context) when no explicit `context_id` is provided. This ensures replies land in the same context thread they came from.
+- Explicit `context_id` in the tool call still overrides (for deliberate cross-context emits, e.g. floe→snowball side thread).
+- `current_delivery_context_id` is still always forwarded as observability metadata (unchanged).
+
+### Snowball BeforeTurn overlay narrowing (D-A fix)
+
+- `floe-ext-snowball/src/hooks.ts` `BeforeTurn`: when `origin.kind === "context"`, the injected board view is narrowed to ONLY the card whose `context_id === origin.id` (read from `CardFile.context_id` frontmatter via `listCards()`).
+- If `origin` maps to no card: **no injection** (return early — the turn is not about a known card).
+- If `origin` is absent (e.g. pulse delivery): fall back to board-wide view for the agent's owned columns (unchanged backward-compatible behavior).
+- System-steward branch (`agentId === "snowball"`): always board-wide view — that is its job, not a leak.
+- Done protocol injected only when a matching card is found (before the card match was confirmed, it would leak done-protocol text even for unknown contexts).

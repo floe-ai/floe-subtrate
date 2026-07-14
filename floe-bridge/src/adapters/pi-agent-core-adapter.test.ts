@@ -1531,9 +1531,11 @@ describe("Substrate model — explicit emit only", () => {
 
     expect(emittedEvents).toHaveLength(1);
     const emitted = emittedEvents[0];
-    // No caller-supplied context_id forwarded
-    expect(emitted.context_id ?? null).toBeNull();
-    // But current_delivery_context_id MUST be set
+    // D-B fix: when no caller-supplied context_id, the emit tool now defaults to the
+    // delivery's origin context (turn.context_id) so replies always land in the same
+    // thread they came from — never leaking into a different card's context.
+    expect(emitted.context_id).toBe("ctx_delivery_2");
+    // current_delivery_context_id MUST also be set (unchanged)
     expect(emitted.current_delivery_context_id).toBe("ctx_delivery_2");
   });
 
@@ -1770,6 +1772,217 @@ describe("Substrate model — explicit emit only", () => {
     // Should NOT see workspace B actors (no leakage of any ws-b name)
     const wsB = parsed.filter((ep: any) => ep.name === "Reviewer" || (ep.ref ?? "").includes("reviewer"));
     expect(wsB).toHaveLength(0);
+  });
+});
+
+// ─── Context isolation (fm/floe-ctx-iso) ────────────────────────────────────
+describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
+  function makeIsoAdapter(capturedTools: any[], fakeAgent: any) {
+    return new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input: any) => {
+          capturedTools.push(...(input.tools ?? []));
+          return fakeAgent;
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+  }
+
+  it("BeforeTurn hook receives origin: { id, kind='context' } when trigger has context_id", async () => {
+    const beforeTurnPayloads: any[] = [];
+    const hooks = new HookRegistry();
+    hooks.on("BeforeTurn", "test-iso", (payload) => {
+      beforeTurnPayloads.push(payload);
+    });
+
+    const fakeAgent = new FakeAgent();
+    const tools: any[] = [];
+    const adapter = makeIsoAdapter(tools, fakeAgent);
+
+    const context = {
+      bridge_id: "bridge:test",
+      hooks,
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async listEndpoints() { return []; }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-iso-ctx", "thread-iso-ctx", "hello");
+    (delivery.events[0] as any).context_id = "ctx_card_a";
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(beforeTurnPayloads).toHaveLength(1);
+    expect(beforeTurnPayloads[0].origin).toEqual({ id: "ctx_card_a", kind: "context" });
+  });
+
+  it("BeforeTurn hook receives origin: { id, kind='thread' } when trigger has only thread_id (no context_id)", async () => {
+    const beforeTurnPayloads: any[] = [];
+    const hooks = new HookRegistry();
+    hooks.on("BeforeTurn", "test-iso", (payload) => {
+      beforeTurnPayloads.push(payload);
+    });
+
+    const fakeAgent = new FakeAgent();
+    const tools: any[] = [];
+    const adapter = makeIsoAdapter(tools, fakeAgent);
+
+    const context = {
+      bridge_id: "bridge:test",
+      hooks,
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(_event: any) {},
+        async listEndpoints() { return []; }
+      }
+    } as any;
+
+    // Delivery with thread_id only — no context_id
+    const delivery = makeDelivery("del-iso-thread", "thread-iso-only", "hello");
+    // context_id is not set (undefined)
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(beforeTurnPayloads).toHaveLength(1);
+    expect(beforeTurnPayloads[0].origin).toEqual({ id: "thread-iso-only", kind: "thread" });
+  });
+
+  it("D-B: emit with no context_id defaults to origin context (reply stays in delivery context)", async () => {
+    const emittedEvents: any[] = [];
+    const capturedTools: any[] = [];
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        const emitTool = capturedTools.find((t: any) => t.name === "emit");
+        if (emitTool) {
+          // Agent replies WITHOUT supplying a context_id — should default to origin
+          await emitTool.execute("tc_iso_emit", {
+            type: "message",
+            destination: "actor:workspace:test:operator",
+            text: "Reply for card A",
+          });
+        }
+        for (const l of this.listeners) await l({
+          type: "agent_end",
+          messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], usage: null, model: "mock-model", provider: "mock-provider" }]
+        });
+      }
+    };
+
+    const adapter = makeIsoAdapter(capturedTools, fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(event: any) { emittedEvents.push(event); },
+        async listEndpoints() {
+          return [
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "idle" }
+          ];
+        }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-db-fix", "thread-db-fix", "work on card A");
+    (delivery.events[0] as any).context_id = "ctx_card_a";
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(emittedEvents).toHaveLength(1);
+    // D-B: context_id on the emitted event must be the delivery origin context
+    expect(emittedEvents[0].context_id).toBe("ctx_card_a");
+  });
+
+  it("D-B: emit with explicit context_id overrides the origin default (cross-context emit works)", async () => {
+    const emittedEvents: any[] = [];
+    const capturedTools: any[] = [];
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        const emitTool = capturedTools.find((t: any) => t.name === "emit");
+        if (emitTool) {
+          // Agent explicitly targets a different context (e.g. side-thread to snowball)
+          await emitTool.execute("tc_cross_emit", {
+            type: "message",
+            destination: "actor:workspace:test:operator",
+            text: "Cross-context note",
+            context_id: "ctx_snowball_side"
+          });
+        }
+        for (const l of this.listeners) await l({
+          type: "agent_end",
+          messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], usage: null, model: "mock-model", provider: "mock-provider" }]
+        });
+      }
+    };
+
+    const adapter = makeIsoAdapter(capturedTools, fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(event: any) { emittedEvents.push(event); },
+        async listEndpoints() {
+          return [
+            { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "idle" }
+          ];
+        }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-cross-ctx", "thread-cross-ctx", "send a note");
+    (delivery.events[0] as any).context_id = "ctx_card_a";
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(emittedEvents).toHaveLength(1);
+    // Explicit context_id wins over the default origin context
+    expect(emittedEvents[0].context_id).toBe("ctx_snowball_side");
   });
 });
 

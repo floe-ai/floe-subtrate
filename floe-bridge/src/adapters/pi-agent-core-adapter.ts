@@ -247,12 +247,23 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       // Fire BeforeTurn hook — collect injected context
       let injectedContext = "";
       if (context.hooks?.hasHandlers("BeforeTurn")) {
+        // Build a typed origin reference symmetric with the emit destination.
+        // kind="context" when the trigger event belongs to a context thread;
+        // kind="thread"  when it only has a thread_id.
+        const triggerEvent = bundle.events[0];
+        const origin: { id: string; kind: "context" | "thread" } | undefined =
+          triggerEvent?.context_id
+            ? { id: triggerEvent.context_id, kind: "context" as const }
+            : triggerEvent?.thread_id
+            ? { id: triggerEvent.thread_id, kind: "thread" as const }
+            : undefined;
         const hookResults = await context.hooks.fire("BeforeTurn", {
           endpoint_id: bundle.endpoint_id,
           workspace_id: bundle.workspace_id,
           delivery_id: bundle.delivery_id,
           trigger_event_id: bundle.trigger_event_id,
-          thread_id: bundle.events[0]?.thread_id
+          thread_id: bundle.events[0]?.thread_id,
+          origin
         });
         injectedContext = renderHookInjections(hookResults);
         if (injectedContext) {
@@ -548,7 +559,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             endpoint_id: String(targetEndpoint)
           },
           thread_id: turn.thread_id,
-          context_id: params?.context_id ?? null,
+          // D-B: default the emit context to the delivery's origin context so replies
+          // always land in the same thread they came from. Explicit context_id overrides.
+          context_id: params?.context_id ?? turn.context_id ?? null,
           current_delivery_context_id: turn.context_id,
           correlation_id: params?.correlation_id ?? turn.correlation_id,
           content: {

@@ -116,7 +116,8 @@ function writeBoard(tmpDir: string): ColumnFile[] {
 async function getBeforeTurnInjection(
   tmpDir: string,
   bus: StubBusClient,
-  agentId: string
+  agentId: string,
+  extraPayload: Record<string, unknown> = {}
 ): Promise<string | null> {
   return new Promise((resolve) => {
     let resolved = false;
@@ -127,7 +128,7 @@ async function getBeforeTurnInjection(
       ...ctx,
       hooks: {
         on: (_event: HookName, handler: HookHandler) => {
-          (handler as (payload: Record<string, unknown>) => Promise<HookResult | void>)({ endpoint_id: endpointId }).then((result) => {
+          (handler as (payload: Record<string, unknown>) => Promise<HookResult | void>)({ endpoint_id: endpointId, ...extraPayload }).then((result) => {
             if (!resolved) {
               resolved = true;
               if (result && "inject" in result) {
@@ -427,3 +428,136 @@ describe("Slice 4 regression — move_card tool uses stable card context", () =>
     expect(bus.createdContexts).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// D-A context isolation: BeforeTurn overlay narrowing (fm/floe-ctx-iso)
+// ---------------------------------------------------------------------------
+
+describe("D-A context isolation — BeforeTurn overlay narrows to current card", () => {
+  let tmpDir: string;
+  let bus: StubBusClient;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `snowball-ctx-iso-test-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    bus = new StubBusClient();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("with origin.kind=context: injection shows ONLY card A when delivery is on card A's context", async () => {
+    writeBoard(tmpDir);
+    // Two cards in the agent column, each with their own context
+    writeCard(tmpDir, makeCardFile({
+      id: "card-a",
+      title: "Card A",
+      column: "agent-col",
+      context_id: "ctx_card_a",
+      order: 0
+    }));
+    writeCard(tmpDir, makeCardFile({
+      id: "card-b",
+      title: "Card B",
+      column: "agent-col",
+      context_id: "ctx_card_b",
+      order: 1
+    }));
+
+    // Delivery arrives on card A's context
+    const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID, {
+      origin: { id: "ctx_card_a", kind: "context" }
+    });
+
+    expect(injection).not.toBeNull();
+    // Must contain card A
+    expect(injection).toContain("Card A");
+    // Must NOT contain card B — this is the D-A isolation invariant
+    expect(injection).not.toContain("Card B");
+    expect(injection).not.toContain("card-b");
+  });
+
+  it("with origin.kind=context: injection shows ONLY card B when delivery is on card B's context", async () => {
+    writeBoard(tmpDir);
+    writeCard(tmpDir, makeCardFile({
+      id: "card-a",
+      title: "Card A",
+      column: "agent-col",
+      context_id: "ctx_card_a",
+      order: 0
+    }));
+    writeCard(tmpDir, makeCardFile({
+      id: "card-b",
+      title: "Card B",
+      column: "agent-col",
+      context_id: "ctx_card_b",
+      order: 1
+    }));
+
+    // Delivery arrives on card B's context
+    const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID, {
+      origin: { id: "ctx_card_b", kind: "context" }
+    });
+
+    expect(injection).not.toBeNull();
+    expect(injection).toContain("Card B");
+    // Must NOT see card A
+    expect(injection).not.toContain("Card A");
+    expect(injection).not.toContain("card-a");
+  });
+
+  it("with origin.kind=context: no injection when origin maps to no card", async () => {
+    writeBoard(tmpDir);
+    writeCard(tmpDir, makeCardFile({
+      id: "card-a",
+      title: "Card A",
+      column: "agent-col",
+      context_id: "ctx_card_a",
+    }));
+
+    // Delivery on a context_id that matches no card
+    const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID, {
+      origin: { id: "ctx_unknown_xyz", kind: "context" }
+    });
+
+    // No injection — the turn is not about a known card
+    expect(injection).toBeNull();
+  });
+
+  it("without origin (no context): falls back to board-wide view for the agent's columns", async () => {
+    writeBoard(tmpDir);
+    writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "agent-col", context_id: "ctx_card_a", order: 0 }));
+    writeCard(tmpDir, makeCardFile({ id: "card-b", title: "Card B", column: "agent-col", context_id: "ctx_card_b", order: 1 }));
+
+    // Delivery with no origin (e.g. pulse event)
+    const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
+
+    expect(injection).not.toBeNull();
+    // Both cards visible in the board-wide view
+    expect(injection).toContain("Card A");
+    expect(injection).toContain("Card B");
+  });
+
+  it("origin context: isolated card shows unchecked criteria from its column", async () => {
+    writeBoard(tmpDir);
+    writeCard(tmpDir, makeCardFile({
+      id: "card-a",
+      title: "Card A",
+      column: "agent-col",
+      context_id: "ctx_card_a",
+    }));
+
+    const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID, {
+      origin: { id: "ctx_card_a", kind: "context" }
+    });
+
+    expect(injection).not.toBeNull();
+    // Both criteria are unchecked — must appear
+    expect(injection).toContain("ec-tests");
+    expect(injection).toContain("ec-review");
+    // Column instructions must appear
+    expect(injection).toContain("Review each card carefully before advancing.");
+  });
+});
+

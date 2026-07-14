@@ -23,6 +23,7 @@ import {
   findBoardScopesForAgentFromFiles,
   ensureBoardFile,
 } from "./board-file.js";
+import { listCards } from "./card-file.js";
 
 const SNOWBALL_AGENT_ID = "snowball";
 
@@ -44,6 +45,16 @@ export function registerHooks(ctx: ExtensionContext): void {
 
     const lines: string[] = [];
 
+    // D-A: extract typed origin reference — symmetric with emit destination.
+    // When origin.kind === "context" (a card-context delivery), we narrow the
+    // injected board view to ONLY that card. This enforces the invariant:
+    // a turn built for context A sees no data from context B.
+    const originRef = (payload as any).origin as { id: string; kind: string } | undefined;
+    const originContextId: string | null =
+      originRef?.kind === "context" && typeof originRef.id === "string"
+        ? originRef.id
+        : null;
+
     for (const scopeId of scopes) {
       const slug = slugify(scopeId);
       const columns = listColumnsFromBoard(workspacePath, slug);
@@ -52,6 +63,7 @@ export function registerHooks(ctx: ExtensionContext): void {
       const snapshot = buildBoardSnapshot(workspacePath, scopeId, workspaceId, columns);
 
       if (agentId === SNOWBALL_AGENT_ID) {
+        // System steward: board-wide view — this is its job, not a leak.
         lines.push(renderCompactBoardSnapshot(snapshot));
         const colsWithInstructions = columns.filter((c) => c.instructions.trim().length > 0);
         if (colsWithInstructions.length > 0) {
@@ -61,7 +73,51 @@ export function registerHooks(ctx: ExtensionContext): void {
             lines.push(col.instructions.trim());
           }
         }
+      } else if (originContextId !== null) {
+        // D-A narrow path: origin identifies a specific context — inject only
+        // the card whose context_id matches. The card file carries context_id in
+        // its frontmatter (written at card-creation time, Slice 4 invariant).
+        const allCardFiles = listCards(workspacePath);
+        const matchingCard = allCardFiles.find((cf) => cf.context_id === originContextId);
+        if (!matchingCard) continue; // delivery not about a known card — skip this scope
+
+        const cardCol = columns.find((c) => c.id === matchingCard.column);
+        if (!cardCol) continue; // card's column not in this board — skip
+
+        // Done protocol (now that we know we have a matching card)
+        const boardFile = ensureBoardFile(workspacePath, slug, scopeId);
+        if (boardFile.done_protocol.trim().length > 0) {
+          lines.push(boardFile.done_protocol.trim());
+          lines.push("");
+        }
+
+        // Inject only this card's column instructions
+        if (cardCol.instructions.trim().length > 0) {
+          lines.push(`## Column Instructions: ${cardCol.name}`);
+          lines.push(cardCol.instructions.trim());
+          lines.push("");
+        }
+
+        // Inject only this card
+        const colChecks = matchingCard.checks[matchingCard.column] ?? {};
+        const checkedCount = Object.values(colChecks).filter((c) => c.checked).length;
+        const totalCriteria = cardCol.exit_criteria.length;
+        const criteriaStr = totalCriteria > 0 ? ` [${checkedCount}/${totalCriteria} criteria]` : "";
+        lines.push(`Board ${scopeId} — current card:`);
+        lines.push(`  - [${cardCol.name}] ${matchingCard.title}${criteriaStr} (${matchingCard.id})`);
+
+        const uncheckedCriteria = cardCol.exit_criteria.filter((ec) => {
+          return !colChecks[ec.id]?.checked;
+        });
+        if (uncheckedCriteria.length > 0) {
+          lines.push(`    Unchecked criteria (call snowball_check_criteria for each):`);
+          for (const ec of uncheckedCriteria) {
+            lines.push(`      criterion_id="${ec.id}" — ${ec.description}`);
+          }
+        }
       } else {
+        // No origin context: board-wide view for this agent's owned columns.
+        // Used for pulse deliveries and other non-context-scoped events.
         const boardFile = ensureBoardFile(workspacePath, slug, scopeId);
         if (boardFile.done_protocol.trim().length > 0) {
           lines.push(boardFile.done_protocol.trim());
