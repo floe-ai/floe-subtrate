@@ -34,6 +34,7 @@ import {
   subscribePulse,
   unsubscribePulse,
 } from "../bus-client/client.ts";
+import { subscribeEvents } from "../bus-client/stream.ts";
 import { contextLabel } from "./ScopeDetail.tsx";
 
 // ---------------------------------------------------------------------------
@@ -603,7 +604,7 @@ function EventsSection({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
     listEvents({ workspace_id: workspaceId, scope_id: scopeId, limit: 50 })
@@ -616,6 +617,21 @@ function EventsSection({
         setLoading(false);
       });
   }, [workspaceId, scopeId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Auto-refresh on push: reload when any event is submitted to this scope.
+  useEffect(() => {
+    const unsub = subscribeEvents((msg) => {
+      if (msg.type === "event_submitted") {
+        const event = (msg.payload as { event?: { scope_id?: string; workspace_id?: string } }).event;
+        if (event?.workspace_id === workspaceId && event?.scope_id === scopeId) {
+          load();
+        }
+      }
+    });
+    return unsub;
+  }, [workspaceId, scopeId, load]);
 
   return (
     <div style={{ marginTop: 8 }}>
@@ -684,6 +700,32 @@ function PulsesSection({
   }, [workspaceId, scopeId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Auto-refresh on push: reload on any pulse lifecycle broadcast for this scope.
+  useEffect(() => {
+    const PULSE_EVENTS = new Set([
+      "pulse_created",
+      "pulse_paused",
+      "pulse_resumed",
+      "pulse_cancelled",
+      "pulse_fired",
+      "pulse_subscriber_changed",
+    ]);
+    const unsub = subscribeEvents((msg) => {
+      if (!PULSE_EVENTS.has(msg.type)) return;
+      // Most pulse broadcasts include a `pulse` object with workspace_id + scope_id.
+      // pulse_fired only has pulse_id; in that case reload unconditionally (cheap).
+      const pulse = (msg.payload as { pulse?: { workspace_id?: string; scope_id?: string } }).pulse;
+      if (pulse) {
+        if (pulse.workspace_id === workspaceId && pulse.scope_id === scopeId) {
+          load();
+        }
+      } else {
+        load();
+      }
+    });
+    return unsub;
+  }, [workspaceId, scopeId, load]);
 
   return (
     <div>
