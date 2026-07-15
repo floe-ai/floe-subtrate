@@ -74,7 +74,7 @@ const tk = {
 // To disable: set SHOW_MOCK_SIDE_THREAD = false.
 // ---------------------------------------------------------------------------
 
-const SHOW_MOCK_SIDE_THREAD = true;
+const SHOW_MOCK_SIDE_THREAD = false;
 
 type MockSideMsg = { id: string; actor: string; text: string; time: string };
 type MockSideThread = { threadId: string; label: string; messages: MockSideMsg[] };
