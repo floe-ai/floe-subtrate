@@ -9,6 +9,9 @@
  *  4. A reply to an existing context participant stays on the main thread
  *     (no side thread created).
  *  5. main/side derivation: parent_thread_id IS NULL ⟹ main; IS NOT NULL ⟹ side.
+ *  6. Closing a side thread flips its status to 'closed'.
+ *  7. A closed thread rejects new events (emit returns 409 / throws ClosedThreadError).
+ *  8. Root/main threads cannot be closed (throws RootThreadCloseError).
  */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
@@ -18,7 +21,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 
 import { applyContextSchema, ContextStore } from "./store.js";
-import { applyThreadSchema, ThreadStore } from "./threads.js";
+import { applyThreadSchema, ThreadStore, RootThreadCloseError, ThreadNotFoundError, ClosedThreadError } from "./threads.js";
 import { BusStore, type EventCommand } from "../store.js";
 import { defaultConfig } from "../config.js";
 
@@ -327,5 +330,209 @@ describe("BusStore — side thread creation (Rule 3 runtime)", () => {
     const threads = store.threadStore.listThreadsForContext(ctxId);
     expect(threads).toHaveLength(1);
     expect(threads[0]?.parent_thread_id).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ThreadStore — close lifecycle
+// ---------------------------------------------------------------------------
+
+describe("ThreadStore — close lifecycle", () => {
+  let db: DatabaseSync;
+  let ctxStore: ContextStore;
+  let thrStore: ThreadStore;
+
+  beforeEach(() => {
+    const freshDb2 = new DatabaseSync(":memory:");
+    freshDb2.exec("PRAGMA foreign_keys = ON");
+    freshDb2.exec(`
+      CREATE TABLE events (
+        event_id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        source_endpoint_id TEXT,
+        context_id TEXT,
+        thread_id TEXT NOT NULL DEFAULT '',
+        scope_id TEXT,
+        correlation_id TEXT,
+        destination_json TEXT NOT NULL DEFAULT '{"kind":"context","context_id":""}',
+        content_json TEXT NOT NULL DEFAULT '{}',
+        response_json TEXT NOT NULL DEFAULT '{"expected":false}',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        idempotency_key TEXT,
+        created_at TEXT NOT NULL
+      );
+    `);
+    applyContextSchema(freshDb2);
+    db = freshDb2;
+    ctxStore = new ContextStore(db);
+    thrStore = new ThreadStore(db);
+  });
+
+  afterEach(() => { try { db.close(); } catch {} });
+
+  // ------- Test 6: close a side thread -------
+  it("closeThread flips status to 'closed' for a side thread", () => {
+    const ctxId = ctxStore.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    const sideId = thrStore.createThread({
+      context_id: ctxId,
+      parent_thread_id: ctxId,
+      created_by_endpoint_id: E1,
+    });
+
+    const before = thrStore.getThread(sideId)!;
+    expect(before.status).toBe("open");
+
+    const closed = thrStore.closeThread(sideId);
+    expect(closed.status).toBe("closed");
+    expect(closed.thread_id).toBe(sideId);
+
+    const after = thrStore.getThread(sideId)!;
+    expect(after.status).toBe("closed");
+  });
+
+  it("closeThread is idempotent — closing an already-closed thread is a no-op", () => {
+    const ctxId = ctxStore.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    const sideId = thrStore.createThread({
+      context_id: ctxId,
+      parent_thread_id: ctxId,
+      created_by_endpoint_id: E1,
+    });
+    thrStore.closeThread(sideId);
+    // Second close should not throw.
+    const closed2 = thrStore.closeThread(sideId);
+    expect(closed2.status).toBe("closed");
+  });
+
+  // ------- Test 8: root thread cannot be closed -------
+  it("closeThread throws RootThreadCloseError for a root/main thread", () => {
+    const ctxId = ctxStore.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    // Root thread id === context id.
+    expect(() => thrStore.closeThread(ctxId)).toThrow(RootThreadCloseError);
+  });
+
+  it("closeThread throws ThreadNotFoundError for an unknown thread", () => {
+    expect(() => thrStore.closeThread("thr_nonexistent")).toThrow(ThreadNotFoundError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BusStore — closed thread rejects events
+// ---------------------------------------------------------------------------
+
+describe("BusStore — closed thread rejects new events (Test 7)", () => {
+  let store: BusStore;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    const made = makeStore();
+    store = made.store;
+    cleanup = made.cleanup;
+  });
+  afterEach(() => cleanup());
+
+  it("emitting onto a closed side thread throws ClosedThreadError", () => {
+    // Build context with E1, E2 participants; E3 non-participant.
+    const ctxId = store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: E1,
+      participants: [E1, E2],
+    });
+    const rootThreadId = ctxId;
+
+    // E1 asks E3 → side thread T created.
+    const ask = store.submitEvent(
+      cmd({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        thread_id: rootThreadId,
+        current_delivery_context_id: ctxId,
+      }),
+      noop
+    );
+    const sideThreadId = ask.event.thread_id;
+    expect(sideThreadId).not.toBe(rootThreadId);
+
+    // Close the side thread.
+    store.threadStore.closeThread(sideThreadId);
+
+    // Attempting to emit onto the closed thread must throw ClosedThreadError.
+    expect(() =>
+      store.submitEvent(
+        cmd({
+          source_endpoint_id: E3,
+          destination: { kind: "endpoint", endpoint_id: E1 },
+          thread_id: sideThreadId,
+          current_delivery_context_id: ctxId,
+        }),
+        noop
+      )
+    ).toThrow(ClosedThreadError);
+  });
+
+  it("emitting on the main thread is unaffected by a closed side thread", () => {
+    const ctxId = store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: E1,
+      participants: [E1, E2],
+    });
+    const rootThreadId = ctxId;
+
+    // Create and close a side thread.
+    const ask = store.submitEvent(
+      cmd({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        thread_id: rootThreadId,
+        current_delivery_context_id: ctxId,
+      }),
+      noop
+    );
+    store.threadStore.closeThread(ask.event.thread_id);
+
+    // E1 can still emit on the main thread.
+    const result = store.submitEvent(
+      cmd({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E2 },
+        thread_id: rootThreadId,
+        current_delivery_context_id: ctxId,
+      }),
+      noop
+    );
+    expect(result.event.thread_id).toBe(rootThreadId);
+    expect(result.event.context_id).toBe(ctxId);
+  });
+
+  it("BusStore.closeThread broadcasts thread_closed", () => {
+    const ctxId = store.contextStore.createContext({
+      workspace_id: WS,
+      created_by_endpoint_id: E1,
+      participants: [E1, E2],
+    });
+    const rootThreadId = ctxId;
+
+    const ask = store.submitEvent(
+      cmd({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        thread_id: rootThreadId,
+        current_delivery_context_id: ctxId,
+      }),
+      noop
+    );
+    const sideThreadId = ask.event.thread_id;
+
+    const broadcasts: Array<{ type: string; payload: unknown }> = [];
+    const captureBroadcast = (type: string, payload: unknown) =>
+      broadcasts.push({ type, payload });
+
+    store.closeThread(sideThreadId, captureBroadcast);
+
+    const threadClosedEvents = broadcasts.filter(b => b.type === "thread_closed");
+    expect(threadClosedEvents).toHaveLength(1);
+    expect((threadClosedEvents[0]!.payload as any).thread_id).toBe(sideThreadId);
+    expect((threadClosedEvents[0]!.payload as any).context_id).toBe(ctxId);
+    expect((threadClosedEvents[0]!.payload as any).parent_thread_id).toBe(rootThreadId);
   });
 });

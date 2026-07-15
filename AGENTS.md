@@ -706,9 +706,23 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - `GET /v1/contexts/:id/threads` → `{ threads: ThreadRecord[] }`
 - `POST /v1/contexts/:id/threads` → `{ ok: true, thread: ThreadRecord }` (201)
 - `GET /v1/threads/:thread_id` → `{ thread: ThreadRecord }` (404 if missing)
+- `POST /v1/threads/:thread_id/close` → `{ ok: true, thread: ThreadRecord }` — closes a side thread; 409 if it is a root/main thread; 404 if not found; idempotent (already-closed is ok).
+
+### Side thread close lifecycle (fm/floe-sidethread-lifecycle)
+
+- **`ThreadStore.closeThread(threadId)`** — sets `status = 'closed'`. Throws `RootThreadCloseError` if `parent_thread_id IS NULL` (only side threads can close). Throws `ThreadNotFoundError` if thread does not exist. Idempotent on already-closed.
+- **`BusStore.closeThread(threadId, broadcast)`** — delegates to `threadStore.closeThread`, then broadcasts `thread_closed { thread_id, context_id, parent_thread_id }`.
+- **Closed thread rejects events**: `BusStore.submitEvent` checks `command.thread_id` against the thread table before inserting. If the thread is closed, throws `ClosedThreadError`. Main/root thread and newly created side threads are unaffected.
+- **`BusClient.closeThread(threadId)`** — `POST /v1/threads/:thread_id/close` wrapper, returns `ThreadRecord`.
+- **`HookName += 'ThreadClosed'`** — payload: `{ thread_id, context_id, parent_thread_id }` (no workspace_id; side threads are only closed by side thread, never broadcast-workspace).
+- **Daemon `onThreadClosed`** — handles `thread_closed` WS broadcast: fires `ThreadClosed` hook to all registered extension hook registries, then calls `adapter.releaseSessionsForClosedThread(closedThreadId)`.
+- **`SessionState.sideThreadId: string | null`** — set when a session is CREATED by a delivery triggered on a non-root thread (thread_id ≠ contextId). Used by `releaseSessionsForClosedThread` for conservative eviction.
+- **`PiAgentCoreAdapter.releaseSessionsForClosedThread(closedThreadId)`** — iterates sessions; evicts any session whose `sideThreadId === closedThreadId`. Skips sessions with an active in-progress turn (deferred). Root-thread sessions (sideThreadId=null) and different-side-thread sessions are never evicted.
+- **`RuntimeAdapter` interface** gains optional `releaseSessionsForClosedThread?(closedThreadId: string): void`.
+- **Error classes** in `floe-bus/src/contexts/threads.ts`: `ThreadNotFoundError`, `RootThreadCloseError`, `ClosedThreadError` (all exported).
 
 ### Non-regressing
 
 - Existing single-thread conversations are unaffected: Rule 2 (participant reply) keeps the same thread.
 - UI renders context events flat until a future slice groups by thread.
-- Close/delete lifecycle and app UI wiring are SEPARATE follow-ups — do NOT implement here.
+- App UI wiring for close is a SEPARATE follow-up.

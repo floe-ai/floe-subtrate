@@ -12,6 +12,33 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
+// ---------------------------------------------------------------------------
+// Domain errors
+// ---------------------------------------------------------------------------
+
+export class ThreadNotFoundError extends Error {
+  readonly code = "thread_not_found";
+  constructor(readonly thread_id: string) {
+    super(`Thread not found: ${thread_id}`);
+    this.name = "ThreadNotFoundError";
+  }
+}
+
+export class RootThreadCloseError extends Error {
+  readonly code = "root_thread_cannot_be_closed";
+  constructor(readonly thread_id: string) {
+    super(`Root/main threads cannot be closed: ${thread_id}`);
+    this.name = "RootThreadCloseError";
+  }
+}
+
+export class ClosedThreadError extends Error {
+  readonly code = "thread_closed";
+  constructor(readonly thread_id: string) {
+    super(`Thread is closed and does not accept new events: ${thread_id}`);
+    this.name = "ClosedThreadError";
+  }
+}
 export type ThreadRecord = {
   thread_id: string;
   context_id: string;
@@ -127,6 +154,36 @@ export class ThreadStore {
       .get(threadId) as any;
     if (!row) return null;
     return this.mapRow(row);
+  }
+
+  /**
+   * Close a side thread — sets `status = 'closed'`.
+   *
+   * Guards:
+   * - Thread must exist (returns null if not found).
+   * - Thread must be a side thread (`parent_thread_id IS NOT NULL`).
+   *   Root/main threads cannot be closed; they are owned by the context lifecycle.
+   * - Closing an already-closed thread is a no-op (returns the thread).
+   *
+   * Returns the updated `ThreadRecord`, or `null` if the thread does not exist.
+   * Throws `RootThreadCloseError` if the caller attempts to close a root thread.
+   */
+  closeThread(threadId: string): ThreadRecord {
+    const existing = this.getThread(threadId);
+    if (!existing) {
+      throw new ThreadNotFoundError(threadId);
+    }
+    if (existing.parent_thread_id === null) {
+      throw new RootThreadCloseError(threadId);
+    }
+    if (existing.status === "closed") {
+      // Idempotent — already closed.
+      return existing;
+    }
+    this.db
+      .prepare("UPDATE threads SET status = 'closed' WHERE thread_id = ?")
+      .run(threadId);
+    return { ...existing, status: "closed" };
   }
 
   /** All threads for a context, root first then sides ordered by creation time. */
