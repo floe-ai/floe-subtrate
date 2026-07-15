@@ -31,6 +31,7 @@ import type {
   RuntimeStatus,
   LocalConfigStatus,
   ResolvedEndpoint,
+  ThreadRecord,
 } from "./types.ts";
 import { subscribeEvents as _subscribeEvents } from "./stream.ts";
 
@@ -313,6 +314,14 @@ export async function addContextParticipant(
   return post(`/v1/contexts/${encodeURIComponent(contextId)}/participants`, {
     endpoint_id: endpointId,
   });
+}
+
+/** GET /v1/contexts/:id/threads — list threads (root first, then sides by creation time) */
+export async function listThreadsForContext(contextId: string): Promise<ThreadRecord[]> {
+  const data = await get<{ threads: ThreadRecord[] }>(
+    `/v1/contexts/${encodeURIComponent(contextId)}/threads`
+  );
+  return data.threads;
 }
 
 export async function listContextEvents(id: string, options?: { limit?: number }): Promise<EventEnvelope[]> {
@@ -773,4 +782,4 @@ export async function putFieldLayout(ws: string, scope: string, renderer: string
 export { subscribeEvents } from "./stream.ts";
 
 // Re-export types for convenience
-export type { StreamMsg };
+export type { StreamMsg, ThreadRecord };

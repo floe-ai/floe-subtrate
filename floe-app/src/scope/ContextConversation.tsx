@@ -18,9 +18,9 @@
  *   B3 — Speaking-as selector always accessible: even when selected actor is
  *        not a context participant, the selector is visible; a "Join context"
  *        button lets the user add themselves.
- *   A  — Mock side-thread panel: renders a hard-coded side exchange as a
- *        collapsible right-side panel. Seam: replace MOCK_SIDE_THREAD_EVENTS
- *        with real events grouped by thread_id when substrate wires that.
+ *   A  — Side-thread sidebar: real events grouped by thread_id from the substrate.
+ *        Side threads appear in a tabbed right panel (one tab per side thread).
+ *        Zero side threads → no sidebar. Live-refreshed via WS event_submitted.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type {
@@ -28,10 +28,12 @@ import type {
   EndpointRef,
   EventEnvelope,
   DeliveryBundle,
+  ThreadRecord,
 } from "../bus-client/types.ts";
 import {
   getContext,
   listContextEvents,
+  listThreadsForContext,
   emit,
   addContextParticipant,
 } from "../bus-client/client.ts";
@@ -65,76 +67,38 @@ const tk = {
 } as const;
 
 // ---------------------------------------------------------------------------
-// ──────────────────────────────────────────────────────────────────────────
-// A. MOCK SIDE-THREADS (multiple)
-// ──────────────────────────────────────────────────────────────────────────
-// Seam: replace MOCK_SIDE_THREADS with real data — a list of
-//   { threadId, label, messages }
-// derived from events grouped by thread_id once the substrate tags them.
-// To disable: set SHOW_MOCK_SIDE_THREAD = false.
+// A. SIDE-THREAD DATA MODEL
+// ---------------------------------------------------------------------------
+// Side threads are derived from real substrate data:
+//   - threads fetched via GET /v1/contexts/:id/threads
+//   - events grouped by thread_id (main = thread_id === context_id)
 // ---------------------------------------------------------------------------
 
-const SHOW_MOCK_SIDE_THREAD = false;
+type SideThread = {
+  thread: ThreadRecord;
+  events: EventEnvelope[];
+};
 
-type MockSideMsg = { id: string; actor: string; text: string; time: string };
-type MockSideThread = { threadId: string; label: string; messages: MockSideMsg[] };
-
-const MOCK_SIDE_THREADS: MockSideThread[] = [
-  {
-    threadId: "mock-side-thread-x1",
-    label: "Floe ↔ Snowball",
-    messages: [
-      {
-        id: "m1-1",
-        actor: "Floe",
-        text: "Snowball, what's the status of the 'Landing page copy' card?",
-        time: "2:14 PM",
-      },
-      {
-        id: "m1-2",
-        actor: "Snowball",
-        text: "It's in the Draft column with 2/3 exit criteria complete. One remaining: 'Copy reviewed by operator'.",
-        time: "2:14 PM",
-      },
-      {
-        id: "m1-3",
-        actor: "Floe",
-        text: "Got it. I'll relay that back and ask the operator to review.",
-        time: "2:15 PM",
-      },
-    ],
-  },
-  {
-    threadId: "mock-side-thread-x2",
-    label: "Floe ↔ Researcher",
-    messages: [
-      {
-        id: "m2-1",
-        actor: "Floe",
-        text: "Researcher, can you pull together recent user feedback on the onboarding flow? I need the top 3 pain points.",
-        time: "2:16 PM",
-      },
-      {
-        id: "m2-2",
-        actor: "Researcher",
-        text: "On it. Scanning Intercom and Notion feedback logs now.",
-        time: "2:16 PM",
-      },
-      {
-        id: "m2-3",
-        actor: "Researcher",
-        text: "Top 3: (1) Users drop off at the 'connect your repo' step — 42% exit rate. (2) The invite team step is skipped 70% of the time. (3) First-run empty state gives no guidance on next action.",
-        time: "2:17 PM",
-      },
-      {
-        id: "m2-4",
-        actor: "Floe",
-        text: "Thanks, that's exactly what I needed. I'll summarise this in the operator thread.",
-        time: "2:17 PM",
-      },
-    ],
-  },
-];
+/** Derive a useful display label for a side thread. */
+function sideThreadLabel(
+  thread: ThreadRecord,
+  events: EventEnvelope[],
+  endpoints: EndpointRef[],
+): string {
+  if (thread.title) return thread.title;
+  // Derive from unique actors in this thread's events
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const e of events) {
+    if (e.source_endpoint_id && !seen.has(e.source_endpoint_id)) {
+      seen.add(e.source_endpoint_id);
+      names.push(endpointName(e.source_endpoint_id, endpoints));
+    }
+  }
+  if (names.length > 0) return names.join(" ↔ ");
+  // Fallback: short thread id
+  return `Thread …${thread.thread_id.slice(-8)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -262,26 +226,29 @@ if (typeof document !== "undefined") {
 }
 
 // ---------------------------------------------------------------------------
-// A — Multi-side-thread sidebar (tabbed)
+// A — Multi-side-thread sidebar (tabbed) — REAL DATA
 //
 // Design: one fixed-width sidebar with a tab row across the top — one tab
-// per side thread, labelled by the actors involved. Selecting a tab shows
-// that thread's message log. Collapsed to a 36px strip with a chevron.
+// per side thread, labelled by the actors involved or the thread title.
+// Selecting a tab shows that thread's message log (reuses MessageRow).
+// Collapsed to a 36px strip with a chevron when ≥1 side thread exists.
 //
-// Presentation rationale: tabs beat stacked panels (avoids vertical
-// compression that makes each thread unreadable) and beat a dropdown
-// (immediate visibility of how many threads exist and their labels).
+// Closed threads (status="closed") render with muted tab styling.
 // ---------------------------------------------------------------------------
 
 function SideThreadsPanel({
   threads,
+  endpoints,
 }: {
-  threads: MockSideThread[];
+  threads: SideThread[];
+  endpoints: EndpointRef[];
 }): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
-  const active = threads[activeIdx] ?? threads[0];
+  // Clamp activeIdx when thread list changes (e.g. new thread appears)
+  const clampedIdx = Math.min(activeIdx, threads.length - 1);
+  const active = threads[clampedIdx];
 
   return (
     <div style={{
@@ -308,7 +275,7 @@ function SideThreadsPanel({
             fontSize: 10, letterSpacing: "0.10em", textTransform: "uppercase",
             color: tk.warn, fontWeight: 600, paddingBottom: 6,
           }}>
-            Side threads · mock
+            Side threads
           </div>
         )}
         <button
@@ -326,7 +293,7 @@ function SideThreadsPanel({
         </button>
       </div>
 
-      {/* ── Tab bar (one tab per thread) ── */}
+      {/* ── Tab bar (one tab per side thread) ── */}
       {!collapsed && (
         <div style={{
           flexShrink: 0,
@@ -334,20 +301,23 @@ function SideThreadsPanel({
           borderBottom: `1px solid ${tk.border2}`,
           overflowX: "auto",
         }}>
-          {threads.map((t, i) => {
-            const isActive = i === activeIdx;
+          {threads.map((st, i) => {
+            const isActive = i === clampedIdx;
+            const isClosed = st.thread.status === "closed";
+            const label = sideThreadLabel(st.thread, st.events, endpoints);
             return (
               <button
-                key={t.threadId}
+                key={st.thread.thread_id}
                 onClick={() => setActiveIdx(i)}
-                title={t.label}
+                title={isClosed ? `${label} (closed)` : label}
                 style={{
                   flexShrink: 0,
                   background: "transparent", border: "none",
                   borderBottom: isActive
                     ? `2px solid ${tk.warn}`
                     : "2px solid transparent",
-                  color: isActive ? tk.warn : tk.ink4,
+                  color: isActive ? tk.warn : isClosed ? tk.ink4 : tk.ink3,
+                  opacity: isClosed ? 0.55 : 1,
                   fontSize: 11.5, fontWeight: isActive ? 580 : 400,
                   fontFamily: tk.fontUi,
                   padding: "6px 10px",
@@ -359,7 +329,7 @@ function SideThreadsPanel({
                   transition: "color 0.12s",
                 }}
               >
-                {t.label}
+                {isClosed ? `${label} ✕` : label}
               </button>
             );
           })}
@@ -372,39 +342,24 @@ function SideThreadsPanel({
           flex: 1, overflow: "auto",
           padding: "8px 12px",
         }}>
-          {/* MOCK notice banner */}
-          <div style={{
-            fontSize: 10.5, color: tk.warn, background: tk.warnSoft,
-            border: `1px solid rgba(201,161,74,0.2)`,
-            borderRadius: tk.r2, padding: "4px 8px", marginBottom: 8,
-            lineHeight: 1.4,
-          }}>
-            ⚠ Mock — design preview. Wires to real{" "}
-            <code style={{ fontFamily: "monospace" }}>thread_id</code>{" "}
-            grouping when substrate supports it.
-          </div>
-
-          {active.messages.map((msg) => (
-            <div key={msg.id} style={{
-              padding: "7px 0",
+          {active.thread.status === "closed" && (
+            <div style={{
+              fontSize: 10.5, color: tk.ink4, fontStyle: "italic",
+              marginBottom: 6, paddingBottom: 6,
               borderBottom: `1px solid ${tk.border2}`,
             }}>
-              <div style={{
-                display: "flex", alignItems: "baseline", gap: 6, marginBottom: 2,
-              }}>
-                <span style={{ fontSize: 11.5, fontWeight: 590, color: tk.ink3 }}>
-                  {msg.actor}
-                </span>
-                <span style={{ fontSize: 10.5, color: tk.ink4 }}>{msg.time}</span>
-              </div>
-              <div style={{
-                fontSize: 12.5, color: tk.ink2, lineHeight: 1.45,
-                whiteSpace: "pre-wrap",
-              }}>
-                {msg.text}
-              </div>
+              This thread is closed.
             </div>
-          ))}
+          )}
+          {active.events.filter(isVisibleMessage).length === 0 ? (
+            <div style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic", padding: "12px 0" }}>
+              No messages in this thread yet.
+            </div>
+          ) : (
+            active.events.filter(isVisibleMessage).map(event => (
+              <MessageRow key={event.event_id} event={event} endpoints={endpoints} />
+            ))
+          )}
         </div>
       )}
     </div>
@@ -660,6 +615,7 @@ export function ContextConversation({
 }: ContextConversationProps): React.ReactElement {
   const [context, setContext] = useState<ContextRef | null>(null);
   const [events, setEvents] = useState<EventEnvelope[]>([]);
+  const [threads, setThreads] = useState<ThreadRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [speakingAsId, setSpeakingAsId] = useState<string>("");
@@ -674,10 +630,15 @@ export function ContextConversation({
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([getContext(contextId), listContextEvents(contextId)])
-      .then(([ctx, evts]) => {
+    Promise.all([
+      getContext(contextId),
+      listContextEvents(contextId),
+      listThreadsForContext(contextId),
+    ])
+      .then(([ctx, evts, thrs]) => {
         setContext(ctx);
         setEvents(evts);
+        setThreads(thrs);
         setLoading(false);
       })
       .catch(err => {
@@ -761,7 +722,8 @@ export function ContextConversation({
   }
 
   // B2 — auto-scroll to bottom when messages or working state changes (if user is at bottom)
-  const visibleMessages = events.filter(isVisibleMessage);
+  // Uses total event count (all threads) so new side-thread events also trigger scroll-check.
+  const totalVisibleCount = events.filter(isVisibleMessage).length;
   const workingCount = workingEndpoints.size;
 
   useEffect(() => {
@@ -770,7 +732,7 @@ export function ContextConversation({
     if (isAtBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [visibleMessages.length, workingCount]);
+  }, [totalVisibleCount, workingCount]);
 
   // B2 — initial scroll to bottom after first load
   useEffect(() => {
@@ -832,9 +794,54 @@ export function ContextConversation({
 
   const isParticipant = context.participants.includes(speakingAsId);
 
-  // A — side-thread mock: derive working actors names for indicator
+  // A — side threads: group events by thread_id; main thread = thread_id === contextId
+  const mainEvents = events.filter(e => e.thread_id === contextId);
+  const sideThreadRecords = threads.filter(t => t.parent_thread_id !== null);
+
+  // Map thread_id → events for side threads
+  const sideEventMap = new Map<string, EventEnvelope[]>();
+  for (const event of events) {
+    if (event.thread_id !== contextId) {
+      const bucket = sideEventMap.get(event.thread_id) ?? [];
+      bucket.push(event);
+      sideEventMap.set(event.thread_id, bucket);
+    }
+  }
+
+  const sideThreads: SideThread[] = sideThreadRecords.map(t => ({
+    thread: t,
+    events: sideEventMap.get(t.thread_id) ?? [],
+  }));
+
+  // Also capture any side-thread events whose ThreadRecord wasn't returned yet
+  // (shouldn't happen, but keeps the display consistent under race conditions).
+  for (const [threadId, evts] of sideEventMap.entries()) {
+    if (!sideThreads.some(st => st.thread.thread_id === threadId)) {
+      sideThreads.push({
+        thread: {
+          thread_id: threadId,
+          context_id: contextId,
+          parent_thread_id: contextId,
+          created_by_endpoint_id: null,
+          status: "open",
+          created_at: evts[0]?.created_at ?? "",
+          title: null,
+        },
+        events: evts,
+      });
+    }
+  }
+
+  // A — derive working actors names for indicator (from working endpoints)
   const workingActorNames = Array.from(workingEndpoints.keys())
     .map(id => endpointName(id, endpoints));
+
+  // Use mainEvents for the main pane (falls back to all events if side-thread
+  // feature is not yet fully reflected, e.g. legacy events where thread_id === context_id)
+  const mainVisibleMessages = mainEvents.filter(isVisibleMessage);
+  // For backwards compat: if ALL events are on the main thread (no side threads),
+  // this naturally renders exactly as before.
+  const visibleMessages = mainVisibleMessages;
 
   return (
     <div style={{
@@ -897,9 +904,9 @@ export function ContextConversation({
           ))}
         </div>
 
-        {/* A — Multi-side-thread tabbed sidebar */}
-        {SHOW_MOCK_SIDE_THREAD && (
-          <SideThreadsPanel threads={MOCK_SIDE_THREADS} />
+        {/* A — Multi-side-thread tabbed sidebar (real data; hidden when no side threads) */}
+        {sideThreads.length > 0 && (
+          <SideThreadsPanel threads={sideThreads} endpoints={endpoints} />
         )}
       </div>
 
