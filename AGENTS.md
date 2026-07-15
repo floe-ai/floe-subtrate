@@ -611,3 +611,59 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - If `origin` is absent (e.g. pulse delivery): fall back to board-wide view for the agent's owned columns (unchanged backward-compatible behavior).
 - System-steward branch (`agentId === "snowball"`): always board-wide view — that is its job, not a leak.
 - Done protocol injected only when a matching card is found (before the card match was confirmed, it would leak done-protocol text even for unknown contexts).
+
+## Per-context session isolation (fm/floe-ctx-session-iso)
+
+**Structural fix for session-level bleed: one pi Agent session per (agent, context), ephemeral.**
+
+### Session vocabulary (LOCKED)
+
+- **Session** — a pi construct (one per (agent, context)). Holds the agent's PRIVATE tool/reasoning memory. EPHEMERAL: not persisted. On restart = cold start = empty session + re-inject.
+- **Context** — a substrate node (bus SQLite). Shared across actors.
+- **Thread** — the context's ordered emit stream (OUTPUTS only, never tool calls). Durable.
+- **World (files)** — cards, board files. Durable truth. Agents re-observe each turn.
+
+### Session key (C-1)
+
+- Session map key in `pi-agent-core-adapter.ts` changed from `bundle.endpoint_id` to `${bundle.endpoint_id}:${context_id}` where `context_id = bundle.events[0]?.context_id ?? "no-context"`.
+- Each (agent, context) pair has an isolated pi `Agent` instance with independent message history.
+- `SessionState` carries `contextId: string` and `threadCursor: string | null` (ephemeral, never persisted).
+- Error-path `sessions.delete(...)` uses the same compound key.
+
+### Thread-slice injection and ephemeral cursor (C-2/C-3)
+
+- Before each `session.agent.prompt(...)`, the adapter fetches context events since `session.threadCursor` via `bus.listContextEvents(context_id, since)`.
+- Cold start (`threadCursor = null`) → cursor absent → full thread backfill.
+- Warm continue → cursor set from last turn → only the delta is fetched.
+- Trigger events (already in `deliveryToPrompt`) are excluded from the slice by event_id.
+- Injection order: `[extension overlay]\n\n[thread slice]\n\n[trigger]`.
+- After SUCCESSFUL turn completion: `session.threadCursor = next_cursor` from the fetch.
+- Failed turn: cursor stays where it was (re-fetches same history on next attempt).
+- `endpoint_watermarks` (human-facing "read up to here" cursor) is NOT touched.
+
+### Thread slice rendering (`renderThreadSlice`)
+
+- Exported from `pi-agent-core-adapter.ts`: `renderThreadSlice(events: EventEnvelope[]): string`
+- Format: `[ActorRef] text` per event; header `[Thread — recent context history]` / footer `[End Thread]`.
+- Includes only events with non-empty `content.text`. Caps at 50 most-recent events and 8000 chars total.
+- Actor ref from `toNeutralRef(source_endpoint_id)` (falls back to raw id on legacy-ref error).
+
+### Bus client: `listContextEvents`
+
+- Added to `BusClient` in `floe-bridge/src/bus-client.ts`.
+- Calls `GET /v1/events?context_id=X&since=Y` — the existing bus endpoint.
+- Returns `{ events: EventEnvelope[]; next_cursor: string | null }`.
+- Non-fatal in the adapter: if it throws, the thread slice is empty and the cursor is unchanged.
+
+### Session eviction
+
+- **No count cap, no LRU.** Sessions persist for the lifetime of the bridge process.
+- Eviction on context-close/terminate is the correct design (event-driven), but no substrate context-close signal exists yet. When one is added, bridge should evict on that signal.
+- Until then: sessions are released on bridge restart (cold start = safe; ephemeral design absorbs this).
+- Do NOT add a count cap or LRU — that would be arbitrary and wrong per the locked model.
+
+### Backfill is lossy by design
+
+- The thread contains `message` events + domain events (OUTPUTS). Tool calls and tool results are PRIVATE session scratch; they do NOT live in the thread.
+- A cold-started session re-derives by reading the world (files) + thread (outputs) + context knowledge. This is by design (session-context-thread-model.md, captain-locked).
+- Do NOT add `agent.turn.record` events to the thread. The locked model scrapped that plan.
