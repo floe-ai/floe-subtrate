@@ -305,6 +305,16 @@ export async function getContext(id: string): Promise<ContextRef> {
   return get<ContextRef>(`/v1/contexts/${encodeURIComponent(id)}`);
 }
 
+/** POST /v1/contexts/:id/participants — idempotently add an endpoint as participant */
+export async function addContextParticipant(
+  contextId: string,
+  endpointId: string
+): Promise<{ ok: boolean }> {
+  return post(`/v1/contexts/${encodeURIComponent(contextId)}/participants`, {
+    endpoint_id: endpointId,
+  });
+}
+
 export async function listContextEvents(id: string, options?: { limit?: number }): Promise<EventEnvelope[]> {
   const params = new URLSearchParams();
   if (options?.limit != null) params.set("limit", String(options.limit));
