@@ -39,6 +39,7 @@ export interface CreateContextInput {
   participants?: string[];
   created_by_endpoint_id?: string | null;
   title?: string | null;
+  parent_context_id?: string | null;
 }
 
 export interface EmitInput {

@@ -1004,9 +1004,22 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
-    // Guard: self-reference on parent_context_id
+    // Guard: self-reference on parent_context_id (when context_id is explicitly provided)
     if (body.parent_context_id && body.context_id && body.parent_context_id === body.context_id) {
       return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id must not equal the context's own id" }] });
+    }
+    // Guard: parent context must exist
+    if (body.parent_context_id) {
+      const parentCtx = store.contextStore.getContext(body.parent_context_id);
+      if (!parentCtx) {
+        return reply.code(404).send({ ok: false, error: "parent_context_not_found", context_id: body.parent_context_id });
+      }
+      // Guard: cycle detection — walk the parent chain from the proposed parent;
+      // if it already contains body.context_id (explicit) we know it would cycle.
+      // For auto-generated IDs we cannot check pre-insert, so we skip (UUID collision is astronomically unlikely).
+      if (body.context_id && store.contextStore.wouldCreateCycle(body.parent_context_id, body.context_id)) {
+        return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id would create a cycle" }] });
+      }
     }
     const contextId = store.contextStore.createContext({
       workspace_id: params.workspace_id,

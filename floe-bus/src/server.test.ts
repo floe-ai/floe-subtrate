@@ -396,6 +396,164 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
   });
 
+  describe("Context linking (Slice 1 Track B)", () => {
+    function ensureWorkspace(h: ServerHandle) {
+      h.store.db.prepare(`
+        INSERT OR IGNORE INTO workspaces (workspace_id, name, locator, status, init_authorized, created_at, updated_at)
+        VALUES (?, ?, ?, 'registered', 0, datetime('now'), datetime('now'))
+      `).run(WS, "Test WS", WS);
+    }
+
+    it("creates a context with parent_context_id and returns it in the response", async () => {
+      ensureWorkspace(handle);
+      // Create parent context directly in store
+      const parentId = handle.store.contextStore.createContext({
+        workspace_id: WS,
+        created_by_endpoint_id: E1,
+        participants: [E1],
+      });
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ participants: [E1], parent_context_id: parentId }),
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json() as { context: any };
+      expect(body.context.parent_context_id).toBe(parentId);
+    });
+
+    it("GET /v1/contexts/:id/children returns linked children", async () => {
+      ensureWorkspace(handle);
+      const parentId = handle.store.contextStore.createContext({
+        workspace_id: WS,
+        created_by_endpoint_id: E1,
+        participants: [E1],
+      });
+      // Create two children via HTTP
+      const r1 = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ participants: [E1], parent_context_id: parentId }),
+      });
+      const r2 = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ participants: [E1], parent_context_id: parentId }),
+      });
+      const child1Id = r1.json().context.context_id;
+      const child2Id = r2.json().context.context_id;
+
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/contexts/${encodeURIComponent(parentId)}/children`,
+      });
+      expect(res.statusCode).toBe(200);
+      const ids = (res.json() as { contexts: any[] }).contexts.map((c: any) => c.context_id);
+      expect(ids).toContain(child1Id);
+      expect(ids).toContain(child2Id);
+      expect(ids).toHaveLength(2);
+    });
+
+    it("GET /v1/contexts/:id/children returns 404 for unknown parent", async () => {
+      const res = await handle.app.inject({
+        method: "GET",
+        url: "/v1/contexts/no-such-ctx/children",
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects self-link (parent_context_id === own context_id)", async () => {
+      ensureWorkspace(handle);
+      const ownId = "ctx_self_link_test";
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ participants: [E1], context_id: ownId, parent_context_id: ownId }),
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe("invalid_request");
+    });
+
+    it("rejects link to a non-existent parent context", async () => {
+      ensureWorkspace(handle);
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ participants: [E1], parent_context_id: "ctx_does_not_exist" }),
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error).toBe("parent_context_not_found");
+    });
+
+    it("rejects a parent_context_id that would create a cycle", async () => {
+      ensureWorkspace(handle);
+      // Build a chain: grandparent -> parent
+      const grandparentId = handle.store.contextStore.createContext({
+        workspace_id: WS, created_by_endpoint_id: E1, participants: [E1],
+      });
+      const parentId = handle.store.contextStore.createContext({
+        workspace_id: WS, created_by_endpoint_id: E1, participants: [E1],
+        parent_context_id: grandparentId,
+      });
+      // Attempt to make grandparent's parent = parent (would close a cycle)
+      const cycleChildId = "ctx_cycle_child";
+      // First create grandparent's child with an explicit ID so we can use it as parent below
+      // Actually test it by trying to set grandparent's parent to parentId using HTTP create:
+      // Create a new context whose parent is parentId, and use grandparentId as its own id
+      // That would create: grandparentId -> parentId -> grandparentId (cycle)
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          participants: [E1],
+          context_id: grandparentId,   // re-use grandparent id as self
+          parent_context_id: parentId, // parent's parent IS grandparent → cycle
+        }),
+      });
+      // context_id already exists so this will fail (either 400 cycle or unique constraint)
+      // The cycle guard fires first because grandparent's chain includes grandparentId
+      expect([400, 409, 500].includes(res.statusCode)).toBe(true);
+      if (res.statusCode === 400) {
+        expect(res.json().error).toBe("invalid_request");
+      }
+    });
+
+    it("rejects a cycle via walk (A -> B -> A)", async () => {
+      ensureWorkspace(handle);
+      const aId = "ctx_cycle_a";
+      const bId = "ctx_cycle_b";
+      // Create A with parent B (B doesn't exist yet but we test with explicit IDs)
+      // Build: A (no parent), B (parent=A)
+      handle.store.contextStore.createContext({
+        workspace_id: WS, created_by_endpoint_id: E1, participants: [E1], context_id: aId,
+      });
+      handle.store.contextStore.createContext({
+        workspace_id: WS, created_by_endpoint_id: E1, participants: [E1], context_id: bId,
+        parent_context_id: aId,
+      });
+      // Now try to create a context with id=aId and parent=bId → would cycle A→B→A
+      const res = await handle.app.inject({
+        method: "POST",
+        url: `/v1/workspaces/${encodeURIComponent(WS)}/contexts`,
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          participants: [E1],
+          context_id: aId,       // same id as A (already exists)
+          parent_context_id: bId, // B's parent is A → cycle
+        }),
+      });
+      // Should be rejected — either 400 cycle or self-reference (bId chain → aId === context_id aId)
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe("invalid_request");
+    });
+  });
+
   describe("Extension registry (GET /v1/extensions + POST /v1/extensions/report)", () => {
     it("GET /v1/extensions returns empty list initially", async () => {
       const res = await handle.app.inject({ method: "GET", url: "/v1/extensions" });

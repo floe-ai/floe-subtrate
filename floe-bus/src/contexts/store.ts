@@ -226,6 +226,25 @@ export class ContextStore implements ContextStoreReader {
   // ---------------------------------------------------------------------------
 
   /**
+   * Walk the parent chain starting from `startId` and return true if `candidateId`
+   * appears anywhere in that chain (which would create a cycle).
+   * Bounded to 100 hops — any legitimate hierarchy is far shallower.
+   */
+  wouldCreateCycle(startId: string, candidateId: string): boolean {
+    const stmt = this.db.prepare("SELECT parent_context_id FROM contexts WHERE context_id = ?");
+    let current: string | null = startId;
+    let hops = 0;
+    while (current !== null && hops < 100) {
+      if (current === candidateId) return true;
+      const row = stmt.get(current) as { parent_context_id: string | null } | undefined;
+      if (!row) break;
+      current = row.parent_context_id;
+      hops++;
+    }
+    return false;
+  }
+
+  /**
    * List direct children of a parent context (contexts whose parent_context_id
    * equals the given parentId).  Ordered by created_at ascending.
    */
