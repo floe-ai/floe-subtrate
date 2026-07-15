@@ -1516,7 +1516,18 @@ describe("Substrate model — explicit emit only", () => {
       bridge_id: "bridge:test",
       bus: {
         async appendRuntimeTelemetry(_input: any) {},
-        async emit(event: any) { emittedEvents.push(event); }
+        async emit(event: any) { emittedEvents.push(event); },
+        // D-B guard: actor must be in participants for the default to apply
+        async getContext(_contextId: string) {
+          return {
+            context_id: "ctx_delivery_2",
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: "actor:workspace:test:operator",
+            created_at: new Date().toISOString(),
+            participants: ["actor:workspace:test:floe", "actor:workspace:test:operator"]
+          };
+        }
       }
     } as any;
 
@@ -1531,9 +1542,7 @@ describe("Substrate model — explicit emit only", () => {
 
     expect(emittedEvents).toHaveLength(1);
     const emitted = emittedEvents[0];
-    // D-B fix: when no caller-supplied context_id, the emit tool now defaults to the
-    // delivery's origin context (turn.context_id) so replies always land in the same
-    // thread they came from — never leaking into a different card's context.
+    // D-B guard: actor is a participant → default applies → context_id = origin context
     expect(emitted.context_id).toBe("ctx_delivery_2");
     // current_delivery_context_id MUST also be set (unchanged)
     expect(emitted.current_delivery_context_id).toBe("ctx_delivery_2");
@@ -1914,6 +1923,17 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
           return [
             { endpoint_id: "actor:workspace:test:operator", name: "Operator", status: "idle" }
           ];
+        },
+        // D-B guard: actor must be returned as a participant so the guard allows the default
+        async getContext(_contextId: string) {
+          return {
+            context_id: "ctx_card_a",
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: "actor:workspace:test:operator",
+            created_at: new Date().toISOString(),
+            participants: ["actor:workspace:test:floe", "actor:workspace:test:operator"]
+          };
         }
       }
     } as any;
@@ -1928,8 +1948,141 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     );
 
     expect(emittedEvents).toHaveLength(1);
-    // D-B: context_id on the emitted event must be the delivery origin context
+    // D-B guard: actor is a participant → default applies → context_id = origin context
     expect(emittedEvents[0].context_id).toBe("ctx_card_a");
+  });
+
+  it("D-B guard: non-participant actor leaves context_id null (Rule 2 handles routing, no 409)", async () => {
+    // Regression: when agent B receives a directed delivery in context A (where A's
+    // participants are [operator, floe]) and B is NOT a participant, the D-B default
+    // must NOT stamp context_id with A. Without the guard, Rule 1 rejects with 409
+    // and the agent loops emitting nothing.
+    const emittedEvents: any[] = [];  // fake bus.emit always accepts
+    const capturedTools: any[] = [];
+
+    // Endpoint for "snowball-overseer" receiving a delivery in operator's context
+    const NON_PARTICIPANT_ENDPOINT = "actor:workspace:test:snowball-overseer";
+    const DELIVERY_CONTEXT = "ctx_operator";
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        const emitTool = capturedTools.find((t: any) => t.name === "emit");
+        if (emitTool) {
+          // Agent replies WITHOUT explicit context_id — D-B guard must NOT inject ctx_operator
+          await emitTool.execute("tc_nonparticipant_emit", {
+            type: "message",
+            destination: "actor:workspace:test:floe",
+            text: "I'm replying as snowball-overseer",
+          });
+        }
+        for (const l of this.listeners) await l({
+          type: "agent_end",
+          messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], usage: null, model: "mock-model", provider: "mock-provider" }]
+        });
+      }
+    };
+
+    // Build an adapter whose delivery endpoint is the NON_PARTICIPANT_ENDPOINT
+    const adapter = new PiAgentCoreAdapter(
+      {
+        paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+        authStorage: {} as any,
+        modelRegistry: {
+          find(provider: string, modelId: string) {
+            if (provider === "mock-provider" && modelId === "mock-model") {
+              return {
+                id: "mock-model", name: "Mock", api: "openai-responses", provider: "mock-provider",
+                baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000, maxTokens: 4096
+              } as any;
+            }
+            return undefined;
+          },
+          async getApiKeyForProvider() { return "test-key"; }
+        } as any,
+        profiles: {
+          version: 1,
+          profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
+        }
+      } as any,
+      {
+        agentFactory: (input: any) => {
+          capturedTools.push(...(input.tools ?? []));
+          return fakeAgent;
+        },
+        turnFinalizeTimeoutMs: 1_000
+      }
+    );
+
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(event: any) { emittedEvents.push(event); },
+        async listEndpoints() {
+          return [
+            { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" }
+          ];
+        },
+        // getContext returns participants that do NOT include snowball-overseer
+        async getContext(_contextId: string) {
+          return {
+            context_id: DELIVERY_CONTEXT,
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: "actor:workspace:test:operator",
+            created_at: new Date().toISOString(),
+            participants: ["actor:workspace:test:operator", "actor:workspace:test:floe"]
+            // snowball-overseer is NOT in this list
+          };
+        }
+      }
+    } as any;
+
+    // Build a delivery whose endpoint_id is snowball-overseer (not in context participants)
+    const delivery: DeliveryBundle = {
+      delivery_id: "del-nonparticipant",
+      endpoint_id: NON_PARTICIPANT_ENDPOINT,
+      workspace_id: "workspace:test",
+      trigger_event_id: "evt:del-nonparticipant",
+      delivered_at: new Date().toISOString(),
+      events: [
+        {
+          event_id: "evt:del-nonparticipant",
+          type: "message",
+          workspace_id: "workspace:test",
+          source_endpoint_id: "actor:workspace:test:floe",
+          context_id: DELIVERY_CONTEXT,
+          thread_id: "thread-nonparticipant",
+          correlation_id: null,
+          destination_json: {
+            kind: "endpoint",
+            endpoint_id: NON_PARTICIPANT_ENDPOINT
+          },
+          content: { text: "Hey snowball, what do you think?", data: {} },
+          response: { expected: true },
+          metadata: {},
+          created_at: new Date().toISOString()
+        } as any
+      ]
+    };
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    // The emit must succeed (no 409 — fake bus always accepts)
+    expect(emittedEvents).toHaveLength(1);
+    // D-B guard: actor is NOT a participant → context_id must be null (not DELIVERY_CONTEXT)
+    // This lets the bus resolver's Rule 2 route it normally instead of Rule 1 rejecting.
+    expect(emittedEvents[0].context_id).toBeNull();
+    // current_delivery_context_id is still forwarded for observability
+    expect(emittedEvents[0].current_delivery_context_id).toBe(DELIVERY_CONTEXT);
   });
 
   it("D-B: emit with explicit context_id overrides the origin default (cross-context emit works)", async () => {
