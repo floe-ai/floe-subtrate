@@ -9,7 +9,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { getGitHubCopilotBaseUrl } from "@earendil-works/pi-ai/oauth";
 import type { AgentRuntimeConfig, BridgeAuthRuntime, ModelThinkingCapability, RuntimeAuthResolved } from "../auth.js";
 import { resolveRuntimeAuth } from "../auth.js";
-import type { DeliveryBundle } from "../bus-client.js";
+import type { DeliveryBundle, EventEnvelope } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 import type { HookPayload } from "../hooks.js";
 import { buildSystemPrompt, renderDestinationContext, appendWorkLog, toNeutralRef, fromNeutralRef, toNeutralEndpoint } from "../runtime-core/index.js";
@@ -108,11 +108,16 @@ type SessionState = {
   agent: AgentLike;
   initialized: boolean;
   endpointId: string;
+  contextId: string;          // The context this session is bound to ("no-context" when none)
   workspaceId: string;
   provider: string;
   modelId: string;
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   instructionsHash: string;
+  /** SESSION-LOCAL ephemeral cursor — tracks last-injected thread position for C-2/C-3.
+   *  null = cold start (inject full thread). NOT persisted. NOT endpoint_watermarks.
+   *  endpoint_watermarks stays the human-facing "read up to here" cursor. */
+  threadCursor: string | null;
   context?: RuntimeContext;
   activeTurn?: RuntimeTurnContext;
 };
@@ -292,7 +297,46 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         }
       }
 
-      const finalPrompt = injectedContext ? `${injectedContext}\n\n${prompt}` : prompt;
+      // C-2: Fetch thread slice since this session's last-injected cursor.
+      // Cold start (threadCursor=null) → fetches full thread (cursor 0 backfill).
+      // Warm continue → fetches only the delta since last turn.
+      // This is a SESSION-LOCAL ephemeral cursor — not endpoint_watermarks (human cursor).
+      // Eviction: sessions are released on bridge restart (no context-close signal yet;
+      // when a substrate context-closed event is available, evict on that signal instead).
+      let threadSlice = "";
+      let nextThreadCursor: string | null = session.threadCursor;
+      if (turn.context_id) {
+        try {
+          const triggerEventIds = new Set(bundle.events.map(e => e.event_id));
+          const { events: ctxEvents, next_cursor } = await context.bus.listContextEvents(
+            turn.context_id,
+            session.threadCursor
+          );
+          // Exclude the trigger events from the slice — they are rendered by deliveryToPrompt
+          const sliceEvents = ctxEvents.filter(e => !triggerEventIds.has(e.event_id));
+          if (sliceEvents.length > 0) {
+            threadSlice = renderThreadSlice(sliceEvents);
+          }
+          // Record next cursor for advance after successful turn (C-3)
+          if (next_cursor !== null) {
+            nextThreadCursor = next_cursor;
+          }
+        } catch (sliceErr) {
+          // Non-fatal: agent proceeds without thread history injection.
+          // Cursor stays at session.threadCursor; next turn will retry.
+          console.warn("[bridge] thread slice fetch failed; proceeding without thread context", {
+            context_id: turn.context_id,
+            error: sliceErr instanceof Error ? sliceErr.message : String(sliceErr)
+          });
+        }
+      }
+
+      // Build final prompt: [extension overlay] + [thread slice] + [trigger]
+      const parts: string[] = [];
+      if (injectedContext) parts.push(injectedContext);
+      if (threadSlice) parts.push(threadSlice);
+      parts.push(prompt);
+      const finalPrompt = parts.join("\n\n");
 
       await session.agent.prompt({
         role: "user",
@@ -301,6 +345,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       } as any);
       await this.awaitTurnCompletion(context, session, turn);
 
+      // C-3: Advance session-local thread cursor — ephemeral, in-memory only.
+      // Done AFTER successful turn completion so a failed turn doesn't advance the cursor.
+      session.threadCursor = nextThreadCursor;
       // Fire TurnEnd hook
       if (context.hooks?.hasHandlers("TurnEnd")) {
         await context.hooks.fire("TurnEnd", {
@@ -368,8 +415,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       this.writeWorkLog(context, bundle, turn, "error");
       // Invalidate session on request body errors (likely state corruption)
       if (errorMessage.includes("invalid_request_body") || errorMessage.includes("400")) {
-        console.log("[bridge] pi session invalidated due to error", { endpoint_id: bundle.endpoint_id });
-        this.sessions.delete(bundle.endpoint_id);
+        const errContextId = bundle.events[0]?.context_id ?? "no-context";
+        const errKey = `${bundle.endpoint_id}:${errContextId}`;
+        console.log("[bridge] pi session invalidated due to error", { endpoint_id: bundle.endpoint_id, context_id: errContextId });
+        this.sessions.delete(errKey);
       }
       // Re-throw as TurnFailedError so the daemon can emit a runtime_error event
       // to the originating endpoint and mark the delivery as failed.
@@ -396,7 +445,11 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
   }
 
   private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved, runtimeConfig?: AgentRuntimeConfig): Promise<SessionState> {
-    const key = bundle.endpoint_id;
+    // C-1: Session key per (endpoint, context) — each card/context gets an isolated
+    // pi Agent instance with independent message history. Cross-context bleed is
+    // structurally impossible: a session for context A can never see context B's data.
+    const contextId = bundle.events[0]?.context_id ?? "no-context";
+    const key = `${bundle.endpoint_id}:${contextId}`;
     const rawInstructions = runtimeConfig?.instructions?.trim() ?? "";
     // Build the full system prompt: agent instructions + Floe substrate guidance
     const systemPrompt = buildSystemPrompt(rawInstructions);
@@ -431,11 +484,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       agent: null as unknown as AgentLike,
       initialized: false,
       endpointId: bundle.endpoint_id,
+      contextId,
       workspaceId: bundle.workspace_id,
       provider: resolved.provider,
       modelId: resolved.model.id,
       thinkingLevel,
       instructionsHash,
+      threadCursor: null,  // cold start — will backfill full thread on first turn
       context
     };
 
@@ -1064,6 +1119,48 @@ export function renderHookInjections(results: Array<{ inject?: Record<string, un
   }
 
   lines.push("\n[End Injected Context]");
+  return lines.join("\n");
+}
+
+/**
+ * Render a slice of context thread events into a readable block for injection.
+ *
+ * Includes events with meaningful text content (message + domain events).
+ * Never includes tool calls (those live only in the private pi session).
+ * Format per event: "[ActorName] text", ordered chronologically.
+ *
+ * Bounded to MAX_THREAD_SLICE_EVENTS most-recent events and MAX_THREAD_SLICE_CHARS total.
+ * This keeps cold-start backfill from overwhelming the context window.
+ */
+const MAX_THREAD_SLICE_EVENTS = 50;
+const MAX_THREAD_SLICE_CHARS = 8_000;
+
+export function renderThreadSlice(events: EventEnvelope[]): string {
+  if (events.length === 0) return "";
+
+  const lines: string[] = ["[Thread — recent context history]"];
+  let totalChars = 0;
+  // Keep the most-recent N events when over the cap
+  const limited = events.length > MAX_THREAD_SLICE_EVENTS
+    ? events.slice(-MAX_THREAD_SLICE_EVENTS)
+    : events;
+
+  for (const event of limited) {
+    // Only inject events with meaningful text; skip structural noise without text
+    const text = typeof event.content?.text === "string" ? event.content.text : null;
+    if (!text) continue;
+
+    const actorRef = event.source_endpoint_id
+      ? (() => { try { return toNeutralRef(event.source_endpoint_id!); } catch { return event.source_endpoint_id!; } })()
+      : "system";
+    const line = `[${actorRef}] ${text}`;
+    if (totalChars + line.length > MAX_THREAD_SLICE_CHARS) break;
+    lines.push(line);
+    totalChars += line.length;
+  }
+
+  if (lines.length === 1) return ""; // header only — no events had renderable text
+  lines.push("[End Thread]");
   return lines.join("\n");
 }
 

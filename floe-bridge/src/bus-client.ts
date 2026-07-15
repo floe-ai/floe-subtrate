@@ -373,6 +373,23 @@ export class BusClient {
   }
 
   /**
+   * List events for a context, optionally since a cursor position.
+   * Returns the events and a next_cursor for advancing the session's ephemeral injection cursor.
+   * `since` = null → cold start (full backfill from the beginning of the thread).
+   */
+  async listContextEvents(
+    contextId: string,
+    since?: string | null,
+    limit?: number
+  ): Promise<{ events: EventEnvelope[]; next_cursor: string | null }> {
+    const params = new URLSearchParams({ context_id: contextId });
+    if (since) params.set("since", since);
+    if (limit != null) params.set("limit", String(limit));
+    const result = await this.get(`/v1/events?${params}`) as { events: EventEnvelope[]; next_cursor: string | null };
+    return { events: result.events ?? [], next_cursor: result.next_cursor ?? null };
+  }
+
+  /**
    * List child contexts whose parent_context_id equals contextId.
    * Used for epic→card links.
    */
