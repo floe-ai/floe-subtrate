@@ -66,36 +66,73 @@ const tk = {
 
 // ---------------------------------------------------------------------------
 // ──────────────────────────────────────────────────────────────────────────
-// A. MOCK SIDE-THREAD
+// A. MOCK SIDE-THREADS (multiple)
 // ──────────────────────────────────────────────────────────────────────────
-// Seam: replace MOCK_SIDE_THREAD_EVENTS with real events filtered by thread_id
-// once the substrate emits events tagged with a side thread_id.
+// Seam: replace MOCK_SIDE_THREADS with real data — a list of
+//   { threadId, label, messages }
+// derived from events grouped by thread_id once the substrate tags them.
 // To disable: set SHOW_MOCK_SIDE_THREAD = false.
 // ---------------------------------------------------------------------------
 
 const SHOW_MOCK_SIDE_THREAD = true;
 
 type MockSideMsg = { id: string; actor: string; text: string; time: string };
+type MockSideThread = { threadId: string; label: string; messages: MockSideMsg[] };
 
-const MOCK_SIDE_THREAD_ID = "mock-side-thread-x1";
-const MOCK_SIDE_THREAD_EVENTS: MockSideMsg[] = [
+const MOCK_SIDE_THREADS: MockSideThread[] = [
   {
-    id: "mock-1",
-    actor: "Floe",
-    text: "Snowball, what's the status of the 'Landing page copy' card?",
-    time: "2:14 PM",
+    threadId: "mock-side-thread-x1",
+    label: "Floe ↔ Snowball",
+    messages: [
+      {
+        id: "m1-1",
+        actor: "Floe",
+        text: "Snowball, what's the status of the 'Landing page copy' card?",
+        time: "2:14 PM",
+      },
+      {
+        id: "m1-2",
+        actor: "Snowball",
+        text: "It's in the Draft column with 2/3 exit criteria complete. One remaining: 'Copy reviewed by operator'.",
+        time: "2:14 PM",
+      },
+      {
+        id: "m1-3",
+        actor: "Floe",
+        text: "Got it. I'll relay that back and ask the operator to review.",
+        time: "2:15 PM",
+      },
+    ],
   },
   {
-    id: "mock-2",
-    actor: "Snowball",
-    text: "It's in the Draft column with 2/3 exit criteria complete. One remaining: 'Copy reviewed by operator'.",
-    time: "2:14 PM",
-  },
-  {
-    id: "mock-3",
-    actor: "Floe",
-    text: "Got it. I'll relay that back and ask the operator to review.",
-    time: "2:15 PM",
+    threadId: "mock-side-thread-x2",
+    label: "Floe ↔ Researcher",
+    messages: [
+      {
+        id: "m2-1",
+        actor: "Floe",
+        text: "Researcher, can you pull together recent user feedback on the onboarding flow? I need the top 3 pain points.",
+        time: "2:16 PM",
+      },
+      {
+        id: "m2-2",
+        actor: "Researcher",
+        text: "On it. Scanning Intercom and Notion feedback logs now.",
+        time: "2:16 PM",
+      },
+      {
+        id: "m2-3",
+        actor: "Researcher",
+        text: "Top 3: (1) Users drop off at the 'connect your repo' step — 42% exit rate. (2) The invite team step is skipped 70% of the time. (3) First-run empty state gives no guidance on next action.",
+        time: "2:17 PM",
+      },
+      {
+        id: "m2-4",
+        actor: "Floe",
+        text: "Thanks, that's exactly what I needed. I'll summarise this in the operator thread.",
+        time: "2:17 PM",
+      },
+    ],
   },
 ];
 
@@ -225,21 +262,30 @@ if (typeof document !== "undefined") {
 }
 
 // ---------------------------------------------------------------------------
-// A — Mock side-thread panel
+// A — Multi-side-thread sidebar (tabbed)
+//
+// Design: one fixed-width sidebar with a tab row across the top — one tab
+// per side thread, labelled by the actors involved. Selecting a tab shows
+// that thread's message log. Collapsed to a 36px strip with a chevron.
+//
+// Presentation rationale: tabs beat stacked panels (avoids vertical
+// compression that makes each thread unreadable) and beat a dropdown
+// (immediate visibility of how many threads exist and their labels).
 // ---------------------------------------------------------------------------
 
-function SideThreadPanel({
-  messages,
-  threadId,
+function SideThreadsPanel({
+  threads,
 }: {
-  messages: MockSideMsg[];
-  threadId: string;
+  threads: MockSideThread[];
 }): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
+
+  const active = threads[activeIdx] ?? threads[0];
 
   return (
     <div style={{
-      width: collapsed ? 36 : 280,
+      width: collapsed ? 36 : 300,
       flexShrink: 0,
       borderLeft: `2px solid ${tk.warn}`,
       background: tk.surfaceSunk,
@@ -248,51 +294,83 @@ function SideThreadPanel({
       transition: "width 0.18s ease",
       overflow: "hidden",
     }}>
-      {/* Panel header */}
+      {/* ── Panel header ── */}
       <div style={{
         flexShrink: 0,
         display: "flex", alignItems: "center",
-        padding: collapsed ? "12px 6px" : "10px 12px",
-        borderBottom: `1px solid ${tk.border2}`,
-        gap: 6,
+        padding: collapsed ? "10px 6px" : "8px 10px 0",
+        gap: 4,
         justifyContent: collapsed ? "center" : "space-between",
+        borderBottom: collapsed ? `1px solid ${tk.border2}` : "none",
       }}>
         {!collapsed && (
-          <div style={{ minWidth: 0 }}>
-            <div style={{
-              fontSize: 10, letterSpacing: "0.10em", textTransform: "uppercase",
-              color: tk.warn, fontWeight: 600, marginBottom: 1,
-            }}>
-              Side thread · mock
-            </div>
-            <div style={{
-              fontSize: 11, color: tk.ink4, overflow: "hidden",
-              textOverflow: "ellipsis", whiteSpace: "nowrap",
-            }}>
-              {threadId}
-            </div>
+          <div style={{
+            fontSize: 10, letterSpacing: "0.10em", textTransform: "uppercase",
+            color: tk.warn, fontWeight: 600, paddingBottom: 6,
+          }}>
+            Side threads · mock
           </div>
         )}
         <button
           onClick={() => setCollapsed(v => !v)}
-          title={collapsed ? "Expand side thread" : "Collapse side thread"}
-          aria-label={collapsed ? "Expand side thread" : "Collapse side thread"}
+          title={collapsed ? "Expand side threads" : "Collapse side threads"}
+          aria-label={collapsed ? "Expand side threads" : "Collapse side threads"}
           style={{
             background: "transparent", border: "none",
             color: tk.ink4, cursor: "pointer",
-            fontSize: 14, lineHeight: 1, padding: 2, flexShrink: 0,
+            fontSize: 13, lineHeight: 1, padding: 2,
+            flexShrink: 0, marginBottom: collapsed ? 0 : 6,
           }}
         >
           {collapsed ? "⟩" : "⟨"}
         </button>
       </div>
 
-      {/* Messages */}
+      {/* ── Tab bar (one tab per thread) ── */}
       {!collapsed && (
+        <div style={{
+          flexShrink: 0,
+          display: "flex",
+          borderBottom: `1px solid ${tk.border2}`,
+          overflowX: "auto",
+        }}>
+          {threads.map((t, i) => {
+            const isActive = i === activeIdx;
+            return (
+              <button
+                key={t.threadId}
+                onClick={() => setActiveIdx(i)}
+                title={t.label}
+                style={{
+                  flexShrink: 0,
+                  background: "transparent", border: "none",
+                  borderBottom: isActive
+                    ? `2px solid ${tk.warn}`
+                    : "2px solid transparent",
+                  color: isActive ? tk.warn : tk.ink4,
+                  fontSize: 11.5, fontWeight: isActive ? 580 : 400,
+                  fontFamily: tk.fontUi,
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  maxWidth: 140,
+                  transition: "color 0.12s",
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Thread message log ── */}
+      {!collapsed && active && (
         <div style={{
           flex: 1, overflow: "auto",
           padding: "8px 12px",
-          display: "flex", flexDirection: "column", gap: 0,
         }}>
           {/* MOCK notice banner */}
           <div style={{
@@ -301,13 +379,14 @@ function SideThreadPanel({
             borderRadius: tk.r2, padding: "4px 8px", marginBottom: 8,
             lineHeight: 1.4,
           }}>
-            ⚠ Mock data — design preview only.<br />
-            Wires to real <code style={{ fontFamily: "monospace" }}>thread_id</code> grouping when substrate supports it.
+            ⚠ Mock — design preview. Wires to real{" "}
+            <code style={{ fontFamily: "monospace" }}>thread_id</code>{" "}
+            grouping when substrate supports it.
           </div>
 
-          {messages.map((msg) => (
+          {active.messages.map((msg) => (
             <div key={msg.id} style={{
-              padding: "8px 0",
+              padding: "7px 0",
               borderBottom: `1px solid ${tk.border2}`,
             }}>
               <div style={{
@@ -319,7 +398,8 @@ function SideThreadPanel({
                 <span style={{ fontSize: 10.5, color: tk.ink4 }}>{msg.time}</span>
               </div>
               <div style={{
-                fontSize: 12.5, color: tk.ink2, lineHeight: 1.45, whiteSpace: "pre-wrap",
+                fontSize: 12.5, color: tk.ink2, lineHeight: 1.45,
+                whiteSpace: "pre-wrap",
               }}>
                 {msg.text}
               </div>
@@ -817,12 +897,9 @@ export function ContextConversation({
           ))}
         </div>
 
-        {/* A — Mock side-thread panel (right sidebar) */}
+        {/* A — Multi-side-thread tabbed sidebar */}
         {SHOW_MOCK_SIDE_THREAD && (
-          <SideThreadPanel
-            messages={MOCK_SIDE_THREAD_EVENTS}
-            threadId={MOCK_SIDE_THREAD_ID}
-          />
+          <SideThreadsPanel threads={MOCK_SIDE_THREADS} />
         )}
       </div>
 
