@@ -82,7 +82,7 @@ describe("resolveContext rule matrix", () => {
     expect(result).toEqual({ context_id: "ctx_a", created: false });
   });
 
-  it("Runtime, no supplied id, destination ∉ current ctx → opens new with {source, destination}", () => {
+  it("Runtime, no supplied id, destination ∉ current ctx → creates side thread in same context (Rule 3)", () => {
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
@@ -90,12 +90,35 @@ describe("resolveContext rule matrix", () => {
         destination: endpointDest(E3),
         supplied_context_id: null,
         current_delivery_context_id: "ctx_a",
+        current_delivery_thread_id: "thr_root",
         workspace_id: WS
       },
       reader
     );
-    expect(result).toMatchObject({ created: true, participants: [E1, E3] });
-    if ("context_id" in result) expect(result.context_id).not.toBe("ctx_a");
+    // Must stay in the SAME context (not open a new one).
+    expect("context_id" in result && result.context_id).toBe("ctx_a");
+    if ("context_id" in result) {
+      expect(result.created).toBe(false);
+      expect(result.side_thread).toMatchObject({ parent_thread_id: "thr_root" });
+    }
+  });
+
+  it("Runtime, Rule 3 — falls back to context_id as parent_thread_id when no delivery thread given", () => {
+    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
+    const result = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E3),
+        supplied_context_id: null,
+        current_delivery_context_id: "ctx_a",
+        current_delivery_thread_id: null,
+        workspace_id: WS
+      },
+      reader
+    );
+    if ("context_id" in result) {
+      expect(result.side_thread).toMatchObject({ parent_thread_id: "ctx_a" });
+    }
   });
 
   it("Supplied context + source is participant → succeeds (rule 1 positive)", () => {

@@ -11,6 +11,7 @@ import { CronExpressionParser } from "cron-parser";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 import { ContextStore, applyContextSchema, type ContextRecord } from "./contexts/store.js";
+import { ThreadStore, type ThreadRecord } from "./contexts/threads.js";
 import { decodeEventCursor } from "./event-cursor.js";
 import {
   EndpointWatermarkStore,
@@ -257,6 +258,7 @@ export function workspaceIdForLocator(locator: string): string {
 export class BusStore {
   readonly db: DatabaseSync;
   readonly contextStore: ContextStore;
+  readonly threadStore: ThreadStore;
   readonly scopeStore: ScopeStore;
   readonly endpointWatermarkStore: EndpointWatermarkStore;
   /** Broadcast function injected by the server after initialisation. */
@@ -272,6 +274,7 @@ export class BusStore {
     this.db.exec("PRAGMA foreign_keys = ON");
     this.migrate();
     this.contextStore = new ContextStore(this.db);
+    this.threadStore = new ThreadStore(this.db);
     this.scopeStore = new ScopeStore(this.db);
     this.endpointWatermarkStore = new EndpointWatermarkStore(this.db);
   }
@@ -1233,6 +1236,9 @@ export class BusStore {
           destination: command.destination,
           supplied_context_id: command.context_id ?? null,
           current_delivery_context_id: command.current_delivery_context_id ?? null,
+          // thread_id from the caller IS the current delivery thread — used as
+          // parent when Rule 3 opens a side thread inside the current context.
+          current_delivery_thread_id: command.thread_id ?? null,
           workspace_id: command.workspace_id
         },
         this.contextStore
@@ -1246,8 +1252,26 @@ export class BusStore {
           participants: resolution.participants ?? [command.source_endpoint_id],
           context_id: resolution.context_id
         });
+        // Every newly created context gets a root thread (thread_id = context_id).
+        this.threadStore.ensureRootThread(
+          resolution.context_id,
+          command.source_endpoint_id,
+          new Date().toISOString()
+        );
       }
       const resolvedContextId = resolution.context_id;
+
+      // Side thread: when the resolver signals that the destination is not a
+      // participant of the current context (Rule 3 runtime), create a new side
+      // thread inside the same context instead of routing to a new context.
+      let resolvedThreadId: string | undefined = command.thread_id;
+      if (resolution.side_thread) {
+        resolvedThreadId = this.threadStore.createThread({
+          context_id: resolvedContextId,
+          parent_thread_id: resolution.side_thread.parent_thread_id,
+          created_by_endpoint_id: command.source_endpoint_id,
+        });
+      }
 
       const inserted = this.insertEvent(
         {
@@ -1255,7 +1279,7 @@ export class BusStore {
           workspace_id: command.workspace_id,
           source_endpoint_id: command.source_endpoint_id,
           destination: command.destination,
-          thread_id: command.thread_id,
+          thread_id: resolvedThreadId,
           correlation_id: command.correlation_id ?? null,
           content: command.content,
           metadata: command.metadata ?? {},

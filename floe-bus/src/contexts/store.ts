@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { applyThreadSchema } from "./threads.js";
 
 export type ContextRecord = {
   context_id: string;
@@ -129,6 +130,8 @@ export function applyContextSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_context_subscriptions_endpoint
       ON context_subscriptions(endpoint_id, context_id);
   `);
+  // Ensure threads table + backfill root rows for existing contexts.
+  applyThreadSchema(db);
 }
 
 export class ContextStore implements ContextStoreReader {
@@ -161,6 +164,11 @@ export class ContextStore implements ContextStoreReader {
     for (const ep of participants) {
       insertParticipant.run(id, ep, ts);
     }
+    // Every context gets a root thread on creation (thread_id = context_id, parent = NULL).
+    // INSERT OR IGNORE is idempotent — safe to call even if applyThreadSchema already backfilled it.
+    this.db.prepare(
+      "INSERT OR IGNORE INTO threads (thread_id, context_id, parent_thread_id, created_by_endpoint_id, status, created_at) VALUES (?, ?, NULL, ?, 'open', ?)"
+    ).run(id, id, input.created_by_endpoint_id ?? null, ts);
     return id;
   }
 

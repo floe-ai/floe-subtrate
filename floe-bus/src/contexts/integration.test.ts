@@ -166,7 +166,7 @@ describe("submitEvent context wiring", () => {
     expect(r2.event.context_id).toBe(ctxA);
   });
 
-  it("T4: emit where destination ∉ current delivery context → opens new context with {source, destination}", () => {
+  it("T4: emit where destination ∉ current delivery context → creates side thread in same context (Rule 3)", () => {
     const r1 = store.submitEvent(
       emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
       noop
@@ -180,10 +180,12 @@ describe("submitEvent context wiring", () => {
       }),
       noop
     );
-    expect(r2.event.context_id).not.toBe(ctxA);
-    const parts = store.contextStore.getContextParticipants(r2.event.context_id!).sort();
-    expect(parts).toEqual([E1, E3].sort());
-    // T11: original A's participants unchanged
+    // Must stay in the SAME context (side thread, not a new context).
+    expect(r2.event.context_id).toBe(ctxA);
+    // The event must be on a NEW side thread (not the root thread).
+    expect(r2.event.thread_id).not.toBe(ctxA);
+    expect(r2.event.thread_id).toMatch(/^thr_/);
+    // T11: original A's participants unchanged (side thread does not add E3 to context).
     expect(store.contextStore.getContextParticipants(ctxA).sort()).toEqual([E1, E2].sort());
   });
 

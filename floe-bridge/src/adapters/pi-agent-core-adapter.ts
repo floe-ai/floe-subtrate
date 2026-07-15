@@ -583,7 +583,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         text: Type.String(),
         response_expected: Type.Optional(Type.Boolean()),
         correlation_id: Type.Optional(Type.String()),
-        context_id: Type.Optional(Type.String({ description: "Optional context_id to emit into. If the destination is already a participant of the current delivery context, omit this to continue that context. Pass an explicit context_id only to intentionally land in a specific existing context. Omitting context_id when emitting to a non-participant opens a new context." }))
+        context_id: Type.Optional(Type.String({ description: "Optional context_id to emit into. If the destination is already a participant of the current delivery context, omit this to continue that context. Pass an explicit context_id only to intentionally land in a specific existing context. Omitting context_id when emitting to a non-participant opens a side thread inside the current context." }))
       }),
       execute: async (_toolCallId, params: any) => {
         const turn = session.activeTurn;
