@@ -13,6 +13,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { ContextRef, EndpointRef, EventEnvelope } from "../bus-client/types.ts";
 import { getContext, listContextEvents, emit } from "../bus-client/client.ts";
+import { subscribeEvents } from "../bus-client/stream.ts";
 import { contextLabel } from "./ScopeDetail.tsx";
 
 // ---------------------------------------------------------------------------
@@ -280,6 +281,19 @@ export function ContextConversation({
   useEffect(() => {
     load();
   }, [load]);
+
+  // Live push refresh: reload whenever a new event lands in this context.
+  useEffect(() => {
+    const unsub = subscribeEvents((msg) => {
+      if (msg.type === "event_submitted") {
+        const event = (msg.payload as { event?: { context_id?: string } }).event;
+        if (event?.context_id === contextId) {
+          load();
+        }
+      }
+    });
+    return unsub;
+  }, [contextId, load]);
 
   // Default "speaking as" to the last saved choice, else the first non-participant
   // actor if available, else the first actor in the workspace.
