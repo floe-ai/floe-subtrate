@@ -11,7 +11,8 @@ import type { AgentRuntimeConfig, BridgeAuthRuntime, ModelThinkingCapability, Ru
 import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle, EventEnvelope } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
-import type { HookPayload } from "../hooks.js";
+import type { HookPayload, HookRegistry } from "../hooks.js";
+import { InjectionBaseline } from "../injection-baseline.js";
 import { buildSystemPrompt, renderDestinationContext, appendWorkLog, toNeutralRef, fromNeutralRef, toNeutralEndpoint } from "../runtime-core/index.js";
 import type { NeutralEndpoint } from "../runtime-core/index.js";
 import type { WorkLogEntry } from "../runtime-core/index.js";
@@ -136,6 +137,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
   private sessions = new Map<string, SessionState>();
   private readonly agentFactory: AgentFactory;
   private readonly turnFinalizeTimeoutMs: number;
+  /** Slice C: inject-once dedup — tracks last-injected content hash per (context, source). */
+  private readonly baseline = new InjectionBaseline();
+  /**
+   * Slice C: registries we have already wired the lifecycle-reset handlers into.
+   * WeakSet so GC can collect dead registries without explicit cleanup.
+   */
+  private readonly registeredHookRegistries = new WeakSet<HookRegistry>();
 
   constructor(
     private readonly authRuntime: BridgeAuthRuntime,
@@ -258,6 +266,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       prompt_length: prompt.length
     });
     try {
+      // Slice C: lazily register lifecycle-reset handlers in the workspace HookRegistry
+      // so the injection baseline is cleared when a context's history is reset.
+      this.maybeRegisterLifecycleHooks(context.hooks);
+
       // Fire BeforeTurn hook — collect injected context
       let injectedContext = "";
       if (context.hooks?.hasHandlers("BeforeTurn")) {
@@ -279,12 +291,16 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           thread_id: bundle.events[0]?.thread_id,
           origin
         });
-        injectedContext = renderHookInjections(hookResults);
+        // Slice C (F2): apply inject-once dedup keyed on (context_id, source).
+        // Content unchanged since last inject → stripped from filteredResults.
+        // No context_id → all results pass through (can’t key without a context binding).
+        const filteredResults = this.baseline.applyDedup(turn.context_id, hookResults);
+        injectedContext = renderHookInjections(filteredResults);
         if (injectedContext) {
           await this.appendTelemetry(context, turn, "hook_injection", {
             hook: "BeforeTurn",
             injection_length: injectedContext.length,
-            source_count: hookResults.filter(r => r.inject).length
+            source_count: filteredResults.filter(r => r.inject).length
           });
         }
       }
@@ -615,6 +631,27 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         provider: session.provider,
         model_id: session.modelId
       }
+    });
+  }
+
+  /**
+   * Slice C (F2): lazily register ContextHistoryCleared / ContextCompacted handlers
+   * in a workspace HookRegistry so the injection baseline is reset when a context
+   * is cleared. Called once per registry instance (tracked via WeakSet).
+   *
+   * The extension name "_substrate_inject_once" is intentionally prefixed with "_"
+   * to distinguish it from user-registered extensions. It is extension-agnostic.
+   */
+  private maybeRegisterLifecycleHooks(hooks: HookRegistry | undefined): void {
+    if (!hooks) return;
+    if (this.registeredHookRegistries.has(hooks)) return;
+    this.registeredHookRegistries.add(hooks);
+
+    hooks.on("ContextHistoryCleared", "_substrate_inject_once", (payload) => {
+      this.baseline.clearContext(payload.context_id);
+    });
+    hooks.on("ContextCompacted", "_substrate_inject_once", (payload) => {
+      this.baseline.clearContext(payload.context_id);
     });
   }
 
