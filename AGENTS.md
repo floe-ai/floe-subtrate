@@ -673,3 +673,42 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - The thread contains `message` events + domain events (OUTPUTS). Tool calls and tool results are PRIVATE session scratch; they do NOT live in the thread.
 - A cold-started session re-derives by reading the world (files) + thread (outputs) + context knowledge. This is by design (session-context-thread-model.md, captain-locked).
 - Do NOT add `agent.turn.record` events to the thread. The locked model scrapped that plan.
+
+---
+
+## First-class Side Threads (fm/floe-side-thread)
+
+### Threads table
+
+- **`threads` table** in `floe-bus/src/contexts/threads.ts`: `thread_id` (PK), `context_id`, `parent_thread_id` (NULL = root/main), `created_by_endpoint_id`, `status` (`open`/`closed`), `created_at`, `title`.
+- **Root thread invariant**: every context gets a root thread row with `thread_id = context_id` and `parent_thread_id = NULL`. Created in `ContextStore.createContext` (via direct `INSERT OR IGNORE`). Backfilled by `applyThreadSchema` migration for existing contexts.
+- **Main vs side is DERIVED**: `parent_thread_id IS NULL` → main thread; `IS NOT NULL` → side thread. No kind/type column.
+- **Schema**: `applyContextSchema` calls `applyThreadSchema` at the end; guaranteed in `BusStore` constructor.
+- **`ThreadStore`** in `floe-bus/src/contexts/threads.ts`: `createThread`, `ensureRootThread`, `getThread`, `listThreadsForContext`. Accessible as `store.threadStore`.
+- `BusClient` exposes `listThreadsForContext(contextId)`, `getThread(threadId)`, `createThread(contextId, input)`. `ThreadRecord` type exported from `floe-bridge/src/bus-client.ts`.
+
+### Rule 3 change (resolver + submitEvent)
+
+- **Old Rule 3** (pre-fm/floe-side-thread): runtime emit to a non-participant destination → open a NEW context with {source, destination}.
+- **New Rule 3**: runtime emit to a non-participant destination → stay in the SAME context, create a **side thread** (`parent_thread_id = current_delivery_thread_id || context_id`).
+- `resolveContext` gains optional `current_delivery_thread_id` input field. When Rule 3 fires, returns `{ context_id: <same>, created: false, side_thread: { parent_thread_id } }`.
+- `submitEvent` in `BusStore`: when `resolution.side_thread` is set, calls `threadStore.createThread(...)` and uses the new thread_id for the emitted event.
+- `submitEvent` also calls `threadStore.ensureRootThread(...)` for newly created contexts (`resolution.created = true`).
+
+### Reply routing
+
+- An actor's turn carries `thread_id` from the delivery trigger event. The emit tool passes this as `thread_id` in the `EventCommand`, which is forwarded to `resolveContext` as `current_delivery_thread_id`.
+- If the addressee replies (Rule 2: destination IS a participant), the reply carries `thread_id = sideThreadId` (from turn) → lands on the same side thread. No new thread created.
+- **`BusStore.submitEvent` new context creation**: also calls `ensureRootThread` for new contexts so every context has a root thread immediately.
+
+### API routes (server.ts)
+
+- `GET /v1/contexts/:id/threads` → `{ threads: ThreadRecord[] }`
+- `POST /v1/contexts/:id/threads` → `{ ok: true, thread: ThreadRecord }` (201)
+- `GET /v1/threads/:thread_id` → `{ thread: ThreadRecord }` (404 if missing)
+
+### Non-regressing
+
+- Existing single-thread conversations are unaffected: Rule 2 (participant reply) keeps the same thread.
+- UI renders context events flat until a future slice groups by thread.
+- Close/delete lifecycle and app UI wiring are SEPARATE follow-ups — do NOT implement here.

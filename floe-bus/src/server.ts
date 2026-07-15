@@ -1232,6 +1232,58 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { ok: true, context_id: params.id, events_deleted: result.events_deleted };
   });
 
+  // ---------------------------------------------------------------------------
+  // Threads API — list / get / create threads inside a context
+  // ---------------------------------------------------------------------------
+
+  app.get("/v1/contexts/:id/threads", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const threads = store.threadStore.listThreadsForContext(params.id);
+    return { threads };
+  });
+
+  app.post("/v1/contexts/:id/threads", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      parent_thread_id: z.string().min(1).nullable().optional(),
+      created_by_endpoint_id: z.string().min(1).nullable().optional(),
+      title: z.string().nullable().optional()
+    }).parse(request.body);
+    const ctx = store.contextStore.getContext(params.id);
+    if (!ctx) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    // Validate that parent_thread_id (if supplied) belongs to this context.
+    if (body.parent_thread_id) {
+      const parent = store.threadStore.getThread(body.parent_thread_id);
+      if (!parent || parent.context_id !== params.id) {
+        return reply.code(400).send({ error: "invalid_parent_thread", parent_thread_id: body.parent_thread_id });
+      }
+    }
+    const threadId = store.threadStore.createThread({
+      context_id: params.id,
+      parent_thread_id: body.parent_thread_id ?? null,
+      created_by_endpoint_id: body.created_by_endpoint_id ?? null,
+      title: body.title ?? null
+    });
+    const thread = store.threadStore.getThread(threadId)!;
+    return reply.code(201).send({ ok: true, thread });
+  });
+
+  app.get("/v1/threads/:thread_id", async (request, reply) => {
+    const params = z.object({ thread_id: z.string().min(1) }).parse(request.params);
+    const thread = store.threadStore.getThread(params.thread_id);
+    if (!thread) {
+      return reply.code(404).send({ error: "thread_not_found", thread_id: params.thread_id });
+    }
+    return { thread };
+  });
+
+
   app.get("/v1/delivery/claim", async (request) => {
     const query = z.object({
       bridge_id: z.string(),
