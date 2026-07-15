@@ -237,6 +237,7 @@ export class BusClient {
     participants?: string[];
     created_by_endpoint_id?: string | null;
     title?: string | null;
+    parent_context_id?: string | null;
   }): Promise<string> {
     const result = await this.post(
       `/v1/workspaces/${encodeURIComponent(input.workspace_id)}/contexts`,
@@ -245,6 +246,7 @@ export class BusClient {
         scope_id: input.scope_id ?? null,
         created_by_endpoint_id: input.created_by_endpoint_id ?? null,
         title: input.title ?? null,
+        parent_context_id: input.parent_context_id ?? null,
       }
     ) as { context: { context_id: string } };
     return result.context.context_id;

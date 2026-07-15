@@ -539,8 +539,14 @@ Four generic, extension-agnostic substrate primitives landed in this PR. All are
 - Routes: `POST /v1/contexts/:id/participants {endpoint_id}` and `DELETE /v1/contexts/:id/participants/:endpoint_id`.
 - `parent_context_id` is now exposed in `POST /v1/workspaces/:ws/contexts` body (field already existed in schema).
 - `ContextStore.listContextsForParent(parentId)` + `GET /v1/contexts/:id/children`.
+- `ContextStore.wouldCreateCycle(startId, candidateId)` — walks the parent chain from `startId`; returns `true` if `candidateId` appears (bounded to 100 hops).
 - Index `idx_contexts_parent ON contexts(parent_context_id, created_at)`.
-- Self-reference guard: `parent_context_id === own id` is rejected 400.
+- Guards on `POST /v1/workspaces/:ws/contexts`:
+  - Self-reference (`parent_context_id === own id`) → 400 `invalid_request`.
+  - Non-existent parent → 404 `parent_context_not_found`.
+  - Cycle (parent chain already reaches own id) → 400 `invalid_request`.
+- `BusClient.createContext` accepts optional `parent_context_id?: string | null`.
+- `CreateContextInput` (stub bus client) gains optional `parent_context_id?: string | null`.
 - Integration test T10 updated: freeze-guard assertions removed; now positively asserts the dynamic API exists.
 
 ### Slice 2 — Per-event-type subscriptions + single context-delivery path

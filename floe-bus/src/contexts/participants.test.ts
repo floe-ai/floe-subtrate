@@ -158,3 +158,48 @@ describe("ContextStore — context linking / listContextsForParent (Slice 1 Trac
     expect(store.listContextsForParent(parent)).toHaveLength(0);
   });
 });
+
+describe("ContextStore — wouldCreateCycle (Slice 1 Track B)", () => {
+  let db: DatabaseSync;
+  let store: ContextStore;
+
+  beforeEach(() => {
+    db = freshDb();
+    store = new ContextStore(db);
+  });
+
+  it("returns false for a context with no parent chain", () => {
+    const a = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    const b = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    // a has no parent chain; b is not in it
+    expect(store.wouldCreateCycle(a, b)).toBe(false);
+  });
+
+  it("returns true when candidateId equals startId (self-reference path)", () => {
+    const a = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    expect(store.wouldCreateCycle(a, a)).toBe(true);
+  });
+
+  it("detects a direct cycle A->B, candidate=A", () => {
+    const a = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    const b = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1], parent_context_id: a });
+    // If we were to make A's parent = B, walking B's chain reaches A
+    expect(store.wouldCreateCycle(b, a)).toBe(true);
+  });
+
+  it("detects a longer chain cycle A->B->C, candidate=A", () => {
+    const a = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    const b = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1], parent_context_id: a });
+    const c = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1], parent_context_id: b });
+    // If we were to make A's parent = C, walking C->B->A would reach A
+    expect(store.wouldCreateCycle(c, a)).toBe(true);
+  });
+
+  it("returns false for a sibling (not in the chain)", () => {
+    const a = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1] });
+    const b = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1], parent_context_id: a });
+    const c = store.createContext({ workspace_id: WS, created_by_endpoint_id: E1, participants: [E1], parent_context_id: a });
+    // c is a sibling of b; c is not in b's parent chain
+    expect(store.wouldCreateCycle(b, c)).toBe(false);
+  });
+});
