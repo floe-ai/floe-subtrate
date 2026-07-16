@@ -228,6 +228,10 @@ export class BridgeDaemon {
     if (message.type === "participant_removed" && message.payload?.context_id) {
       void this.fireContextLifecycleHook("ParticipantRemoved", message.payload);
     }
+    // Side thread lifecycle
+    if (message.type === "thread_closed" && message.payload?.thread_id) {
+      void this.onThreadClosed(message.payload);
+    }
   }
 
   private async fireWebhookReceived(event: any): Promise<void> {
@@ -262,7 +266,34 @@ export class BridgeDaemon {
   }
 
   /**
-   * Fire a context-lifecycle hook workspace-wide (to every registered HookRegistry
+   * Handle a `thread_closed` broadcast: fire the `ThreadClosed` hook to all
+   * registered extension handlers, then ask the adapter to evict any sessions
+   * that were scoped exclusively to this side thread.
+   */
+  private async onThreadClosed(payload: {
+    thread_id: string;
+    context_id: string;
+    parent_thread_id: string;
+  }): Promise<void> {
+    // Fire extension hook (fire-and-forget failures).
+    for (const [, hooks] of this.workspaceHooks) {
+      if (hooks.hasHandlers("ThreadClosed")) {
+        try {
+          await hooks.fire("ThreadClosed", payload);
+        } catch (err) {
+          console.error("[bridge] ThreadClosed hook failed", err);
+        }
+      }
+    }
+    // Ask the adapter to release sessions scoped to this side thread.
+    this.adapter.releaseSessionsForClosedThread?.(payload.thread_id);
+    console.log("[bridge] side thread closed; session eviction requested", {
+      thread_id: payload.thread_id,
+      context_id: payload.context_id,
+    });
+  }
+
+  /** (to every registered HookRegistry
    * for the workspace identified by `payload.workspace_id`, if present; or all
    * workspaces when the broadcast payload does not carry workspace_id).
    */

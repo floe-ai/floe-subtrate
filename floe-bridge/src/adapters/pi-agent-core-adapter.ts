@@ -118,6 +118,15 @@ type SessionState = {
    *  null = cold start (inject full thread). NOT persisted. NOT endpoint_watermarks.
    *  endpoint_watermarks stays the human-facing "read up to here" cursor. */
   threadCursor: string | null;
+  /**
+   * Side thread that triggered this session's CREATION, if any.
+   * Set when the first delivery for this (endpoint, context) session arrived on a
+   * non-root thread (i.e. thread_id !== contextId).  Used by
+   * `releaseSessionsForClosedThread` to evict sessions that are scoped exclusively
+   * to a side thread that has now closed.
+   * `null` → session was created on the main/root thread (initiator's session).
+   */
+  sideThreadId: string | null;
   context?: RuntimeContext;
   activeTurn?: RuntimeTurnContext;
 };
@@ -444,6 +453,36 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     }
   }
 
+  /**
+   * Evict sessions that were scoped exclusively to the given closed side thread.
+   *
+   * Only sessions whose `sideThreadId` matches `closedThreadId` are removed —
+   * sessions for other (endpoint, context) pairs, and sessions that were created
+   * on the main/root thread, are left untouched (conservative eviction).
+   *
+   * If a session has an in-progress turn it is skipped; the session will become
+   * stale once the turn completes and the thread can no longer receive new events.
+   */
+  releaseSessionsForClosedThread(closedThreadId: string): void {
+    for (const [key, session] of this.sessions) {
+      if (session.sideThreadId !== closedThreadId) continue;
+      if (session.activeTurn && !session.activeTurn.finalized) {
+        console.log("[bridge] side thread closed mid-turn; deferring session eviction", {
+          key,
+          closed_thread_id: closedThreadId,
+        });
+        continue;
+      }
+      this.sessions.delete(key);
+      console.log("[bridge] session evicted: side thread closed", {
+        key,
+        endpoint_id: session.endpointId,
+        context_id: session.contextId,
+        closed_thread_id: closedThreadId,
+      });
+    }
+  }
+
   private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved, runtimeConfig?: AgentRuntimeConfig): Promise<SessionState> {
     // C-1: Session key per (endpoint, context) — each card/context gets an isolated
     // pi Agent instance with independent message history. Cross-context bleed is
@@ -491,6 +530,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       thinkingLevel,
       instructionsHash,
       threadCursor: null,  // cold start — will backfill full thread on first turn
+      // Capture the side thread_id that triggered this session's creation, if any.
+      // A session created on a non-root thread (thread_id ≠ contextId) is considered
+      // scoped to that side thread and can be evicted when the thread closes.
+      sideThreadId: (() => {
+        const triggerThreadId = bundle.events[0]?.thread_id ?? null;
+        return triggerThreadId && triggerThreadId !== contextId ? triggerThreadId : null;
+      })(),
       context
     };
 

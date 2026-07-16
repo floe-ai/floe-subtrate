@@ -447,6 +447,18 @@ export class BusClient {
     return result.thread.thread_id;
   }
 
+  /**
+   * Close a side thread.  Returns the updated ThreadRecord.
+   * Throws if the thread is not found or if it is a root/main thread.
+   */
+  async closeThread(threadId: string): Promise<ThreadRecord> {
+    const result = await this.post(
+      `/v1/threads/${encodeURIComponent(threadId)}/close`,
+      {}
+    ) as { thread: ThreadRecord };
+    return result.thread;
+  }
+
   private async _delete(path: string): Promise<unknown> {
     const response = await fetch(`${this.baseUrl}${path}`, { method: "DELETE" });
     if (!response.ok) throw new Error(`DELETE ${path} failed: ${response.status} ${await response.text()}`);

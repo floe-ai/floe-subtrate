@@ -11,7 +11,7 @@ import { CronExpressionParser } from "cron-parser";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 import { ContextStore, applyContextSchema, type ContextRecord } from "./contexts/store.js";
-import { ThreadStore, type ThreadRecord } from "./contexts/threads.js";
+import { ThreadStore, type ThreadRecord, ClosedThreadError } from "./contexts/threads.js";
 import { decodeEventCursor } from "./event-cursor.js";
 import {
   EndpointWatermarkStore,
@@ -956,6 +956,22 @@ export class BusStore {
     return { ok: true, workspace_id: workspaceId, locator, locator_deleted: locatorDeleted };
   }
 
+  /**
+   * Close a side thread.  Sets `status = 'closed'`; broadcasts `thread_closed`
+   * so the bridge can evict ephemeral sessions scoped to this thread.
+   *
+   * Throws `ThreadNotFoundError` | `RootThreadCloseError` from the ThreadStore.
+   */
+  closeThread(threadId: string, broadcast: Broadcast): import("./contexts/threads.js").ThreadRecord {
+    const closed = this.threadStore.closeThread(threadId);
+    broadcast("thread_closed", {
+      thread_id: closed.thread_id,
+      context_id: closed.context_id,
+      parent_thread_id: closed.parent_thread_id,
+    });
+    return closed;
+  }
+
   deleteContext(contextId: string, broadcast: Broadcast): {
     ok: true;
     context_id: string;
@@ -1265,6 +1281,18 @@ export class BusStore {
       // participant of the current context (Rule 3 runtime), create a new side
       // thread inside the same context instead of routing to a new context.
       let resolvedThreadId: string | undefined = command.thread_id;
+
+      // Guard: reject events directed at a closed thread.
+      // Only check when an explicit thread_id was supplied by the caller AND we are
+      // NOT about to create a NEW side thread via Rule 3 (resolution.side_thread).
+      // Newly created threads are always open, so no check is needed there.
+      if (command.thread_id && !resolution.side_thread) {
+        const thr = this.threadStore.getThread(command.thread_id);
+        if (thr?.status === "closed") {
+          throw new ClosedThreadError(command.thread_id);
+        }
+      }
+
       if (resolution.side_thread) {
         resolvedThreadId = this.threadStore.createThread({
           context_id: resolvedContextId,

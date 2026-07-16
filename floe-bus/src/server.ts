@@ -12,6 +12,7 @@ import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { parseListen } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
+import { RootThreadCloseError, ThreadNotFoundError, ClosedThreadError } from "./contexts/threads.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadScopeProjectionLayout,
@@ -807,6 +808,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       if (err instanceof ContextParticipantError) {
         return reply.code(409).send({ ok: false, error: err.payload });
       }
+      if (err instanceof ClosedThreadError) {
+        return reply.code(409).send({
+          ok: false,
+          error: "thread_closed",
+          thread_id: err.thread_id,
+          message: "Cannot emit onto a closed thread."
+        });
+      }
       if (err instanceof ScopeNotFoundError) {
         return reply.code(404).send({
           ok: false,
@@ -1283,6 +1292,33 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { thread };
   });
 
+  /**
+   * Close a side thread.  Flips `status = 'closed'` and broadcasts `thread_closed`
+   * so the bridge can evict ephemeral sessions scoped to this thread.
+   *
+   * Guard: root/main threads (parent_thread_id IS NULL) cannot be closed.
+   * Returns 409 if the caller attempts to close a root thread.
+   * Returns 200 even when the thread is already closed (idempotent).
+   */
+  app.post("/v1/threads/:thread_id/close", async (request, reply) => {
+    const params = z.object({ thread_id: z.string().min(1) }).parse(request.params);
+    try {
+      const thread = store.closeThread(params.thread_id, broadcast);
+      return { ok: true, thread };
+    } catch (err) {
+      if (err instanceof ThreadNotFoundError) {
+        return reply.code(404).send({ error: "thread_not_found", thread_id: params.thread_id });
+      }
+      if (err instanceof RootThreadCloseError) {
+        return reply.code(409).send({
+          error: "root_thread_cannot_be_closed",
+          thread_id: params.thread_id,
+          message: "Root/main threads cannot be closed; only side threads can be closed."
+        });
+      }
+      throw err;
+    }
+  });
 
   app.get("/v1/delivery/claim", async (request) => {
     const query = z.object({
