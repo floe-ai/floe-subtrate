@@ -2137,6 +2137,153 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     // Explicit context_id wins over the default origin context
     expect(emittedEvents[0].context_id).toBe("ctx_snowball_side");
   });
+
+  it("D-B Guard 2: participant emitting to NON-participant destination leaves context_id null (Rule 3 side-thread path)", async () => {
+    // This is the Floe→Snowball case: Floe IS a participant of the delivery context,
+    // but Snowball (the destination) is NOT. D-B must leave context_id null so the
+    // resolver's Rule 3 branch fires and opens a side thread.
+    const emittedEvents: any[] = [];
+    const capturedTools: any[] = [];
+
+    const FLOE = "actor:workspace:test:floe";
+    const SNOWBALL = "actor:workspace:test:snowball-overseer";
+    const DELIVERY_CTX = "ctx_delivery";
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        const emitTool = capturedTools.find((t: any) => t.name === "emit");
+        if (emitTool) {
+          // Floe emits to Snowball WITHOUT an explicit context_id — D-B Guard 2 must
+          // NOT stamp context_id because Snowball is not a participant of DELIVERY_CTX.
+          await emitTool.execute("tc_floe_to_snowball", {
+            type: "message",
+            destination: SNOWBALL,
+            text: "Hey Snowball, check this card.",
+          });
+        }
+        for (const l of this.listeners) await l({
+          type: "agent_end",
+          messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], usage: null, model: "mock-model", provider: "mock-provider" }]
+        });
+      }
+    };
+
+    const adapter = makeIsoAdapter(capturedTools, fakeAgent);
+    // Override the endpoint to Floe (a participant)
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(event: any) { emittedEvents.push(event); },
+        async listEndpoints() {
+          return [
+            { endpoint_id: SNOWBALL, name: "Snowball", status: "idle" }
+          ];
+        },
+        // Floe IS a participant; Snowball is NOT.
+        async getContext(_contextId: string) {
+          return {
+            context_id: DELIVERY_CTX,
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: "actor:workspace:test:operator",
+            created_at: new Date().toISOString(),
+            participants: [FLOE, "actor:workspace:test:operator"]
+          };
+        }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-floe-snowball", "thread-floe-snowball", "check the card");
+    (delivery.events[0] as any).context_id = DELIVERY_CTX;
+    // Use Floe as the delivering endpoint (it IS a participant)
+    delivery.endpoint_id = FLOE;
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(emittedEvents).toHaveLength(1);
+    // Guard 2: destination not a participant → context_id must be null so Rule 3 fires.
+    expect(emittedEvents[0].context_id).toBeNull();
+    // current_delivery_context_id is always forwarded so Rule 3 can open a side thread.
+    expect(emittedEvents[0].current_delivery_context_id).toBe(DELIVERY_CTX);
+  });
+
+  it("D-B Guard 2: participant emitting to PARTICIPANT destination keeps context_id (reply stays on main thread)", async () => {
+    // Floe emits a reply to Operator — both are participants. D-B default must apply:
+    // context_id = delivery context, no side thread.
+    const emittedEvents: any[] = [];
+    const capturedTools: any[] = [];
+
+    const FLOE = "actor:workspace:test:floe";
+    const OPERATOR = "actor:workspace:test:operator";
+    const DELIVERY_CTX = "ctx_delivery";
+
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        const emitTool = capturedTools.find((t: any) => t.name === "emit");
+        if (emitTool) {
+          // Floe replies to Operator (also a participant) — D-B default should apply.
+          await emitTool.execute("tc_floe_reply", {
+            type: "message",
+            destination: OPERATOR,
+            text: "Here's the update.",
+          });
+        }
+        for (const l of this.listeners) await l({
+          type: "agent_end",
+          messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], usage: null, model: "mock-model", provider: "mock-provider" }]
+        });
+      }
+    };
+
+    const adapter = makeIsoAdapter(capturedTools, fakeAgent);
+    const context = {
+      bridge_id: "bridge:test",
+      bus: {
+        async appendRuntimeTelemetry(_input: any) {},
+        async emit(event: any) { emittedEvents.push(event); },
+        async listEndpoints() {
+          return [
+            { endpoint_id: OPERATOR, name: "Operator", status: "idle" }
+          ];
+        },
+        // Both Floe and Operator are participants.
+        async getContext(_contextId: string) {
+          return {
+            context_id: DELIVERY_CTX,
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: OPERATOR,
+            created_at: new Date().toISOString(),
+            participants: [FLOE, OPERATOR]
+          };
+        }
+      }
+    } as any;
+
+    const delivery = makeDelivery("del-floe-reply", "thread-floe-reply", "give me an update");
+    (delivery.events[0] as any).context_id = DELIVERY_CTX;
+    delivery.endpoint_id = FLOE;
+
+    await adapter.handleBundle(
+      context,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(emittedEvents).toHaveLength(1);
+    // D-B default applies: destination IS a participant → stay in delivery context.
+    expect(emittedEvents[0].context_id).toBe(DELIVERY_CTX);
+    expect(emittedEvents[0].current_delivery_context_id).toBe(DELIVERY_CTX);
+  });
 });
 
 // ─── Slice 4: Full actor work loop acceptance ─────────────────────────────────
