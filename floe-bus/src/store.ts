@@ -1286,7 +1286,7 @@ export class BusStore {
       // Only check when an explicit thread_id was supplied by the caller AND we are
       // NOT about to create a NEW side thread via Rule 3 (resolution.side_thread).
       // Newly created threads are always open, so no check is needed there.
-      if (command.thread_id && !resolution.side_thread) {
+      if (command.thread_id && !resolution.side_thread && !resolution.force_root_thread) {
         const thr = this.threadStore.getThread(command.thread_id);
         if (thr?.status === "closed") {
           throw new ClosedThreadError(command.thread_id);
@@ -1299,6 +1299,11 @@ export class BusStore {
           parent_thread_id: resolution.side_thread.parent_thread_id,
           created_by_endpoint_id: command.source_endpoint_id,
         });
+      } else if (resolution.force_root_thread) {
+        // Cross-thread fix: both source and destination are context participants;
+        // route the reply to the ROOT thread (thread_id = context_id) regardless
+        // of which side thread the current delivery arrived on.
+        resolvedThreadId = resolvedContextId;
       }
 
       const inserted = this.insertEvent(

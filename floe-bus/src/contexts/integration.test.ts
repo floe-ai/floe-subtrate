@@ -393,4 +393,119 @@ describe("submitEvent context wiring", () => {
     const queueAfter = store.db.prepare("SELECT COUNT(*) AS c FROM event_queue").get() as any;
     expect(queueAfter.c).toBe(queueBefore.c);
   });
+
+  // --- Cross-thread reply routing tests ---
+
+  it("T-CR1: participant emitting to another participant while handling a side-thread delivery → event lands on ROOT thread", () => {
+    // Step 1: create context with E1+E2 as participants (E1↔E2 root exchange).
+    const r1 = store.submitEvent(
+      emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
+      noop
+    );
+    const ctxA = r1.event.context_id!;
+    // Step 2: E1 emits to E3 (non-participant) → Rule 3 opens side thread thr_S.
+    const r2 = store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        current_delivery_context_id: ctxA,
+        thread_id: ctxA  // current delivery is on root thread
+      }),
+      noop
+    );
+    expect(r2.event.context_id).toBe(ctxA);
+    const sideThreadId = r2.event.thread_id!;
+    expect(sideThreadId).not.toBe(ctxA);
+    expect(sideThreadId).toMatch(/^thr_/);
+
+    // Step 3: E1 is now handling E3's reply on the side thread thr_S.
+    // E1 emits to E2 (also a participant) — should land on ROOT thread, not thr_S.
+    const r3 = store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E2 },
+        current_delivery_context_id: ctxA,
+        thread_id: sideThreadId  // current delivery is on the side thread
+      }),
+      noop
+    );
+    expect(r3.event.context_id).toBe(ctxA);
+    // The reply between two participants must be on the ROOT thread (= context_id), not the side thread.
+    expect(r3.event.thread_id).toBe(ctxA);
+  });
+
+  it("T-CR2: non-participant source (e.g. snowball) replying to a participant stays on the current side thread", () => {
+    // Step 1: create context with E1+E2. E3 is NOT a participant.
+    const r1 = store.submitEvent(
+      emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
+      noop
+    );
+    const ctxA = r1.event.context_id!;
+    // Step 2: E1 emits to E3 → opens side thread thr_S.
+    const r2 = store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        current_delivery_context_id: ctxA,
+        thread_id: ctxA
+      }),
+      noop
+    );
+    const sideThreadId = r2.event.thread_id!;
+    expect(sideThreadId).not.toBe(ctxA);
+
+    // Step 3: E3 (non-participant) replies to E1 (participant) on the side thread.
+    // This simulates snowball replying to floe — must stay on the side thread.
+    const r3 = store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E3,  // NOT a participant of ctxA
+        destination: { kind: "endpoint", endpoint_id: E1 },
+        current_delivery_context_id: ctxA,
+        thread_id: sideThreadId  // processing the side-thread delivery
+      }),
+      noop
+    );
+    expect(r3.event.context_id).toBe(ctxA);
+    // Non-participant source → must NOT be forced to root; stays on the side thread.
+    expect(r3.event.thread_id).toBe(sideThreadId);
+    expect(r3.event.thread_id).not.toBe(ctxA);
+  });
+
+  it("T-CR3: Rule 1 (D-B supplied context_id) path — participant→participant on side-thread delivery → root thread", () => {
+    // D-B default: the emit tool stamps context_id = delivery origin context.
+    // When E1 on side thread thr_S emits to E2 with supplied context_id=ctxA,
+    // both are participants → event must land on root thread.
+    const r1 = store.submitEvent(
+      emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
+      noop
+    );
+    const ctxA = r1.event.context_id!;
+    // Open side thread.
+    const r2 = store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        current_delivery_context_id: ctxA,
+        thread_id: ctxA
+      }),
+      noop
+    );
+    const sideThreadId = r2.event.thread_id!;
+
+    // E1 emits to E2 with supplied context_id (Rule 1), but thread_id = sideThreadId (D-B side effect).
+    const r3 = store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E2 },
+        context_id: ctxA,              // D-B default: stamped context_id
+        current_delivery_context_id: ctxA,
+        thread_id: sideThreadId       // D-B side effect: stamped thread_id from delivery
+      }),
+      noop
+    );
+    expect(r3.event.context_id).toBe(ctxA);
+    // Must land on ROOT thread, not side thread.
+    expect(r3.event.thread_id).toBe(ctxA);
+  });
 });
+
