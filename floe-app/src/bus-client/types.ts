@@ -368,6 +368,21 @@ export type EventTrace = {
 };
 
 // ---------------------------------------------------------------------------
+// Threads
+// ---------------------------------------------------------------------------
+
+export type ThreadRecord = {
+  thread_id: string;
+  context_id: string;
+  /** NULL ⇒ main/root thread (thread_id === context_id).  Non-null ⇒ side thread. */
+  parent_thread_id: string | null;
+  created_by_endpoint_id: string | null;
+  status: "open" | "closed";
+  created_at: string;
+  title: string | null;
+};
+
+// ---------------------------------------------------------------------------
 // Emit input (for client.emit)
 // ---------------------------------------------------------------------------
 
