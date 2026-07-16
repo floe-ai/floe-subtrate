@@ -30,6 +30,15 @@ export type ResolveContextSuccess = {
   side_thread?: {
     parent_thread_id: string;
   } | null;
+  /**
+   * When true, the caller must route this event to the ROOT thread
+   * (thread_id = context_id) regardless of the caller-supplied thread_id.
+   *
+   * Set when BOTH source and destination are participants of the resolved
+   * context — a participant↔participant exchange always belongs on the main
+   * thread, even if the current delivery arrived via a side thread.
+   */
+  force_root_thread?: boolean;
 };
 
 export type NotContextParticipantError = {
@@ -135,6 +144,17 @@ export function resolveContext(input: ResolveContextInput, ctxStore: ContextStor
         side_thread: { parent_thread_id: parentThreadId },
       };
     }
+    // Cross-thread fix: when BOTH source and destination are participants of the
+    // same context, the exchange belongs on the ROOT thread (thread_id = context_id),
+    // regardless of which side thread the current delivery arrived on.
+    // Exemptions: self-emit and broadcast (no destEndpoint).
+    if (
+      destEndpointR1 &&
+      destEndpointR1 !== source_endpoint_id &&
+      ctxStore.isParticipant(supplied_context_id, destEndpointR1)
+    ) {
+      return { context_id: supplied_context_id, created: false, force_root_thread: true };
+    }
     return { context_id: supplied_context_id, created: false };
   }
 
@@ -143,7 +163,14 @@ export function resolveContext(input: ResolveContextInput, ctxStore: ContextStor
   // Runtime-originated: a current delivery context is in play.
   if (current_delivery_context_id) {
     if (destEndpoint && ctxStore.isParticipant(current_delivery_context_id, destEndpoint)) {
-      // Rule 2: destination is a participant — continue current context on current thread.
+      // Rule 2: destination is a participant of the current context.
+      // Cross-thread fix: when BOTH source and destination are participants, the reply
+      // belongs on the ROOT thread, not the (possibly side) delivery thread.
+      // When the source is NOT a participant (e.g. snowball replying to floe), keep
+      // the current thread so the side-thread exchange continues as intended.
+      if (ctxStore.isParticipant(current_delivery_context_id, source_endpoint_id)) {
+        return { context_id: current_delivery_context_id, created: false, force_root_thread: true };
+      }
       return { context_id: current_delivery_context_id, created: false };
     }
     // Rule 3: destination is NOT a participant of the current context.
