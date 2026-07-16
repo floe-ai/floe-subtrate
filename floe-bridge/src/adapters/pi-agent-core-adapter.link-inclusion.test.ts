@@ -133,3 +133,202 @@ describe("renderOriginatingSlice — peer context integration (D5)", () => {
     expect(result).toMatch(/emit with context_id.*ctx_operator_snowball_c/);
   });
 });
+
+// Integration: ensure link-inclusion is ONLY injected for actors that are
+// participants of the origin context. A leaf actor (not in origin participants)
+// must NOT receive the originating slice; a bridging actor who IS a participant
+// must still receive it.
+import { PiAgentCoreAdapter } from "./pi-agent-core-adapter.js";
+
+describe("D5 link-inclusion — origin membership gating", () => {
+  const MOCK_AUTH = {
+    paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
+    authStorage: {} as any,
+    modelRegistry: {
+      find(provider: string, modelId: string) {
+        if (provider === "mock-provider" && modelId === "mock-model") {
+          return {
+            id: "mock-model",
+            name: "Mock",
+            api: "openai-responses",
+            provider: "mock-provider",
+            baseUrl: "https://example.invalid",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128_000,
+            maxTokens: 4_096
+          } as any;
+        }
+        return undefined;
+      },
+      async getApiKeyForProvider() { return "test-key"; }
+    },
+    profiles: { version: 1, profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }] }
+  } as any;
+
+  function makeDelivery(deliveryId: string, endpointId: string, contextId: string, threadId: string): any {
+    return {
+      delivery_id: deliveryId,
+      endpoint_id: endpointId,
+      workspace_id: "workspace:test",
+      trigger_event_id: `evt:${deliveryId}`,
+      delivered_at: new Date().toISOString(),
+      events: [
+        {
+          event_id: `evt:${deliveryId}`,
+          type: "message",
+          workspace_id: "workspace:test",
+          source_endpoint_id: "actor:workspace:test:operator",
+          thread_id: threadId,
+          context_id: contextId,
+          correlation_id: null,
+          destination_json: { kind: "endpoint", endpoint_id: endpointId },
+          content: { text: "hello", data: {} },
+          response: { expected: false },
+          metadata: {},
+          created_at: new Date().toISOString()
+        }
+      ]
+    };
+  }
+
+  it("does NOT inject originating slice for an actor that is NOT a participant of the origin", async () => {
+    let capturedPrompt = "";
+    const fakeAgent: any = {
+      registeredTools: [] as any[],
+      listeners: [] as Array<(e: any) => void | Promise<void>>,
+      subscribe(l: any) { this.listeners.push(l); },
+      async prompt(message: any) {
+        capturedPrompt = message?.content?.[0]?.text ?? "";
+        // signal completion
+        for (const l of this.listeners) await l({ type: "turn_end", message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" } });
+        for (const l of this.listeners) await l({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }], model: "mock-model", provider: "mock-provider" });
+      }
+    };
+
+    const adapter = new PiAgentCoreAdapter(MOCK_AUTH, { agentFactory: (input) => { fakeAgent.registeredTools = input.tools ?? []; return fakeAgent; }, turnFinalizeTimeoutMs: 1000 });
+
+    const ENDPOINT = "actor:workspace:test:leaf";
+    const PEER_CTX = "ctx_peer_1";
+    const ORIGIN_CTX = "ctx_origin_1";
+
+    const bus = {
+      async appendRuntimeTelemetry() {},
+      async emit() {},
+      async getContext(ctxId: string) {
+        if (ctxId === PEER_CTX) {
+          return {
+            context_id: PEER_CTX,
+            workspace_id: "workspace:test",
+            parent_context_id: ORIGIN_CTX,
+            created_by_endpoint_id: null,
+            scope_id: null,
+            created_at: new Date().toISOString(),
+            // peer context participants can be empty or different
+            participants: ["actor:workspace:test:other"]
+          };
+        }
+        if (ctxId === ORIGIN_CTX) {
+          return {
+            context_id: ORIGIN_CTX,
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: null,
+            scope_id: null,
+            created_at: new Date().toISOString(),
+            // origin participants do NOT include our ENDPOINT
+            participants: ["actor:workspace:test:other"]
+          };
+        }
+        return null;
+      },
+      async listContextEvents(ctxId: string, _since?: string | null, _limit?: number) {
+        if (ctxId === ORIGIN_CTX) {
+          return { events: [
+            { event_id: "evt_o1", type: "message", workspace_id: "workspace:test", source_endpoint_id: "actor:workspace:test:operator", thread_id: ORIGIN_CTX, context_id: ORIGIN_CTX, content: { text: "origin text" }, response: { expected: false }, metadata: {}, created_at: new Date().toISOString() }
+          ], next_cursor: null };
+        }
+        return { events: [], next_cursor: null };
+      },
+      async listEndpoints(_ws: string) { return []; }
+    } as any;
+
+    const ctx = { bridge_id: "bridge:test", bus } as any;
+
+    await adapter.handleBundle(ctx, makeDelivery("del-x", ENDPOINT, PEER_CTX, "thread-x"), { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" });
+
+    // Should NOT contain the peer context header / relay instruction
+    expect(capturedPrompt).not.toContain("Peer Context");
+    expect(capturedPrompt).not.toMatch(/emit with context_id.*ctx_origin_1/);
+  });
+
+  it("does inject originating slice for an actor that IS a participant of the origin", async () => {
+    let capturedPrompt = "";
+    const fakeAgent: any = {
+      registeredTools: [] as any[],
+      listeners: [] as Array<(e: any) => void | Promise<void>>,
+      subscribe(l: any) { this.listeners.push(l); },
+      async prompt(message: any) {
+        capturedPrompt = message?.content?.[0]?.text ?? "";
+        for (const l of this.listeners) await l({ type: "turn_end", message: { role: "assistant", usage: null, model: "mock-model", provider: "mock-provider" } });
+        for (const l of this.listeners) await l({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }], model: "mock-model", provider: "mock-provider" });
+      }
+    };
+
+    const adapter = new PiAgentCoreAdapter(MOCK_AUTH, { agentFactory: (input) => { fakeAgent.registeredTools = input.tools ?? []; return fakeAgent; }, turnFinalizeTimeoutMs: 1000 });
+
+    const ENDPOINT = "actor:workspace:test:bridge_agent";
+    const PEER_CTX = "ctx_peer_2";
+    const ORIGIN_CTX = "ctx_origin_2";
+
+    const bus = {
+      async appendRuntimeTelemetry() {},
+      async emit() {},
+      async getContext(ctxId: string) {
+        if (ctxId === PEER_CTX) {
+          return {
+            context_id: PEER_CTX,
+            workspace_id: "workspace:test",
+            parent_context_id: ORIGIN_CTX,
+            created_by_endpoint_id: null,
+            scope_id: null,
+            created_at: new Date().toISOString(),
+            participants: [ENDPOINT]
+          };
+        }
+        if (ctxId === ORIGIN_CTX) {
+          return {
+            context_id: ORIGIN_CTX,
+            workspace_id: "workspace:test",
+            parent_context_id: null,
+            created_by_endpoint_id: null,
+            scope_id: null,
+            created_at: new Date().toISOString(),
+            // origin participants include our ENDPOINT (bridging actor)
+            participants: [ENDPOINT, "actor:workspace:test:other"]
+          };
+        }
+        return null;
+      },
+      async listContextEvents(ctxId: string, _since?: string | null, _limit?: number) {
+        if (ctxId === ORIGIN_CTX) {
+          return { events: [
+            { event_id: "evt_o1", type: "message", workspace_id: "workspace:test", source_endpoint_id: "actor:workspace:test:operator", thread_id: ORIGIN_CTX, context_id: ORIGIN_CTX, content: { text: "origin text" }, response: { expected: false }, metadata: {}, created_at: new Date().toISOString() }
+          ], next_cursor: null };
+        }
+        return { events: [], next_cursor: null };
+      },
+      async listEndpoints(_ws: string) { return []; }
+    } as any;
+
+    const ctx = { bridge_id: "bridge:test", bus } as any;
+
+    await adapter.handleBundle(ctx, makeDelivery("del-y", ENDPOINT, PEER_CTX, "thread-y"), { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" });
+
+    // Should contain peer context header and relay instruction
+    expect(capturedPrompt).toContain("Peer Context");
+    expect(capturedPrompt).toMatch(/emit with context_id.*ctx_origin_2/);
+    expect(capturedPrompt).toContain("origin text");
+  });
+});

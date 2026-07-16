@@ -254,9 +254,25 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             turn.scope_id = ctx.scope_id;
           }
           // D5: if this context has a parent_context_id, it is a peer context.
-          // Surface the origin context_id for link-inclusion injection.
+          // Only the BRIDGING actor (a participant of the ORIGIN context) may relay
+          // there. Injecting the relay instruction into a leaf actor makes it attempt
+          // an illegal cross-context emit that falls back to spawning a spurious
+          // grandchild peer context. Gate link-inclusion on origin membership.
           if (ctx.parent_context_id) {
-            peerOriginContextId = ctx.parent_context_id;
+            try {
+              const origin = await context.bus.getContext(ctx.parent_context_id);
+              const originParticipants = Array.isArray(origin?.participants)
+                ? origin!.participants.filter((p): p is string => typeof p === "string")
+                : [];
+              if (originParticipants.includes(bundle.endpoint_id)) {
+                peerOriginContextId = ctx.parent_context_id;
+              }
+            } catch (originErr) {
+              console.warn("[bridge] origin getContext failed; skipping link-inclusion", {
+                origin_context_id: ctx.parent_context_id,
+                error: originErr instanceof Error ? originErr.message : String(originErr)
+              });
+            }
           }
         } else if (ctx) {
           console.warn("[bridge] getContext returned unexpected shape; rendering empty participants", {
