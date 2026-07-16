@@ -726,3 +726,35 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - Existing single-thread conversations are unaffected: Rule 2 (participant reply) keeps the same thread.
 - UI renders context events flat until a future slice groups by thread.
 - App UI wiring for close is a SEPARATE follow-up.
+
+---
+
+## Inject-once / resolve-live (fm/floe-instruction-inject-once — Slice C)
+
+### Substrate primitive: InjectionBaseline (floe-bridge)
+
+- **F1 — context binding on BeforeTurn**: already resolved. `BeforeTurn` payload carries `origin?: { id: string; kind: "context" | "thread" }`. When `origin.kind === "context"`, `origin.id` IS the context_id. No duplicate `context_id` field was needed.
+- **F2 — Inject-once dedup**: `floe-bridge/src/injection-baseline.ts` → `InjectionBaseline` class.
+  - Keyed on `(context_id, source)`. Stores FNV-1a hash of last-injected content per key.
+  - `applyDedup(contextId, results)` — filters hook results: same hash → strip inject; changed → inject + update; null contextId → always inject.
+  - `clearContext(contextId)` — reset baseline for that context (so next turn re-injects into the fresh window).
+  - `PiAgentCoreAdapter` holds a single `InjectionBaseline` instance. It lazily registers `ContextHistoryCleared` / `ContextCompacted` handlers into each workspace `HookRegistry` (via `maybeRegisterLifecycleHooks`, tracked with `WeakSet<HookRegistry>`). Extension name `"_substrate_inject_once"` (underscore prefix = substrate internal).
+  - `applyDedup` is called after `hookResults = await context.hooks.fire("BeforeTurn", ...)` and before `renderHookInjections(...)`.
+
+### Snowball hook changes (floe-ext-snowball)
+
+- **F4 — resolve-live instructions only (card-context path)**: when `origin.kind === "context"` matches a card, inject `done_protocol` + column `instructions` for that card's column. **No card list, no criteria.**
+- **F3 — no card list on any path**: system actor (snowball) no longer receives board snapshot — only column instructions. No-origin (pulse) path injects done_protocol + owned-column instructions only.
+- Removed imports: `buildBoardSnapshot`, `renderCompactBoardSnapshot` (no longer needed in hooks.ts; `listCards` still used for card-lookup in the card-context path).
+- `snowball-instructions.md` updated (D4): explicitly tells the overseer that board state comes from tools (`snowball_get_board_state`), NOT from injection. Column instructions are injected once when they change.
+
+### Invariants
+- Instruction edit → reflected next turn, NO wake (resolved live from files, deduplicated).
+- Card moved to new column → different resolved instructions → re-injected once.
+- Context history cleared/compacted → baseline reset → instructions re-inject into fresh context.
+- No stored copy, no drift, no per-turn injection spam.
+- Substrate primitive stays extension-agnostic (no snowball vocabulary in bridge/bus).
+
+### Tests
+- `floe-bridge/src/injection-baseline.test.ts` — 13 tests: dedup skips/re-injects/resets, cross-context independence, null contextId always-inject, non-string content passthrough.
+- `floe-ext-snowball/src/__tests__/hooks.test.ts` updated: removed card-list/criteria assertions; added "does NOT inject card list" and system-actor-no-snapshot tests.

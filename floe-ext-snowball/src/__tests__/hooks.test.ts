@@ -1,13 +1,15 @@
 /**
- * BeforeTurn hook injection tests — regression coverage for Issues #1 and #2.
+ * BeforeTurn hook injection tests.
  *
- * Issue #1: criteria not ticked, card doesn't move.
- *   Root fix: BeforeTurn injection now lists unchecked criteria IDs so the
- *   agent can call check_criteria without a separate get_board_state call.
+ * Slice C (fm/floe-instruction-inject-once):
+ *   BeforeTurn now returns ONLY resolved instructions (done_protocol + column
+ *   instructions). No per-turn card list, no board snapshot, no criteria IDs.
+ *   Agents call snowball_get_board_state for live card state.
  *
- * Issue #2: new context created on every card move.
- *   Root fix: move_card tool now does lazy board init before emitting
- *   entered_column, ensuring context_id is always set (stable context reuse).
+ * Retained regression coverage:
+ *   - done protocol and column instructions are still injected
+ *   - D-A isolation: no injection when origin maps to no card
+ *   - Card tool flows (move_card / check_criteria) are unaffected
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -164,10 +166,10 @@ async function callTool(
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1 regression: BeforeTurn injection includes criteria IDs
+// BeforeTurn injection: done protocol + column instructions
 // ---------------------------------------------------------------------------
 
-describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", () => {
+describe("BeforeTurn injection — resolved instructions (Slice C)", () => {
   let tmpDir: string;
   let bus: StubBusClient;
 
@@ -199,74 +201,34 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
     expect(injection).toContain("Review each card carefully before advancing.");
   });
 
-  it("injects card list with criteria count", async () => {
+  it("does NOT inject card list or criteria — agents use tools for live state", async () => {
     writeBoard(tmpDir);
     writeCard(tmpDir, makeCardFile({ id: "my-card", title: "My Task", column: "agent-col" }));
 
     const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
-    expect(injection).not.toBeNull();
-    expect(injection).toContain("My Task");
-    expect(injection).toContain("[0/2 criteria]");
-  });
-
-  it("lists unchecked criteria IDs in injection so agent can call check_criteria directly", async () => {
-    // ISSUE #1 REGRESSION: Before fix, injection showed '[0/2 criteria]' but
-    // did NOT include the criterion_id values. The agent had to call
-    // get_board_state separately to discover the IDs. Now they are listed
-    // inline so the agent can immediately call check_criteria.
-    writeBoard(tmpDir);
-    writeCard(tmpDir, makeCardFile({ id: "my-card", title: "My Task", column: "agent-col" }));
-
-    const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
-    expect(injection).not.toBeNull();
-    // Both criterion IDs must appear in the injection
-    expect(injection).toContain("ec-tests");
-    expect(injection).toContain("ec-review");
-    // Their descriptions must also appear
-    expect(injection).toContain("Tests pass");
-    expect(injection).toContain("Code reviewed");
-  });
-
-  it("does NOT list criteria IDs for already-checked criteria", async () => {
-    writeBoard(tmpDir);
-    const now = new Date().toISOString();
-    // One criterion checked, one not
-    writeCard(tmpDir, makeCardFile({
-      id: "my-card",
-      title: "Partial Card",
-      column: "agent-col",
-      checks: {
-        "agent-col": {
-          "ec-tests": { checked: true, checked_at: now, checked_by: null },
-        },
-      },
-    }));
-
-    const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
-    expect(injection).not.toBeNull();
-    // ec-review is unchecked → must appear
-    expect(injection).toContain("ec-review");
-    expect(injection).toContain("Code reviewed");
-    // ec-tests is checked → must NOT appear in unchecked list
-    // (it may still appear in the criteria count, but not as an unchecked criterion)
-    const uncheckedSection = injection!.split("Unchecked criteria")[1] ?? "";
-    expect(uncheckedSection).not.toContain("ec-tests");
+    // Injection must contain instructions but NOT card titles or criteria IDs
+    expect(injection).toContain("Done Protocol");
+    expect(injection).toContain("Review each card carefully before advancing.");
+    // Card list must NOT appear in injection
+    expect(injection).not.toContain("My Task");
+    expect(injection).not.toContain("ec-tests");
+    expect(injection).not.toContain("ec-review");
   });
 
   it("full agent protocol loop: check_criteria then move_card advances the card", async () => {
-    // ISSUE #1 FULL REGRESSION: agent calls check_criteria for all criteria,
-    // then calls move_card. Card must advance to the next column.
+    // Tools still work correctly; agents get criteria via snowball_get_board_state
     writeBoard(tmpDir);
     writeCard(tmpDir, makeCardFile({ id: "loop-card", title: "Loop Card", column: "agent-col" }));
 
     const tools = createTools(makeCtx(tmpDir, bus));
 
-    // Step 1: BeforeTurn injection shows criteria IDs
+    // BeforeTurn injection contains instructions only (no criteria IDs)
     const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
-    expect(injection).toContain("ec-tests");
-    expect(injection).toContain("ec-review");
+    expect(injection).toContain("Done Protocol");
+    expect(injection).toContain("Review each card carefully before advancing.");
+    expect(injection).not.toContain("ec-tests");
 
-    // Step 2: Agent checks criterion ec-tests
+    // Step 1: Agent checks criterion ec-tests
     const check1 = await callTool(tools, "check_criteria", {
       card_id: "loop-card",
       scope_id: SCOPE,
@@ -276,7 +238,7 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
     });
     expect(JSON.parse(check1.content[0].text).ok).toBe(true);
 
-    // Step 3: Agent checks criterion ec-review
+    // Step 2: Agent checks criterion ec-review
     const check2 = await callTool(tools, "check_criteria", {
       card_id: "loop-card",
       scope_id: SCOPE,
@@ -286,7 +248,7 @@ describe("Issue #1 regression — BeforeTurn injection includes criteria IDs", (
     });
     expect(JSON.parse(check2.content[0].text).ok).toBe(true);
 
-    // Step 4: Agent calls move_card — must succeed now that all criteria are checked
+    // Step 3: Agent calls move_card — must succeed now that all criteria are checked
     const move = await callTool(tools, "move_card", {
       card_id: "loop-card",
       to_column_id: "done",
@@ -431,9 +393,11 @@ describe("Slice 4 regression — move_card tool uses stable card context", () =>
 
 // ---------------------------------------------------------------------------
 // D-A context isolation: BeforeTurn overlay narrowing (fm/floe-ctx-iso)
+// Slice C: injection narrows to COLUMN INSTRUCTIONS for the card's column
+// (not card titles, since cards are no longer injected)
 // ---------------------------------------------------------------------------
 
-describe("D-A context isolation — BeforeTurn overlay narrows to current card", () => {
+describe("D-A context isolation — BeforeTurn resolves instructions for card's column", () => {
   let tmpDir: string;
   let bus: StubBusClient;
 
@@ -447,9 +411,8 @@ describe("D-A context isolation — BeforeTurn overlay narrows to current card",
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("with origin.kind=context: injection shows ONLY card A when delivery is on card A's context", async () => {
+  it("with origin.kind=context: injects done protocol + column instructions for the matched card's column", async () => {
     writeBoard(tmpDir);
-    // Two cards in the agent column, each with their own context
     writeCard(tmpDir, makeCardFile({
       id: "card-a",
       title: "Card A",
@@ -471,40 +434,13 @@ describe("D-A context isolation — BeforeTurn overlay narrows to current card",
     });
 
     expect(injection).not.toBeNull();
-    // Must contain card A
-    expect(injection).toContain("Card A");
-    // Must NOT contain card B — this is the D-A isolation invariant
-    expect(injection).not.toContain("Card B");
-    expect(injection).not.toContain("card-b");
-  });
-
-  it("with origin.kind=context: injection shows ONLY card B when delivery is on card B's context", async () => {
-    writeBoard(tmpDir);
-    writeCard(tmpDir, makeCardFile({
-      id: "card-a",
-      title: "Card A",
-      column: "agent-col",
-      context_id: "ctx_card_a",
-      order: 0
-    }));
-    writeCard(tmpDir, makeCardFile({
-      id: "card-b",
-      title: "Card B",
-      column: "agent-col",
-      context_id: "ctx_card_b",
-      order: 1
-    }));
-
-    // Delivery arrives on card B's context
-    const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID, {
-      origin: { id: "ctx_card_b", kind: "context" }
-    });
-
-    expect(injection).not.toBeNull();
-    expect(injection).toContain("Card B");
-    // Must NOT see card A
+    // Done protocol must appear
+    expect(injection).toContain("Done Protocol");
+    // Column instructions must appear
+    expect(injection).toContain("Review each card carefully before advancing.");
+    // Card titles must NOT appear — agents use tools for live card state
     expect(injection).not.toContain("Card A");
-    expect(injection).not.toContain("card-a");
+    expect(injection).not.toContain("Card B");
   });
 
   it("with origin.kind=context: no injection when origin maps to no card", async () => {
@@ -525,7 +461,7 @@ describe("D-A context isolation — BeforeTurn overlay narrows to current card",
     expect(injection).toBeNull();
   });
 
-  it("without origin (no context): falls back to board-wide view for the agent's columns", async () => {
+  it("without origin (no context): injects done protocol + owned column instructions only", async () => {
     writeBoard(tmpDir);
     writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "agent-col", context_id: "ctx_card_a", order: 0 }));
     writeCard(tmpDir, makeCardFile({ id: "card-b", title: "Card B", column: "agent-col", context_id: "ctx_card_b", order: 1 }));
@@ -534,12 +470,15 @@ describe("D-A context isolation — BeforeTurn overlay narrows to current card",
     const injection = await getBeforeTurnInjection(tmpDir, bus, AGENT_ID);
 
     expect(injection).not.toBeNull();
-    // Both cards visible in the board-wide view
-    expect(injection).toContain("Card A");
-    expect(injection).toContain("Card B");
+    // Done protocol and column instructions must appear
+    expect(injection).toContain("Done Protocol");
+    expect(injection).toContain("Review each card carefully before advancing.");
+    // Card titles must NOT appear
+    expect(injection).not.toContain("Card A");
+    expect(injection).not.toContain("Card B");
   });
 
-  it("origin context: isolated card shows unchecked criteria from its column", async () => {
+  it("origin context: injects done protocol + column instructions (no criteria)", async () => {
     writeBoard(tmpDir);
     writeCard(tmpDir, makeCardFile({
       id: "card-a",
@@ -553,11 +492,25 @@ describe("D-A context isolation — BeforeTurn overlay narrows to current card",
     });
 
     expect(injection).not.toBeNull();
-    // Both criteria are unchecked — must appear
-    expect(injection).toContain("ec-tests");
-    expect(injection).toContain("ec-review");
     // Column instructions must appear
     expect(injection).toContain("Review each card carefully before advancing.");
+    // Criteria IDs must NOT appear — agents call get_board_state for live criteria
+    expect(injection).not.toContain("ec-tests");
+    expect(injection).not.toContain("ec-review");
+  });
+
+  it("system actor (snowball): injects column instructions, no board snapshot", async () => {
+    writeBoard(tmpDir);
+    writeCard(tmpDir, makeCardFile({ id: "card-a", title: "Card A", column: "agent-col", context_id: "ctx_card_a" }));
+
+    const injection = await getBeforeTurnInjection(tmpDir, bus, "snowball");
+
+    expect(injection).not.toBeNull();
+    // Column instructions must appear
+    expect(injection).toContain("Review each card carefully before advancing.");
+    // Board snapshot / card list must NOT appear
+    expect(injection).not.toContain("Card A");
+    expect(injection).not.toContain("Board");
   });
 });
 
