@@ -1252,9 +1252,6 @@ export class BusStore {
           destination: command.destination,
           supplied_context_id: command.context_id ?? null,
           current_delivery_context_id: command.current_delivery_context_id ?? null,
-          // thread_id from the caller IS the current delivery thread — used as
-          // parent when Rule 3 opens a side thread inside the current context.
-          current_delivery_thread_id: command.thread_id ?? null,
           workspace_id: command.workspace_id
         },
         this.contextStore
@@ -1266,7 +1263,10 @@ export class BusStore {
           scope_id: explicitScopeId,
           created_by_endpoint_id: command.source_endpoint_id,
           participants: resolution.participants ?? [command.source_endpoint_id],
-          context_id: resolution.context_id
+          context_id: resolution.context_id,
+          // Peer context model: link the new context to its origin via parent_context_id.
+          // This is a neutral associative link (not a parent/child hierarchy).
+          parent_context_id: resolution.peer_link_to ?? null
         });
         // Every newly created context gets a root thread (thread_id = context_id).
         this.threadStore.ensureRootThread(
@@ -1277,33 +1277,21 @@ export class BusStore {
       }
       const resolvedContextId = resolution.context_id;
 
-      // Side thread: when the resolver signals that the destination is not a
-      // participant of the current context (Rule 3 runtime), create a new side
-      // thread inside the same context instead of routing to a new context.
-      let resolvedThreadId: string | undefined = command.thread_id;
+      // Peer context model: every event lands on its context's root thread.
+      // The thread_id stored in the event always equals the context_id (root thread).
+      // command.thread_id from the caller is the delivery thread of the ORIGIN context;
+      // it must not be carried over into a peer context (different context, different root).
+      const resolvedThreadId = resolvedContextId;
 
       // Guard: reject events directed at a closed thread.
-      // Only check when an explicit thread_id was supplied by the caller AND we are
-      // NOT about to create a NEW side thread via Rule 3 (resolution.side_thread).
-      // Newly created threads are always open, so no check is needed there.
-      if (command.thread_id && !resolution.side_thread && !resolution.force_root_thread) {
+      // Root threads cannot be closed, so this guard exists for safety.
+      // Supplying an explicitly closed thread_id that differs from the resolved
+      // context's root thread would indicate a caller error.
+      if (command.thread_id && command.thread_id !== resolvedContextId) {
         const thr = this.threadStore.getThread(command.thread_id);
         if (thr?.status === "closed") {
           throw new ClosedThreadError(command.thread_id);
         }
-      }
-
-      if (resolution.side_thread) {
-        resolvedThreadId = this.threadStore.createThread({
-          context_id: resolvedContextId,
-          parent_thread_id: resolution.side_thread.parent_thread_id,
-          created_by_endpoint_id: command.source_endpoint_id,
-        });
-      } else if (resolution.force_root_thread) {
-        // Cross-thread fix: both source and destination are context participants;
-        // route the reply to the ROOT thread (thread_id = context_id) regardless
-        // of which side thread the current delivery arrived on.
-        resolvedThreadId = resolvedContextId;
       }
 
       const inserted = this.insertEvent(

@@ -120,12 +120,19 @@ type SessionState = {
    *  endpoint_watermarks stays the human-facing "read up to here" cursor. */
   threadCursor: string | null;
   /**
+   * D5 Link-inclusion: the origin context_id if this session is for a PEER context.
+   * Set during handleBundle when the current context has a parent_context_id.
+   * null → this is a root/standalone context (no peer link).
+   * Used to inject the originating slice so the actor knows what it serves and
+   * where to relay back (the relay target is this context_id).
+   */
+  peerOriginContextId: string | null;
+  /**
    * Side thread that triggered this session's CREATION, if any.
-   * Set when the first delivery for this (endpoint, context) session arrived on a
-   * non-root thread (i.e. thread_id !== contextId).  Used by
-   * `releaseSessionsForClosedThread` to evict sessions that are scoped exclusively
-   * to a side thread that has now closed.
-   * `null` → session was created on the main/root thread (initiator's session).
+   * With the peer context model, new side threads are not created by routing —
+   * this field is preserved for backward compatibility with the ThreadClosed
+   * lifecycle hook but will always be null for new sessions.
+   * null → no side thread (all new sessions after the peer context pivot).
    */
   sideThreadId: string | null;
   context?: RuntimeContext;
@@ -236,6 +243,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     // authority for participant-aware continue-vs-branch decisions. We log a warning
     // so the operator can see when the prompt was rendered with degraded context info.
     let currentContextParticipants: string[] = [];
+    // Link-inclusion (D5): track whether this context is a peer context (has a parent link).
+    let peerOriginContextId: string | null = null;
     if (turn.context_id) {
       try {
         const ctx = await context.bus.getContext(turn.context_id);
@@ -243,6 +252,11 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           currentContextParticipants = ctx.participants.filter((p): p is string => typeof p === "string");
           if (typeof ctx.scope_id === "string" && ctx.scope_id.trim()) {
             turn.scope_id = ctx.scope_id;
+          }
+          // D5: if this context has a parent_context_id, it is a peer context.
+          // Surface the origin context_id for link-inclusion injection.
+          if (ctx.parent_context_id) {
+            peerOriginContextId = ctx.parent_context_id;
           }
         } else if (ctx) {
           console.warn("[bridge] getContext returned unexpected shape; rendering empty participants", {
@@ -257,6 +271,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       }
     }
     turn.current_context_participants = currentContextParticipants;
+    // Store peer origin in session for tool use (D3 relay ergonomics).
+    session.peerOriginContextId = peerOriginContextId;
 
     const prompt = deliveryToPrompt(bundle, visibleEndpoints, currentContextParticipants);
     console.log("[bridge] pi prompt injected", {
@@ -356,9 +372,44 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         }
       }
 
-      // Build final prompt: [extension overlay] + [thread slice] + [trigger]
+      // D5 Link-inclusion: if this is a peer context (has parent_context_id), inject a
+      // read-only originating slice from the linked origin context.
+      // This tells the actor which request spawned this peer context and where to relay back.
+      // Only the originating request (first few events of origin) is injected; the rest of
+      // the origin's thread remains discoverable via the link (not auto-injected).
+      // Non-fatal: if origin fetch fails, actor proceeds without the originating slice.
+      let originatingSlice = "";
+      if (peerOriginContextId) {
+        try {
+          const ORIGINATING_LIMIT = 5;
+          const { events: originEvents } = await context.bus.listContextEvents(
+            peerOriginContextId,
+            null,       // from the beginning
+            ORIGINATING_LIMIT
+          );
+          if (originEvents.length > 0) {
+            originatingSlice = renderOriginatingSlice(peerOriginContextId, originEvents);
+          }
+          console.log("[bridge] link-inclusion: injected originating slice", {
+            peer_context_id: turn.context_id,
+            origin_context_id: peerOriginContextId,
+            events_count: originEvents.length
+          });
+        } catch (originErr) {
+          console.warn("[bridge] link-inclusion: failed to fetch originating slice", {
+            peer_context_id: turn.context_id,
+            origin_context_id: peerOriginContextId,
+            error: originErr instanceof Error ? originErr.message : String(originErr)
+          });
+        }
+      }
+
+      // Build final prompt: [extension overlay] + [originating slice] + [thread slice] + [trigger]
+      // Originating slice comes before the peer context's own thread so the actor first
+      // understands what it serves, then sees its own conversation, then the new trigger.
       const parts: string[] = [];
       if (injectedContext) parts.push(injectedContext);
+      if (originatingSlice) parts.push(originatingSlice);
       if (threadSlice) parts.push(threadSlice);
       parts.push(prompt);
       const finalPrompt = parts.join("\n\n");
@@ -546,13 +597,14 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       thinkingLevel,
       instructionsHash,
       threadCursor: null,  // cold start — will backfill full thread on first turn
-      // Capture the side thread_id that triggered this session's creation, if any.
-      // A session created on a non-root thread (thread_id ≠ contextId) is considered
-      // scoped to that side thread and can be evicted when the thread closes.
-      sideThreadId: (() => {
-        const triggerThreadId = bundle.events[0]?.thread_id ?? null;
-        return triggerThreadId && triggerThreadId !== contextId ? triggerThreadId : null;
-      })(),
+      // Peer origin context_id: set during handleBundle after fetching the context.
+      // Null initially; handleBundle sets session.peerOriginContextId when the current
+      // context has a parent_context_id (i.e. it is a peer/linked context).
+      peerOriginContextId: null,
+      // sideThreadId: with the peer context model, routing no longer creates side threads.
+      // This field is retained for compatibility with the ThreadClosed lifecycle hook
+      // but will always be null for new sessions (side-thread routing retired).
+      sideThreadId: null,
       context
     };
 
@@ -659,14 +711,14 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "emit",
       label: "Emit Floe Event",
-      description: "Publish a canonical event to the Floe event bus. This is the ONLY way to communicate with other actors. Nothing you produce (text, tool results, reasoning) is visible to anyone unless you use this tool. Always call emit with type 'message' to reply to a delivered message. Use neutral actor refs from list_endpoints (e.g. 'operator', 'floe') as destination, or omit destination to reply to the source.",
+      description: "Publish a canonical event to the Floe event bus. This is the ONLY way to communicate with other actors. Nothing you produce (text, tool results, reasoning) is visible to anyone unless you use this tool. Always call emit with type 'message' to reply to a delivered message. Use neutral actor refs from list_endpoints (e.g. 'operator', 'floe') as destination, or omit destination to reply to the source. The tool returns the context_id the event landed in — use this to relay results back to an origin context if needed.",
       parameters: Type.Object({
         type: Type.String(),
         destination: Type.Optional(Type.String({ description: "Target actor's neutral ref (as returned by list_endpoints, e.g. 'operator' or 'floe'). Omit to reply to the delivery source." })),
         text: Type.String(),
         response_expected: Type.Optional(Type.Boolean()),
         correlation_id: Type.Optional(Type.String()),
-        context_id: Type.Optional(Type.String({ description: "Optional context_id to emit into. If the destination is already a participant of the current delivery context, omit this to continue that context. Pass an explicit context_id only to intentionally land in a specific existing context. Omitting context_id when emitting to a non-participant opens a side thread inside the current context." }))
+        context_id: Type.Optional(Type.String({ description: "Optional context_id to emit into. If the destination is a participant of the current delivery context, omit this to continue that context. Pass an explicit context_id to relay into a specific context (e.g. the origin context from link-inclusion if you are acting in a peer context). When the destination is NOT a participant of the current context and context_id is omitted, a peer context is created/reused for that pair." }))
       }),
       execute: async (_toolCallId, params: any) => {
         const turn = session.activeTurn;
@@ -688,7 +740,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           }
           targetEndpoint = resolved;
         }
-        await context.bus.emit({
+        const emitResult = await context.bus.emit({
           type: String(params?.type ?? "message"),
           workspace_id: turn.workspace_id,
           source_endpoint_id: turn.endpoint_id,
@@ -698,15 +750,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           },
           thread_id: turn.thread_id,
           // D-B: default the emit context to the delivery's origin context so replies
-          // always land in the same thread they came from. Explicit context_id overrides.
+          // always land in the same context they came from. Explicit context_id overrides.
           // Guard 1: only apply D-B default when this actor IS a participant of the origin
-          // context. If it is NOT a participant, Rule 1 (bus resolver) would reject with
-          // 409 because participant membership is enforced there. Non-participants must
-          // leave context_id null so Rule 2 handles routing instead.
+          // context. Non-participants must leave context_id null so Rule 2 handles routing.
           // Guard 2: only apply D-B default when the DESTINATION is also a participant of
-          // the origin context (i.e. a genuine reply). When the destination is NOT a
-          // participant, leave context_id null so the resolver's current_delivery_context_id
-          // path triggers Rule 3, opening a side thread for the cross-actor exchange.
+          // the origin context (a genuine reply). When the destination is NOT a participant,
+          // leave context_id null so the resolver's Rule 3 creates a peer context linked
+          // to the origin context for the cross-actor exchange.
           context_id: params?.context_id ?? (
             turn.context_id !== null &&
             (turn.current_context_participants ?? []).includes(turn.endpoint_id) &&
@@ -739,6 +789,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             delivery_attempt_id: turn.delivery_attempt_id
           }
         });
+        // emitResult may be null/undefined in test stubs that return void.
+        const resolvedContextId = (emitResult as any)?.context_id ?? null;
         // Track emitted event for work log
         turn.emitted_events.push({
           type: String(params?.type ?? "message"),
@@ -746,9 +798,16 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           text_preview: String(params?.text ?? "").slice(0, 120),
           response_expected: !!params?.response_expected
         });
+        // Include the resolved context_id in the tool result so the actor knows
+        // which context the event landed in (important for peer context relay:
+        // the resolved context_id may be a newly-created peer context distinct
+        // from the current delivery context).
+        const responseText = resolvedContextId
+          ? `emit accepted (context_id: ${resolvedContextId})`
+          : "emit accepted";
         return {
-          content: [{ type: "text", text: "emit accepted" }],
-          details: { ok: true }
+          content: [{ type: "text", text: responseText }],
+          details: { ok: true, context_id: resolvedContextId }
         };
       }
     };
@@ -1252,6 +1311,47 @@ export function renderThreadSlice(events: EventEnvelope[]): string {
 
   if (lines.length === 1) return ""; // header only — no events had renderable text
   lines.push("[End Thread]");
+  return lines.join("\n");
+}
+
+/**
+ * D5 Link-inclusion: render the originating slice from the linked origin context.
+ *
+ * When an actor acts in a PEER context (a context linked to an origin via parent_context_id),
+ * this slice is injected at the start of the prompt to tell the actor:
+ * - what the origin context is (context_id for explicit relay)
+ * - what the originating request was (the first events of the origin context)
+ * - where to emit results back (emit with context_id = originContextId)
+ *
+ * Only the originating request (first few events) is injected; the rest of the origin's
+ * thread is discoverable on demand, not auto-injected (D5 decision).
+ */
+export function renderOriginatingSlice(originContextId: string, events: EventEnvelope[]): string {
+  if (events.length === 0) return "";
+
+  const MAX_ORIGINATING_CHARS = 3_000;
+  const lines: string[] = [
+    `[Peer Context — this context is linked to origin context: ${originContextId}]`,
+    `[To relay results back, emit with context_id: ${originContextId}]`,
+    `[Originating request from the origin context:]`
+  ];
+  let totalChars = 0;
+
+  for (const event of events) {
+    const text = typeof event.content?.text === "string" ? event.content.text : null;
+    if (!text) continue;
+
+    const actorRef = event.source_endpoint_id
+      ? (() => { try { return toNeutralRef(event.source_endpoint_id!); } catch { return event.source_endpoint_id!; } })()
+      : "system";
+    const line = `[${actorRef}] ${text}`;
+    if (totalChars + line.length > MAX_ORIGINATING_CHARS) break;
+    lines.push(line);
+    totalChars += line.length;
+  }
+
+  if (lines.length === 3) return ""; // header only — no events had renderable text
+  lines.push("[End Originating Request]");
   return lines.join("\n");
 }
 

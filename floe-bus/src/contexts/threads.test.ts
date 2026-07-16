@@ -1,17 +1,19 @@
 /**
- * Side-thread substrate tests.
+ * Thread substrate tests — peer context model.
  *
  * Invariants under test:
  *  1. applyThreadSchema backfills a root thread for every existing context.
- *  2. A runtime emit to a non-participant creates a side thread and the
- *     message carries the new thread_id.
- *  3. A reply from the addressee defaults onto the SAME side thread.
- *  4. A reply to an existing context participant stays on the main thread
- *     (no side thread created).
+ *  2. Every context created via submitEvent has a root thread (thread_id = context_id).
+ *  3. A runtime emit to a non-participant creates a PEER CONTEXT (NOT a side thread).
+ *     The peer context's root thread = peer context_id.
+ *  4. A reply to a context participant stays in that context (Rule 2 — unchanged).
  *  5. main/side derivation: parent_thread_id IS NULL ⟹ main; IS NOT NULL ⟹ side.
- *  6. Closing a side thread flips its status to 'closed'.
- *  7. A closed thread rejects new events (emit returns 409 / throws ClosedThreadError).
+ *  6. Closing a side thread (manually created) flips its status to 'closed'.
+ *  7. Emitting with an explicitly-closed thread_id (not the resolved root) throws ClosedThreadError.
  *  8. Root/main threads cannot be closed (throws RootThreadCloseError).
+ *
+ * Side threads are NOT created by submitEvent routing. The ThreadStore.createThread API
+ * still exists for future use (e.g. the threads REST endpoint for manual side threads).
  */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
@@ -158,13 +160,13 @@ describe("ThreadStore — schema + CRUD", () => {
 });
 
 // ---------------------------------------------------------------------------
-// BusStore integration — side thread creation via submitEvent
+// BusStore integration — peer context model (Rule 3 runtime)
 // ---------------------------------------------------------------------------
 
 const noop = () => {};
 
 function makeStore(extraEndpoints: string[] = []): { store: BusStore; cleanup: () => void } {
-  const tmp = mkdtempSync(join(tmpdir(), "floe-bus-side-thread-"));
+  const tmp = mkdtempSync(join(tmpdir(), "floe-bus-peer-ctx-"));
   const cfgPath = join(tmp, "config.yaml");
   const cfg = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
@@ -206,7 +208,7 @@ function cmd(
   };
 }
 
-describe("BusStore — side thread creation (Rule 3 runtime)", () => {
+describe("BusStore — peer context creation (Rule 3 runtime)", () => {
   let store: BusStore;
   let cleanup: () => void;
 
@@ -217,15 +219,14 @@ describe("BusStore — side thread creation (Rule 3 runtime)", () => {
   });
   afterEach(() => cleanup());
 
-  // ------- Test 2: cross-actor emit creates side thread -------
-  it("emitting to a non-participant creates a side thread with parent = origin thread", () => {
+  // ------- Test 2: cross-actor emit creates peer context (not side thread) -------
+  it("emitting to a non-participant creates a peer context linked to origin (not a side thread)", () => {
     // E1 and E2 are in ctx_base. E3 is NOT a participant.
     const ctxId = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
       participants: [E1, E2],
     });
-    // The root thread should exist (backfilled at context creation by applyContextSchema).
     const rootThreadId = ctxId; // root thread_id === context_id
 
     // E1 (participant) emits to E3 (non-participant) while processing in ctx_base.
@@ -233,7 +234,7 @@ describe("BusStore — side thread creation (Rule 3 runtime)", () => {
       cmd({
         source_endpoint_id: E1,
         destination: { kind: "endpoint", endpoint_id: E3 },
-        thread_id: rootThreadId,          // turn.thread_id = root thread
+        thread_id: rootThreadId,          // turn.thread_id = origin root thread
         current_delivery_context_id: ctxId,
       }),
       noop
@@ -241,23 +242,29 @@ describe("BusStore — side thread creation (Rule 3 runtime)", () => {
 
     const event = result.event;
 
-    // Event must stay in the SAME context.
-    expect(event.context_id).toBe(ctxId);
+    // Event must land in a NEW peer context (NOT the origin context).
+    expect(event.context_id).not.toBe(ctxId);
+    expect(event.context_id).toMatch(/^ctx_/);
 
-    // thread_id must be a NEW thread (not the root).
-    expect(event.thread_id).not.toBe(rootThreadId);
-    expect(event.thread_id).toMatch(/^thr_/);
+    // The peer context's root thread = peer context_id.
+    expect(event.thread_id).toBe(event.context_id);
 
-    // That thread must exist in the threads table with parent = root.
-    const sideThread = store.threadStore.getThread(event.thread_id);
-    expect(sideThread).not.toBeNull();
-    expect(sideThread?.context_id).toBe(ctxId);
-    expect(sideThread?.parent_thread_id).toBe(rootThreadId);
-    expect(sideThread?.created_by_endpoint_id).toBe(E1);
+    // The peer context must be linked to the origin via parent_context_id.
+    const peerCtx = store.contextStore.getContext(event.context_id!);
+    expect(peerCtx?.parent_context_id).toBe(ctxId);
+
+    // The peer context participants must be {E1, E3}.
+    const peerParticipants = store.contextStore.getContextParticipants(event.context_id!);
+    expect(peerParticipants.sort()).toEqual([E1, E3].sort());
+
+    // NO side threads in the origin context — only its root thread exists.
+    const originThreads = store.threadStore.listThreadsForContext(ctxId);
+    expect(originThreads).toHaveLength(1);
+    expect(originThreads[0]?.parent_thread_id).toBeNull();
   });
 
-  // ------- Test 3: reply from addressee defaults onto same side thread -------
-  it("addressee reply carries the same side thread_id", () => {
+  // ------- Test 3: addressee reply stays in the peer context (Rule 2) -------
+  it("addressee reply carries stays in the peer context — both participants of peer", () => {
     const ctxId = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -265,7 +272,7 @@ describe("BusStore — side thread creation (Rule 3 runtime)", () => {
     });
     const rootThreadId = ctxId;
 
-    // E1 asks E3 → side thread created.
+    // E1 asks E3 → peer context created.
     const ask = store.submitEvent(
       cmd({
         source_endpoint_id: E1,
@@ -275,35 +282,31 @@ describe("BusStore — side thread creation (Rule 3 runtime)", () => {
       }),
       noop
     );
-    const sideThreadId = ask.event.thread_id;
-    expect(sideThreadId).not.toBe(rootThreadId); // sanity
+    const peerCtxId = ask.event.context_id!;
+    expect(peerCtxId).not.toBe(ctxId);
 
-    // E3 replies to E1 (participant of ctxId). E3's turn thread_id = sideThreadId.
-    // D-B guard: E3 is NOT a participant of ctxId, so context_id is omitted
-    // (null). The resolver uses current_delivery_context_id + destination
-    // participant check (Rule 2: E1 IS participant → continue context).
+    // E3 replies to E1. Both are participants of the peer context → Rule 2: stay in peer.
     const reply = store.submitEvent(
       cmd({
         source_endpoint_id: E3,
         destination: { kind: "endpoint", endpoint_id: E1 },
-        thread_id: sideThreadId,            // turn.thread_id = side thread
-        context_id: null,                   // D-B guard: E3 is not a participant
-        current_delivery_context_id: ctxId, // from the delivery
+        thread_id: peerCtxId,            // turn.thread_id = peer root thread
+        current_delivery_context_id: peerCtxId, // acting in the peer context
       }),
       noop
     );
 
-    // Reply must be on the SAME side thread.
-    expect(reply.event.thread_id).toBe(sideThreadId);
-    // And in the same context.
-    expect(reply.event.context_id).toBe(ctxId);
-    // No new side thread created for the reply (Rule 2).
-    const threads = store.threadStore.listThreadsForContext(ctxId);
-    expect(threads).toHaveLength(2); // root + one side thread
+    // Reply must be in the SAME peer context.
+    expect(reply.event.context_id).toBe(peerCtxId);
+    // And on the peer context's root thread.
+    expect(reply.event.thread_id).toBe(peerCtxId);
+    // No new context created.
+    const originCtxs = store.contextStore.listContextsForWorkspace(WS, {});
+    expect(originCtxs).toHaveLength(2); // origin + peer
   });
 
-  // ------- Test 4: reply to context participant stays on main thread -------
-  it("reply to a context participant does NOT create a side thread", () => {
+  // ------- Test 4: reply to context participant stays in origin context (Rule 2) -------
+  it("reply to a context participant does NOT create a side thread or peer context", () => {
     const ctxId = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -311,7 +314,7 @@ describe("BusStore — side thread creation (Rule 3 runtime)", () => {
     });
     const rootThreadId = ctxId;
 
-    // E1 replies to E2 (both participants). No side thread.
+    // E1 replies to E2 (both participants). No side thread, no new context.
     const result = store.submitEvent(
       cmd({
         source_endpoint_id: E1,
@@ -322,11 +325,14 @@ describe("BusStore — side thread creation (Rule 3 runtime)", () => {
       noop
     );
 
-    // Event stays in same context on the main thread.
+    // Event stays in same context on the root thread.
     expect(result.event.context_id).toBe(ctxId);
     expect(result.event.thread_id).toBe(rootThreadId);
 
-    // Only the root thread exists — no side thread was created.
+    // Only the origin context exists — no peer context created.
+    const originCtxs = store.contextStore.listContextsForWorkspace(WS, {});
+    expect(originCtxs).toHaveLength(1);
+    // Only the root thread in origin — no side thread.
     const threads = store.threadStore.listThreadsForContext(ctxId);
     expect(threads).toHaveLength(1);
     expect(threads[0]?.parent_thread_id).toBeNull();
@@ -417,7 +423,7 @@ describe("ThreadStore — close lifecycle", () => {
 });
 
 // ---------------------------------------------------------------------------
-// BusStore — closed thread rejects events
+// BusStore — closed thread rejects events (guard still works for explicit thread_id)
 // ---------------------------------------------------------------------------
 
 describe("BusStore — closed thread rejects new events (Test 7)", () => {
@@ -432,7 +438,7 @@ describe("BusStore — closed thread rejects new events (Test 7)", () => {
   afterEach(() => cleanup());
 
   it("emitting onto a closed side thread throws ClosedThreadError", () => {
-    // Build context with E1, E2 participants; E3 non-participant.
+    // Create a context, manually create a side thread, close it, then attempt to emit onto it.
     const ctxId = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -440,29 +446,25 @@ describe("BusStore — closed thread rejects new events (Test 7)", () => {
     });
     const rootThreadId = ctxId;
 
-    // E1 asks E3 → side thread T created.
-    const ask = store.submitEvent(
-      cmd({
-        source_endpoint_id: E1,
-        destination: { kind: "endpoint", endpoint_id: E3 },
-        thread_id: rootThreadId,
-        current_delivery_context_id: ctxId,
-      }),
-      noop
-    );
-    const sideThreadId = ask.event.thread_id;
-    expect(sideThreadId).not.toBe(rootThreadId);
+    // Manually create a side thread (this can happen via the REST API or future features).
+    const sideThreadId = store.threadStore.createThread({
+      context_id: ctxId,
+      parent_thread_id: rootThreadId,
+      created_by_endpoint_id: E1,
+    });
 
     // Close the side thread.
     store.threadStore.closeThread(sideThreadId);
 
-    // Attempting to emit onto the closed thread must throw ClosedThreadError.
+    // Attempting to emit with the closed side thread_id must throw ClosedThreadError.
+    // The guard fires because command.thread_id (sideThreadId) ≠ resolvedContextId.
     expect(() =>
       store.submitEvent(
         cmd({
-          source_endpoint_id: E3,
-          destination: { kind: "endpoint", endpoint_id: E1 },
-          thread_id: sideThreadId,
+          source_endpoint_id: E1,
+          destination: { kind: "endpoint", endpoint_id: E2 },
+          thread_id: sideThreadId,  // explicitly passing a closed thread_id
+          context_id: ctxId,        // Rule 1: stay in ctxId
           current_delivery_context_id: ctxId,
         }),
         noop
@@ -479,18 +481,14 @@ describe("BusStore — closed thread rejects new events (Test 7)", () => {
     const rootThreadId = ctxId;
 
     // Create and close a side thread.
-    const ask = store.submitEvent(
-      cmd({
-        source_endpoint_id: E1,
-        destination: { kind: "endpoint", endpoint_id: E3 },
-        thread_id: rootThreadId,
-        current_delivery_context_id: ctxId,
-      }),
-      noop
-    );
-    store.threadStore.closeThread(ask.event.thread_id);
+    const sideId = store.threadStore.createThread({
+      context_id: ctxId,
+      parent_thread_id: rootThreadId,
+      created_by_endpoint_id: E1,
+    });
+    store.threadStore.closeThread(sideId);
 
-    // E1 can still emit on the main thread.
+    // E1 can still emit on the main thread — thread_id=rootThreadId = resolvedContextId.
     const result = store.submitEvent(
       cmd({
         source_endpoint_id: E1,
@@ -500,8 +498,8 @@ describe("BusStore — closed thread rejects new events (Test 7)", () => {
       }),
       noop
     );
-    expect(result.event.thread_id).toBe(rootThreadId);
     expect(result.event.context_id).toBe(ctxId);
+    expect(result.event.thread_id).toBe(rootThreadId);
   });
 
   it("BusStore.closeThread broadcasts thread_closed", () => {
@@ -512,16 +510,12 @@ describe("BusStore — closed thread rejects new events (Test 7)", () => {
     });
     const rootThreadId = ctxId;
 
-    const ask = store.submitEvent(
-      cmd({
-        source_endpoint_id: E1,
-        destination: { kind: "endpoint", endpoint_id: E3 },
-        thread_id: rootThreadId,
-        current_delivery_context_id: ctxId,
-      }),
-      noop
-    );
-    const sideThreadId = ask.event.thread_id;
+    // Manually create a side thread to close.
+    const sideThreadId = store.threadStore.createThread({
+      context_id: ctxId,
+      parent_thread_id: rootThreadId,
+      created_by_endpoint_id: E1,
+    });
 
     const broadcasts: Array<{ type: string; payload: unknown }> = [];
     const captureBroadcast = (type: string, payload: unknown) =>

@@ -12,7 +12,16 @@ function endpointDest(id: string): DestinationSelector {
   return { kind: "endpoint", endpoint_id: id };
 }
 
-function makeReader(contexts: Record<string, { participants: string[]; topic?: string | null }>): ContextStoreReader {
+type ContextEntry = {
+  participants: string[];
+  topic?: string | null;
+  parent_context_id?: string | null;
+};
+
+function makeReader(
+  contexts: Record<string, ContextEntry>,
+  peerContexts: Array<{ parent_context_id: string; participants: string[]; context_id: string }> = []
+): ContextStoreReader {
   return {
     getContext(id) {
       if (!contexts[id]) return null;
@@ -20,7 +29,7 @@ function makeReader(contexts: Record<string, { participants: string[]; topic?: s
         context_id: id,
         workspace_id: WS,
         scope_id: null,
-        parent_context_id: null,
+        parent_context_id: contexts[id].parent_context_id ?? null,
         created_by_endpoint_id: contexts[id].participants[0],
         created_at: "2026-01-01T00:00:00.000Z",
         title: null
@@ -39,7 +48,7 @@ function makeReader(contexts: Record<string, { participants: string[]; topic?: s
           context_id: id,
           workspace_id: WS,
           scope_id: null,
-          parent_context_id: null,
+          parent_context_id: v.parent_context_id ?? null,
           created_by_endpoint_id: v.participants[0],
           created_at: "2026-01-01T00:00:00.000Z",
           last_event_at: null,
@@ -47,6 +56,25 @@ function makeReader(contexts: Record<string, { participants: string[]; topic?: s
           title: null,
           participants: v.participants.slice()
         }));
+    },
+    findLinkedPeerContext(linkedToContextId, endpointA, endpointB) {
+      const match = peerContexts.find(
+        (pc) =>
+          pc.parent_context_id === linkedToContextId &&
+          pc.participants.includes(endpointA) &&
+          pc.participants.includes(endpointB) &&
+          pc.participants.length === 2
+      );
+      if (!match) return null;
+      return {
+        context_id: match.context_id,
+        workspace_id: WS,
+        scope_id: null,
+        parent_context_id: match.parent_context_id,
+        created_by_endpoint_id: match.participants[0],
+        created_at: "2026-01-01T00:00:00.000Z",
+        title: null
+      };
     }
   };
 }
@@ -65,9 +93,11 @@ describe("resolveContext rule matrix", () => {
       reader
     );
     expect(result).toEqual({ context_id: expect.any(String), created: true, participants: [E1, E2] });
+    // No peer link for UI-originated context (no origin to link to).
+    expect("peer_link_to" in result).toBe(false);
   });
 
-  it("Runtime, no supplied id, destination ∈ current ctx → continues current on ROOT thread", () => {
+  it("Runtime, no supplied id, destination ∈ current ctx → continues current context (Rule 2)", () => {
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
@@ -79,11 +109,11 @@ describe("resolveContext rule matrix", () => {
       },
       reader
     );
-    // Both source (E1) and destination (E2) are participants → force root thread.
-    expect(result).toEqual({ context_id: "ctx_a", created: false, force_root_thread: true });
+    // Both participants → stay in current context.
+    expect(result).toEqual({ context_id: "ctx_a", created: false });
   });
 
-  it("Runtime, no supplied id, destination ∉ current ctx → creates side thread in same context (Rule 3)", () => {
+  it("Runtime, no supplied id, destination ∉ current ctx → creates peer context linked to origin (Rule 3)", () => {
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
@@ -91,38 +121,47 @@ describe("resolveContext rule matrix", () => {
         destination: endpointDest(E3),
         supplied_context_id: null,
         current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: "thr_root",
         workspace_id: WS
       },
       reader
     );
-    // Must stay in the SAME context (not open a new one).
-    expect("context_id" in result && result.context_id).toBe("ctx_a");
+    // Must create a NEW peer context (not modify ctx_a).
+    expect("context_id" in result).toBe(true);
     if ("context_id" in result) {
+      expect(result.context_id).not.toBe("ctx_a");
+      expect(result.created).toBe(true);
+      expect(result.participants).toEqual(expect.arrayContaining([E1, E3]));
+      expect(result.participants).toHaveLength(2);
+      // Must carry the peer link back to the origin context.
+      expect(result.peer_link_to).toBe("ctx_a");
+    }
+  });
+
+  it("Runtime Rule 3 — D1 reuse: returns existing peer context when one already exists for the pair", () => {
+    // An existing peer context ctx_peer = {E1, E3} linked to ctx_a already exists.
+    const reader = makeReader(
+      { ctx_a: { participants: [E1, E2] } },
+      [{ parent_context_id: "ctx_a", participants: [E1, E3], context_id: "ctx_peer_existing" }]
+    );
+    const result = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E3),
+        supplied_context_id: null,
+        current_delivery_context_id: "ctx_a",
+        workspace_id: WS
+      },
+      reader
+    );
+    // Must reuse the existing peer context, not create a new one.
+    expect("context_id" in result).toBe(true);
+    if ("context_id" in result) {
+      expect(result.context_id).toBe("ctx_peer_existing");
       expect(result.created).toBe(false);
-      expect(result.side_thread).toMatchObject({ parent_thread_id: "thr_root" });
     }
   });
 
-  it("Runtime, Rule 3 — falls back to context_id as parent_thread_id when no delivery thread given", () => {
-    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
-    const result = resolveContext(
-      {
-        source_endpoint_id: E1,
-        destination: endpointDest(E3),
-        supplied_context_id: null,
-        current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: null,
-        workspace_id: WS
-      },
-      reader
-    );
-    if ("context_id" in result) {
-      expect(result.side_thread).toMatchObject({ parent_thread_id: "ctx_a" });
-    }
-  });
-
-  it("Supplied context + source is participant + dest is participant → succeeds with force_root_thread (rule 1 positive)", () => {
+  it("Supplied context + source is participant → succeeds (rule 1 positive)", () => {
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
@@ -134,8 +173,25 @@ describe("resolveContext rule matrix", () => {
       },
       reader
     );
-    // Both source and destination are participants → force root thread.
-    expect(result).toEqual({ context_id: "ctx_a", created: false, force_root_thread: true });
+    expect(result).toEqual({ context_id: "ctx_a", created: false });
+  });
+
+  it("Supplied context + source is participant + destination NOT participant → still emits to supplied context (Rule 1)", () => {
+    // Rule 1 validates source participation only. Destination can be non-participant
+    // (event is stored; no delivery created for non-participant dest — that's correct).
+    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
+    const result = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E3),  // E3 NOT in ctx_a
+        supplied_context_id: "ctx_a",
+        current_delivery_context_id: "ctx_a",
+        workspace_id: WS
+      },
+      reader
+    );
+    // Emits to the supplied context. No side thread, no peer context creation.
+    expect(result).toEqual({ context_id: "ctx_a", created: false });
   });
 
   it("Supplied context + source is NOT participant → E_NOT_CONTEXT_PARTICIPANT (rule 1 negative)", () => {
@@ -181,7 +237,7 @@ describe("resolveContext rule matrix", () => {
   });
 
   it("available_contexts is bounded (cap at 10)", () => {
-    const map: Record<string, { participants: string[] }> = {
+    const map: Record<string, ContextEntry> = {
       ctx_target: { participants: [E2, E3] }
     };
     for (let i = 0; i < 25; i++) map[`ctx_avail_${i}`] = { participants: [E1, E2] };
@@ -232,7 +288,7 @@ describe("resolveContext rule matrix", () => {
     expect(result).toMatchObject({ created: true, participants: [E1] });
   });
 
-  it("UI-originated emit with explicit context_id continues that context with force_root_thread (T19)", () => {
+  it("UI-originated emit with explicit context_id continues that context (T19)", () => {
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
@@ -244,109 +300,36 @@ describe("resolveContext rule matrix", () => {
       },
       reader
     );
-    // Both participants → force root thread.
-    expect(result).toEqual({ context_id: "ctx_a", created: false, force_root_thread: true });
-  });
-
-  it("Rule 1 hardening: supplied context + source participant + destination NOT participant → side thread", () => {
-    // E1 and E2 are in ctx_a; E3 is NOT. When E1 emits to E3 with supplied context_id
-    // (e.g. because D-B stamped it), the resolver must open a side thread instead of
-    // landing E3 on the main thread.
-    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
-    const result = resolveContext(
-      {
-        source_endpoint_id: E1,
-        destination: endpointDest(E3),
-        supplied_context_id: "ctx_a",
-        current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: "thr_main",
-        workspace_id: WS
-      },
-      reader
-    );
-    expect("context_id" in result).toBe(true);
-    if ("context_id" in result) {
-      // Must stay in the SAME context, not open a new one.
-      expect(result.context_id).toBe("ctx_a");
-      expect(result.created).toBe(false);
-      // Must signal a side thread rooted at the delivery thread.
-      expect(result.side_thread).toMatchObject({ parent_thread_id: "thr_main" });
-    }
-  });
-
-  it("Rule 1 hardening: supplied context + source participant + destination NOT participant — falls back to context_id as parent when no delivery thread", () => {
-    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
-    const result = resolveContext(
-      {
-        source_endpoint_id: E1,
-        destination: endpointDest(E3),
-        supplied_context_id: "ctx_a",
-        current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: null,
-        workspace_id: WS
-      },
-      reader
-    );
-    if ("context_id" in result) {
-      expect(result.side_thread).toMatchObject({ parent_thread_id: "ctx_a" });
-    }
-  });
-
-  it("Rule 1 hardening: self-emit into supplied context (source == destination) stays on main thread", () => {
-    // Self-emit is exempt from the side-thread rule regardless of participant list.
-    const reader = makeReader({ ctx_a: { participants: [E1] } });
-    const result = resolveContext(
-      {
-        source_endpoint_id: E1,
-        destination: endpointDest(E1),
-        supplied_context_id: "ctx_a",
-        current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: "thr_main",
-        workspace_id: WS
-      },
-      reader
-    );
-    // Self-emit: no side thread.
+    // Rule 1 positive: stays in ctx_a (no force_root_thread, no side thread).
     expect(result).toEqual({ context_id: "ctx_a", created: false });
   });
 
-  // --- Cross-thread reply routing tests ---
-
-  it("Cross-thread: participant emitting to another participant from a side-thread delivery → force_root_thread (Rule 2)", () => {
-    // Scenario: Floe (E1) is processing a delivery on side thread thr_X.
-    // Floe emits to operator (E2), also a participant. Reply MUST land on root.
+  it("Runtime self-emit (source == destination) stays in current context, never creates peer", () => {
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
         source_endpoint_id: E1,
-        destination: endpointDest(E2),
+        destination: endpointDest(E1),  // self
         supplied_context_id: null,
         current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: "thr_X",  // side thread
         workspace_id: WS
       },
       reader
     );
-    expect("context_id" in result).toBe(true);
-    if ("context_id" in result) {
-      expect(result.context_id).toBe("ctx_a");
-      expect(result.created).toBe(false);
-      expect(result.force_root_thread).toBe(true);
-      expect(result.side_thread).toBeFalsy();
-    }
+    // Self-emit stays in current context regardless.
+    expect(result).toEqual({ context_id: "ctx_a", created: false });
   });
 
-  it("Cross-thread: non-participant source (snowball) replying to a participant stays on current side thread", () => {
-    // Scenario: snowball (E3, NOT a participant) is replying to floe (E1, participant).
-    // The reply must stay on the current side thread, not be forced to root.
-    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });  // E3 NOT in ctx_a
+  it("Runtime Rule 2: non-participant source emitting to a participant stays in current context", () => {
+    // Scenario: snowball (E3, NOT a participant of ctx_a) is acting in ctx_a via some delivery.
+    // It emits to floe (E1, participant). Rule 2: dest ∈ current context → stay.
+    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
-        source_endpoint_id: E3,  // NOT a participant
-        destination: endpointDest(E1),  // IS a participant
+        source_endpoint_id: E3,  // NOT a participant (but has a delivery from ctx_a)
+        destination: endpointDest(E1),  // participant
         supplied_context_id: null,
         current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: "thr_X",
         workspace_id: WS
       },
       reader
@@ -355,83 +338,110 @@ describe("resolveContext rule matrix", () => {
     if ("context_id" in result) {
       expect(result.context_id).toBe("ctx_a");
       expect(result.created).toBe(false);
-      // Source is NOT a participant → do NOT force root; stay on current thread.
-      expect(result.force_root_thread).toBeFalsy();
-      expect(result.side_thread).toBeFalsy();
     }
   });
 
-  it("Cross-thread: participant→non-participant (floe→snowball) still opens side thread (Rule 3)", () => {
-    // Floe (E1, participant) emitting to snowball (E3, NOT participant) → Rule 3 side thread.
-    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });  // E3 NOT in ctx_a
+  it("Peer context in context: when S acts in C' and emits to D (also in C'), stays in C' (Rule 2)", () => {
+    // C' = {E1, E3} is a peer context. E1 acts in C' and replies to E3.
+    const reader = makeReader({
+      ctx_a: { participants: [E1, E2] },
+      ctx_peer: { participants: [E1, E3], parent_context_id: "ctx_a" }
+    });
     const result = resolveContext(
       {
         source_endpoint_id: E1,
-        destination: endpointDest(E3),  // NOT a participant
+        destination: endpointDest(E3),
         supplied_context_id: null,
-        current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: "thr_root",
+        current_delivery_context_id: "ctx_peer",
         workspace_id: WS
       },
       reader
     );
-    expect("context_id" in result).toBe(true);
-    if ("context_id" in result) {
-      expect(result.context_id).toBe("ctx_a");
-      expect(result.created).toBe(false);
-      expect(result.side_thread).toMatchObject({ parent_thread_id: "thr_root" });
-      expect(result.force_root_thread).toBeFalsy();
-    }
+    // E3 ∈ ctx_peer → stay in ctx_peer (Rule 2).
+    expect(result).toEqual({ context_id: "ctx_peer", created: false });
   });
 
-  it("Cross-thread: Rule 1 path — participant emitting to participant via supplied_context_id from side thread → force_root_thread", () => {
-    // D-B default: emit tool stamps context_id from delivery origin context.
-    // Floe (E1) on side thread thr_X emits to operator (E2) with context_id=ctx_a.
-    // Both are participants → resolver must signal force_root_thread.
+  it("Relay: actor S in peer context C' emits to origin context C via explicit context_id (Rule 1)", () => {
+    // S (E1) is in both C (ctx_a) and C' (ctx_peer). S acting in C' wants to relay
+    // back to operator (E2) in C. S passes explicit context_id=ctx_a.
+    const reader = makeReader({
+      ctx_a: { participants: [E1, E2] },
+      ctx_peer: { participants: [E1, E3], parent_context_id: "ctx_a" }
+    });
+    const result = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E2),
+        supplied_context_id: "ctx_a",  // explicit relay to origin
+        current_delivery_context_id: "ctx_peer",
+        workspace_id: WS
+      },
+      reader
+    );
+    // Rule 1: E1 ∈ ctx_a → emit to ctx_a. Clean relay.
+    expect(result).toEqual({ context_id: "ctx_a", created: false });
+  });
+
+  it("NO side threads created: Rule 3 always creates a peer context, never a side thread", () => {
+    // This is the key invariant: the resolver never returns a side_thread signal.
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
         source_endpoint_id: E1,
-        destination: endpointDest(E2),
-        supplied_context_id: "ctx_a",
+        destination: endpointDest(E3),
+        supplied_context_id: null,
         current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: "thr_X",
         workspace_id: WS
       },
       reader
     );
-    expect("context_id" in result).toBe(true);
     if ("context_id" in result) {
-      expect(result.context_id).toBe("ctx_a");
-      expect(result.created).toBe(false);
-      expect(result.force_root_thread).toBe(true);
-      expect(result.side_thread).toBeFalsy();
+      expect((result as any).side_thread).toBeUndefined();
+      expect((result as any).force_root_thread).toBeUndefined();
     }
   });
 
-  it("Cross-thread: plain operator↔floe main-thread reply unchanged (no side thread, no force when on root)", () => {
-    // Main-thread delivery (thread_id = context_id = root). Both participants.
-    // force_root_thread is still set but resolvedThreadId will be context_id anyway — no-op.
+  it("Broadcast destination in a runtime context stays in the current context", () => {
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
     const result = resolveContext(
       {
         source_endpoint_id: E1,
-        destination: endpointDest(E2),
+        destination: { kind: "broadcast", scope: "workspace", target: "active" },
         supplied_context_id: null,
         current_delivery_context_id: "ctx_a",
-        current_delivery_thread_id: "ctx_a",  // root thread = context_id
         workspace_id: WS
       },
       reader
     );
-    expect("context_id" in result).toBe(true);
-    if ("context_id" in result) {
-      expect(result.context_id).toBe("ctx_a");
-      expect(result.created).toBe(false);
-      // force_root_thread is set; submitEvent will set resolvedThreadId=ctx_a (same as root).
-      expect(result.force_root_thread).toBe(true);
-      expect(result.side_thread).toBeFalsy();
+    // Broadcast: no specific endpoint → stay in current context.
+    expect(result).toEqual({ context_id: "ctx_a", created: false });
+  });
+
+  it("New peer context has a unique context_id each time (no reuse when no existing peer)", () => {
+    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
+    const r1 = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E3),
+        supplied_context_id: null,
+        current_delivery_context_id: "ctx_a",
+        workspace_id: WS
+      },
+      reader
+    );
+    const r2 = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E3),
+        supplied_context_id: null,
+        current_delivery_context_id: "ctx_a",
+        workspace_id: WS
+      },
+      reader
+    );
+    // Without an existing peer context, two calls produce two different ids.
+    if ("context_id" in r1 && "context_id" in r2) {
+      expect(r1.context_id).not.toBe(r2.context_id);
     }
   });
 });
-

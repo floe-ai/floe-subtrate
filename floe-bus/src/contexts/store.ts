@@ -29,6 +29,17 @@ export interface ContextStoreReader {
   getContextParticipants(context_id: string): string[];
   isParticipant(context_id: string, endpoint_id: string): boolean;
   listContextsForParticipant(endpoint_id: string): ContextListRow[];
+  /**
+   * Find an existing open peer context linked to `linkedToContextId` whose
+   * participant set is exactly {endpointA, endpointB}.
+   *
+   * "Open" is defined as: the context's root thread is not closed.
+   * Returns null when no such context exists.
+   *
+   * Used by the resolver for D1: reuse the existing {S,D} peer context
+   * instead of creating a new one for every repeated cross-actor emit.
+   */
+  findLinkedPeerContext(linkedToContextId: string, endpointA: string, endpointB: string): ContextRecord | null;
 }
 
 function nowIso(): string {
@@ -333,6 +344,44 @@ export class ContextStore implements ContextStoreReader {
       )
       .all(endpoint_id) as any[];
     return rows.map((row) => this.mapContextListRow(row));
+  }
+
+  /**
+   * Find an existing peer context linked to `linkedToContextId` whose participant
+   * set is exactly {endpointA, endpointB}.  Returns the first match ordered by
+   * created_at ascending (oldest / most stable DM wins).
+   *
+   * Implementation note: we check that both participants exist AND that the
+   * total participant count is exactly 2 to prevent returning a larger group
+   * context that happens to contain both actors.
+   */
+  findLinkedPeerContext(linkedToContextId: string, endpointA: string, endpointB: string): ContextRecord | null {
+    const row = this.db.prepare(`
+      SELECT c.*
+      FROM contexts c
+      WHERE c.parent_context_id = ?
+        AND EXISTS (
+          SELECT 1 FROM context_participants
+          WHERE context_id = c.context_id AND endpoint_id = ?
+        )
+        AND EXISTS (
+          SELECT 1 FROM context_participants
+          WHERE context_id = c.context_id AND endpoint_id = ?
+        )
+        AND (SELECT COUNT(*) FROM context_participants WHERE context_id = c.context_id) = 2
+      ORDER BY c.created_at ASC
+      LIMIT 1
+    `).get(linkedToContextId, endpointA, endpointB) as any;
+    if (!row) return null;
+    return {
+      context_id: row.context_id,
+      workspace_id: row.workspace_id,
+      scope_id: row.scope_id ?? null,
+      parent_context_id: row.parent_context_id ?? null,
+      created_by_endpoint_id: row.created_by_endpoint_id ?? null,
+      created_at: row.created_at,
+      title: (row.title as string | null) ?? null
+    };
   }
 
   listContextsForWorkspace(

@@ -166,7 +166,7 @@ describe("submitEvent context wiring", () => {
     expect(r2.event.context_id).toBe(ctxA);
   });
 
-  it("T4: emit where destination ∉ current delivery context → creates side thread in same context (Rule 3)", () => {
+  it("T4: emit where destination ∉ current delivery context → creates peer context linked to origin (Rule 3)", () => {
     const r1 = store.submitEvent(
       emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
       noop
@@ -180,12 +180,15 @@ describe("submitEvent context wiring", () => {
       }),
       noop
     );
-    // Must stay in the SAME context (side thread, not a new context).
-    expect(r2.event.context_id).toBe(ctxA);
-    // The event must be on a NEW side thread (not the root thread).
-    expect(r2.event.thread_id).not.toBe(ctxA);
-    expect(r2.event.thread_id).toMatch(/^thr_/);
-    // T11: original A's participants unchanged (side thread does not add E3 to context).
+    // Must land in a NEW peer context (not ctxA — peer context model, not side thread).
+    expect(r2.event.context_id).not.toBe(ctxA);
+    expect(r2.event.context_id).toMatch(/^ctx_/);
+    // Peer context root thread = peer context_id.
+    expect(r2.event.thread_id).toBe(r2.event.context_id);
+    // The peer context must be linked to ctxA via parent_context_id.
+    const peerCtx = store.contextStore.getContext(r2.event.context_id!);
+    expect(peerCtx?.parent_context_id).toBe(ctxA);
+    // T11: ctxA's participants unchanged — E3 is NOT added to ctxA, only to the peer.
     expect(store.contextStore.getContextParticipants(ctxA).sort()).toEqual([E1, E2].sort());
   });
 
@@ -394,54 +397,46 @@ describe("submitEvent context wiring", () => {
     expect(queueAfter.c).toBe(queueBefore.c);
   });
 
-  // --- Cross-thread reply routing tests ---
+  // --- Peer context routing tests (replaces side-thread tests) ---
 
-  it("T-CR1: participant emitting to another participant while handling a side-thread delivery → event lands on ROOT thread", () => {
-    // Step 1: create context with E1+E2 as participants (E1↔E2 root exchange).
+  it("T-CR1: participant emitting to non-participant creates a peer context linked to origin (Rule 3)", () => {
+    // Step 1: create context with E1+E2 as participants.
     const r1 = store.submitEvent(
       emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
       noop
     );
     const ctxA = r1.event.context_id!;
-    // Step 2: E1 emits to E3 (non-participant) → Rule 3 opens side thread thr_S.
+    // Step 2: E1 emits to E3 (non-participant) → Rule 3 creates peer context C' linked to ctxA.
     const r2 = store.submitEvent(
       emitCommand({
         source_endpoint_id: E1,
         destination: { kind: "endpoint", endpoint_id: E3 },
         current_delivery_context_id: ctxA,
-        thread_id: ctxA  // current delivery is on root thread
+        thread_id: ctxA  // origin delivery thread
       }),
       noop
     );
-    expect(r2.event.context_id).toBe(ctxA);
-    const sideThreadId = r2.event.thread_id!;
-    expect(sideThreadId).not.toBe(ctxA);
-    expect(sideThreadId).toMatch(/^thr_/);
-
-    // Step 3: E1 is now handling E3's reply on the side thread thr_S.
-    // E1 emits to E2 (also a participant) — should land on ROOT thread, not thr_S.
-    const r3 = store.submitEvent(
-      emitCommand({
-        source_endpoint_id: E1,
-        destination: { kind: "endpoint", endpoint_id: E2 },
-        current_delivery_context_id: ctxA,
-        thread_id: sideThreadId  // current delivery is on the side thread
-      }),
-      noop
-    );
-    expect(r3.event.context_id).toBe(ctxA);
-    // The reply between two participants must be on the ROOT thread (= context_id), not the side thread.
-    expect(r3.event.thread_id).toBe(ctxA);
+    // Event must land in a NEW peer context (not ctxA).
+    expect(r2.event.context_id).not.toBe(ctxA);
+    expect(r2.event.context_id).toMatch(/^ctx_/);
+    // The peer context's root thread = peer context_id.
+    expect(r2.event.thread_id).toBe(r2.event.context_id);
+    // The peer context must be linked to ctxA via parent_context_id.
+    const peerCtx = store.contextStore.getContext(r2.event.context_id!);
+    expect(peerCtx?.parent_context_id).toBe(ctxA);
+    // The peer context participants must be {E1, E3}.
+    const peerParticipants = store.contextStore.getContextParticipants(r2.event.context_id!);
+    expect(peerParticipants.sort()).toEqual([E1, E3].sort());
   });
 
-  it("T-CR2: non-participant source (e.g. snowball) replying to a participant stays on the current side thread", () => {
-    // Step 1: create context with E1+E2. E3 is NOT a participant.
+  it("T-CR2: D1 reuse — repeat cross-actor emit reuses the existing peer context", () => {
+    // Step 1: create origin context {E1, E2}.
     const r1 = store.submitEvent(
       emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
       noop
     );
     const ctxA = r1.event.context_id!;
-    // Step 2: E1 emits to E3 → opens side thread thr_S.
+    // Step 2: E1 emits to E3 → creates peer context C' = {E1, E3} linked to ctxA.
     const r2 = store.submitEvent(
       emitCommand({
         source_endpoint_id: E1,
@@ -451,61 +446,119 @@ describe("submitEvent context wiring", () => {
       }),
       noop
     );
-    const sideThreadId = r2.event.thread_id!;
-    expect(sideThreadId).not.toBe(ctxA);
+    const peerCtxId = r2.event.context_id!;
+    expect(peerCtxId).not.toBe(ctxA);
 
-    // Step 3: E3 (non-participant) replies to E1 (participant) on the side thread.
-    // This simulates snowball replying to floe — must stay on the side thread.
+    // Step 3: E1 emits to E3 again (repeat) → MUST reuse C', not create a new context.
     const r3 = store.submitEvent(
       emitCommand({
-        source_endpoint_id: E3,  // NOT a participant of ctxA
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        current_delivery_context_id: ctxA,
+        thread_id: ctxA
+      }),
+      noop
+    );
+    expect(r3.event.context_id).toBe(peerCtxId);
+  });
+
+  it("T-CR3: both-participant exchange stays in origin context (Rule 2 — unchanged)", () => {
+    // E1 and E2 are both in ctxA. E1 replies to E2 while handling a delivery from ctxA.
+    // Must stay in ctxA — no peer context created.
+    const r1 = store.submitEvent(
+      emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
+      noop
+    );
+    const ctxA = r1.event.context_id!;
+
+    const r2 = store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E2,
         destination: { kind: "endpoint", endpoint_id: E1 },
         current_delivery_context_id: ctxA,
-        thread_id: sideThreadId  // processing the side-thread delivery
+        thread_id: ctxA
       }),
       noop
     );
-    expect(r3.event.context_id).toBe(ctxA);
-    // Non-participant source → must NOT be forced to root; stays on the side thread.
-    expect(r3.event.thread_id).toBe(sideThreadId);
-    expect(r3.event.thread_id).not.toBe(ctxA);
+    // Must stay in ctxA (Rule 2).
+    expect(r2.event.context_id).toBe(ctxA);
+    expect(r2.event.thread_id).toBe(ctxA);
+    // No new context was created.
+    const allContexts = store.contextStore.listContextsForWorkspace(WS, {});
+    expect(allContexts).toHaveLength(1);
   });
 
-  it("T-CR3: Rule 1 (D-B supplied context_id) path — participant→participant on side-thread delivery → root thread", () => {
-    // D-B default: the emit tool stamps context_id = delivery origin context.
-    // When E1 on side thread thr_S emits to E2 with supplied context_id=ctxA,
-    // both are participants → event must land on root thread.
+  it("T-CR4: relay — actor acting in peer context C' emits back to origin via explicit context_id", () => {
+    // Step 1: {E1, E2} origin context.
     const r1 = store.submitEvent(
       emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
       noop
     );
     const ctxA = r1.event.context_id!;
-    // Open side thread.
+    // Step 2: E1 emits to E3 → peer context C' created.
     const r2 = store.submitEvent(
       emitCommand({
         source_endpoint_id: E1,
         destination: { kind: "endpoint", endpoint_id: E3 },
-        current_delivery_context_id: ctxA,
-        thread_id: ctxA
+        current_delivery_context_id: ctxA
       }),
       noop
     );
-    const sideThreadId = r2.event.thread_id!;
-
-    // E1 emits to E2 with supplied context_id (Rule 1), but thread_id = sideThreadId (D-B side effect).
+    const peerCtxId = r2.event.context_id!;
+    expect(peerCtxId).not.toBe(ctxA);
+    // Step 3: E3 replies to E1 in C' (both participants of C' — Rule 2).
     const r3 = store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E3,
+        destination: { kind: "endpoint", endpoint_id: E1 },
+        current_delivery_context_id: peerCtxId
+      }),
+      noop
+    );
+    expect(r3.event.context_id).toBe(peerCtxId);
+    // Step 4: E1 (participant of both ctxA and peerCtx) acts in C' and relays back to E2 in ctxA.
+    // Explicit context_id=ctxA (Rule 1) — E1 ∈ ctxA → relay lands in ctxA.
+    const r4 = store.submitEvent(
       emitCommand({
         source_endpoint_id: E1,
         destination: { kind: "endpoint", endpoint_id: E2 },
-        context_id: ctxA,              // D-B default: stamped context_id
-        current_delivery_context_id: ctxA,
-        thread_id: sideThreadId       // D-B side effect: stamped thread_id from delivery
+        context_id: ctxA,               // explicit relay target
+        current_delivery_context_id: peerCtxId  // currently acting in peer
       }),
       noop
     );
-    expect(r3.event.context_id).toBe(ctxA);
-    // Must land on ROOT thread, not side thread.
-    expect(r3.event.thread_id).toBe(ctxA);
+    expect(r4.event.context_id).toBe(ctxA);
+    expect(r4.event.thread_id).toBe(ctxA);  // root thread of ctxA
+  });
+
+  it("T-CR5: NO side threads — Rule 3 never creates a thread with thr_ prefix", () => {
+    // Sanity check: ensure the threads table only has root threads after cross-actor emits.
+    const r1 = store.submitEvent(
+      emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
+      noop
+    );
+    const ctxA = r1.event.context_id!;
+    // Multiple cross-actor emits.
+    store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        current_delivery_context_id: ctxA
+      }),
+      noop
+    );
+    store.submitEvent(
+      emitCommand({
+        source_endpoint_id: E1,
+        destination: { kind: "endpoint", endpoint_id: E3 },
+        current_delivery_context_id: ctxA
+      }),
+      noop
+    );
+    // All threads in the DB must be root threads (thread_id = context_id, parent = NULL).
+    const allThreads = store.db.prepare("SELECT * FROM threads").all() as any[];
+    const sideThreads = allThreads.filter((t) => t.parent_thread_id !== null);
+    expect(sideThreads).toHaveLength(0);
   });
 });
 

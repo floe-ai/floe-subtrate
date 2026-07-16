@@ -156,11 +156,13 @@ describe("PiAgentCoreAdapter.releaseSessionsForClosedThread", () => {
   const SIDE_THREAD_T2 = "thr_side_t2_close";
 
   // ---------------------------------------------------------------------------
-  // Test 1: Session scoped to side thread T is evicted when T is closed.
-  // Detected by the agent factory being called AGAIN on the next handleBundle
-  // (a new session is created, proving the old one was evicted).
+  // Test 1 (peer context pivot): releaseSessionsForClosedThread is now a no-op
+  // for sessions created under the peer context routing model, because sideThreadId
+  // is always null (routing no longer creates side threads). Sessions are scoped
+  // per (endpoint, context) and persist until bridge restart or context closure.
+  // The API remains callable without error for backward compatibility.
   // ---------------------------------------------------------------------------
-  it("evicts session scoped to the closed side thread", async () => {
+  it("releaseSessionsForClosedThread is safe to call (no-op for peer-context-model sessions)", async () => {
     const { factory, getCallCount } = makeAgentFactory();
     const adapter = new PiAgentCoreAdapter(MOCK_AUTH, {
       agentFactory: factory,
@@ -170,7 +172,7 @@ describe("PiAgentCoreAdapter.releaseSessionsForClosedThread", () => {
     const bus = makeBus();
     const ctx = { bridge_id: "bridge:test", bus } as any;
 
-    // First call: delivery arrives on SIDE_THREAD_T → session created (sideThreadId = T)
+    // First call: session created.
     await adapter.handleBundle(
       ctx,
       makeDelivery("del-1", ENDPOINT_A, CTX, SIDE_THREAD_T),
@@ -178,7 +180,7 @@ describe("PiAgentCoreAdapter.releaseSessionsForClosedThread", () => {
     );
     expect(getCallCount()).toBe(1);
 
-    // Second call with same delivery: session reused (factory NOT called again)
+    // Second call: session reused (factory NOT called again).
     await adapter.handleBundle(
       ctx,
       makeDelivery("del-2", ENDPOINT_A, CTX, SIDE_THREAD_T),
@@ -186,16 +188,19 @@ describe("PiAgentCoreAdapter.releaseSessionsForClosedThread", () => {
     );
     expect(getCallCount()).toBe(1); // session reused
 
-    // Close side thread T → evict session
-    adapter.releaseSessionsForClosedThread(SIDE_THREAD_T);
+    // releaseSessionsForClosedThread: does NOT evict sessions (sideThreadId always null).
+    // This is correct: routing creates peer contexts, not side threads, so sessions
+    // are not scoped to threads and cannot be evicted this way.
+    expect(() => adapter.releaseSessionsForClosedThread(SIDE_THREAD_T)).not.toThrow();
 
-    // Third call: session was evicted → factory called again (new session)
+    // Third call: session still alive (not evicted) — factory count stays at 1.
     await adapter.handleBundle(
       ctx,
       makeDelivery("del-3", ENDPOINT_A, CTX, SIDE_THREAD_T),
       MOCK_RUNTIME_CONFIG
     );
-    expect(getCallCount()).toBe(2);
+    // Session NOT evicted — factory not called again.
+    expect(getCallCount()).toBe(1);
   });
 
   // ---------------------------------------------------------------------------

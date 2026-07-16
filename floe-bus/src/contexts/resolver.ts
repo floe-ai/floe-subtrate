@@ -7,12 +7,6 @@ export type ResolveContextInput = {
   destination: DestinationSelector;
   supplied_context_id: string | null | undefined;
   current_delivery_context_id: string | null | undefined;
-  /**
-   * The thread_id of the delivery being processed.  Used as parent when
-   * a side thread is needed (Rule 3 runtime).  Falls back to
-   * current_delivery_context_id (root thread) when absent.
-   */
-  current_delivery_thread_id?: string | null;
   workspace_id: string;
 };
 
@@ -22,23 +16,14 @@ export type ResolveContextSuccess = {
   /** When `created` is true, the participant set the caller must persist. */
   participants?: string[];
   /**
-   * When set, the caller must create a side thread with this parent_thread_id
-   * inside `context_id` and use the resulting thread_id on the emitted event.
+   * When set and `created` is true, the caller must create this context linked
+   * (via parent_context_id) to the given origin context.
    *
-   * NULL / absent → stay on the current (main or side) thread.
+   * This implements the peer context model: cross-actor communication lives in
+   * its own independent context, associated to the origin by a neutral peer link,
+   * NOT a side thread inside the origin context.
    */
-  side_thread?: {
-    parent_thread_id: string;
-  } | null;
-  /**
-   * When true, the caller must route this event to the ROOT thread
-   * (thread_id = context_id) regardless of the caller-supplied thread_id.
-   *
-   * Set when BOTH source and destination are participants of the resolved
-   * context — a participant↔participant exchange always belongs on the main
-   * thread, even if the current delivery arrived via a side thread.
-   */
-  force_root_thread?: boolean;
+  peer_link_to?: string | null;
 };
 
 export type NotContextParticipantError = {
@@ -79,7 +64,7 @@ function rejection(
       source_endpoint_id,
       available_contexts: available,
       recovery: [
-        "Omit context_id to open a new context with {source, destination}.",
+        "Omit context_id to open a new peer context with {source, destination}.",
         "Pass a context_id from available_contexts where the source is already a participant.",
         "If the destination is in the current delivery context, omit context_id to continue it."
       ]
@@ -94,20 +79,32 @@ function destinationEndpoint(destination: DestinationSelector): string | null {
 }
 
 /**
- * Pure function — encodes the participant-aware continue rule (design §3.1.4).
+ * Pure function — encodes the participant-aware routing rules (peer context model).
  *
- *   UI-originated (no current delivery context):
- *     supplied_context_id present  → rule 1 (validate participant or reject)
- *     supplied_context_id omitted  → open new context with {source, destination}
+ * Rules:
  *
- *   Runtime-originated (current_delivery_context_id present):
- *     supplied_context_id present       → rule 1
- *     destination ∈ current context    → continue current context on current thread (rule 2)
- *     destination ∉ current context    → stay in same context, create a SIDE THREAD (rule 3)
- *                                         side_thread.parent_thread_id = current_delivery_thread_id
- *                                         (falls back to current_delivery_context_id = root thread)
+ *   Rule 1 — explicit context_id:
+ *     source must be a participant of the supplied context, else E_NOT_CONTEXT_PARTICIPANT.
+ *     Emits directly to that context (participant check for source only; destination
+ *     participation is not required — if dest is not a participant, the event is stored
+ *     in the context but no delivery is created for dest).
  *
- *   Self-emit (source == destination) is allowed.
+ *   Rule 2 — runtime, destination ∈ current context:
+ *     Continue the current delivery context.
+ *
+ *   Rule 3 — runtime, destination ∉ current context (peer context):
+ *     D1 reuse: if an open peer context with participants {S, D} linked to the current
+ *     context already exists, emit there.
+ *     Else: create a NEW peer context {S, D} with parent_context_id = current context.
+ *     Cross-actor communication lives in its own independent peer context, NEVER in
+ *     a side thread inside the origin context.
+ *
+ *   Rule 0 — UI-originated (no current delivery context) with no supplied id:
+ *     Open a new context with {source, destination}.
+ *
+ * Self-emit (source == destination) is allowed.
+ * Side threads and force_root_thread are RETIRED — there is exactly one thread per
+ * context (its root thread, thread_id = context_id).
  */
 export function resolveContext(input: ResolveContextInput, ctxStore: ContextStoreReader): ResolveContextResult {
   const {
@@ -115,46 +112,16 @@ export function resolveContext(input: ResolveContextInput, ctxStore: ContextStor
     destination,
     supplied_context_id,
     current_delivery_context_id,
-    current_delivery_thread_id,
   } = input;
 
-  // Rule 1: explicit context_id supplied — validate strict participant gating.
+  // Rule 1: explicit context_id supplied — validate source participant.
   if (supplied_context_id) {
     const ctx = ctxStore.getContext(supplied_context_id);
     if (!ctx || !ctxStore.isParticipant(supplied_context_id, source_endpoint_id)) {
       return rejection(supplied_context_id, source_endpoint_id, ctxStore);
     }
-    // Hardening: if the destination is NOT a participant of the supplied context, open a
-    // side thread — the same outcome as the runtime Rule 3 branch. This makes side-thread
-    // routing robust regardless of how context_id was set (e.g. the D-B emit-tool default).
-    // Exemptions: self-emit (source == destination) and broadcast (no destEndpoint).
-    const destEndpointR1 = destinationEndpoint(destination);
-    if (
-      destEndpointR1 &&
-      destEndpointR1 !== source_endpoint_id &&
-      !ctxStore.isParticipant(supplied_context_id, destEndpointR1)
-    ) {
-      const parentThreadId =
-        current_delivery_thread_id && current_delivery_thread_id.length > 0
-          ? current_delivery_thread_id
-          : supplied_context_id;
-      return {
-        context_id: supplied_context_id,
-        created: false,
-        side_thread: { parent_thread_id: parentThreadId },
-      };
-    }
-    // Cross-thread fix: when BOTH source and destination are participants of the
-    // same context, the exchange belongs on the ROOT thread (thread_id = context_id),
-    // regardless of which side thread the current delivery arrived on.
-    // Exemptions: self-emit and broadcast (no destEndpoint).
-    if (
-      destEndpointR1 &&
-      destEndpointR1 !== source_endpoint_id &&
-      ctxStore.isParticipant(supplied_context_id, destEndpointR1)
-    ) {
-      return { context_id: supplied_context_id, created: false, force_root_thread: true };
-    }
+    // Emit to the supplied context. Destination participation is not validated here —
+    // the delivery layer (resolveDestinations) handles whether dest gets a notification.
     return { context_id: supplied_context_id, created: false };
   }
 
@@ -163,31 +130,33 @@ export function resolveContext(input: ResolveContextInput, ctxStore: ContextStor
   // Runtime-originated: a current delivery context is in play.
   if (current_delivery_context_id) {
     if (destEndpoint && ctxStore.isParticipant(current_delivery_context_id, destEndpoint)) {
-      // Rule 2: destination is a participant of the current context.
-      // Cross-thread fix: when BOTH source and destination are participants, the reply
-      // belongs on the ROOT thread, not the (possibly side) delivery thread.
-      // When the source is NOT a participant (e.g. snowball replying to floe), keep
-      // the current thread so the side-thread exchange continues as intended.
-      if (ctxStore.isParticipant(current_delivery_context_id, source_endpoint_id)) {
-        return { context_id: current_delivery_context_id, created: false, force_root_thread: true };
-      }
+      // Rule 2: destination is already a participant of the current context → stay here.
       return { context_id: current_delivery_context_id, created: false };
     }
-    // Rule 3: destination is NOT a participant of the current context.
-    // Stay in the SAME context but open a new side thread for this sub-exchange.
-    // The side thread's parent is the delivery thread (or root = context_id when absent).
-    const parentThreadId =
-      current_delivery_thread_id && current_delivery_thread_id.length > 0
-        ? current_delivery_thread_id
-        : current_delivery_context_id;
-    return {
-      context_id: current_delivery_context_id,
-      created: false,
-      side_thread: { parent_thread_id: parentThreadId },
-    };
+    // Rule 3: destination is NOT a participant → peer context model.
+    if (destEndpoint && destEndpoint !== source_endpoint_id) {
+      // D1: reuse an existing open peer context linked to this origin for the same pair.
+      const existing = ctxStore.findLinkedPeerContext(
+        current_delivery_context_id,
+        source_endpoint_id,
+        destEndpoint
+      );
+      if (existing) {
+        return { context_id: existing.context_id, created: false };
+      }
+      // Create a new peer context linked to the origin.
+      return {
+        context_id: newContextId(),
+        created: true,
+        participants: [source_endpoint_id, destEndpoint],
+        peer_link_to: current_delivery_context_id
+      };
+    }
+    // destEndpoint is null (broadcast) or self-emit: stay in current context.
+    return { context_id: current_delivery_context_id, created: false };
   }
 
-  // UI-originated (no current delivery context) with no supplied id:
+  // Rule 0 — UI-originated (no current delivery context) with no supplied id:
   // open a new context with {source, destination}.
   const participants = destEndpoint && destEndpoint !== source_endpoint_id
     ? [source_endpoint_id, destEndpoint]

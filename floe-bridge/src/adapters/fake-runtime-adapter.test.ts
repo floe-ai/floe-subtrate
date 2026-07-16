@@ -42,6 +42,7 @@ function makeContext(): { context: RuntimeContext; emittedEvents: Array<Paramete
   bus.appendRuntimeTelemetry = async () => {};
   bus.emit = async (event) => {
     emittedEvents.push(event);
+    return { event_id: `evt_fake_${Date.now()}`, context_id: null };
   };
   return {
     emittedEvents,

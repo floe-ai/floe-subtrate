@@ -174,8 +174,20 @@ export class BusClient {
     });
   }
 
-  async emit(event: EventCommand): Promise<void> {
-    await this.post("/v1/events/emit", event);
+  /**
+   * Emit an event to the bus.
+   * Returns the resolved context_id (may be a newly-created peer context)
+   * and event_id so the caller can surface topology info to the emitting actor.
+   */
+  async emit(event: EventCommand): Promise<{ event_id: string; context_id: string | null }> {
+    const result = await this.post("/v1/events/emit", event) as {
+      event_id: string;
+      event?: { context_id?: string | null };
+    };
+    return {
+      event_id: result.event_id,
+      context_id: result.event?.context_id ?? null
+    };
   }
 
   async reportTurnEnd(endpointId: string): Promise<void> {

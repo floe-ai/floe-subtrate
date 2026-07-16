@@ -607,7 +607,7 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 ### Emit defaults to origin context (D-B fix)
 
 - The `emit` tool in `pi-agent-core-adapter.ts` now defaults `context_id` to `turn.context_id` (the delivery origin context) when no explicit `context_id` is provided. This ensures replies land in the same context thread they came from.
-- Explicit `context_id` in the tool call still overrides (for deliberate cross-context emits, e.g. floe→snowball side thread).
+- Explicit `context_id` in the tool call still overrides (for deliberate cross-context emits, e.g. relay back to the origin context from a peer context).
 - `current_delivery_context_id` is still always forwarded as observability metadata (unchanged).
 
 ### Snowball BeforeTurn overlay narrowing (D-A fix)
@@ -676,56 +676,98 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 
 ---
 
-## First-class Side Threads (fm/floe-side-thread)
+## First-class Side Threads (fm/floe-side-thread) — SUPERSEDED by fm/floe-peer-context-relay
 
-### Threads table
+> **NOTE (fm/floe-peer-context-relay):** Side-thread ROUTING is RETIRED. Cross-actor communication now uses PEER CONTEXTS (see below). The `threads` table and ThreadStore remain for root-thread records and the close lifecycle API, but `submitEvent` no longer creates side threads via Rule 3.
+
+### Threads table (minimal, still active)
 
 - **`threads` table** in `floe-bus/src/contexts/threads.ts`: `thread_id` (PK), `context_id`, `parent_thread_id` (NULL = root/main), `created_by_endpoint_id`, `status` (`open`/`closed`), `created_at`, `title`.
-- **Root thread invariant**: every context gets a root thread row with `thread_id = context_id` and `parent_thread_id = NULL`. Created in `ContextStore.createContext` (via direct `INSERT OR IGNORE`). Backfilled by `applyThreadSchema` migration for existing contexts.
+- **Root thread invariant**: every context gets a root thread row with `thread_id = context_id` and `parent_thread_id = NULL`. Created in `ContextStore.createContext`. Backfilled by `applyThreadSchema` for existing contexts.
 - **Main vs side is DERIVED**: `parent_thread_id IS NULL` → main thread; `IS NOT NULL` → side thread. No kind/type column.
 - **Schema**: `applyContextSchema` calls `applyThreadSchema` at the end; guaranteed in `BusStore` constructor.
 - **`ThreadStore`** in `floe-bus/src/contexts/threads.ts`: `createThread`, `ensureRootThread`, `getThread`, `listThreadsForContext`. Accessible as `store.threadStore`.
 - `BusClient` exposes `listThreadsForContext(contextId)`, `getThread(threadId)`, `createThread(contextId, input)`. `ThreadRecord` type exported from `floe-bridge/src/bus-client.ts`.
 
-### Rule 3 change (resolver + submitEvent)
+### Side thread close lifecycle (fm/floe-sidethread-lifecycle) — still active for manually-created threads
 
-- **Old Rule 3** (pre-fm/floe-side-thread): runtime emit to a non-participant destination → open a NEW context with {source, destination}.
-- **New Rule 3**: runtime emit to a non-participant destination → stay in the SAME context, create a **side thread** (`parent_thread_id = current_delivery_thread_id || context_id`).
-- `resolveContext` gains optional `current_delivery_thread_id` input field. When Rule 3 fires, returns `{ context_id: <same>, created: false, side_thread: { parent_thread_id } }`.
-- `submitEvent` in `BusStore`: when `resolution.side_thread` is set, calls `threadStore.createThread(...)` and uses the new thread_id for the emitted event.
-- `submitEvent` also calls `threadStore.ensureRootThread(...)` for newly created contexts (`resolution.created = true`).
+- **`ThreadStore.closeThread(threadId)`** — sets `status = 'closed'`. Throws `RootThreadCloseError` if `parent_thread_id IS NULL`. Throws `ThreadNotFoundError` if missing. Idempotent on already-closed.
+- **`BusStore.closeThread(threadId, broadcast)`** — delegates to `threadStore.closeThread`, then broadcasts `thread_closed { thread_id, context_id, parent_thread_id }`.
+- **Closed thread rejects events**: `BusStore.submitEvent` checks `command.thread_id` against the thread table before inserting. If the thread is closed, throws `ClosedThreadError`. Root threads are safe (cannot be closed).
+- **`BusClient.closeThread(threadId)`** — `POST /v1/threads/:thread_id/close` wrapper, returns `ThreadRecord`.
+- **`HookName += 'ThreadClosed'`** — payload: `{ thread_id, context_id, parent_thread_id }`.
+- **Daemon `onThreadClosed`** — handles `thread_closed` WS broadcast: fires `ThreadClosed` hook, calls `adapter.releaseSessionsForClosedThread(closedThreadId)`.
+- **`SessionState.sideThreadId: string | null`** — always `null` after the peer context pivot (no routing creates side threads). Retained for compatibility with `releaseSessionsForClosedThread`.
+- **`PiAgentCoreAdapter.releaseSessionsForClosedThread(closedThreadId)`** — no-op in practice (sideThreadId is always null). API retained; callable without error.
+- **`RuntimeAdapter` interface** gains optional `releaseSessionsForClosedThread?(closedThreadId: string): void`.
+- **Error classes** in `floe-bus/src/contexts/threads.ts`: `ThreadNotFoundError`, `RootThreadCloseError`, `ClosedThreadError` (all exported).
 
-### Reply routing
-
-- An actor's turn carries `thread_id` from the delivery trigger event. The emit tool passes this as `thread_id` in the `EventCommand`, which is forwarded to `resolveContext` as `current_delivery_thread_id`.
-- If the addressee replies (Rule 2: destination IS a participant), the reply carries `thread_id = sideThreadId` (from turn) → lands on the same side thread. No new thread created.
-- **`BusStore.submitEvent` new context creation**: also calls `ensureRootThread` for new contexts so every context has a root thread immediately.
-
-### API routes (server.ts)
+### API routes (server.ts) — unchanged
 
 - `GET /v1/contexts/:id/threads` → `{ threads: ThreadRecord[] }`
 - `POST /v1/contexts/:id/threads` → `{ ok: true, thread: ThreadRecord }` (201)
 - `GET /v1/threads/:thread_id` → `{ thread: ThreadRecord }` (404 if missing)
-- `POST /v1/threads/:thread_id/close` → `{ ok: true, thread: ThreadRecord }` — closes a side thread; 409 if it is a root/main thread; 404 if not found; idempotent (already-closed is ok).
+- `POST /v1/threads/:thread_id/close` → `{ ok: true, thread: ThreadRecord }` — closes a side thread; 409 if root; 404 if not found; idempotent.
 
-### Side thread close lifecycle (fm/floe-sidethread-lifecycle)
+---
 
-- **`ThreadStore.closeThread(threadId)`** — sets `status = 'closed'`. Throws `RootThreadCloseError` if `parent_thread_id IS NULL` (only side threads can close). Throws `ThreadNotFoundError` if thread does not exist. Idempotent on already-closed.
-- **`BusStore.closeThread(threadId, broadcast)`** — delegates to `threadStore.closeThread`, then broadcasts `thread_closed { thread_id, context_id, parent_thread_id }`.
-- **Closed thread rejects events**: `BusStore.submitEvent` checks `command.thread_id` against the thread table before inserting. If the thread is closed, throws `ClosedThreadError`. Main/root thread and newly created side threads are unaffected.
-- **`BusClient.closeThread(threadId)`** — `POST /v1/threads/:thread_id/close` wrapper, returns `ThreadRecord`.
-- **`HookName += 'ThreadClosed'`** — payload: `{ thread_id, context_id, parent_thread_id }` (no workspace_id; side threads are only closed by side thread, never broadcast-workspace).
-- **Daemon `onThreadClosed`** — handles `thread_closed` WS broadcast: fires `ThreadClosed` hook to all registered extension hook registries, then calls `adapter.releaseSessionsForClosedThread(closedThreadId)`.
-- **`SessionState.sideThreadId: string | null`** — set when a session is CREATED by a delivery triggered on a non-root thread (thread_id ≠ contextId). Used by `releaseSessionsForClosedThread` for conservative eviction.
-- **`PiAgentCoreAdapter.releaseSessionsForClosedThread(closedThreadId)`** — iterates sessions; evicts any session whose `sideThreadId === closedThreadId`. Skips sessions with an active in-progress turn (deferred). Root-thread sessions (sideThreadId=null) and different-side-thread sessions are never evicted.
-- **`RuntimeAdapter` interface** gains optional `releaseSessionsForClosedThread?(closedThreadId: string): void`.
-- **Error classes** in `floe-bus/src/contexts/threads.ts`: `ThreadNotFoundError`, `RootThreadCloseError`, `ClosedThreadError` (all exported).
+## Peer Context Relay (fm/floe-peer-context-relay) — SUPERSEDES fm/floe-side-thread Rule 3
 
-### Non-regressing
+### Core invariants (locked 2026-07-16, captain-driven)
 
-- Existing single-thread conversations are unaffected: Rule 2 (participant reply) keeps the same thread.
-- UI renders context events flat until a future slice groups by thread.
-- App UI wiring for close is a SEPARATE follow-up.
+- **Cross-actor communication = peer context, never side thread.** When actor S (in context C) emits to actor D (NOT in C), a NEW independent PEER context C' = {S, D} is created and linked to C via `parent_context_id`. The event lands in C', not C.
+- **D1 reuse:** if an open peer context with exactly {S, D} linked to C already exists, it is reused (DM analogy — repeat cross-actor asks share one peer context).
+- **Peer context is STRUCTURALLY IDENTICAL to any other context:** same table, same root thread, same participant model. The ONLY difference is `parent_context_id` pointing back to the origin.
+- **`parent_context_id` is a NEUTRAL ASSOCIATIVE LINK** (not hierarchy/containment). Direction = provenance (C' was spun up to serve C's work).
+- **`side_thread` and `force_root_thread` RETIRED** from `ResolveContextSuccess`. The resolver no longer emits these signals.
+- **Every event lands on its context's root thread** (`thread_id = context_id`). No event crosses context boundaries via side threads.
+- **Single thread per context** (Decision D2). Root thread = the conversation. Future multi-thread is possible but deferred.
+
+### Routing rules (resolver)
+
+- **Rule 1 (explicit context_id):** source must be a participant of the supplied context → emit there. Destination participation is not validated (delivery layer handles it).
+- **Rule 2 (destination ∈ current context):** destination IS a participant → stay in current context. No force_root_thread needed (only one thread per context).
+- **Rule 3 (destination ∉ current context — peer context):**
+  - D1: find existing open peer context `{S, D}` linked to current context → reuse.
+  - Else: create new peer context `{S, D}` with `parent_context_id = current_delivery_context_id`.
+- **`ContextStoreReader.findLinkedPeerContext(linkedToContextId, endpointA, endpointB)`** — finds an existing context with `parent_context_id = linkedToContextId` and exactly participant set `{endpointA, endpointB}`.
+- **`ResolveContextSuccess.peer_link_to?: string | null`** — when `created=true`, `submitEvent` creates the context with `parent_context_id = peer_link_to`.
+
+### Link-inclusion (D5)
+
+- When an actor is delivered a message in a peer context C' (which has `parent_context_id = C`), the adapter fetches the ORIGINATING SLICE from C (first 5 events) and injects it into the prompt before the peer thread slice and trigger.
+- `renderOriginatingSlice(originContextId, events)` — renders header + relay instructions + event text. Exported from `pi-agent-core-adapter.ts`.
+- **Injection order:** `[extension overlay]` → `[originating slice from C]` → `[peer thread slice]` → `[trigger]`.
+- Originating slice header: `[Peer Context — linked to origin context: <id>]` + `[To relay results back, emit with context_id: <id>]`.
+- Non-fatal: if the origin fetch fails, the actor proceeds without the slice.
+- `SessionState.peerOriginContextId: string | null` — set during `handleBundle` after detecting `parent_context_id` on the current context.
+
+### Relay ergonomics (D3 explicit)
+
+- The bridging actor S (participant of BOTH C' and C) relays by emitting with explicit `context_id = C.context_id` (Rule 1 → valid since S ∈ C).
+- The originating slice provides `C.context_id` to the actor so it knows where to relay.
+- `BusClient.emit()` now returns `{ event_id: string; context_id: string | null }` — the resolved context_id is surfaced to the emitting actor in the tool result: `emit accepted (context_id: ctx_...)`. This lets the actor discover the peer context_id after the first cross-actor emit.
+
+### What changed vs the old side-thread model
+
+| Before | After |
+|--------|-------|
+| Rule 3: create side thread in same context C | Rule 3: create peer context C' linked to C |
+| `side_thread` in ResolveContextSuccess | `peer_link_to` in ResolveContextSuccess |
+| `force_root_thread` for both-participant exchange | Removed (single thread per context) |
+| `current_delivery_thread_id` in ResolveContextInput | Removed (unused after pivot) |
+| `sideThreadId` in SessionState tracks side thread | Always null (no routing side threads) |
+| `releaseSessionsForClosedThread` evicts thread-scoped sessions | No-op (sessions not scoped to threads) |
+| D-B prompt: side thread instruction in emit tool | Updated: peer context instruction in emit tool |
+
+### Tests
+
+- `floe-bus/src/contexts/peer-context.test.ts` — 6 end-to-end integration tests for the complete relay flow.
+- `floe-bus/src/contexts/resolver.test.ts` — rewritten for peer context model (18 tests).
+- `floe-bus/src/contexts/threads.test.ts` — updated; side-thread creation tests → peer context creation tests.
+- `floe-bus/src/contexts/integration.test.ts` — T4/T-CR1..5 updated for peer context.
+- `floe-bridge/src/adapters/pi-agent-core-adapter.link-inclusion.test.ts` — 9 tests for `renderOriginatingSlice`.
+- `floe-bridge/src/adapters/pi-agent-core-adapter.thread-close.test.ts` — updated Test 1 to document no-op behavior.
 
 ---
 
