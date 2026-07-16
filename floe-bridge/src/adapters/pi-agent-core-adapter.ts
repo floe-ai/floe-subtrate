@@ -616,13 +616,21 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           thread_id: turn.thread_id,
           // D-B: default the emit context to the delivery's origin context so replies
           // always land in the same thread they came from. Explicit context_id overrides.
-          // Guard: only apply D-B default when this actor IS a participant of the origin
+          // Guard 1: only apply D-B default when this actor IS a participant of the origin
           // context. If it is NOT a participant, Rule 1 (bus resolver) would reject with
           // 409 because participant membership is enforced there. Non-participants must
           // leave context_id null so Rule 2 handles routing instead.
+          // Guard 2: only apply D-B default when the DESTINATION is also a participant of
+          // the origin context (i.e. a genuine reply). When the destination is NOT a
+          // participant, leave context_id null so the resolver's current_delivery_context_id
+          // path triggers Rule 3, opening a side thread for the cross-actor exchange.
           context_id: params?.context_id ?? (
             turn.context_id !== null &&
-            (turn.current_context_participants ?? []).includes(turn.endpoint_id)
+            (turn.current_context_participants ?? []).includes(turn.endpoint_id) &&
+            (
+              !targetEndpoint ||
+              (turn.current_context_participants ?? []).includes(String(targetEndpoint))
+            )
               ? turn.context_id
               : null
           ),

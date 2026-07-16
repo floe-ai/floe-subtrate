@@ -115,6 +115,26 @@ export function resolveContext(input: ResolveContextInput, ctxStore: ContextStor
     if (!ctx || !ctxStore.isParticipant(supplied_context_id, source_endpoint_id)) {
       return rejection(supplied_context_id, source_endpoint_id, ctxStore);
     }
+    // Hardening: if the destination is NOT a participant of the supplied context, open a
+    // side thread — the same outcome as the runtime Rule 3 branch. This makes side-thread
+    // routing robust regardless of how context_id was set (e.g. the D-B emit-tool default).
+    // Exemptions: self-emit (source == destination) and broadcast (no destEndpoint).
+    const destEndpointR1 = destinationEndpoint(destination);
+    if (
+      destEndpointR1 &&
+      destEndpointR1 !== source_endpoint_id &&
+      !ctxStore.isParticipant(supplied_context_id, destEndpointR1)
+    ) {
+      const parentThreadId =
+        current_delivery_thread_id && current_delivery_thread_id.length > 0
+          ? current_delivery_thread_id
+          : supplied_context_id;
+      return {
+        context_id: supplied_context_id,
+        created: false,
+        side_thread: { parent_thread_id: parentThreadId },
+      };
+    }
     return { context_id: supplied_context_id, created: false };
   }
 

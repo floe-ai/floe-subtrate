@@ -244,4 +244,66 @@ describe("resolveContext rule matrix", () => {
     );
     expect(result).toEqual({ context_id: "ctx_a", created: false });
   });
+
+  it("Rule 1 hardening: supplied context + source participant + destination NOT participant → side thread", () => {
+    // E1 and E2 are in ctx_a; E3 is NOT. When E1 emits to E3 with supplied context_id
+    // (e.g. because D-B stamped it), the resolver must open a side thread instead of
+    // landing E3 on the main thread.
+    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
+    const result = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E3),
+        supplied_context_id: "ctx_a",
+        current_delivery_context_id: "ctx_a",
+        current_delivery_thread_id: "thr_main",
+        workspace_id: WS
+      },
+      reader
+    );
+    expect("context_id" in result).toBe(true);
+    if ("context_id" in result) {
+      // Must stay in the SAME context, not open a new one.
+      expect(result.context_id).toBe("ctx_a");
+      expect(result.created).toBe(false);
+      // Must signal a side thread rooted at the delivery thread.
+      expect(result.side_thread).toMatchObject({ parent_thread_id: "thr_main" });
+    }
+  });
+
+  it("Rule 1 hardening: supplied context + source participant + destination NOT participant — falls back to context_id as parent when no delivery thread", () => {
+    const reader = makeReader({ ctx_a: { participants: [E1, E2] } });
+    const result = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E3),
+        supplied_context_id: "ctx_a",
+        current_delivery_context_id: "ctx_a",
+        current_delivery_thread_id: null,
+        workspace_id: WS
+      },
+      reader
+    );
+    if ("context_id" in result) {
+      expect(result.side_thread).toMatchObject({ parent_thread_id: "ctx_a" });
+    }
+  });
+
+  it("Rule 1 hardening: self-emit into supplied context (source == destination) stays on main thread", () => {
+    // Self-emit is exempt from the side-thread rule regardless of participant list.
+    const reader = makeReader({ ctx_a: { participants: [E1] } });
+    const result = resolveContext(
+      {
+        source_endpoint_id: E1,
+        destination: endpointDest(E1),
+        supplied_context_id: "ctx_a",
+        current_delivery_context_id: "ctx_a",
+        current_delivery_thread_id: "thr_main",
+        workspace_id: WS
+      },
+      reader
+    );
+    // Self-emit: no side thread.
+    expect(result).toEqual({ context_id: "ctx_a", created: false });
+  });
 });
