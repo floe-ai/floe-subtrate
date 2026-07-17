@@ -44,6 +44,7 @@ export type SavedProjectConfig = {
 };
 
 const DEFAULT_FLOE_AGENT_BODY = readPromptAsset("default-floe-agent.md");
+const DEFAULT_SUBSTRATE_BUILD_SKILL = readPromptAsset("substrate-build-skill.md");
 
 export function ensureProjectTemplate(workspacePath: string, workspaceName: string): void {
   const floeDir = join(workspacePath, ".floe");
@@ -101,12 +102,7 @@ ${DEFAULT_FLOE_AGENT_BODY}
 `, "utf8");
 
   writeIfMissing(join(floeDir, "extensions", "README.md"), "# Extensions\n\nProject-local Floe extensions can be placed here.\n", "utf8");
-  writeIfMissing(join(floeDir, "skills", "substrate-build", "SKILL.md"), `# substrate-build
-
-Use this skill to inspect and extend the Floe substrate. Preserve the daemon
-boundary: bus owns durable routing state, bridge owns runtime adaptation, and
-web owns the human operator experience.
-`, "utf8");
+  writeIfMissing(join(floeDir, "skills", "substrate-build", "SKILL.md"), `${DEFAULT_SUBSTRATE_BUILD_SKILL}\n`, "utf8");
   writeIfMissing(join(floeDir, "mcp", "README.md"), "# MCP\n\nReference or copy runtime-native MCP profiles here when needed.\n", "utf8");
   writeIfMissing(join(floeDir, "state", "README.md"), "# State\n\nEphemeral project-local Floe runtime state may be placed here.\n", "utf8");
   writeIfMissing(join(floeDir, "state", ".gitignore"), "*\n!.gitignore\n!README.md\n", "utf8");
