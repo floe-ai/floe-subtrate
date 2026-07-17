@@ -68,6 +68,10 @@ If any are not actually complete in code, treat them as immediate prerequisite w
 * public extension hooks have real firing paths, typed payloads, docs, and tests
 * FloeWeb is a client/renderer over substrate state, not the substrate model
 * Scope is the workspace organising boundary; Field is FloeWeb's rendering of Scope
+* push-only delivery: bus pushes events to the bridge via WebSocket; no recurring polling timers anywhere in the substrate; the bridge reconnects with exponential back-off and runs a one-shot resync on each reconnect
+* session isolation per (actor, context): the bridge maintains one ephemeral session per (actor, context) pair; session is private working memory, never persisted; a cold-start session re-derives from context history and world files
+* instruction inject-once: hook results are deduplicated by content hash per (context, source) before injection; same hash means no re-injection; context clear or compact resets the baseline so instructions re-inject into the fresh window
+* cross-actor coordination uses independent peer contexts joined by a neutral link; a different participant set is a different context; the bridging actor relays results explicitly into the origin context; side-thread routing for cross-participant-set work is retired
 
 ## Standing regression checks
 
@@ -84,6 +88,9 @@ Every major slice should re-check:
 * docs and code agree
 * vocabulary drift lint stays green (`floe-bus/src/docs-vocabulary.test.ts` — retired terms do not reappear as live concepts)
 * docs structure lint stays green (`floe-bus/src/docs-structure.test.ts` — standing docs are a closed registered set; knowledge routes into living documents)
+* no recurring `setInterval` for delivery, liveness, or reconciliation anywhere in the substrate
+* no session state persisted beyond bridge process lifetime
+* instructions not re-injected per turn when content hash is unchanged in a context (inject-once baseline)
 
 ---
 
@@ -134,6 +141,12 @@ ExtensionContext.hooks.on(...)
 ```
 
 Declarative YAML hook config remains future/not implemented.
+
+## Inject-once deduplication (standing behavior)
+
+The `BeforeTurn` hook path includes a bridge-level deduplication baseline. The bridge tracks a content hash per `(context_id, source)` across turns in a given context. When a hook result's hash matches the last-injected value for that context and source, the injection is suppressed for that turn. When the hash changes, injection proceeds and the baseline updates. Context clear or compact resets the baseline so instructions re-inject cleanly into the fresh window on the next turn.
+
+This ensures instruction content enters a context once and re-enters only when the source genuinely changes — not on every turn.
 
 ---
 
@@ -471,6 +484,16 @@ Core should not become:
 
 Those are user-space patterns over pulse.
 
+## Heartbeat as pulse composition
+
+A heartbeat is not a new primitive — it is a utilisation of the existing pulse event type together with the inject-once instruction path.
+
+An actor with heartbeat enabled receives a recurring `pulse.fired` event that triggers its normal delivery path. Per-actor heartbeat instructions are resolved at turn time and injected once (deduplicated by hash). The actor reacts.
+
+Per-actor config: enable/disable + an editable instruction file the actor controls. Extensions may ship default heartbeat instruction text; actors override per-agent by editing their instruction file. No bespoke pulse plumbing required in extensions.
+
+This is the substrate-native pattern for recurring actor activation with configurable intent — not a new system, just the existing pulse and instruction primitives composed.
+
 ## Webhooks
 
 Core owns:
@@ -603,13 +626,19 @@ Core should avoid prescribing one memory model too early.
 
 Core already supports actor-to-actor work through explicit contexts and emits.
 
-The canonical pattern remains:
+> **Model update (2026-07-17):** The canonical cross-actor pattern uses peer contexts joined by a neutral link, replacing side-thread routing for cross-participant-set work.
+
+The canonical cross-actor pattern is peer contexts with a neutral link:
 
 ```text
-A ↔ B
-B ↔ C
-B summarises back to A ↔ B
+Context C  {A, B}        — A and B work together here
+B needs D  (D ∉ C)
+→ Context C' {B, D}      — independent peer context; neutral link C' → C
+B and D work in C'
+B bridges: emits result back into C (B participates in both)
 ```
+
+C and C' are structurally identical substrate peers — the link carries associative provenance but imposes no hierarchy and no auto-inheritance. The bridging actor (member of both contexts) makes the relay explicit by emitting into the origin context. Side-thread routing for cross-participant-set work is retired.
 
 Do not introduce channels, rooms, teams, or implicit group chat as core concepts.
 
@@ -748,12 +777,18 @@ Blocks are how FloeWeb represents and composes that substrate.
 
 Users and extensions should build the ways of working.
 
-The next major move after hook completeness is:
+The foundational substrate primitives are landed: push-only delivery, session isolation per (actor, context), instruction inject-once deduplication, peer-context coordination with neutral links, context compaction, dynamic participants, per-event-type subscriptions, and batch subscription primitives.
+
+The current next moves are, in order:
 
 ```text
-Block model for substrate representation
+Peer-context UI: sidebar renders linked peer contexts (not side threads);
+close a finished peer context releases its session.
+
+Heartbeat: per-actor pulse + instruction config (composition, not a new primitive).
+
+Block model for substrate representation: clarify how actors, contexts,
+pulses, webhooks, tools, extensions, files, and work logs compose visually.
 ```
 
-because this clarifies how actors, contexts, pulses, webhooks, tools, extensions, files, work logs, and future workflows fit together.
-
-Then local extension lifecycle can build on that model so extensions can eventually contribute not only tools and hooks, but also block interpretations and block-connected capabilities.
+Extensions prove the pattern: they stay thin — file formats, UI projection, config, minimal glue — while the substrate provides the durable coordination primitives underneath.
