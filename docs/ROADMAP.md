@@ -638,7 +638,7 @@ B and D work in C'
 B bridges: emits result back into C (B participates in both)
 ```
 
-C and C' are structurally identical substrate peers — the link carries associative provenance but imposes no hierarchy and no auto-inheritance. The bridging actor (member of both contexts) makes the relay explicit by emitting into the origin context. Side-thread routing for cross-participant-set work is retired; within a single context, local threads remain available for topic subdivision among that context's own participants.
+C and C' are structurally identical substrate peers — the link carries associative provenance but imposes no hierarchy and no auto-inheritance. The bridging actor (member of both contexts) makes the relay explicit by emitting into the origin context. Side-thread routing for cross-participant-set work is retired.
 
 Do not introduce channels, rooms, teams, or implicit group chat as core concepts.
 
