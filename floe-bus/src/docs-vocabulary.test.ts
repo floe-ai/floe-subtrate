@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Standing regression check (ROADMAP "Standing regression checks": docs and code agree).
@@ -117,7 +117,7 @@ describe("vocabulary drift lint", () => {
       const matchedAllowed = new Set<string>();
       for (const root of rule.roots) {
         for (const file of collectFiles(root, rule.extensions)) {
-          const repoPath = relative(REPO_ROOT, file);
+          const repoPath = relative(REPO_ROOT, file).split(sep).join("/");
           if (repoPath === SELF) continue;
           const lines = readFileSync(file, "utf8").split("\n");
           lines.forEach((line, index) => {
