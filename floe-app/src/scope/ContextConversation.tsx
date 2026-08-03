@@ -18,9 +18,6 @@
  *   B3 — Speaking-as selector always accessible: even when selected actor is
  *        not a context participant, the selector is visible; a "Join context"
  *        button lets the user add themselves.
- *   A  — Side-thread sidebar: real events grouped by thread_id from the substrate.
- *        Side threads appear in a tabbed right panel (one tab per side thread).
- *        Zero side threads → no sidebar. Live-refreshed via WS event_submitted.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type {
@@ -28,12 +25,10 @@ import type {
   EndpointRef,
   EventEnvelope,
   DeliveryBundle,
-  ThreadRecord,
 } from "../bus-client/types.ts";
 import {
   getContext,
   listContextEvents,
-  listThreadsForContext,
   emit,
   addContextParticipant,
 } from "../bus-client/client.ts";
@@ -65,40 +60,6 @@ const tk = {
   fontUi:      '"Inter Variable","Inter",-apple-system,BlinkMacSystemFont,system-ui,sans-serif',
   r1: 3, r2: 5, r3: 8,
 } as const;
-
-// ---------------------------------------------------------------------------
-// A. SIDE-THREAD DATA MODEL
-// ---------------------------------------------------------------------------
-// Side threads are derived from real substrate data:
-//   - threads fetched via GET /v1/contexts/:id/threads
-//   - events grouped by thread_id (main = thread_id === context_id)
-// ---------------------------------------------------------------------------
-
-type SideThread = {
-  thread: ThreadRecord;
-  events: EventEnvelope[];
-};
-
-/** Derive a useful display label for a side thread. */
-function sideThreadLabel(
-  thread: ThreadRecord,
-  events: EventEnvelope[],
-  endpoints: EndpointRef[],
-): string {
-  if (thread.title) return thread.title;
-  // Derive from unique actors in this thread's events
-  const seen = new Set<string>();
-  const names: string[] = [];
-  for (const e of events) {
-    if (e.source_endpoint_id && !seen.has(e.source_endpoint_id)) {
-      seen.add(e.source_endpoint_id);
-      names.push(endpointName(e.source_endpoint_id, endpoints));
-    }
-  }
-  if (names.length > 0) return names.join(" ↔ ");
-  // Fallback: short thread id
-  return `Thread …${thread.thread_id.slice(-8)}`;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -223,147 +184,6 @@ if (typeof document !== "undefined") {
     `;
     document.head.appendChild(style);
   }
-}
-
-// ---------------------------------------------------------------------------
-// A — Multi-side-thread sidebar (tabbed) — REAL DATA
-//
-// Design: one fixed-width sidebar with a tab row across the top — one tab
-// per side thread, labelled by the actors involved or the thread title.
-// Selecting a tab shows that thread's message log (reuses MessageRow).
-// Collapsed to a 36px strip with a chevron when ≥1 side thread exists.
-//
-// Closed threads (status="closed") render with muted tab styling.
-// ---------------------------------------------------------------------------
-
-function SideThreadsPanel({
-  threads,
-  endpoints,
-}: {
-  threads: SideThread[];
-  endpoints: EndpointRef[];
-}): React.ReactElement {
-  const [collapsed, setCollapsed] = useState(false);
-  const [activeIdx, setActiveIdx] = useState(0);
-
-  // Clamp activeIdx when thread list changes (e.g. new thread appears)
-  const clampedIdx = Math.min(activeIdx, threads.length - 1);
-  const active = threads[clampedIdx];
-
-  return (
-    <div style={{
-      width: collapsed ? 36 : 300,
-      flexShrink: 0,
-      borderLeft: `2px solid ${tk.warn}`,
-      background: tk.surfaceSunk,
-      display: "flex",
-      flexDirection: "column",
-      transition: "width 0.18s ease",
-      overflow: "hidden",
-    }}>
-      {/* ── Panel header ── */}
-      <div style={{
-        flexShrink: 0,
-        display: "flex", alignItems: "center",
-        padding: collapsed ? "10px 6px" : "8px 10px 0",
-        gap: 4,
-        justifyContent: collapsed ? "center" : "space-between",
-        borderBottom: collapsed ? `1px solid ${tk.border2}` : "none",
-      }}>
-        {!collapsed && (
-          <div style={{
-            fontSize: 10, letterSpacing: "0.10em", textTransform: "uppercase",
-            color: tk.warn, fontWeight: 600, paddingBottom: 6,
-          }}>
-            Side threads
-          </div>
-        )}
-        <button
-          onClick={() => setCollapsed(v => !v)}
-          title={collapsed ? "Expand side threads" : "Collapse side threads"}
-          aria-label={collapsed ? "Expand side threads" : "Collapse side threads"}
-          style={{
-            background: "transparent", border: "none",
-            color: tk.ink4, cursor: "pointer",
-            fontSize: 13, lineHeight: 1, padding: 2,
-            flexShrink: 0, marginBottom: collapsed ? 0 : 6,
-          }}
-        >
-          {collapsed ? "⟩" : "⟨"}
-        </button>
-      </div>
-
-      {/* ── Tab bar (one tab per side thread) ── */}
-      {!collapsed && (
-        <div style={{
-          flexShrink: 0,
-          display: "flex",
-          borderBottom: `1px solid ${tk.border2}`,
-          overflowX: "auto",
-        }}>
-          {threads.map((st, i) => {
-            const isActive = i === clampedIdx;
-            const isClosed = st.thread.status === "closed";
-            const label = sideThreadLabel(st.thread, st.events, endpoints);
-            return (
-              <button
-                key={st.thread.thread_id}
-                onClick={() => setActiveIdx(i)}
-                title={isClosed ? `${label} (closed)` : label}
-                style={{
-                  flexShrink: 0,
-                  background: "transparent", border: "none",
-                  borderBottom: isActive
-                    ? `2px solid ${tk.warn}`
-                    : "2px solid transparent",
-                  color: isActive ? tk.warn : isClosed ? tk.ink4 : tk.ink3,
-                  opacity: isClosed ? 0.55 : 1,
-                  fontSize: 11.5, fontWeight: isActive ? 580 : 400,
-                  fontFamily: tk.fontUi,
-                  padding: "6px 10px",
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  maxWidth: 140,
-                  transition: "color 0.12s",
-                }}
-              >
-                {isClosed ? `${label} ✕` : label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── Thread message log ── */}
-      {!collapsed && active && (
-        <div style={{
-          flex: 1, overflow: "auto",
-          padding: "8px 12px",
-        }}>
-          {active.thread.status === "closed" && (
-            <div style={{
-              fontSize: 10.5, color: tk.ink4, fontStyle: "italic",
-              marginBottom: 6, paddingBottom: 6,
-              borderBottom: `1px solid ${tk.border2}`,
-            }}>
-              This thread is closed.
-            </div>
-          )}
-          {active.events.filter(isVisibleMessage).length === 0 ? (
-            <div style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic", padding: "12px 0" }}>
-              No messages in this thread yet.
-            </div>
-          ) : (
-            active.events.filter(isVisibleMessage).map(event => (
-              <MessageRow key={event.event_id} event={event} endpoints={endpoints} />
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -615,7 +435,6 @@ export function ContextConversation({
 }: ContextConversationProps): React.ReactElement {
   const [context, setContext] = useState<ContextRef | null>(null);
   const [events, setEvents] = useState<EventEnvelope[]>([]);
-  const [threads, setThreads] = useState<ThreadRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [speakingAsId, setSpeakingAsId] = useState<string>("");
@@ -633,12 +452,10 @@ export function ContextConversation({
     Promise.all([
       getContext(contextId),
       listContextEvents(contextId),
-      listThreadsForContext(contextId),
     ])
-      .then(([ctx, evts, thrs]) => {
+      .then(([ctx, evts]) => {
         setContext(ctx);
         setEvents(evts);
-        setThreads(thrs);
         setLoading(false);
       })
       .catch(err => {
@@ -722,7 +539,7 @@ export function ContextConversation({
   }
 
   // B2 — auto-scroll to bottom when messages or working state changes (if user is at bottom)
-  // Uses total event count (all threads) so new side-thread events also trigger scroll-check.
+  // Re-check scroll position whenever the visible event stream changes.
   const totalVisibleCount = events.filter(isVisibleMessage).length;
   const workingCount = workingEndpoints.size;
 
@@ -794,54 +611,10 @@ export function ContextConversation({
 
   const isParticipant = context.participants.includes(speakingAsId);
 
-  // A — side threads: group events by thread_id; main thread = thread_id === contextId
-  const mainEvents = events.filter(e => e.thread_id === contextId);
-  const sideThreadRecords = threads.filter(t => t.parent_thread_id !== null);
-
-  // Map thread_id → events for side threads
-  const sideEventMap = new Map<string, EventEnvelope[]>();
-  for (const event of events) {
-    if (event.thread_id !== contextId) {
-      const bucket = sideEventMap.get(event.thread_id) ?? [];
-      bucket.push(event);
-      sideEventMap.set(event.thread_id, bucket);
-    }
-  }
-
-  const sideThreads: SideThread[] = sideThreadRecords.map(t => ({
-    thread: t,
-    events: sideEventMap.get(t.thread_id) ?? [],
-  }));
-
-  // Also capture any side-thread events whose ThreadRecord wasn't returned yet
-  // (shouldn't happen, but keeps the display consistent under race conditions).
-  for (const [threadId, evts] of sideEventMap.entries()) {
-    if (!sideThreads.some(st => st.thread.thread_id === threadId)) {
-      sideThreads.push({
-        thread: {
-          thread_id: threadId,
-          context_id: contextId,
-          parent_thread_id: contextId,
-          created_by_endpoint_id: null,
-          status: "open",
-          created_at: evts[0]?.created_at ?? "",
-          title: null,
-        },
-        events: evts,
-      });
-    }
-  }
-
-  // A — derive working actors names for indicator (from working endpoints)
   const workingActorNames = Array.from(workingEndpoints.keys())
     .map(id => endpointName(id, endpoints));
 
-  // Use mainEvents for the main pane (falls back to all events if side-thread
-  // feature is not yet fully reflected, e.g. legacy events where thread_id === context_id)
-  const mainVisibleMessages = mainEvents.filter(isVisibleMessage);
-  // For backwards compat: if ALL events are on the main thread (no side threads),
-  // this naturally renders exactly as before.
-  const visibleMessages = mainVisibleMessages;
+  const visibleMessages = events.filter(isVisibleMessage);
 
   return (
     <div style={{
@@ -878,7 +651,7 @@ export function ContextConversation({
         </div>
       </div>
 
-      {/* Body: message stream + optional side-thread panel */}
+      {/* Body: message stream */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
         {/* Main message stream */}
@@ -904,10 +677,6 @@ export function ContextConversation({
           ))}
         </div>
 
-        {/* A — Multi-side-thread tabbed sidebar (real data; hidden when no side threads) */}
-        {sideThreads.length > 0 && (
-          <SideThreadsPanel threads={sideThreads} endpoints={endpoints} />
-        )}
       </div>
 
       {/* Footer: composer dock (participant) or non-participant selector + join */}
