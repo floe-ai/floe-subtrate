@@ -148,8 +148,6 @@ describe("Floe local vertical slice", () => {
       "event_submitted",
       "destination_selector_resolved",
       "delivery_created",
-      "delivery_reserved",
-      "delivery_delivered_to_bridge",
       "delivery_injected_to_runtime",
       "delivery_acknowledged",
       "turn_end_observed"
@@ -512,13 +510,13 @@ You are Floe.
   // Snowball board routing regression test
   //
   // Reproduces the captain's live-run bugs:
-  //   (A) stray no-scope contexts created when board not initialized
+  //   (A) stray no-scope contexts created when board routing is not scoped
   //   (B) 409 operator reply — escalated (design fork; see PR)
   //   (C) WS reconnect storm — fixed in stream.ts / BoardView.tsx (no runtime test)
   //
   // Uses FLOE_RUNTIME_ADAPTER=fake so no live LLM is required.
   // ---------------------------------------------------------------------------
-  it("snowball board: card move to agent-owned column routes into column context, not a stray no-scope context", async () => {
+  it("snowball board: card move routes into the stable scoped card context, not a stray no-scope context", async () => {
     // ── 1. Write snowball extension manifest pointer ──────────────────────
     const snowballExtSrcDir = join(root, "floe-ext-snowball");
     mkdirSync(join(projectPath, ".floe", "extensions", "snowball"), { recursive: true });
@@ -537,13 +535,13 @@ You are Floe.
     const workspaceId = registered.workspace.workspace_id;
     await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
 
-    // ── 3. Wait for snowball-overseer endpoint to be registered ───────────
-    const overseerEndpointId = `actor:${workspaceId}:snowball-overseer`;
+    // ── 3. Wait for snowball endpoint to be registered ────────────────────
+    const snowballEndpointId = `actor:${workspaceId}:snowball`;
     const operatorEndpointId = `actor:${workspaceId}:operator`;
     await waitFor(async () => {
       const result = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
-      return result.endpoints.some((ep) => ep.endpoint_id === overseerEndpointId);
-    }, "snowball-overseer endpoint registered");
+      return result.endpoints.some((ep) => ep.endpoint_id === snowballEndpointId);
+    }, "snowball endpoint registered");
 
     // Register operator endpoint (needed to emit events as operator later)
     await post("/v1/endpoints/register", {
@@ -561,7 +559,7 @@ You are Floe.
     const scopeId = testScope.scope_id;
 
     // ── 5. Set runtime binding so fake adapter can process deliveries ────
-    // The snowball-overseer starts as runtime_unconfigured (no auth profile).
+    // The snowball endpoint starts as runtime_unconfigured (no auth profile).
     // Setting a workspace-default binding (any profile name — the fake adapter
     // never validates it) causes the bridge to re-attach and set the endpoint
     // to idle, enabling delivery processing.
@@ -572,12 +570,12 @@ You are Floe.
     });
     await waitFor(async () => {
       const result = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
-      return result.endpoints.some((ep) => ep.endpoint_id === overseerEndpointId && ep.status === "idle");
-    }, "snowball-overseer endpoint idle", 15_000);
+      return result.endpoints.some((ep) => ep.endpoint_id === snowballEndpointId && ep.status === "idle");
+    }, "snowball endpoint idle", 15_000);
 
     // ── 6. Wait for extension relay to be reported to bus ─────────────────
     // The bridge reports relay_url after loading extensions + starting the relay.
-    // We know it's done when the snowball-overseer is registered AND the extension
+    // We know it's done when the snowball endpoint is registered AND the extension
     // appears in GET /v1/extensions. Give it a moment after endpoint registration.
     await waitFor(async () => {
       const result = await get<{ extensions: any[] }>("/v1/extensions");
@@ -585,7 +583,7 @@ You are Floe.
     }, "snowball extension relay registered", 20_000);
 
     // ── 7. Initialize the board via extension relay ───────────────────────
-    // POST /v1/extensions/snowball/board/init creates column files + column contexts.
+    // POST /v1/extensions/snowball/board/init ensures the board file exists.
     const initResult = await post<{ ok: boolean; board: any }>(
       "/v1/extensions/snowball/board/init",
       { scope_id: scopeId }
@@ -599,24 +597,25 @@ You are Floe.
     expect(inProgressCol).toBeDefined();
     const inProgressColId = inProgressCol!.id as string;
 
-    // ── 7. Change In Progress column owner to snowball-overseer ──────────
-    // This simulates the captain's action. Our fix evicts the old column
-    // context from the sidecar so a new one (with the agent as participant)
-    // is created on the next move.
+    // ── 7. Assign the Snowball actor to In Progress ────────────────────────
+    // Column assignment drives subscriptions on the card context; columns
+    // themselves do not have bus contexts.
     await post("/v1/extensions/snowball/columns", {
       scope_id: scopeId,
       action: "update",
       column_id: inProgressColId,
-      owner: { kind: "agent", agent_id: "snowball-overseer" }
+      assigned_actors: [{ actor_ref: "snowball", event_types: ["*"] }]
     });
 
     // ── 8. Create a task card ─────────────────────────────────────────────
-    const cardResult = await post<{ ok: boolean; card_id: string; board: any }>(
+    const cardResult = await post<{ ok: boolean; card_id: string; context_id: string; board: any }>(
       "/v1/extensions/snowball/card",
       { scope_id: scopeId, title: "create a file called haiku.md and generate 5 haikus", column_id: "todo" }
     );
     expect(cardResult.ok).toBe(true);
     const cardId = cardResult.card_id;
+    const cardContextId = cardResult.context_id;
+    expect(cardContextId).toBeTruthy();
 
     // ── 9. Move card to In Progress ───────────────────────────────────────
     // This is the key action that triggered the stray contexts bug.
@@ -634,25 +633,27 @@ You are Floe.
       return !!enteredEvent;
     }, "snowball.card.entered_column event");
 
-    // ── 11. Assert routing lands in a scoped column context ───────────────
+    // ── 11. Assert routing lands in the stable, scoped card context ───────
     expect(enteredEvent.context_id).toBeTruthy();
 
-    // The context must be scoped to the board scope (not null = stray no-scope context).
+    // The event must reuse the card context, which must be scoped to the board
+    // scope (not null = stray no-scope context).
     const routingCtxId: string = enteredEvent.context_id;
+    expect(routingCtxId).toBe(cardContextId);
     const ctxResult = await get<{ context_id: string; scope_id: string | null; participants: string[] }>(
       `/v1/contexts/${encodeURIComponent(routingCtxId)}`
     );
     expect(ctxResult.scope_id).toBe(scopeId);
-    expect(ctxResult.participants).toContain(overseerEndpointId);
+    expect(ctxResult.participants).toContain(snowballEndpointId);
 
     // ── 12. No stray no-scope contexts from snowball events ───────────────
     // Collect all contexts for this workspace; none should have null scope_id
-    // among the ones created by the snowball extension (identified by overseer as source).
+    // among the ones created by the snowball extension.
     const allEventsResult = await get<{ events: any[] }>(
       `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`
     );
     const snowballEvents = allEventsResult.events.filter(
-      (e) => e.source_endpoint_id === overseerEndpointId ||
+      (e) => e.source_endpoint_id === snowballEndpointId ||
              (e.type ?? "").startsWith("snowball.")
     );
 
@@ -677,7 +678,7 @@ You are Floe.
       const result = await get<{ events: any[] }>(
         `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`
       );
-      // Fake adapter emits a "message" event back to the source (overseer -> overseer).
+      // Fake adapter emits a "message" event back to the source.
       // Delivery acknowledged means the turn completed.
       return busMessages.some((m) => m.type === "turn_end_observed");
     }, "fake runtime turn completed", 30_000);
