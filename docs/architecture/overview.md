@@ -621,6 +621,6 @@ graph LR
 | [`docs/adr/0001-pulse-scheduled-event-delivery.md`](../adr/0001-pulse-scheduled-event-delivery.md) | Pulse = scheduled event; definitions-in-files / runtime-in-bus split; event-driven scheduler. |
 | [`docs/adr/0002-extension-substrate-design.md`](../adr/0002-extension-substrate-design.md) | Extension manifest format, factory function entry, hook registration model, tool namespacing. |
 | [`docs/adr/0003-field-substrate-primitive.md`](../adr/0003-field-substrate-primitive.md) | Field as FloeWeb rendering of Scope (superseded by ADR-0004 for ownership questions). |
-| [`docs/adr/0004-scope-as-substrate-organising-boundary.md`](../adr/0004-scope-as-substrate-organising-boundary.md) | Scope is the organising boundary; contexts may be scope-anchored or actor-anchored; no default scope. |
+| [`docs/adr/0004-scope-as-substrate-organising-boundary.md`](../adr/0004-scope-as-substrate-organising-boundary.md) | Scope is the organising boundary; contexts may be scope-anchored or actor-anchored; there is no automatic fallback Scope. |
 | [`docs/adr/0005-file-access-patterns.md`](../adr/0005-file-access-patterns.md) | File access: Tauri IPC for desktop auth-write; agent file writes sandboxed to workspace locator; no remote HTTP file-write. |
 | [`docs/substrate-semantics.md`](../substrate-semantics.md) | Endpoint equality, event as primitive, turn as lifecycle, chat as a view. Substrate doctrine. |

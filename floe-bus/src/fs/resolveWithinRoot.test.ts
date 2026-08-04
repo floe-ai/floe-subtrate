@@ -46,11 +46,21 @@ describe("resolveWithinRoot", () => {
     expect(() => resolveWithinRoot(root, "C:\\Windows\\System32")).toThrow(PathEscapesRootError);
   });
 
-  it("rejects symlink escaping root", () => {
+  it("rejects symlink escaping root", ({ skip }) => {
     const root = tempWorkspace();
     const outside = tempWorkspace();
     writeFileSync(join(outside, "secret.txt"), "nope");
-    symlinkSync(outside, join(root, "escape"));
+    try {
+      symlinkSync(outside, join(root, "escape"));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const name = error instanceof Error ? error.name : undefined;
+      if (code === "EPERM" || code === "EACCES" || name === "UnsupportedOperation") {
+        skip();
+        return;
+      }
+      throw error;
+    }
     expect(() => resolveWithinRoot(root, "escape/secret.txt")).toThrow(PathEscapesRootError);
   });
 

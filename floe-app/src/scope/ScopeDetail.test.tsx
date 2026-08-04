@@ -29,11 +29,6 @@ vi.mock("./Ops.tsx", () => ({
   Ops: () => <div data-testid="ops-stub" />,
 }));
 
-// Mock SnowballBoard (extension dependency)
-vi.mock("floe-ext-snowball/BoardView", () => ({
-  SnowballBoard: () => <div data-testid="snowball-stub" />,
-}));
-
 // We need fetch for the extension views call — return empty list
 (globalThis as any).fetch = vi.fn(() =>
   Promise.resolve({ ok: true, json: () => Promise.resolve({ extensions: [] }) })

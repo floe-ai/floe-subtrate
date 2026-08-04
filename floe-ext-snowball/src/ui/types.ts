@@ -66,7 +66,7 @@ export interface UiBoardState {
   cards: UiCard[];
 }
 
-/** Props passed to the SnowballBoard component by the host app (contract §1.4). */
+/** Props passed to the BoardView component by the host app (contract §1.4). */
 export interface ExtensionViewProps {
   workspaceId: string;
   scopeId: string;

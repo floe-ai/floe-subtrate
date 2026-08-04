@@ -1,9 +1,9 @@
 /**
- * SnowballBoard — the extension view component.
+ * BoardView — the extension view component.
  *
  * Exported as the "BoardView" entry point (package.json exports["./BoardView"]).
- * Imported by floe-app/src/scope/ScopeDetail.tsx at build time (Track S adds
- * the static import; see contract §1.5).
+ * Discovered by the host app via the floe-ext-{name}/src/ui/{component}.tsx
+ * convention — the core UI does NOT import this package directly.
  *
  * Props: ExtensionViewProps (contract §1.4)
  *  - workspaceId: string
@@ -469,10 +469,10 @@ function CardDetailPanel({
 }
 
 // ---------------------------------------------------------------------------
-// SnowballBoard
+// BoardView
 // ---------------------------------------------------------------------------
 
-export function SnowballBoard({
+export function BoardView({
   workspaceId: _workspaceId,
   scopeId,
   busBaseUrl,

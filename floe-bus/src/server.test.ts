@@ -571,7 +571,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
           extensions: [
             {
               name: "snowball",
-              views: [{ slot: "scope-detail-tab", label: "Board", component: "@floe/ext-snowball/BoardView" }],
+              views: [{ slot: "scope-detail-tab", label: "Board", component: "BoardView" }],
               errors: [],
               relay_url: null
             }

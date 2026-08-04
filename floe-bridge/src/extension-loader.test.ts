@@ -178,7 +178,7 @@ describe("loadExtensions", () => {
     const manifest = {
       ...VALID_MANIFEST,
       views: [
-        { slot: "scope-detail-tab", label: "Board", component: "@floe/ext-snowball/BoardView" }
+        { slot: "scope-detail-tab", label: "Board", component: "BoardView" }
       ]
     };
     writeExtension("todo", manifest, VALID_ENTRY);
@@ -186,7 +186,7 @@ describe("loadExtensions", () => {
     expect(result[0].views).toHaveLength(1);
     expect(result[0].views[0].slot).toBe("scope-detail-tab");
     expect(result[0].views[0].label).toBe("Board");
-    expect(result[0].views[0].component).toBe("@floe/ext-snowball/BoardView");
+    expect(result[0].views[0].component).toBe("BoardView");
   });
 
   it("returns empty views array when manifest has no views", async () => {
