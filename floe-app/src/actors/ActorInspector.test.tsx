@@ -235,8 +235,8 @@ function makeActor(metadata_json: string) {
 
 describe("actorExtensionName", () => {
   it("returns the extension name for a sentinel file value", () => {
-    const actor = makeActor(JSON.stringify({ file: "[extension:snowball]" }));
-    expect(actorExtensionName(actor)).toBe("snowball");
+    const actor = makeActor(JSON.stringify({ file: "[extension:acme]" }));
+    expect(actorExtensionName(actor)).toBe("acme");
   });
 
   it("returns null for a normal file path", () => {
@@ -258,7 +258,7 @@ describe("actorExtensionName", () => {
 
 describe("actorFileRelPath", () => {
   it("returns null for an extension sentinel", () => {
-    const actor = makeActor(JSON.stringify({ file: "[extension:snowball]" }));
+    const actor = makeActor(JSON.stringify({ file: "[extension:acme]" }));
     expect(actorFileRelPath(actor)).toBeNull();
   });
 

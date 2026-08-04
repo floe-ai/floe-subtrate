@@ -336,8 +336,8 @@ describe("resolveContext rule matrix", () => {
     }
   });
 
-  it("Cross-thread: non-participant source (snowball) replying to a participant stays on current side thread", () => {
-    // Scenario: snowball (E3, NOT a participant) is replying to floe (E1, participant).
+  it("Cross-thread: non-participant source (acme) replying to a participant stays on current side thread", () => {
+    // Scenario: acme (E3, NOT a participant) is replying to floe (E1, participant).
     // The reply must stay on the current side thread, not be forced to root.
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });  // E3 NOT in ctx_a
     const result = resolveContext(
@@ -361,8 +361,8 @@ describe("resolveContext rule matrix", () => {
     }
   });
 
-  it("Cross-thread: participant→non-participant (floe→snowball) still opens side thread (Rule 3)", () => {
-    // Floe (E1, participant) emitting to snowball (E3, NOT participant) → Rule 3 side thread.
+  it("Cross-thread: participant→non-participant (floe→acme) still opens side thread (Rule 3)", () => {
+    // Floe (E1, participant) emitting to acme (E3, NOT participant) → Rule 3 side thread.
     const reader = makeReader({ ctx_a: { participants: [E1, E2] } });  // E3 NOT in ctx_a
     const result = resolveContext(
       {

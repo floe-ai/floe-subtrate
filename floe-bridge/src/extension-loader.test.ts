@@ -401,9 +401,9 @@ describe("loadExtensions — manifest_source pointer", () => {
     //   <pkgDir>/extension.json     — canonical source manifest
     //   <pkgDir>/src/index.ts       — entry
     //   <extDir>/extension.json     — installed pointer (manifest_source -> pkgDir)
-    const pkgDir = join(tempDir, "floe-ext-snowball");
+    const pkgDir = join(tempDir, "floe-ext-acme");
     const extRoot = join(tempDir, "extensions");
-    const extDir = join(extRoot, "snowball");
+    const extDir = join(extRoot, "acme");
     mkdirSync(join(pkgDir, "src"), { recursive: true });
     mkdirSync(extDir, { recursive: true });
 
@@ -412,7 +412,7 @@ describe("loadExtensions — manifest_source pointer", () => {
       join(pkgDir, "extension.json"),
       JSON.stringify({
         schema: "floe.extension.v1",
-        name: "snowball",
+        name: "acme",
         entry: "./src/index.ts",
         pulses: [],
       }, null, 2)
@@ -422,14 +422,14 @@ describe("loadExtensions — manifest_source pointer", () => {
     // Installed pointer (relative path from extDir to pkgDir)
     writeFileSync(
       join(extDir, "extension.json"),
-      JSON.stringify({ manifest_source: "../../floe-ext-snowball/extension.json" }, null, 2)
+      JSON.stringify({ manifest_source: "../../floe-ext-acme/extension.json" }, null, 2)
     );
 
     const result = await loadExtensions(extRoot, baseContext());
     expect(result).toHaveLength(1);
-    expect(result[0].name).toBe("snowball");
+    expect(result[0].name).toBe("acme");
     expect(result[0].tools).toHaveLength(1);
-    expect(result[0].tools[0].name).toBe("snowball_add");
+    expect(result[0].tools[0].name).toBe("acme_add");
     expect(result[0].errors).toHaveLength(0);
     expect(result[0].pulses).toHaveLength(0); // pulses:[] in source, not the stale copy
   });

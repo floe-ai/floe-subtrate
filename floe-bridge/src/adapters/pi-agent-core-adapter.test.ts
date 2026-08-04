@@ -1960,8 +1960,8 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     const emittedEvents: any[] = [];  // fake bus.emit always accepts
     const capturedTools: any[] = [];
 
-    // Endpoint for "snowball-overseer" receiving a delivery in operator's context
-    const NON_PARTICIPANT_ENDPOINT = "actor:workspace:test:snowball-overseer";
+    // Endpoint for "acme-overseer" receiving a delivery in operator's context
+    const NON_PARTICIPANT_ENDPOINT = "actor:workspace:test:acme-overseer";
     const DELIVERY_CONTEXT = "ctx_operator";
 
     const fakeAgent = {
@@ -1974,7 +1974,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
           await emitTool.execute("tc_nonparticipant_emit", {
             type: "message",
             destination: "actor:workspace:test:floe",
-            text: "I'm replying as snowball-overseer",
+            text: "I'm replying as acme-overseer",
           });
         }
         for (const l of this.listeners) await l({
@@ -2027,7 +2027,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
             { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" }
           ];
         },
-        // getContext returns participants that do NOT include snowball-overseer
+        // getContext returns participants that do NOT include acme-overseer
         async getContext(_contextId: string) {
           return {
             context_id: DELIVERY_CONTEXT,
@@ -2036,13 +2036,13 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
             created_by_endpoint_id: "actor:workspace:test:operator",
             created_at: new Date().toISOString(),
             participants: ["actor:workspace:test:operator", "actor:workspace:test:floe"]
-            // snowball-overseer is NOT in this list
+            // acme-overseer is NOT in this list
           };
         }
       }
     } as any;
 
-    // Build a delivery whose endpoint_id is snowball-overseer (not in context participants)
+    // Build a delivery whose endpoint_id is acme-overseer (not in context participants)
     const delivery: DeliveryBundle = {
       delivery_id: "del-nonparticipant",
       endpoint_id: NON_PARTICIPANT_ENDPOINT,
@@ -2062,7 +2062,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
             kind: "endpoint",
             endpoint_id: NON_PARTICIPANT_ENDPOINT
           },
-          content: { text: "Hey snowball, what do you think?", data: {} },
+          content: { text: "Hey acme, what do you think?", data: {} },
           response: { expected: true },
           metadata: {},
           created_at: new Date().toISOString()
@@ -2095,12 +2095,12 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
       async prompt() {
         const emitTool = capturedTools.find((t: any) => t.name === "emit");
         if (emitTool) {
-          // Agent explicitly targets a different context (e.g. side-thread to snowball)
+          // Agent explicitly targets a different context (e.g. side-thread to acme)
           await emitTool.execute("tc_cross_emit", {
             type: "message",
             destination: "actor:workspace:test:operator",
             text: "Cross-context note",
-            context_id: "ctx_snowball_side"
+            context_id: "ctx_acme_side"
           });
         }
         for (const l of this.listeners) await l({
@@ -2135,18 +2135,18 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
 
     expect(emittedEvents).toHaveLength(1);
     // Explicit context_id wins over the default origin context
-    expect(emittedEvents[0].context_id).toBe("ctx_snowball_side");
+    expect(emittedEvents[0].context_id).toBe("ctx_acme_side");
   });
 
   it("D-B Guard 2: participant emitting to NON-participant destination leaves context_id null (Rule 3 side-thread path)", async () => {
-    // This is the Floe→Snowball case: Floe IS a participant of the delivery context,
-    // but Snowball (the destination) is NOT. D-B must leave context_id null so the
+    // This is the Floe→Acme case: Floe IS a participant of the delivery context,
+    // but Acme (the destination) is NOT. D-B must leave context_id null so the
     // resolver's Rule 3 branch fires and opens a side thread.
     const emittedEvents: any[] = [];
     const capturedTools: any[] = [];
 
     const FLOE = "actor:workspace:test:floe";
-    const SNOWBALL = "actor:workspace:test:snowball-overseer";
+    const ACME = "actor:workspace:test:acme-overseer";
     const DELIVERY_CTX = "ctx_delivery";
 
     const fakeAgent = {
@@ -2155,12 +2155,12 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
       async prompt() {
         const emitTool = capturedTools.find((t: any) => t.name === "emit");
         if (emitTool) {
-          // Floe emits to Snowball WITHOUT an explicit context_id — D-B Guard 2 must
-          // NOT stamp context_id because Snowball is not a participant of DELIVERY_CTX.
-          await emitTool.execute("tc_floe_to_snowball", {
+          // Floe emits to Acme WITHOUT an explicit context_id — D-B Guard 2 must
+          // NOT stamp context_id because Acme is not a participant of DELIVERY_CTX.
+          await emitTool.execute("tc_floe_to_acme", {
             type: "message",
-            destination: SNOWBALL,
-            text: "Hey Snowball, check this card.",
+            destination: ACME,
+            text: "Hey Acme, check this card.",
           });
         }
         for (const l of this.listeners) await l({
@@ -2179,10 +2179,10 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
           return [
-            { endpoint_id: SNOWBALL, name: "Snowball", status: "idle" }
+            { endpoint_id: ACME, name: "Acme", status: "idle" }
           ];
         },
-        // Floe IS a participant; Snowball is NOT.
+        // Floe IS a participant; Acme is NOT.
         async getContext(_contextId: string) {
           return {
             context_id: DELIVERY_CTX,
@@ -2196,7 +2196,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
       }
     } as any;
 
-    const delivery = makeDelivery("del-floe-snowball", "thread-floe-snowball", "check the card");
+    const delivery = makeDelivery("del-floe-acme", "thread-floe-acme", "check the card");
     (delivery.events[0] as any).context_id = DELIVERY_CTX;
     // Use Floe as the delivering endpoint (it IS a participant)
     delivery.endpoint_id = FLOE;

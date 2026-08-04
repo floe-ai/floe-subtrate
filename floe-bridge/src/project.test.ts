@@ -338,7 +338,7 @@ describe("computeConfigSurface — declared surface regression tests", () => {
 
   it("extension entry-point that resolves OUTSIDE .floe does NOT change the config hash", () => {
     // Simulates a pointer-extension whose source package lives outside .floe
-    // (e.g. the snowball pattern).  The pointer file itself is already in the
+    // (e.g. the acme pattern).  The pointer file itself is already in the
     // surface; we must not pull in outside files.
     const workspace = makeTmp();
     ensureProjectTemplate(workspace, "Test");

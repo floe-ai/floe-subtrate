@@ -166,7 +166,7 @@ export function resolveContext(input: ResolveContextInput, ctxStore: ContextStor
       // Rule 2: destination is a participant of the current context.
       // Cross-thread fix: when BOTH source and destination are participants, the reply
       // belongs on the ROOT thread, not the (possibly side) delivery thread.
-      // When the source is NOT a participant (e.g. snowball replying to floe), keep
+      // When the source is NOT a participant (e.g. acme replying to floe), keep
       // the current thread so the side-thread exchange continues as intended.
       if (ctxStore.isParticipant(current_delivery_context_id, source_endpoint_id)) {
         return { context_id: current_delivery_context_id, created: false, force_root_thread: true };

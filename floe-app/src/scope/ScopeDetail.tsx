@@ -29,7 +29,7 @@ export interface ExtensionViewProps {
 
 /** A registered extension view (one tab slot: "scope-detail-tab") */
 export interface ExtensionViewEntry {
-  id: string;         // unique key: extension name (e.g. "snowball")
+  id: string;         // unique key: extension name (e.g. "acme")
   label: string;      // tab label (e.g. "Board")
   extensionName: string;
   component: React.ComponentType<ExtensionViewProps>;

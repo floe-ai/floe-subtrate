@@ -57,7 +57,7 @@ export type HookPayloadByName = {
      * Undefined when neither is present (e.g. bare endpoint delivery).
      *
      * Hooks use this to scope their view to a single thread without coupling to
-     * event-type identity. Snowball BeforeTurn narrows to the card whose
+     * event-type identity. An extension's BeforeTurn hook can narrow to the card whose
      * context_id === origin.id when origin.kind === "context".
      */
     origin?: { id: string; kind: "context" | "thread" };

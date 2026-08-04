@@ -23,7 +23,7 @@ function makeResult(source: string, content: string): { inject: Record<string, u
 describe("InjectionBaseline.applyDedup", () => {
   it("passes through all results on first inject", () => {
     const baseline = new InjectionBaseline();
-    const results = [makeResult("snowball", "column instructions v1")];
+    const results = [makeResult("acme", "column instructions v1")];
     const filtered = baseline.applyDedup(CTX_A, results);
     expect(filtered).toHaveLength(1);
     expect(filtered[0]?.inject?.content).toBe("column instructions v1");
@@ -31,7 +31,7 @@ describe("InjectionBaseline.applyDedup", () => {
 
   it("skips injection when content is identical on subsequent call", () => {
     const baseline = new InjectionBaseline();
-    const result = makeResult("snowball", "column instructions v1");
+    const result = makeResult("acme", "column instructions v1");
     baseline.applyDedup(CTX_A, [result]); // first: inject + record hash
     const filtered = baseline.applyDedup(CTX_A, [result]); // second: same content
     expect(filtered).toHaveLength(1);
@@ -41,30 +41,30 @@ describe("InjectionBaseline.applyDedup", () => {
 
   it("re-injects when content changes", () => {
     const baseline = new InjectionBaseline();
-    baseline.applyDedup(CTX_A, [makeResult("snowball", "v1")]);
-    const filtered = baseline.applyDedup(CTX_A, [makeResult("snowball", "v2 — changed instruction")]);
+    baseline.applyDedup(CTX_A, [makeResult("acme", "v1")]);
+    const filtered = baseline.applyDedup(CTX_A, [makeResult("acme", "v2 — changed instruction")]);
     expect(filtered[0]?.inject?.content).toBe("v2 — changed instruction");
   });
 
   it("tracks different sources independently", () => {
     const baseline = new InjectionBaseline();
-    const r1 = makeResult("snowball", "snowball content");
+    const r1 = makeResult("acme", "acme content");
     const r2 = makeResult("memory", "memory content");
     baseline.applyDedup(CTX_A, [r1, r2]);
 
-    // Only change snowball; memory unchanged
-    const r1b = makeResult("snowball", "snowball content updated");
+    // Only change acme; memory unchanged
+    const r1b = makeResult("acme", "acme content updated");
     const r2b = makeResult("memory", "memory content"); // unchanged
     const filtered = baseline.applyDedup(CTX_A, [r1b, r2b]);
 
-    // snowball re-injects; memory skips
-    expect(filtered[0]?.inject?.content).toBe("snowball content updated");
+    // acme re-injects; memory skips
+    expect(filtered[0]?.inject?.content).toBe("acme content updated");
     expect(filtered[1]).not.toHaveProperty("inject");
   });
 
   it("tracks different contexts independently", () => {
     const baseline = new InjectionBaseline();
-    const result = makeResult("snowball", "instructions");
+    const result = makeResult("acme", "instructions");
     baseline.applyDedup(CTX_A, [result]); // inject into ctx A
 
     // Same content but different context: ctx B has no record yet → inject
@@ -82,7 +82,7 @@ describe("InjectionBaseline.applyDedup", () => {
 
   it("passes through all results unchanged when context_id is null", () => {
     const baseline = new InjectionBaseline();
-    const result = makeResult("snowball", "instructions");
+    const result = makeResult("acme", "instructions");
     // First call: inject (null context)
     const f1 = baseline.applyDedup(null, [result]);
     expect(f1[0]?.inject?.content).toBe("instructions");
@@ -122,7 +122,7 @@ describe("InjectionBaseline.applyDedup", () => {
 describe("InjectionBaseline.clearContext", () => {
   it("resets baseline for a context so next turn re-injects", () => {
     const baseline = new InjectionBaseline();
-    const result = makeResult("snowball", "instructions v1");
+    const result = makeResult("acme", "instructions v1");
     baseline.applyDedup(CTX_A, [result]); // inject + record
     baseline.applyDedup(CTX_A, [result]); // second: skip (same content)
 
@@ -136,8 +136,8 @@ describe("InjectionBaseline.clearContext", () => {
 
   it("clearing one context does not affect other contexts", () => {
     const baseline = new InjectionBaseline();
-    const rA = makeResult("snowball", "ctx-a instructions");
-    const rB = makeResult("snowball", "ctx-b instructions");
+    const rA = makeResult("acme", "ctx-a instructions");
+    const rB = makeResult("acme", "ctx-b instructions");
     baseline.applyDedup(CTX_A, [rA]);
     baseline.applyDedup(CTX_B, [rB]);
 

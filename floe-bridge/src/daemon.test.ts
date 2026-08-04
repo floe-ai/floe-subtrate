@@ -423,7 +423,7 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
 
       (daemon as any).bus = {
         async emit(event: any) { emittedEvents.push(event); },
-        async reportDeliveryStatus(bridgeId: string, id: string, state: string, error?: string) {
+        async reportDeliveryStatus(...[, id, state, error]: [string, string, string, string?]) {
           deliveryStatusUpdates.push({ id, state, error: error ?? null });
         },
         async reportTurnEnd() {},
@@ -513,11 +513,11 @@ describe("BridgeDaemon – extension tool ungating", () => {
 
       // Simulate a workspace that has loaded one extension with two tools
       const mockExtension = {
-        name: "snowball",
+        name: "acme",
         errors: [],
         tools: [
-          { name: "snowball_check_criteria", description: "check", parameters: {} },
-          { name: "snowball_move_card", description: "move", parameters: {} }
+          { name: "acme_check_criteria", description: "check", parameters: {} },
+          { name: "acme_move_card", description: "move", parameters: {} }
         ],
         pulses: [],
         bundledAgents: [],
@@ -586,10 +586,10 @@ describe("BridgeDaemon – extension tool ungating", () => {
       expect(capturedBundles).toHaveLength(1);
       const passedExtensions = capturedBundles[0].extensions;
       expect(passedExtensions).toHaveLength(1);
-      expect(passedExtensions[0].name).toBe("snowball");
+      expect(passedExtensions[0].name).toBe("acme");
       expect(passedExtensions[0].tools).toHaveLength(2);
-      expect(passedExtensions[0].tools.map((t: any) => t.name)).toContain("snowball_check_criteria");
-      expect(passedExtensions[0].tools.map((t: any) => t.name)).toContain("snowball_move_card");
+      expect(passedExtensions[0].tools.map((t: any) => t.name)).toContain("acme_check_criteria");
+      expect(passedExtensions[0].tools.map((t: any) => t.name)).toContain("acme_move_card");
     } finally {
       made.cleanup();
     }
@@ -807,7 +807,6 @@ describe("BridgeDaemon – D2 direct bundle consumption from WS payload", () => 
       });
 
       // Capture handleDelivery calls
-      const originalHandle = (daemon as any).handleDelivery.bind(daemon);
       (daemon as any).handleDelivery = async (d: any) => {
         handledDeliveries.push(d.delivery_id);
         // Don't actually invoke the full delivery pipeline in this unit test
@@ -973,4 +972,3 @@ describe("BridgeDaemon – D4 bridge_hello sent on WS open", () => {
     }
   });
 });
-

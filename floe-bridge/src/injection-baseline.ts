@@ -12,7 +12,7 @@
  * The baseline for a context is reset when the context history is cleared or
  * compacted so instructions re-inject into the fresh context on the next turn.
  *
- * This is an extension-agnostic substrate primitive. No snowball vocabulary here.
+ * This is an extension-agnostic substrate primitive with no extension-specific vocabulary.
  */
 
 /**
@@ -32,7 +32,7 @@ function contentHash(text: string): string {
 export class InjectionBaseline {
   /**
    * Outer key: context_id.
-   * Inner key: injection source label (e.g. "snowball", "memory").
+   * Inner key: injection source label (e.g. "acme", "memory").
    * Value: hash of the last injected content string.
    */
   private baselines = new Map<string, Map<string, string>>();
