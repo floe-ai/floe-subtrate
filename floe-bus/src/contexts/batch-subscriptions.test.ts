@@ -65,7 +65,7 @@ describe("ContextStore.applyContextSubscriptions — batch participant + subscri
   it("adds participants and subscriptions for each entry", () => {
     store.applyContextSubscriptions(CTX, [
       { endpoint_id: "actor:ws:agent-a", event_types: ["*"] },
-      { endpoint_id: "actor:ws:agent-b", event_types: ["snowball.card.entered_column"] },
+      { endpoint_id: "actor:ws:agent-b", event_types: ["acme.card.entered_column"] },
     ]);
 
     const participants = store.getContextParticipants(CTX);
@@ -76,7 +76,7 @@ describe("ContextStore.applyContextSubscriptions — batch participant + subscri
     const a = subs.find((s) => s.endpoint_id === "actor:ws:agent-a");
     const b = subs.find((s) => s.endpoint_id === "actor:ws:agent-b");
     expect(a?.event_types).toEqual(["*"]);
-    expect(b?.event_types).toEqual(["snowball.card.entered_column"]);
+    expect(b?.event_types).toEqual(["acme.card.entered_column"]);
   });
 
   it("event_types:[] creates a silent watcher (participant, not subscribed to anything)", () => {
@@ -154,7 +154,7 @@ describe("ContextStore.applyContextSubscriptions — batch participant + subscri
     store.applyContextSubscriptions(
       CTX,
       [
-        { endpoint_id: "actor:ws:dest-1", event_types: ["snowball.card.entered_column"] },
+        { endpoint_id: "actor:ws:dest-1", event_types: ["acme.card.entered_column"] },
         { endpoint_id: "actor:ws:prior-1", event_types: [] },
       ],
       ["actor:ws:operator"]
@@ -167,7 +167,7 @@ describe("ContextStore.applyContextSubscriptions — batch participant + subscri
 
     const subs = store.getContextSubscriptions(CTX);
     expect(subs.find((s) => s.endpoint_id === "actor:ws:dest-1")?.event_types)
-      .toEqual(["snowball.card.entered_column"]);
+      .toEqual(["acme.card.entered_column"]);
     expect(subs.find((s) => s.endpoint_id === "actor:ws:prior-1")?.event_types)
       .toEqual([]);
     // operator has no subscription

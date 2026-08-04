@@ -486,7 +486,7 @@ export class BridgeDaemon {
         }
 
         // Register extension-declared pulses (only pulses with explicit scope_id are supported;
-        // per-board scope discovery was removed along with the snowball heartbeat).
+        // per-board scope discovery was removed along with the acme heartbeat).
         for (const ext of loaded) {
           for (const pulseDef of ext.pulses) {
             if (!pulseDef.scope_id) {

@@ -92,13 +92,13 @@ describe("BusClient.subscribeToContext", () => {
   });
 
   it("sends non-empty event type list as-is", async () => {
-    mockFetch({ ok: true, context_id: "ctx:1", endpoint_id: "actor:ws:agent-a", event_types: ["message", "snowball.card.entered_column"] });
+    mockFetch({ ok: true, context_id: "ctx:1", endpoint_id: "actor:ws:agent-a", event_types: ["message", "acme.card.entered_column"] });
 
-    await client.subscribeToContext("ctx:1", "actor:ws:agent-a", ["message", "snowball.card.entered_column"]);
+    await client.subscribeToContext("ctx:1", "actor:ws:agent-a", ["message", "acme.card.entered_column"]);
 
     const fetchMock = vi.mocked(globalThis.fetch);
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
-    expect(body.event_types).toEqual(["message", "snowball.card.entered_column"]);
+    expect(body.event_types).toEqual(["message", "acme.card.entered_column"]);
   });
 
   it("sends [] for a silent watcher subscription", async () => {

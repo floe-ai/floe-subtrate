@@ -434,7 +434,7 @@ describe("submitEvent context wiring", () => {
     expect(r3.event.thread_id).toBe(ctxA);
   });
 
-  it("T-CR2: non-participant source (e.g. snowball) replying to a participant stays on the current side thread", () => {
+  it("T-CR2: non-participant source (e.g. acme) replying to a participant stays on the current side thread", () => {
     // Step 1: create context with E1+E2. E3 is NOT a participant.
     const r1 = store.submitEvent(
       emitCommand({ source_endpoint_id: E1, destination: { kind: "endpoint", endpoint_id: E2 } }),
@@ -455,7 +455,7 @@ describe("submitEvent context wiring", () => {
     expect(sideThreadId).not.toBe(ctxA);
 
     // Step 3: E3 (non-participant) replies to E1 (participant) on the side thread.
-    // This simulates snowball replying to floe — must stay on the side thread.
+    // This simulates acme replying to floe — must stay on the side thread.
     const r3 = store.submitEvent(
       emitCommand({
         source_endpoint_id: E3,  // NOT a participant of ctxA

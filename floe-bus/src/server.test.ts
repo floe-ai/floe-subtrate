@@ -570,7 +570,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
           workspace_id: WS,
           extensions: [
             {
-              name: "snowball",
+              name: "acme",
               views: [{ slot: "scope-detail-tab", label: "Board", component: "BoardView" }],
               errors: [],
               relay_url: null
@@ -587,7 +587,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
       expect(getRes.statusCode).toBe(200);
       const body = getRes.json() as { extensions: any[] };
       expect(body.extensions).toHaveLength(1);
-      expect(body.extensions[0].name).toBe("snowball");
+      expect(body.extensions[0].name).toBe("acme");
       expect(body.extensions[0].views).toHaveLength(1);
       expect(body.extensions[0].views[0].slot).toBe("scope-detail-tab");
       expect(body.extensions[0].views[0].label).toBe("Board");
@@ -1011,7 +1011,7 @@ describe("Context destination selector — HTTP emit schema", () => {
       method: "POST",
       url: "/v1/events/emit",
       payload: {
-        type: "snowball.card.entered_column",
+        type: "acme.card.entered_column",
         workspace_id: WS,
         source_endpoint_id: E1,
         destination: { kind: "context", context_id: ctx },
@@ -1038,7 +1038,7 @@ describe("Context destination selector — HTTP emit schema", () => {
       method: "POST",
       url: "/v1/events/emit",
       payload: {
-        type: "snowball.card.entered_column",
+        type: "acme.card.entered_column",
         workspace_id: WS,
         source_endpoint_id: E1,
         destination: { kind: "context", context_id: ctx },
@@ -1077,7 +1077,7 @@ describe("Context destination selector — HTTP emit schema", () => {
       method: "POST",
       url: "/v1/events/emit",
       payload: {
-        type: "snowball.card.entered_column",
+        type: "acme.card.entered_column",
         workspace_id: WS,
         source_endpoint_id: E1,
         destination: { kind: "context", context_id: ctx },

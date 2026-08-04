@@ -503,7 +503,7 @@ export function actorExtensionName(actor: EndpointRef): string | null {
 
 export function actorFileRelPath(actor: EndpointRef): string | null {
   if (!actor.metadata_json) return null;
-  // Extension-provided actors use a sentinel (e.g. "[extension:snowball]") — no on-disk file.
+  // Extension-provided actors use a sentinel (e.g. "[extension:acme]") — no on-disk file.
   if (actorExtensionName(actor) !== null) return null;
   try {
     const meta = JSON.parse(actor.metadata_json) as { file?: unknown };

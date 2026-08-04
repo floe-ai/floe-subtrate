@@ -7,8 +7,8 @@
  * `GET|POST /v1/extensions/:name/*` can forward incoming app requests here.
  *
  * URL scheme: `http://127.0.0.1:{port}/{extName}/{handlerPath}`
- * e.g.  GET  http://127.0.0.1:5378/snowball/board?scope_id=X
- *        POST http://127.0.0.1:5378/snowball/move
+ * e.g.  GET  http://127.0.0.1:5378/acme/board?scope_id=X
+ *        POST http://127.0.0.1:5378/acme/move
  *
  * The bus relay strips the extension name from the path before forwarding, so
  * the subPath it forwards is `/{handlerPath}` (e.g. `/board`). The bridge
@@ -58,7 +58,7 @@ export async function startExtensionRelayServer(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-type HandlerKey = `${"GET"|"POST"}:/${string}/${string}`; // e.g. "GET:/snowball/board"
+type HandlerKey = `${"GET"|"POST"}:/${string}/${string}`; // e.g. "GET:/acme/board"
 
 function buildHandlerMap(extensions: RelayExtensionEntry[]): Map<HandlerKey, ExtensionHttpHandler["handler"]> {
   const map = new Map<HandlerKey, ExtensionHttpHandler["handler"]>();
@@ -83,7 +83,7 @@ async function handleRequest(
 
   // Parse path + query
   const urlObj = new URL(rawUrl, "http://localhost");
-  const pathname = urlObj.pathname; // e.g. "/snowball/board"
+  const pathname = urlObj.pathname; // e.g. "/acme/board"
   const query: Record<string, string> = {};
   urlObj.searchParams.forEach((v, k) => { query[k] = v; });
 
