@@ -1,12 +1,12 @@
 /**
  * Ops — events & pulses management for a scope.
  *
- * REAL MODEL (mirrors floe-web / floe-bus exactly — see worklog for the full trace):
+ * REAL MODEL:
  *  - "Event" has no standalone managed/CRUD entity in the substrate. An Event is an
  *    immutable emitted message (EventEnvelope) — created by an actor emit, a pulse
  *    firing (`pulse.fired`), or a webhook ingest. There is no create/edit/delete for
- *    a raw event as a thing-in-itself, and floe-web has no such UI either. So the
- *    Events section here is a READ-ONLY recent list, scoped via `GET /v1/events?scope_id=`.
+ *    a raw event as a thing-in-itself. The Events section here is a READ-ONLY
+ *    recent list, scoped via `GET /v1/events?scope_id=`.
  *  - "Pulse" is the real manageable/schedulable entity: a bus-owned trigger (once/cron)
  *    that fires `pulse.fired` to its subscribers (a context, or an endpoint+context).
  *    The bus supports create / list / pause / resume / cancel / subscribe / unsubscribe —

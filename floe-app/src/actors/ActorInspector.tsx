@@ -7,7 +7,7 @@
  *    so a name change doesn't clobber other fields.
  *  - Profile -> Model -> Effort (scope="agent"): selecting a profile constrains
  *    the Model dropdown to that profile's provider (see modelsForProfile.ts,
- *    lifted from floe-web's effectiveProfile/availableModels wiring).
+ *    using the shared profile/provider model helper).
  *    Clearing the profile removes the agent-level binding entirely
  *    (clearRuntimeBindings) so the actor falls back to workspace/global.
  *  - Effective resolved binding (resolveRuntimeBinding) shown with layer

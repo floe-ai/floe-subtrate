@@ -91,7 +91,7 @@ The substrate model is:
 events → deliveries → endpoint processing cycles → emitted events
 ```
 
-Thread views in floe-web render events grouped by thread_id. They do not imply
+Thread views in the UI render events grouped by thread_id. They do not imply
 a request/response pair at the substrate level.
 
 ---
@@ -271,7 +271,7 @@ runtime adapter selection.
 
 ## 14. What this means for implementation
 
-When writing code in floe-bus, floe-bridge, or floe-web:
+When writing code in floe-bus, floe-bridge, or floe-app:
 
 - ✅ Use "event", "delivery", "endpoint", "emit", "turn", "processing cycle"
 - ❌ Do not use "prompt", "reply", "assistant response", "user message" as substrate concepts

@@ -1,10 +1,8 @@
 /**
  * modelsForProfile — profile → provider → models constraint.
  *
- * Lifted from floe-web/src/main.tsx (effectiveProfile + the useEffect that
- * calls `/v1/auth/models?provider=...` whenever the selected profile changes,
- * see lines ~441-457 and ~877-885). floe-web never built a generic helper —
- * the constraint was inlined in the component. We extract it here so both
+ * Profile/provider model-binding behavior is implemented here as a reusable helper.
+ * Both
  * the actor inspector (scope=agent) and Workspace Settings (scope=workspace_default)
  * can share one constrained-list rule instead of reimplementing it twice.
  *
@@ -43,8 +41,8 @@ export async function modelsForProfile(
 /**
  * Ensure the currently-selected model still shows up in the dropdown even if
  * the live provider model list doesn't include it (e.g. a model that was
- * valid when bound but has since rotated out of the catalog). Mirrors
- * floe-web's `workspaceModelOptions` memo (main.tsx ~445-457).
+ * valid when bound but has since rotated out of the catalog). Keeps a currently
+ * selected model visible when the provider catalog changes.
  */
 export function withSelectedModelOption(
   models: AuthModelRecord[],
@@ -69,11 +67,8 @@ export function withSelectedModelOption(
 // ---------------------------------------------------------------------------
 
 /**
- * The floe-web convention for actor endpoint ids (see
- * floe-web/src/main.tsx:2631 `operatorActorId`): `actor:<workspace_id>:<slug>`.
- * floe-web only ever generates the reserved "operator" slug; this generalizes
- * it for arbitrary actor names so floe-app's id generation matches the same
- * shape instead of a bare crypto.randomUUID().
+ * Actor endpoint ids use `actor:<workspace_id>:<slug>`, with the reserved
+ * "operator" slug generalized for arbitrary actor names.
  */
 export function slugify(name: string): string {
   const slug = name
