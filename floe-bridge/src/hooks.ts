@@ -26,8 +26,7 @@ export type HookName =
   // Slice 1 — dynamic participants
   | "ParticipantAdded"
   | "ParticipantRemoved"
-  // Side thread lifecycle
-  | "ThreadClosed";
+;
 
 type RuntimeSessionSummary = {
   provider: string;
@@ -132,14 +131,6 @@ export type HookPayloadByName = {
     endpoint_id: string;
   };
   // Side thread lifecycle
-  ThreadClosed: {
-    /** The thread that was closed. */
-    thread_id: string;
-    /** The context this thread belongs to. */
-    context_id: string;
-    /** The parent thread — present because only side threads can be closed. */
-    parent_thread_id: string;
-  };
 };
 
 export type HookPayload<Name extends HookName = HookName> = HookPayloadByName[Name];

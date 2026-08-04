@@ -41,12 +41,7 @@ matching migration tests in `floe-bus/src/config-migration.test.ts` and
 
 ## Remove the `Thread` primitive (approved 2026-06-14)
 
-`thread_id` is vestigial — "legacy field retained for storage compatibility
-only; no new flow reads it." Contexts are the real stream primitive.
+**Completed in `fm/remove-thread-primitive`:** removed the `threads` table, thread storage, HTTP and bridge APIs, lifecycle hook/session eviction, side-thread resolver state, and associated tests. Runtime Rule 3 now opens an independent peer context containing `{source, destination}` and records the origin in `parent_context_id`; the origin context remains unchanged.
 
-**Action:** remove `thread_id` from the events schema, `EventCommand`,
-`submitEvent` (it currently writes the resolved `context_id` into `thread_id` to
-satisfy a NOT NULL constraint), `pending_responses`, and the `thread_affine`
-response mode. Bundle with the schema-collapse above so the events table is
-rewritten once.
+**Deferred to the schema collapse above:** retain `events.thread_id` (including its `NOT NULL` constraint), `pending_responses.thread_id`, and `thread_affine`. They are still read by the event filter/deserialiser and response matching. `submitEvent` preserves a supplied `thread_id` and falls back to the resolved `context_id` only when it is absent.
 

@@ -1,14 +1,3 @@
-export type ThreadRecord = {
-  thread_id: string;
-  context_id: string;
-  /** NULL ⇒ main/root thread.  Non-null ⇒ side thread. */
-  parent_thread_id: string | null;
-  created_by_endpoint_id: string | null;
-  status: "open" | "closed";
-  created_at: string;
-  title: string | null;
-};
-
 export type EventEnvelope = {
   event_id: string;
   type: string;
@@ -414,51 +403,6 @@ export class BusClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Threads API
-  // ---------------------------------------------------------------------------
-
-  async listThreadsForContext(contextId: string): Promise<ThreadRecord[]> {
-    const result = await this.get(
-      `/v1/contexts/${encodeURIComponent(contextId)}/threads`
-    ) as { threads: ThreadRecord[] };
-    return result.threads;
-  }
-
-  async getThread(threadId: string): Promise<ThreadRecord | null> {
-    try {
-      const result = await this.get(
-        `/v1/threads/${encodeURIComponent(threadId)}`
-      ) as { thread: ThreadRecord };
-      return result.thread;
-    } catch {
-      return null;
-    }
-  }
-
-  async createThread(contextId: string, input: {
-    parent_thread_id?: string | null;
-    created_by_endpoint_id?: string | null;
-    title?: string | null;
-  }): Promise<string> {
-    const result = await this.post(
-      `/v1/contexts/${encodeURIComponent(contextId)}/threads`,
-      input
-    ) as { thread: ThreadRecord };
-    return result.thread.thread_id;
-  }
-
-  /**
-   * Close a side thread.  Returns the updated ThreadRecord.
-   * Throws if the thread is not found or if it is a root/main thread.
-   */
-  async closeThread(threadId: string): Promise<ThreadRecord> {
-    const result = await this.post(
-      `/v1/threads/${encodeURIComponent(threadId)}/close`,
-      {}
-    ) as { thread: ThreadRecord };
-    return result.thread;
-  }
-
   private async _delete(path: string): Promise<unknown> {
     const response = await fetch(`${this.baseUrl}${path}`, { method: "DELETE" });
     if (!response.ok) throw new Error(`DELETE ${path} failed: ${response.status} ${await response.text()}`);

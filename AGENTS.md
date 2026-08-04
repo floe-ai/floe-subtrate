@@ -592,56 +592,19 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 
 ---
 
-## First-class Side Threads (fm/floe-side-thread)
+## Peer contexts (fm/remove-thread-primitive)
 
-### Threads table
+There is no Thread primitive. A Context is the shared event stream and the session key remains `(agent, context)`.
 
-- **`threads` table** in `floe-bus/src/contexts/threads.ts`: `thread_id` (PK), `context_id`, `parent_thread_id` (NULL = root/main), `created_by_endpoint_id`, `status` (`open`/`closed`), `created_at`, `title`.
-- **Root thread invariant**: every context gets a root thread row with `thread_id = context_id` and `parent_thread_id = NULL`. Created in `ContextStore.createContext` (via direct `INSERT OR IGNORE`). Backfilled by `applyThreadSchema` migration for existing contexts.
-- **Main vs side is DERIVED**: `parent_thread_id IS NULL` → main thread; `IS NOT NULL` → side thread. No kind/type column.
-- **Schema**: `applyContextSchema` calls `applyThreadSchema` at the end; guaranteed in `BusStore` constructor.
-- **`ThreadStore`** in `floe-bus/src/contexts/threads.ts`: `createThread`, `ensureRootThread`, `getThread`, `listThreadsForContext`. Accessible as `store.threadStore`.
-- `BusClient` exposes `listThreadsForContext(contextId)`, `getThread(threadId)`, `createThread(contextId, input)`. `ThreadRecord` type exported from `floe-bridge/src/bus-client.ts`.
+### Rule 3: cross-actor peer context
 
-### Rule 3 change (resolver + submitEvent)
+- Rule 2: a runtime emit to an existing participant continues the current context.
+- Rule 3: a runtime emit to a non-participant creates an independent context containing `{source, destination}`.
+- The peer context records `parent_context_id = current_delivery_context_id` as provenance. This temporarily reuses the hierarchical field because the ROADMAP's neutral link and peer-context UI do not exist; revisit when that UI lands.
+- UI-originated new contexts have `parent_context_id = null`.
+- The bridging actor relays results explicitly between the origin and peer contexts.
 
-- **Old Rule 3** (pre-fm/floe-side-thread): runtime emit to a non-participant destination → open a NEW context with {source, destination}.
-- **New Rule 3**: runtime emit to a non-participant destination → stay in the SAME context, create a **side thread** (`parent_thread_id = current_delivery_thread_id || context_id`).
-- `resolveContext` gains optional `current_delivery_thread_id` input field. When Rule 3 fires, returns `{ context_id: <same>, created: false, side_thread: { parent_thread_id } }`.
-- `submitEvent` in `BusStore`: when `resolution.side_thread` is set, calls `threadStore.createThread(...)` and uses the new thread_id for the emitted event.
-- `submitEvent` also calls `threadStore.ensureRootThread(...)` for newly created contexts (`resolution.created = true`).
-
-### Reply routing
-
-- An actor's turn carries `thread_id` from the delivery trigger event. The emit tool passes this as `thread_id` in the `EventCommand`, which is forwarded to `resolveContext` as `current_delivery_thread_id`.
-- If the addressee replies (Rule 2: destination IS a participant), the reply carries `thread_id = sideThreadId` (from turn) → lands on the same side thread. No new thread created.
-- **`BusStore.submitEvent` new context creation**: also calls `ensureRootThread` for new contexts so every context has a root thread immediately.
-
-### API routes (server.ts)
-
-- `GET /v1/contexts/:id/threads` → `{ threads: ThreadRecord[] }`
-- `POST /v1/contexts/:id/threads` → `{ ok: true, thread: ThreadRecord }` (201)
-- `GET /v1/threads/:thread_id` → `{ thread: ThreadRecord }` (404 if missing)
-- `POST /v1/threads/:thread_id/close` → `{ ok: true, thread: ThreadRecord }` — closes a side thread; 409 if it is a root/main thread; 404 if not found; idempotent (already-closed is ok).
-
-### Side thread close lifecycle (fm/floe-sidethread-lifecycle)
-
-- **`ThreadStore.closeThread(threadId)`** — sets `status = 'closed'`. Throws `RootThreadCloseError` if `parent_thread_id IS NULL` (only side threads can close). Throws `ThreadNotFoundError` if thread does not exist. Idempotent on already-closed.
-- **`BusStore.closeThread(threadId, broadcast)`** — delegates to `threadStore.closeThread`, then broadcasts `thread_closed { thread_id, context_id, parent_thread_id }`.
-- **Closed thread rejects events**: `BusStore.submitEvent` checks `command.thread_id` against the thread table before inserting. If the thread is closed, throws `ClosedThreadError`. Main/root thread and newly created side threads are unaffected.
-- **`BusClient.closeThread(threadId)`** — `POST /v1/threads/:thread_id/close` wrapper, returns `ThreadRecord`.
-- **`HookName += 'ThreadClosed'`** — payload: `{ thread_id, context_id, parent_thread_id }` (no workspace_id; side threads are only closed by side thread, never broadcast-workspace).
-- **Daemon `onThreadClosed`** — handles `thread_closed` WS broadcast: fires `ThreadClosed` hook to all registered extension hook registries, then calls `adapter.releaseSessionsForClosedThread(closedThreadId)`.
-- **`SessionState.sideThreadId: string | null`** — set when a session is CREATED by a delivery triggered on a non-root thread (thread_id ≠ contextId). Used by `releaseSessionsForClosedThread` for conservative eviction.
-- **`PiAgentCoreAdapter.releaseSessionsForClosedThread(closedThreadId)`** — iterates sessions; evicts any session whose `sideThreadId === closedThreadId`. Skips sessions with an active in-progress turn (deferred). Root-thread sessions (sideThreadId=null) and different-side-thread sessions are never evicted.
-- **`RuntimeAdapter` interface** gains optional `releaseSessionsForClosedThread?(closedThreadId: string): void`.
-- **Error classes** in `floe-bus/src/contexts/threads.ts`: `ThreadNotFoundError`, `RootThreadCloseError`, `ClosedThreadError` (all exported).
-
-### Non-regressing
-
-- Existing single-thread conversations are unaffected: Rule 2 (participant reply) keeps the same thread.
-- UI renders context events flat until a future slice groups by thread.
-- App UI wiring for close is a SEPARATE follow-up.
+`events.thread_id`, `pending_responses.thread_id`, and `thread_affine` remain deferred schema-collapse compatibility storage. New events fall back to their `context_id` when no thread id is supplied.
 
 ---
 
