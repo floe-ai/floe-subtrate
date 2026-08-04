@@ -47,22 +47,6 @@ function PlaceholderExtensionView({ extensionName, scopeId }: ExtensionViewProps
   );
 }
 
-// Extension views use the convention floe-ext-{name}/src/ui/{component}.tsx.
-const extensionViewModules = import.meta.glob("../../../floe-ext-*/src/ui/*.tsx", { eager: true });
-
-export function resolveExtensionView(
-  extensionName: string,
-  component: string,
-): React.ComponentType<ExtensionViewProps> {
-  const module = extensionViewModules[
-    `../../../floe-ext-${extensionName}/src/ui/${component}.tsx`
-  ] as Record<string, unknown> | undefined;
-  const view = module?.[component] ?? module?.default;
-  return typeof view === "function"
-    ? view as React.ComponentType<ExtensionViewProps>
-    : PlaceholderExtensionView;
-}
-
 const BUS_BASE = "http://127.0.0.1:5377";
 
 type ExtensionApiEntry = {
@@ -92,7 +76,9 @@ function useFetchedExtensionViews(workspaceId: string): ExtensionViewEntry[] {
                   id: ext.name,
                   label: v.label,
                   extensionName: ext.name,
-                  component: resolveExtensionView(ext.name, v.component),
+                  // External extension views are not loaded yet; runtime loading is not implemented.
+                  // Declared views therefore render a placeholder.
+                  component: PlaceholderExtensionView,
                 });
               }
             }
