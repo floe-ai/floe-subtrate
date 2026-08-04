@@ -19,11 +19,6 @@ import {
 } from "../bus-client/client.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
 import { Ops } from "./Ops.tsx";
-import { SnowballBoard } from "floe-ext-snowball/BoardView";
-
-// ---------------------------------------------------------------------------
-// Extension view registry
-// ---------------------------------------------------------------------------
 
 export interface ExtensionViewProps {
   workspaceId: string;
@@ -37,20 +32,9 @@ export interface ExtensionViewEntry {
   id: string;         // unique key: extension name (e.g. "snowball")
   label: string;      // tab label (e.g. "Board")
   extensionName: string;
-  /**
-   * Component to render. For the stub/test placeholder this is a simple
-   * functional component. The real extension component (SnowballBoard) is
-   * wired here at integration-join time (see PR description).
-   *
-   * TODO(integration-join): replace placeholder with:
-   *   import { SnowballBoard } from "@floe/ext-snowball/BoardView";
-   * once snowball-ext-x2 track lands.
-   */
   component: React.ComponentType<ExtensionViewProps>;
 }
 
-// Fallback placeholder for any extension whose component identifier is not
-// statically mapped below (unknown or future extensions).
 function PlaceholderExtensionView({ extensionName, scopeId }: ExtensionViewProps): React.ReactElement {
   return (
     <div style={{ padding: 28, color: "#8a8f98", fontSize: 13, fontFamily: '"Inter Variable","Inter",-apple-system,system-ui,sans-serif' }}>
@@ -63,16 +47,21 @@ function PlaceholderExtensionView({ extensionName, scopeId }: ExtensionViewProps
   );
 }
 
-/**
- * Static component registry: maps extension manifest `component` identifiers
- * to their React components (build-time bundle model per contract §1.5).
- *
- * TODO(Phase-3): replace with runtime registry when external (out-of-monorepo)
- * extensions are needed.
- */
-const COMPONENT_REGISTRY: Record<string, React.ComponentType<ExtensionViewProps>> = {
-  "@floe/ext-snowball/BoardView": SnowballBoard as React.ComponentType<ExtensionViewProps>,
-};
+// Extension views use the convention floe-ext-{name}/src/ui/{component}.tsx.
+const extensionViewModules = import.meta.glob("../../../floe-ext-*/src/ui/*.tsx", { eager: true });
+
+export function resolveExtensionView(
+  extensionName: string,
+  component: string,
+): React.ComponentType<ExtensionViewProps> {
+  const module = extensionViewModules[
+    `../../../floe-ext-${extensionName}/src/ui/${component}.tsx`
+  ] as Record<string, unknown> | undefined;
+  const view = module?.[component] ?? module?.default;
+  return typeof view === "function"
+    ? view as React.ComponentType<ExtensionViewProps>
+    : PlaceholderExtensionView;
+}
 
 const BUS_BASE = "http://127.0.0.1:5377";
 
@@ -103,7 +92,7 @@ function useFetchedExtensionViews(workspaceId: string): ExtensionViewEntry[] {
                   id: ext.name,
                   label: v.label,
                   extensionName: ext.name,
-                  component: COMPONENT_REGISTRY[v.component] ?? PlaceholderExtensionView,
+                  component: resolveExtensionView(ext.name, v.component),
                 });
               }
             }

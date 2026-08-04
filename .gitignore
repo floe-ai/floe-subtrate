@@ -20,3 +20,4 @@ test-results/
 .floe/agents/snowball-overseer.md
 # Runtime context-map (regenerable bus context ids; not version-controlled)
 .floe/extensions/snowball/runtime/
+*.tsbuildinfo

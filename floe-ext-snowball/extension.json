@@ -7,7 +7,7 @@
     {
       "slot": "scope-detail-tab",
       "label": "Board",
-      "component": "@floe/ext-snowball/BoardView"
+      "component": "BoardView"
     }
   ],
   "agents": [
