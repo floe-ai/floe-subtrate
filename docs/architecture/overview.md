@@ -48,17 +48,17 @@ graph LR
         RELAY["extension-relay · port 5378"]
     end
 
-    subgraph EXTS["extensions (e.g. snowball)"]
+    subgraph EXTS["external extensions"]
         ENTRY["entry factory\n(tools + hook handlers)"]
-        EHTTP["HTTP handlers\n(board API)"]
-        EVIEW["UI component\n(BoardView.tsx)"]
+        EHTTP["HTTP handlers"]
+        EVIEW["declared view"]
         EFILES[".floe/extensions/name/\n(definition files)"]
     end
 
     UI -->|"HTTP GET/POST /v1/*"| BHTTP
     UI -->|"WebSocket — event_submitted"| BHTTP
     BHTTP -->|"GET /v1/extensions\n→ registered views"| UI
-    CREG -.->|"static import at build time"| EVIEW
+    CREG -.->|"unavailable components render a placeholder"| EVIEW
 
     DAEMON -->|"GET deliveries\nPOST events, endpoints"| BHTTP
     DAEMON -->|"POST /v1/extensions/report\n(relay_url)"| BHTTP
@@ -234,7 +234,7 @@ sequenceDiagram
     EL->>EXT: import(entry) → factory(ctx)
     EXT->>HR: ctx.hooks.on("BeforeTurn", handler)
     EXT->>BD: ctx.registerHttpHandler(...)
-    EXT-->>EL: AgentTool[] (prefixed snowball_*)
+    EXT-->>EL: AgentTool[] (prefixed extension name)
     EL-->>BD: LoadedExtension[]
     BD->>RL: startExtensionRelayServer() [port 5378]
     BD->>BUS: POST /v1/extensions/report (relay_url)
@@ -277,8 +277,8 @@ graph TD
         SS["SubstrateSettingsView\n(auth profiles / runtime config)"]
     end
 
-    subgraph EXT["extensions (e.g. snowball)"]
-        SB["SnowballBoard\n(floe-ext-snowball/BoardView)\n— static import via COMPONENT_REGISTRY"]
+    subgraph EXT["external extensions"]
+        EV["Declared views\n(discovered at runtime)"]
     end
 
     subgraph BUS["floe-bus (port 5377)"]
@@ -293,7 +293,7 @@ graph TD
     SD --> CTX_LIST
     SD --> OPS
     SD --> EXT_TABS
-    EXT_TABS -->|"component = @floe/ext-snowball/BoardView"| SB
+    EXT_TABS -->|"unavailable component"| EV
     APPX --> SS
     SS -->|"browser: GET /v1/auth/profiles (read-only)"| BAPI
     SS -->|"desktop: invoke()"| TAURI
@@ -305,111 +305,9 @@ graph TD
 **Extension view registration** (`ScopeDetail.tsx`):
 - `GET /v1/extensions?workspace_id=X` returns extension manifests with declared views.
 - Views with `slot: "scope-detail-tab"` are added as dynamic tabs alongside built-in Contexts/Ops tabs.
-- The `COMPONENT_REGISTRY` map resolves component identifiers to React components at build time.
+- A declared component without an in-repo implementation renders `PlaceholderExtensionView`; runtime loading of external view components is not implemented.
 - `contextLabel` prefers `title` over `first_message_preview`.
 
----
-
-### 1.4 Snowball Extension — Current State (`floe-ext-snowball`)
-
-> **Foundation Slices 1+2 (`fm/snowball-found-s1` + `fm/snowball-col-instr-s2`) shipped.**
-> Cards are committed files. Columns are now ALSO committed definition files with
-> agent instructions in the body. This section reflects post-slice-2 reality.
-
-```mermaid
-graph TD
-    subgraph EXT["floe-ext-snowball"]
-        SBX["entry (src/index.ts)"]
-        HOOK["BeforeTurn hook (hooks.ts)
-Injects board snapshot into agent prompt
-(reads tasks/*.md card files)"]
-        TOOLS["Tools (tools/index.ts)
-move_card · list_cards · create_card
-check_criteria · list_columns · get_board_state"]
-        OVERSEER["Overseer (overseer.ts)
-advanceCardIfReady()
-— reads/writes card files, not sidecar"]
-        HTTP["HTTP handlers (handlers.ts)
-board state + card move relay"]
-        UI["BoardView.tsx (ui/)
-Kanban board React UI"]
-        SIDECAR[".floe/extensions/snowball/runtime/<slug>.yaml (v3, GITIGNORED)
-Owns ONLY: column_contexts map (runtime, regenerable)"]
-        COL_FILES[".floe/extensions/snowball/boards/<slug>/columns/<id>.md (COMMITTED)
-Frontmatter: id · name · scope_id · owner · order · wip_limit · exit_criteria
-Body: agent instructions (editable, injected via BeforeTurn)"]
-        BOARD_FILE[".floe/extensions/snowball/boards/<slug>/board.md (COMMITTED)
-Frontmatter: scope_id
-Body: board-wide done protocol (editable in Board Settings UI,
-injected into every column worker's BeforeTurn)"]
-        CARDS["tasks/<id>.md (COMMITTED)
-Frontmatter: id · title · type · actor · column · order · checks
-Body: description + carry-forward comments"]
-    end
-
-    subgraph BUS["floe-bus (SQLite)"]
-        BUS_EV["Events
-snowball.card.entered_column (routing + UI-refresh signal)
-(snowball.card.moved / .created / .criteria_checked suppressed — caused context churn)"]
-        BUS_CTX["Contexts
-(one per COLUMN, not per card)
-Owner actor + overseer frozen participants"]
-    end
-
-    SBX --> HOOK
-    SBX --> TOOLS
-    SBX --> HTTP
-    TOOLS -->|"read/write"| CARDS
-    TOOLS -->|"read"| COL_FILES
-    HOOK -->|"read"| CARDS
-    HOOK -->|"read"| COL_FILES
-    HOOK -->|"read (done protocol)"| BOARD_FILE
-    OVERSEER -->|"read/write"| CARDS
-    OVERSEER -->|"read"| COL_FILES
-    TOOLS -->|"triggers"| OVERSEER
-    OVERSEER -->|"emit"| BUS_EV
-    HTTP -->|"read/write"| COL_FILES
-    HTTP -->|"read/write"| CARDS
-    HTTP -->|"read/write (done protocol)"| BOARD_FILE
-    HTTP -->|"read/write (context map only)"| SIDECAR
-    HTTP -->|"serves"| UI
-    BUS_CTX -->|"listContextsForScope
-(columns as context rows)"| UI
-```
-
-**What Snowball owns (post-slice-2):**
-
-- **Column definition files** (`.floe/extensions/snowball/boards/<slug>/columns/<id>.md`, **committed + diffable**) own column config: `id`, `name`, `scope_id`, `order`, `wip_limit`, `owner` (kind + agent_id), `exit_criteria`. **Body = agent instructions** (free-form markdown, editable in Board UI, injected via BeforeTurn).
-- **Board definition file** (`.floe/extensions/snowball/boards/<slug>/board.md`, **committed + diffable**) owns board-level config. **Body = board-wide done protocol** (free-form markdown, editable in Board UI via the "Board Settings" button). The done protocol is injected into every column worker's BeforeTurn prompt and drives the advance-on-conclusion behavior: agents do work, check criteria, then call `move_card`. Created on board init with a default done protocol; lazily created on first BeforeTurn read if absent.
-- **Advance-on-conclusion** (`fm/floe-advance-protocol`): a card entering an agent-owned column is held there while the agent does its work (triggered by `snowball.card.entered_column`). The card advances only when the agent concludes — calling `check_criteria` (for criteria columns) and then `move_card`. The synchronous `advanceCardIfReady` cascade is NOT called on card arrival; it is kept as a utility callable by the overseer or in tests. The board-level done protocol provides the explicit instructions agents need. The BeforeTurn injection now also lists **unchecked criteria IDs** inline so agents can call `check_criteria` without an extra `get_board_state` call.
-- **Sidecar YAML** (`.floe/extensions/snowball/runtime/<slug>.yaml`, schema `floe.ext.snowball.board.v3`, **gitignored**) owns ONLY the `column_contexts` map (`column_id → bus Context id`). Renamed from `boards/<slug>.yaml` to `runtime/<slug>.yaml` to clearly separate authored content from regenerable runtime state. Populated lazily on first card move to an agent-owned column (no explicit `POST /board/init` required).
-- **`slugify()`** maps `scope_id → filesystem slug` (replaces `:`, `/`, `\` with `_` for Windows-safe filenames).
-- **Card files** (`tasks/<id>.md`, **committed**) are the source of truth for card state. Frontmatter: `id`, `title`, `type`, `actor`, `column` (updated in-place on move, file never moves — D1), `order`, `created_at`, `checks`. Body: description + appended carry-forward comments.
-- **Column = bus Context**: `POST /board/init` creates one bus Context per column (scoped to board scope_id), with column owner actor + `snowball-overseer` as frozen participants. Context ids stored in `column_contexts` (sidecar).
-- **Columns as context rows**: `listContextsForScope` returns column contexts — the UI Contexts tab shows columns, not cards.
-- **Card-move path**: rewrites `column` frontmatter in-place, appends `<!-- carry-forward from "ColumnName" at ISO -->` comment to body, emits `snowball.card.entered_column` (for agent-owned columns) into the column context. All emits include `scope_id` so any fallback-created contexts are always board-scoped (never stray no-scope contexts).
-- **Lazy board init on move**: `handlePostMove` (HTTP handler) AND the `move_card` tool both lazily call `initBoardContexts` when the destination agent-owned column has no column context in the sidecar. This ensures `entered_column` routing ALWAYS targets a scoped, stable column context — the same context reused across all moves to that column. Without lazy init in the tool path, each AI-initiated move would create a fresh context instead of reusing the column's persistent context.
-- **Stable column context**: each agent-owned column has ONE context in the bus. The context_id is persisted to the runtime sidecar after lazy init. Subsequent moves reuse the same context_id.
-- **Owner-change eviction**: `handlePostColumns` action:update evicts the column context from the sidecar when the column owner changes to an agent, so the next move triggers a lazy re-init with the new agent as a participant.
-- **BeforeTurn injection**: reads column files + card files. Column workers receive: (1) board-wide done protocol, (2) their column's agent instructions, (3) card list with criteria count AND unchecked criteria IDs/descriptions (so agents can call `check_criteria` without a separate `get_board_state` call). Overseer receives full board snapshot + all columns' instructions. Board discovery uses `.floe/extensions/snowball/boards/` directory (works after clone — no sidecar needed).
-- **Column instructions before board init**: `POST /column/instructions` now auto-creates default column files if the target column doesn't exist yet on disk. This allows users to save instructions for a default (in-memory) column without first calling `POST /board/init`.
-- **Overseer** (`advanceCardIfReady`) reads column definitions from column files (not sidecar). Maximum 20-column cascade guard.
-- **Gate enforcement**: AI `move_card` hard-blocked by unchecked exit criteria (read from column files); human `force=true` is soft-warn; WIP limits hard-block both.
-- **Column instructions UI**: `ColumnConfigPanel` includes an "Agent Instructions" textarea. Saving writes the column file body via `POST /column/instructions` (the file IS the source of truth). Instructions are committed and diffable.
-- **Overseer agent** (`snowball-overseer`) registered in memory at workspace attach — no disk write, no `floe.yaml` modification.
-
-**State/runtime split (post-slice-2 — §2.4 fully realized for columns):**
-
-| What | Where | Tracked? |
-|---|---|---|
-| Column definitions (name, owner, exit-criteria, WIP) | Column file frontmatter (`boards/<slug>/columns/<id>.md`) | ✅ Committed |
-| Column agent instructions | Column file body (`boards/<slug>/columns/<id>.md`) | ✅ Committed |
-| Board done protocol (advance-on-conclusion instructions) | Board file body (`boards/<slug>/board.md`) | ✅ Committed |
-| Column context ids | Sidecar YAML (`column_contexts` map, v3, gitignored) | ❌ Runtime scratch |
-| Card definition (type, description, comments) | Card file (`tasks/<id>.md`) | ✅ Committed |
-| Card current column + order | Card file frontmatter (updated in-place on move) | ✅ Committed |
-| Column contexts (stable, scoped) | Bus SQLite (created at board init) | ❌ Runtime |
-| Card-move events | Bus SQLite | ❌ Runtime |
 ---
 
 ## Part 2 — Target Model
@@ -422,10 +320,7 @@ Owner actor + overseer frozen participants"]
 
 ### 2.0 Substrate vs Extension — What Belongs Where
 
-A future agent building a *different* extension must know exactly which
-capabilities come from the general substrate and which are Snowball-specific
-applications of those primitives. Snowball is an example consumer of the
-substrate — not part of it.
+Extensions are independent consumers of the substrate. They define their own product semantics and durable state; the substrate owns shared coordination and runtime contracts.
 
 | Concept | Owner | Available to any extension? |
 |---|---|---|
@@ -434,137 +329,38 @@ substrate — not part of it.
 | Pulses (`pulse.fired`) | **Substrate** (`floe-bus`) | ✅ Yes |
 | Hooks (`BeforeTurn`, `Pulse`, `TurnEnd`, …) | **Substrate** (`floe-bridge`) | ✅ Yes — register via `ExtensionContext.hooks.on(...)` |
 | HTTP relay (`GET/POST /v1/extensions/name/*`) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare handlers via `ctx.registerHttpHandler(...)` |
-| Scope-detail tab views | **Substrate** (`floe-app` COMPONENT_REGISTRY) | ✅ Yes — declare `views` in extension manifest |
+| Extension-view discovery | **Substrate** (`floe-bus` + `floe-app`) | ✅ Yes — declare `views` in the manifest; unavailable components render a placeholder |
 | Tool namespacing (auto-prefix) | **Substrate** (`extension-loader`) | ✅ Yes — automatic for all extensions |
-| Agent bundling (in-memory, no disk write) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare `agents` in extension manifest |
-| **Boards** (column config, accepted card type) | **Snowball-specific** | ❌ No |
-| **Columns as Contexts** | **Snowball's use** of substrate Contexts | ❌ No |
-| **Cards** (markdown files with YAML frontmatter) | **Snowball-specific** | ❌ No |
-| **Exit criteria** (per-column gate logic) | **Snowball-specific** | ❌ No |
-| **Overseer agent** (`snowball-overseer`) | **Snowball-specific** | ❌ No |
-| **WIP limits** | **Snowball-specific** | ❌ No |
-| **Carry-forward comments** | **Snowball-specific** | ❌ No |
+| Agent bundling (in-memory, no disk write) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare `agents` in the manifest |
+| Product domain, file formats, and business rules | **Extension** | ❌ No |
 
-> **Rule:** if Snowball deleted tomorrow, the substrate (bus, bridge, app) must
-> be completely unmodified. Snowball only calls substrate APIs — it never adds
-> to them.
+> **Rule:** deleting an extension must leave the substrate (bus, bridge, and app) unmodified. Extensions call substrate APIs; they do not add product semantics to them.
 
 ---
 
-### 2.1 File-First Philosophy
+### 2.1 Extensions as Thin Glue
 
-> **Realized for cards (`fm/snowball-found-s1`) and columns (`fm/snowball-col-instr-s2`).**
+Extensions integrate into substrate primitives; they must not build parallel stores for substrate-owned mutable state.
 
-Everything in Floe is a committable, diffable file.
-
-```mermaid
-graph TD
-    CARD["Card = Markdown file\n(tasks/<id>.md)\nFrontmatter: type, actor\nBody: description\nAppended comments: carry-forward context"]
-    COL["Column = Markdown file\n(columns/<id>.md)\nFrontmatter: name, owner-actor, exit-criteria, WIP\nBody: agent instructions for this column"]
-    BOARD_FILE["Board = Markdown file\n(board.md)\nFrontmatter: scope_id\nBody: board-wide done protocol"]
-    ACT["Actor / runtime binding = Files\n(.floe/agents/<id>.md)"]
-
-    CARD -->|"flows between"| COL
-    COL -->|"configured into"| BOARD_FILE
-    ACT -->|"owns"| COL
-
-    note1["Files are source of truth.\nTools are thin optional endpoints that write files.\nRuntime state (delivery/event tracking) lives in bus."]
-    style note1 fill:#2a2a2a,stroke:#555,color:#aaa
-```
-
-**Invariants:**
-- A card's persistent identity is its file path, not a generated UUID.
-- A column's agent instructions live in the column file body — no separate instructions store.
-- Any tool that "creates a card" is writing a markdown file; the bus event is the notification, not the storage.
+- Extension-owned definitions and product state belong to the extension workspace files or its own storage contract.
+- The bus owns contexts, events, deliveries, subscriptions, and runtime state.
+- Extension hooks and handlers use the normal event and delivery paths; they do not introduce polling loops or separate participant management.
+- Tools are optional interfaces to extension-owned state. Events notify and route work; they are not a replacement for durable product state.
 
 ---
 
-### 2.2 Extensions as Thin Glue
+### 2.2 Definitions-in-Files / Runtime-in-Bus Split
 
-Extensions must integrate INTO substrate primitives — not build parallel state stores.
-
-**Snowball realignment target:**
-
-```mermaid
-graph LR
-    subgraph SUB["Substrate (general — available to any extension)"]
-        BUS_CTX["Bus: Contexts\n(column contexts)"]
-        BUS_EV["Bus: Events\n(card moved, criteria checked)"]
-        FILES["Workspace files\n(card .md, column .md, board config)"]
-    end
-
-    subgraph SB["Snowball (target: thin glue only)"]
-        FMT["File formats\n(card + column schema)"]
-        UI2["UI projection\n(BoardView reads files + events)"]
-        GLUE["Thin event handlers\n(route card moves to correct context)"]
-    end
-
-    FMT -->|"defines shape of"| FILES
-    GLUE -->|"writes"| FILES
-    GLUE -->|"emits into"| BUS_EV
-    UI2 -->|"reads"| FILES
-    UI2 -->|"reads"| BUS_CTX
-```
-
-**What Snowball must NOT do in the target:**
-- Own a parallel sidecar that is the source of truth for mutable runtime state.
-- Build its own event handlers or polling mechanism outside the hook/event substrate.
-- Maintain its own context/participant management separate from the bus.
-
----
-
-### 2.3 Column = Context (decided); Card = File
-
-**Decided context granularity:**
-
-```mermaid
-graph TD
-    subgraph SB["Snowball (extension)"]
-        BOARD_CFG["Board configuration file\n(columns + accepted card type)"]
-        COL_FILE["Column file\n(.md with frontmatter + agent instructions)"]
-        CARD_FILE["Card file\n(tasks/<id>.md)\nFlows between columns as a file move"]
-        CARRY["Carry-forward comment\nAppended to card .md on column move\nExplicit, inspectable, diffable"]
-    end
-
-    subgraph SUB["Substrate (floe-bus)"]
-        COL_CTX["Column Context\n(scope_id = board scope)\nStable participant = column owner actor\nNO per-move participant churn"]
-        ENTER_EV["Event: card.entered_column\n(column_id, card_id, stable context_id)\nTargeted endpoint delivery → agent routing + UI-refresh signal"]
-    end
-
-    BOARD_CFG -->|"references"| COL_FILE
-    COL_FILE -->|"corresponds to"| COL_CTX
-    CARD_FILE -->|"moved to agent col → emit"| ENTER_EV
-    ENTER_EV -->|"delivered to"| COL_CTX
-    CARD_FILE -->|"on move"| CARRY
-```
-
-**Rules (decided):**
-- A **column** is a Context. Its stable participant is the column owner actor. Participants are set at column creation and do not change when cards move through.
-- A **card** is a file that flows between column-contexts as events.
-- A card **intentionally loses** per-column context on move — carry-forward is an explicit comment appended to the card file.
-- **Ruled out**: snowball-as-one-context (all cards in one context → no isolation); board-as-the-working-context (too coarse).
-
----
-
-### 2.4 Definitions-in-Files / Runtime-in-Bus Split
-
-> **Fully realized for cards and columns as of `fm/snowball-col-instr-s2`.**
-> Following the ADR-0001 model (pulse definitions in `.floe/`, runtime in SQLite):
+Following ADR-0001, human-authored definitions are committed and portable; bus runtime state is local and ephemeral. An extension may define its own durable files, but it must not treat runtime scratch state as committed configuration.
 
 | What | Home | Committed? |
 |---|---|---|
-| Card definition (type, description, comments) | `tasks/<id>.md` | ✅ Yes |
-| Column definition (name, owner, exit-criteria, WIP, agent instructions) | `boards/<slug>/columns/<id>.md` | ✅ Yes |
-| Board definition (done protocol, board config) | `boards/<slug>/board.md` | ✅ Yes |
-| Column context ids | Sidecar YAML (`column_contexts` map, gitignored) | ❌ No — runtime |
-| Column context (stable, scoped) | Bus SQLite (created at board init) | ❌ No — runtime |
-| Card-move events | Bus SQLite | ❌ No — runtime |
-| Exit-criteria check events | Bus SQLite | ❌ No — runtime |
-| Watermarks / delivery state | Bus SQLite | ❌ No — runtime |
+| Project configuration | `.floe/floe.yaml` | ✅ Yes |
+| Extension definitions and product state | Extension-owned contract | Extension-defined |
+| Contexts, events, deliveries, subscriptions, and watermarks | Bus SQLite | ❌ No — runtime |
 
 ---
-
-### 2.5 Pulse / Event / Hook Unification Note
+### 2.3 Pulse / Event / Hook Unification Note
 
 > **Current state:** hooks are session/turn lifecycle only. Pulses create `pulse.fired` events delivered to endpoints. Events are the reaction currency.
 
@@ -582,7 +378,7 @@ graph LR
         EP -->|"processed by bridge"| HOOKS["Hooks\n(BeforeTurn, TurnEnd, Pulse…)"]
     end
 
-    subgraph EXT["Extension handlers (e.g. snowball)"]
+    subgraph EXT["Extension handlers"]
         HNDL["Hook handler\n(observes / injects)"]
         AGT["Agent tool call"] -->|"emits"| EV
         HNDL -->|"may emit"| EV
@@ -594,7 +390,7 @@ graph LR
 
 - A pulse is just a scheduled event — no special processing path beyond creation.
 - Events are the reaction currency; hooks are observation/injection points on the processing lifecycle.
-- Today's hooks are session/turn lifecycle only. Future: domain-event hooks (e.g. `card.moved`) are not yet designed.
+- Today's hooks are session/turn lifecycle only. Future domain-event hooks are not yet designed.
 
 ---
 
@@ -604,11 +400,7 @@ graph LR
 
 | # | Question | Why deferred |
 |---|---|---|
-| OQ-1 | **Board semantics**: is a board a Scope, or a config/lens over cards that could span scopes? | Start with one board per scope; multi-board hierarchy (epics → tasks → subtasks, cross-board exit criteria) is undesigned. |
-| OQ-2 | **Multi-board hierarchy**: epics on a higher board, tasks on a lower board, cross-board exit criteria ("all child tasks validated + PR-ready"). | Requires scoped membership model and cross-scope event routing, neither of which is decided. |
-| OQ-3 | **Overseer observation model**: how does the overseer "observe" the system to know when exit criteria are satisfied without a polling/heartbeat mechanism? | Near-term: overseer is a file-authoring systems agent, not a work manager. Full reactive observation model not yet designed. |
-| OQ-4 | **Domain-event hooks**: should extensions register handlers on domain events (e.g. `card.moved`) rather than lifecycle hooks (BeforeTurn)? | Hook system currently covers session/turn lifecycle only. Extending to arbitrary event types requires design. |
-| ~~OQ-5~~ | **Card identity across moves** — **RESOLVED** (fm/snowball-found-s1): identity is the stable frontmatter `id` field. The card file STAYS in `tasks/` and is NEVER moved. The current column is a frontmatter field updated in-place. Carry-forward is by appended comment. File rename does not affect card identity (`id` frontmatter is stable). | Resolved — see §1.4 and D1. |
+| OQ-1 | **Domain-event hooks**: should extensions register handlers on domain events rather than lifecycle hooks such as `BeforeTurn`? | Hook system currently covers session/turn lifecycle only. Extending to arbitrary event types requires design. |
 
 ---
 
@@ -623,4 +415,5 @@ graph LR
 | [`docs/adr/0003-field-substrate-primitive.md`](../adr/0003-field-substrate-primitive.md) | Field as FloeWeb rendering of Scope (superseded by ADR-0004 for ownership questions). |
 | [`docs/adr/0004-scope-as-substrate-organising-boundary.md`](../adr/0004-scope-as-substrate-organising-boundary.md) | Scope is the organising boundary; contexts may be scope-anchored or actor-anchored; there is no automatic fallback Scope. |
 | [`docs/adr/0005-file-access-patterns.md`](../adr/0005-file-access-patterns.md) | File access: Tauri IPC for desktop auth-write; agent file writes sandboxed to workspace locator; no remote HTTP file-write. |
+| [`docs/adr/0006-external-extension-repositories.md`](../adr/0006-external-extension-repositories.md) | Extensions live in independent repositories; the monorepo contains substrate only. |
 | [`docs/substrate-semantics.md`](../substrate-semantics.md) | Endpoint equality, event as primitive, turn as lifecycle, chat as a view. Substrate doctrine. |

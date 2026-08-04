@@ -363,6 +363,9 @@ npm run build -- --help
 
 ## Extension Substrate (Track S — ext-substrate-s3)
 
+Extensions are not part of this repository. They are independent repositories
+that build against the substrate contract.
+
 ### Update-safety invariant (fm/state-hygiene-p6)
 
 **`.floe/floe.yaml` is human-authored, committed project config — treat it as read-only at runtime.**
@@ -405,87 +408,11 @@ npm run build -- --help
 - `contextLabel` prefers `title` over `first_message_preview`.
 - Tabs are dynamic: built-in `["Contexts", "Ops"]` + extension views from `GET /v1/extensions`.
 - Contexts list now calls `listContextsForScope` (server-side index) instead of client-side filter.
-- Placeholder stub view validates registry without importing the extension package.
-- Integration join COMPLETE (fm/integrate-board-i4): `PlaceholderExtensionView` replaced by `SnowballBoard` from `"floe-ext-snowball/BoardView"` via `COMPONENT_REGISTRY` keyed on `v.component`. Fallback to `PlaceholderExtensionView` for unknown extension components.
+- A declared view whose component is unavailable renders `PlaceholderExtensionView`.
 
 ### Extension loader test isolation
 
 - When writing test fixtures that need `.floe/` structure, use a **separate** workspace dir from the extensions dir (e.g. `join(tempDir, "workspace")` for the workspace and `join(tempDir, "extensions")` for extensions). Mixing them causes `loadExtensions` to treat `.floe/` as an extension directory.
-
----
-
-## floe-ext-snowball (extension package)
-
-New workspace package added in `fm/snowball-ext-x2` (PR #72).
-Foundation Slice 1 shipped in `fm/snowball-found-s1`: **card = markdown file, column = bus Context**.
-Slice 2 shipped in `fm/snowball-col-instr-s2`: **column = committed markdown file** (with instructions in body).
-
-**Location:** `floe-ext-snowball/` (workspace entry in root `package.json`)
-
-**What it is:** The Snowball Kanban extension — exit-criteria-gated cards, column ownership, and agent routing — implemented as a floe extension that builds against the substrate contract (contract-w7).
-
-**Key invariants (post fm/snowball-ctx-retire — Slice 6):**
-- **No sidecar.** The `.floe/extensions/snowball/runtime/` directory and all `<slug>.yaml` sidecar files are eliminated. There is no `column_contexts` map, no `initBoardContexts`, no `loadSidecar`/`saveSidecar`. The only persistent state is committed board files + card files.
-- `slugify(scope_id)` exported from `board-file.ts` (moved from sidecar.ts in Slice 6).
-- **Board snapshot** utilities (`buildBoardSnapshot`, `renderCompactBoardSnapshot`) live in `board-snapshot.ts` (relocated from sidecar.ts in Slice 6). `buildBoardSnapshot(workspacePath, scopeId, workspaceId, columns)` — no sidecar param.
-- `getUncheckedCriteriaForCard` is in `card-file.ts` (canonical home).
-- **`initialized` flag** on board API responses = board file exists (`readBoardFile(...) !== null`). Before `POST /board/init`, `initialized=false`.
-- `POST /board/init` = file-ensure only: calls `ensureBoardFile()` to create `board.md` with default columns if absent. Creates **ZERO bus contexts**. Pure file operation.
-- No column contexts are created anywhere. Column contexts were retired in Slice 6.
-- The overseer is NOT added to any card context (not even a watcher).
-- **Card = context**: every card has a `context_id` field in its frontmatter (null for legacy pre-Slice-4 cards). The card context is created at card creation time and its `context_id` written to frontmatter immediately.
-- **AssignedActor model** (`assigned_actors: Array<{actor_ref: string, event_types: string[]}>`) on columns. `actor_ref` resolves to `actor:<workspace_id>:<actor_ref>` at runtime. Empty `assigned_actors` = no actors assigned.
-- **Handoff** (`floe-ext-snowball/src/handoff.ts`): `applyColumnAssignment()` is the shared helper for both create and move.
-- **Routing**: `snowball.card.entered_column` uses `destination:{kind:"context",context_id:<card_context_id>}` — subscription-based routing to the card's context, never endpoint-targeted.
-- **UI handler acting actor**: operator endpoint `actor:<workspace_id>:operator`.
-- **Built-in operator**: reference `actor:<workspace_id>:operator` — never register a snowball-specific operator.
-- AI `move_card` gate: HARD block when exit criteria unchecked; human `force=true` is soft-warn.
-- WIP limit: hard block for both human and AI.
-- `StubBusClient.createdContexts` captures `CreateContextInput[]` for test assertions.
-
-**Tests:** `npm test --workspace floe-ext-snowball` — 221 unit tests (board-snapshot utilities + gate enforcement + handler + overseer driver + instructions endpoints + board-file + advance-on-conclusion timing + hooks BeforeTurn injection + Slice 4 card-context invariants + context isolation D-A).
-
-**Slice 4 (fm/snowball-card-context) — card = context, uniform actor assignment:**
-- **Card = context**: every card has a `context_id` field in its frontmatter (null for legacy pre-Slice-4 cards). The card context is created at card creation time and its `context_id` written to frontmatter immediately.
-- **AssignedActor model** (`assigned_actors: Array<{actor_ref: string, event_types: string[]}>`) replaces the old `owner: {kind:"human"|"agent", agent_id}` model on column files. `actor_ref` is a slug resolved to `actor:<workspace_id>:<actor_ref>` at runtime. Empty `assigned_actors` = no actors assigned (equivalent to old "human"-owned). Any actor — operator or LLM — is handled by identical code.
-- **Handoff** (`floe-ext-snowball/src/handoff.ts`): `applyColumnAssignment()` is the shared helper for both create and move. It builds a single `applyContextSubscriptions` batch call: acting actor → `participants_only`, destination column actors → entries with their `event_types`, prior column actors → entries with `event_types:[]` (silent watcher). Then emits `snowball.card.entered_column` into the card context with `destination:{kind:"context"}` if the destination has assigned actors. `createCardContext()` creates a bus context for a card with the creator as first participant.
-- **Routing**: `snowball.card.entered_column` uses `destination:{kind:"context",context_id:<card_context_id>}` — subscription-based routing to the card's context, never endpoint-targeted. No column contexts created on moves (only card contexts).
-- **UI handler acting actor**: operator endpoint `actor:<workspace_id>:operator`.
-- **Tool acting actor**: first assigned actor of the destination column (TODO: use calling agent endpoint when `ExtensionContext` exposes it).
-- **Built-in operator**: reference `actor:<workspace_id>:operator` — never register a snowball-specific operator.
-- The overseer is NOT added to any card context (not even a watcher).
-
-**Slice 5 (fm/snowball-col-board-s5) — columns inside board file:**
-- **Column definitions relocated** from individual `boards/<slug>/columns/<id>.md` files INTO `boards/<slug>/board.md` frontmatter. `column-file.ts` is deleted.
-- **`BoardFile.columns: ColumnFile[]`** — board.md frontmatter now has `scope_id` + `columns` array. Body = done protocol unchanged.
-- **`ColumnFile` type** moved to `types.ts` (from `column-file.ts`). The `scope_id` field is populated from the board's `scope_id` at read time; not stored per-column in YAML.
-- **Board-file.ts** now owns all column I/O: `listColumnsFromBoard`, `readColumnFromBoard`, `writeColumnToBoard`, `updateColumnInBoard`, `updateColumnInstructions`, `deleteColumnFromBoard`, `findBoardScopesForAgentFromFiles`, `defaultColumnFiles`, `generateColumnId`.
-- **Column addressability**: column IDs are stable; future cross-board references use `<board_scope_id>/<column_id>`. The board file format does not hardcode single-board assumptions.
-- `ensureBoardFile` now creates board.md with default columns if absent.
-
-**Board live refresh (fm/board-refresh-fix, updated fm/floe-card-context-churn):** Human mutations use `withReload()` in `BoardView.tsx` — every mutation calls `reload()` after the POST completes. Agent-driven moves are covered by a WS subscription via `subscribeBusStream()` in `bus-stream.ts` (which provides automatic reconnect with exponential back-off — no reconnect storms). The bus broadcasts `event_submitted` via `store.submitEvent` → `broadcast("event_submitted", { event })` at `floe-bus/src/store.ts:1352`. **`snowball.card.moved`, `snowball.card.created`, `snowball.card.criteria_checked`, and `snowball.card.gate_overridden` broadcast events have been removed** — they used `target: "active_with_delivery_processor"` with no `context_id`, causing the bus resolver to create a throwaway context and trigger an agent-turn delivery for every card mutation. `snowball.card.entered_column` (into the CARD context with `destination:{kind:"context"}`) is now the sole canonical signal for both agent routing and WS-based UI refresh.
-
-**Board routing invariants (fm/floe-e2e-fix, updated fm/snowball-card-context):**
-- **All snowball emits must include `scope_id`** so any fallback-created contexts are scoped to the board scope, never stray no-scope contexts.
-- **Card contexts are stable**: each card has ONE stable context from creation. Moving a card from column A to column B reuses the same card context. No new context is created on move when `context_id` is already set.
-- **Lazy card context creation**: legacy cards (pre-Slice-4, `context_id:null`) get a card context created on first move. Written to frontmatter immediately.
-- **Prior actor demotion**: when a card moves from column A (with actors) to column B (with different actors), column A's actors get `event_types:[]` in the batch call — still participants (can emit), never woken again.
-- **Endpoint status gate**: the `snowball-overseer` endpoint starts as `runtime_unconfigured` (no auth profile). The bus does NOT create delivery bundles for `runtime_unconfigured` endpoints (`tryCreateDeliveryForEndpoint` returns null). A workspace runtime binding must be set before the overseer can process deliveries.
-
-**Board UI entry point:** `floe-ext-snowball/src/ui/BoardView.tsx` exported at `package.json exports['./BoardView']` for Track S's static import into `ScopeDetail.tsx`.
-
-### Snowball extension installation (dogfooding in this repo)
-
-The extension is pre-installed for this workspace at `.floe/extensions/snowball/extension.json`.
-The entry path (`../../../floe-ext-snowball/src/index.ts`) resolves to the source package when this repo IS the workspace.
-
-When bridge loads: `snowball-overseer` agent is registered **in memory only** (no disk write) — its instructions are read from `floe-ext-snowball/overseer-instructions.md` at load time and the endpoint is registered directly with the bus via `registerEndpoint`. No file is written to `.floe/agents/` and `floe.yaml` is not modified at runtime.
-
-**To run live:**
-```bash
-npm run floe -- setup -- --no-autostart --no-open
-# open http://127.0.0.1:5379 and select the workspace; create a Scope; the Board tab appears
-```
 
 ---
 
@@ -519,7 +446,7 @@ The nav "Substrate Settings" item is always visible (useful in both modes).
 
 ## Card = Context substrate primitives (fm/floe-ctx-primitives, PR #95)
 
-Four generic, extension-agnostic substrate primitives landed in this PR. All are in `floe-bus/` and `floe-bridge/`. No snowball vocabulary.
+Four generic, extension-agnostic substrate primitives landed in this PR. All are in `floe-bus/` and `floe-bridge/`.
 
 ### Core model invariants (captain-confirmed)
 - **Participation ≠ subscription.** Participation = context membership; any participant may ALWAYS emit (resolver rule 1 unchanged). Subscription = which event TYPES wake an actor (trigger a delivery/turn).
@@ -563,8 +490,6 @@ Four generic, extension-agnostic substrate primitives landed in this PR. All are
   - `entries`: each endpoint is idempotently added as participant AND has its subscription upserted. `event_types:[]` = silent watcher.
   - `participantsOnly`: endpoints added as participants with NO subscription change (for acting actors who must emit but are not subscribed).
 - Route: `POST /v1/contexts/:id/subscriptions:batch` body `{ entries, participants_only? }`.
-- Both `floe-bridge/src/bus-client.ts` and `floe-ext-snowball/src/stub/bus-client.ts` expose `applyContextSubscriptions(contextId, entries, participantsOnly?)`.
-- `applyColumnAssignment` in `floe-ext-snowball/src/handoff.ts` collapses 6+ sequential bus calls into one batch call + one emit.
 
 ### Slice 3 — Runtime-based delivery gate (reworked from actor_kind)
 The substrate has exactly ONE actor abstraction. Delivery is gated on runtime attachment (`bridge_id` + `status`), never on a stored backing label. There is **no `actor_kind` column** and no human/agent distinction stored anywhere — peers cannot tell what backs an actor.
@@ -578,7 +503,6 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - `floe-bus/src/contexts/subscriptions.test.ts` — 19 tests
 - `floe-bus/src/contexts/runtime-delivery.test.ts` — 4 tests
 - `floe-bus/src/contexts/batch-subscriptions.test.ts` — 8 tests
-- `floe-ext-snowball/src/__tests__/handoff.test.ts` — 8 tests
 
 ---
 
@@ -607,16 +531,8 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 ### Emit defaults to origin context (D-B fix)
 
 - The `emit` tool in `pi-agent-core-adapter.ts` now defaults `context_id` to `turn.context_id` (the delivery origin context) when no explicit `context_id` is provided. This ensures replies land in the same context thread they came from.
-- Explicit `context_id` in the tool call still overrides (for deliberate cross-context emits, e.g. floe→snowball side thread).
+- Explicit `context_id` in the tool call still overrides for deliberate cross-context emits.
 - `current_delivery_context_id` is still always forwarded as observability metadata (unchanged).
-
-### Snowball BeforeTurn overlay narrowing (D-A fix)
-
-- `floe-ext-snowball/src/hooks.ts` `BeforeTurn`: when `origin.kind === "context"`, the injected board view is narrowed to ONLY the card whose `context_id === origin.id` (read from `CardFile.context_id` frontmatter via `listCards()`).
-- If `origin` maps to no card: **no injection** (return early — the turn is not about a known card).
-- If `origin` is absent (e.g. pulse delivery): fall back to board-wide view for the agent's owned columns (unchanged backward-compatible behavior).
-- System-steward branch (`agentId === "snowball"`): always board-wide view — that is its job, not a leak.
-- Done protocol injected only when a matching card is found (before the card match was confirmed, it would leak done-protocol text even for unknown contexts).
 
 ## Per-context session isolation (fm/floe-ctx-session-iso)
 
@@ -627,7 +543,7 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
 - **Session** — a pi construct (one per (agent, context)). Holds the agent's PRIVATE tool/reasoning memory. EPHEMERAL: not persisted. On restart = cold start = empty session + re-inject.
 - **Context** — a substrate node (bus SQLite). Shared across actors.
 - **Thread** — the context's ordered emit stream (OUTPUTS only, never tool calls). Durable.
-- **World (files)** — cards, board files. Durable truth. Agents re-observe each turn.
+- **World (files)** — durable truth. Agents re-observe each turn.
 
 ### Session key (C-1)
 
@@ -741,20 +657,11 @@ The substrate has exactly ONE actor abstraction. Delivery is gated on runtime at
   - `PiAgentCoreAdapter` holds a single `InjectionBaseline` instance. It lazily registers `ContextHistoryCleared` / `ContextCompacted` handlers into each workspace `HookRegistry` (via `maybeRegisterLifecycleHooks`, tracked with `WeakSet<HookRegistry>`). Extension name `"_substrate_inject_once"` (underscore prefix = substrate internal).
   - `applyDedup` is called after `hookResults = await context.hooks.fire("BeforeTurn", ...)` and before `renderHookInjections(...)`.
 
-### Snowball hook changes (floe-ext-snowball)
-
-- **F4 — resolve-live instructions only (card-context path)**: when `origin.kind === "context"` matches a card, inject `done_protocol` + column `instructions` for that card's column. **No card list, no criteria.**
-- **F3 — no card list on any path**: system actor (snowball) no longer receives board snapshot — only column instructions. No-origin (pulse) path injects done_protocol + owned-column instructions only.
-- Removed imports: `buildBoardSnapshot`, `renderCompactBoardSnapshot` (no longer needed in hooks.ts; `listCards` still used for card-lookup in the card-context path).
-- `snowball-instructions.md` updated (D4): explicitly tells the overseer that board state comes from tools (`snowball_get_board_state`), NOT from injection. Column instructions are injected once when they change.
-
 ### Invariants
-- Instruction edit → reflected next turn, NO wake (resolved live from files, deduplicated).
-- Card moved to new column → different resolved instructions → re-injected once.
+- A changed resolved injection is reflected on the next turn without a wake and is injected once.
 - Context history cleared/compacted → baseline reset → instructions re-inject into fresh context.
 - No stored copy, no drift, no per-turn injection spam.
-- Substrate primitive stays extension-agnostic (no snowball vocabulary in bridge/bus).
+- The substrate primitive stays extension-agnostic.
 
 ### Tests
 - `floe-bridge/src/injection-baseline.test.ts` — 13 tests: dedup skips/re-injects/resets, cross-context independence, null contextId always-inject, non-string content passthrough.
-- `floe-ext-snowball/src/__tests__/hooks.test.ts` updated: removed card-list/criteria assertions; added "does NOT inject card list" and system-actor-no-snapshot tests.
