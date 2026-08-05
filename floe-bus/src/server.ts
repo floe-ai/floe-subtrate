@@ -385,9 +385,9 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       scope_id: z.string(),
       renderer: z.string()
     }).parse(request.params);
-    if (params.renderer !== "floeweb") {
+    if (params.renderer !== "floe-app") {
       reply.code(400);
-      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' not supported (only 'floeweb')` };
+      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' not supported (only 'floe-app')` };
     }
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
@@ -421,9 +421,9 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       scope_id: z.string(),
       renderer: z.string()
     }).parse(request.params);
-    if (params.renderer !== "floeweb") {
+    if (params.renderer !== "floe-app") {
       reply.code(400);
-      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' not supported (only 'floeweb')` };
+      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' not supported (only 'floe-app')` };
     }
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });

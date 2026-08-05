@@ -7,7 +7,7 @@ import type {
   WorkspaceRef,
   ScopeRef,
   ScopeProjection,
-  FieldLayout,
+  ScopeProjectionLayout,
   ContextRef,
   EventEnvelope,
   EventTrace,
@@ -205,9 +205,9 @@ export async function getScopeProjection(ws: string, scope: string): Promise<Sco
   return data.projection;
 }
 
-export async function getFieldLayout(ws: string, scope: string, renderer: string): Promise<FieldLayout | null> {
+export async function getScopeProjectionLayout(ws: string, scope: string, renderer: string): Promise<ScopeProjectionLayout | null> {
   try {
-    const data = await get<{ layout: FieldLayout }>(
+    const data = await get<{ layout: ScopeProjectionLayout }>(
       `/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}/projection/layout/${encodeURIComponent(renderer)}`
     );
     return data.layout;
@@ -756,10 +756,10 @@ export async function getLocalConfigStatus(): Promise<LocalConfigStatus> {
 }
 
 // ---------------------------------------------------------------------------
-// Field layout
+// Scope projection layout
 // ---------------------------------------------------------------------------
 
-export async function putFieldLayout(ws: string, scope: string, renderer: string, layout: FieldLayout): Promise<void> {
+export async function putScopeProjectionLayout(ws: string, scope: string, renderer: string, layout: ScopeProjectionLayout): Promise<void> {
   await put(
     `/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}/projection/layout/${encodeURIComponent(renderer)}`,
     layout
