@@ -12,7 +12,6 @@ import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { parseListen } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
-import { RootThreadCloseError, ThreadNotFoundError, ClosedThreadError } from "./contexts/threads.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadScopeProjectionLayout,
@@ -808,14 +807,6 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       if (err instanceof ContextParticipantError) {
         return reply.code(409).send({ ok: false, error: err.payload });
       }
-      if (err instanceof ClosedThreadError) {
-        return reply.code(409).send({
-          ok: false,
-          error: "thread_closed",
-          thread_id: err.thread_id,
-          message: "Cannot emit onto a closed thread."
-        });
-      }
       if (err instanceof ScopeNotFoundError) {
         return reply.code(404).send({
           ok: false,
@@ -1242,84 +1233,6 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   // ---------------------------------------------------------------------------
-  // Threads API — list / get / create threads inside a context
-  // ---------------------------------------------------------------------------
-
-  app.get("/v1/contexts/:id/threads", async (request, reply) => {
-    const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const ctx = store.contextStore.getContext(params.id);
-    if (!ctx) {
-      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
-    }
-    const threads = store.threadStore.listThreadsForContext(params.id);
-    return { threads };
-  });
-
-  app.post("/v1/contexts/:id/threads", async (request, reply) => {
-    const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const body = z.object({
-      parent_thread_id: z.string().min(1).nullable().optional(),
-      created_by_endpoint_id: z.string().min(1).nullable().optional(),
-      title: z.string().nullable().optional()
-    }).parse(request.body);
-    const ctx = store.contextStore.getContext(params.id);
-    if (!ctx) {
-      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
-    }
-    // Validate that parent_thread_id (if supplied) belongs to this context.
-    if (body.parent_thread_id) {
-      const parent = store.threadStore.getThread(body.parent_thread_id);
-      if (!parent || parent.context_id !== params.id) {
-        return reply.code(400).send({ error: "invalid_parent_thread", parent_thread_id: body.parent_thread_id });
-      }
-    }
-    const threadId = store.threadStore.createThread({
-      context_id: params.id,
-      parent_thread_id: body.parent_thread_id ?? null,
-      created_by_endpoint_id: body.created_by_endpoint_id ?? null,
-      title: body.title ?? null
-    });
-    const thread = store.threadStore.getThread(threadId)!;
-    return reply.code(201).send({ ok: true, thread });
-  });
-
-  app.get("/v1/threads/:thread_id", async (request, reply) => {
-    const params = z.object({ thread_id: z.string().min(1) }).parse(request.params);
-    const thread = store.threadStore.getThread(params.thread_id);
-    if (!thread) {
-      return reply.code(404).send({ error: "thread_not_found", thread_id: params.thread_id });
-    }
-    return { thread };
-  });
-
-  /**
-   * Close a side thread.  Flips `status = 'closed'` and broadcasts `thread_closed`
-   * so the bridge can evict ephemeral sessions scoped to this thread.
-   *
-   * Guard: root/main threads (parent_thread_id IS NULL) cannot be closed.
-   * Returns 409 if the caller attempts to close a root thread.
-   * Returns 200 even when the thread is already closed (idempotent).
-   */
-  app.post("/v1/threads/:thread_id/close", async (request, reply) => {
-    const params = z.object({ thread_id: z.string().min(1) }).parse(request.params);
-    try {
-      const thread = store.closeThread(params.thread_id, broadcast);
-      return { ok: true, thread };
-    } catch (err) {
-      if (err instanceof ThreadNotFoundError) {
-        return reply.code(404).send({ error: "thread_not_found", thread_id: params.thread_id });
-      }
-      if (err instanceof RootThreadCloseError) {
-        return reply.code(409).send({
-          error: "root_thread_cannot_be_closed",
-          thread_id: params.thread_id,
-          message: "Root/main threads cannot be closed; only side threads can be closed."
-        });
-      }
-      throw err;
-    }
-  });
-
   app.get("/v1/delivery/claim", async (request) => {
     const query = z.object({
       bridge_id: z.string(),
