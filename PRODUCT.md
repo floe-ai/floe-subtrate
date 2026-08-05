@@ -8,7 +8,7 @@ product
 
 Floe Web is for local operators and builders who are setting up, shaping, and operating portable Floe workspaces.
 
-They are not looking for a chat app, a project tracker, or a runtime debug console. They need a clear interface for creating or opening a Workspace, organising connected substrate work into named Scopes when needed, rendering a Scope as a Field, inspecting what is configured, and talking to Floe through the substrate path. They may later compose richer Blocks, extensions, agents, hooks, and surfaces, but V0 should make the first workspace loop understandable before expanding the model.
+They are not looking for a chat app, a project tracker, or a runtime debug console. They need a clear interface for creating or opening a Workspace, organising connected substrate work into named Scopes when needed, rendering a Scope, inspecting what is configured, and talking to Floe through the substrate path. They may later compose richer Blocks, extensions, agents, hooks, and surfaces, but V0 should make the first workspace loop understandable before expanding the model.
 
 The primary user is technical enough to understand folders, providers, runtime profiles, and portable configuration. The interface should still protect them from substrate leakage unless they deliberately inspect advanced state.
 
@@ -22,14 +22,14 @@ Its job is to let a user operate a portable Workspace without bypassing the subs
 - consent to `.floe/` initialization
 - reach Workspace Home
 - create a Scope
-- open the Scope as a Field canvas Surface
-- inspect Workspace, Field, runtime, and actor access state
+- open the Scope on a canvas Surface
+- inspect Workspace, Scope, runtime, and actor access state
 - open the global Floe Channel
 - send messages to Floe through `floe-bus` and the default runtime-backed endpoint
 
 Floe Web succeeds when the user understands this mental model:
 
-> I have a portable Workspace. Workspace Home is the top-level index, not a Scope. Actor conversations can exist at Workspace level without a Scope. A Scope is an intentional substrate organising boundary for connected or operational work, and FloeWeb renders a Scope as a Field canvas. The Field shows scoped substrate primitives and relationships that already exist in the substrate; it does not own a separate item list or graph. Actors are workspace-scoped participants, not objects I drag into a Field. Floe is the always-available system interface, not a Field item or Block.
+> I have a portable Workspace. Workspace Home is the top-level index, not a Scope. Actor conversations can exist at Workspace level without a Scope. A Scope is an intentional substrate organising boundary for connected or operational work, and FloeWeb renders a Scope on a canvas. The Scope shows scoped substrate primitives and relationships that already exist in the substrate; it does not own a separate item list or graph. Actors are workspace-scoped participants, not objects I drag into a Scope projection. Floe is the always-available system interface, not a separate item or Block.
 
 ## Source Of Truth
 
@@ -58,26 +58,25 @@ Floe should feel like a quiet operating surface over a durable substrate. The fl
 Use these terms consistently:
 
 - Workspace: the portable configuration container, usually a folder or repository containing `.floe/`.
-- Workspace Home: the top-level product surface after a Workspace is opened. It is not a Field or Scope.
+- Workspace Home: the top-level product surface after a Workspace is opened. It is not a Scope.
 - Scope: an intentional substrate organising boundary inside a Workspace for connected, event-driven, or operational work. It is not a universal fallback bucket.
 - Workspace-level Context: an actor-anchored Context with no Scope, such as a direct actor conversation, actor side conversation, self-note, or unsorted/general conversation.
 - Scoped Context: a Context with a Scope. Scope is required for actorless Contexts and scoped operational flows, unless the operation targets an already-valid explicit unscoped actor Context.
-- Field: FloeWeb's rendering/projection of a Scope on a canvas Surface. A Field does not own membership.
 - Block: a representational concept - how a client renders or interprets a scoped substrate primitive or derived relationship. Blocks are not a storage category; existing substrate primitives are not "stored as blocks".
-- Surface: how a client renders state. FloeWeb's canvas Surface renders a Scope as a Field with Blocks and derived relationships.
+- Surface: how a client renders state. FloeWeb's canvas Surface renders a Scope with Blocks and derived relationships.
 - Inspector: configuration and state for the current selection.
 - Channel: a right-side conversation pane.
 - Floe: the global system interface available from any screen.
-- Actor: a workspace-scoped endpoint/participant. Actors are not Field-owned objects.
+- Actor: a workspace-scoped endpoint/participant. Actors are not projection-owned objects.
 - Agent: a runtime-backed actor configured through substrate-aligned agent files and runtime bindings.
 
-Avoid using "Project" for the Workspace model. Avoid "Floe Assistant." Avoid treating Skills, MCPs, extensions, humans, agents, provider profiles, Field Items, or Field Connections as default substrate concepts.
+Avoid using "Project" for the Workspace model. Avoid "Floe Assistant." Avoid treating Skills, MCPs, extensions, humans, agents, provider profiles, separate item lists or connection lists as default substrate concepts.
 
 ## Design Principles
 
-Composition is the primitive, but not everything belongs on the canvas. Fields are Scope renderings; actors, runtime profiles, event delivery state, hooks, and provider auth are configured or inspected through appropriate surfaces.
+Composition is the primitive, but not everything belongs on the canvas. Scopes are rendered directly; actors, runtime profiles, event delivery state, hooks, and provider auth are configured or inspected through appropriate surfaces.
 
-Start with the smallest real loop. The first useful scoped product slice is Workspace -> named Scope -> Field Surface -> Floe Channel, while Workspace Home must also expose unscoped actor Contexts without inventing a Default Scope. Do not expose speculative Block types just because the canvas can render nodes.
+Start with the smallest real loop. The first useful scoped product slice is Workspace -> named Scope -> Scope Surface -> Floe Channel, while Workspace Home must also expose unscoped actor Contexts without inventing a Default Scope. Do not expose speculative Block types just because the canvas can render nodes.
 
 Product layer respects substrate layer. UI actions should compile down to bus events, endpoint state, runtime bindings, or product-layer artifacts under `.floe/`, not create parallel runtime semantics.
 
@@ -85,7 +84,7 @@ Portable by default. Workspace-owned Floe product state belongs under `.floe/` i
 
 Calm surface, inspectable depth. Ordinary composition screens should stay focused and legible. Delivery records, pending responses, telemetry, hook results, and dead-letter state belong in trust/advanced views, not as the default experience.
 
-No fake agents. Humans and agents are not rendered as default Blocks in a Field. Floe is not placed on the canvas.
+No fake agents. Humans and agents are not rendered as default Blocks in a Scope projection. Floe is not placed on the canvas.
 
 ## Design Direction
 
@@ -96,11 +95,11 @@ Use restrained color, stable layout, system typography, clear focus states, and 
 The first viewport after a Workspace opens should communicate the actual product model:
 
 - left: Workspace selection and local connection
-- center: Workspace Home or opened Field Surface
+- center: Workspace Home or opened Scope Surface
 - bottom or side: contextual Inspector, depending on available space
 - right: Channel, closed by default until Floe is opened
 
-Field canvas work should use React Flow / React Flow UI direction. In this repo, React Flow core can be adopted first; the full React Flow UI component stack requires a shadcn/Tailwind decision and should not be smuggled into the app without an explicit design-system migration.
+Scope canvas work should use React Flow / React Flow UI direction. In this repo, React Flow core can be adopted first; the full React Flow UI component stack requires a shadcn/Tailwind decision and should not be smuggled into the app without an explicit design-system migration.
 
 ## Anti-References
 
@@ -119,6 +118,6 @@ Do not make Floe Web feel like:
 
 Target WCAG AA for the product interface.
 
-The user must be able to navigate Workspace selection, Field creation, Inspector controls, and Channel messaging by keyboard. Focus states should be visible. Status should not rely on color alone. Motion must respect reduced-motion preferences.
+The user must be able to navigate Workspace selection, Scope creation, Inspector controls, and Channel messaging by keyboard. Focus states should be visible. Status should not rely on color alone. Motion must respect reduced-motion preferences.
 
 The UI should use clear labels for destructive or substrate-affecting actions, especially `.floe/` initialization, runtime profile changes, and future artifact writes.

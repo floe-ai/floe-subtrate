@@ -7,7 +7,7 @@ conflicts with `MISSION.md`, `CONTEXT.md`, or accepted ADRs, those govern.
 *how, platform, cutover, and substrate prerequisites* live in `new-ui-replacement-plan.md`.
 
 **Relationship to existing work:** this reframes and supersedes the operator-facing direction in
-`PRODUCT.md` and the in-flight `slice-2-scope-field-remainder.md`. The substrate semantics in
+`PRODUCT.md` and the canonical `CONTEXT.md`. The substrate semantics in
 `CONTEXT.md` and `substrate-semantics.md` are unchanged and remain authoritative — this is a
 rendering/projection redesign, not a substrate redesign.
 
@@ -25,13 +25,13 @@ So the interface is not a cockpit. It is what an **executive returns to**. Its d
 *"what happened while I was gone, and what needs me?"* — not *"what do you want to type?"*
 
 This single shift reorganises the product. The current `PRODUCT.md` layout (left rail / centre
-canvas / inspector / right Channel) is a competent *driver* layout — an empty Field waiting to be
+canvas / inspector / right Channel) is a competent *driver* layout — an empty Scope waiting to be
 operated. We invert it: **the canvas is a place you enter, not where you land.**
 
 ## 2. The governing law: substrate honesty
 
-Brand words: calm, spatial, durable, precise. The product model already insists the Field renders
-only what exists in the substrate — no fake agents, no invented Blocks, no Field-owned membership.
+Brand words: calm, spatial, durable, precise. The product model already insists the Scope renders
+only what exists in the substrate — no fake agents, no invented Blocks, no projection-owned membership.
 
 We make that a hard design law: **every element maps to a real substrate primitive, and from any
 rendering you can descend to the event/delivery/work-log truth underneath.** The UI is a faithful
@@ -56,12 +56,12 @@ Momentum (is spend converting to progress?) is woven in as a single legible read
 not charts. Per `floe_thought_log.md`, spend-to-outcome telemetry is a deliberately later layer; the
 Briefing reserves the slot but does not block on it.
 
-### Lens 2 — The Field (lean in; spatial work)
-Opening a Scope enters its Field: a calm spatial composition of the *actual* scoped primitives from
+### Lens 2 — The Scope (lean in; spatial work)
+Opening a Scope opens its Scope: a calm spatial composition of the *actual* scoped primitives from
 the Scope Projection (`floe-bus/src/scopes/projection.ts`) — Contexts as the top-level work tiles,
 their participant Actors, attached Pulses, and the derived relationships that already exist on the
 substrate. The floe metaphor done right: tiles carry stable identity and can be rearranged without
-that rearrangement *meaning* anything (Field Layout is renderer-only, never membership). Where you go
+that rearrangement *meaning* anything (Scope Projection Layout is renderer-only, never membership). Where you go
 to understand or reshape connected work — not the default screen, and not a node-canvas spectacle.
 
 ### Lens 3 — The Timeline (look back; legibility)
@@ -73,7 +73,7 @@ across time"). Every artifact, anywhere, has a **trace-back** affordance.
 ### Cross-cutting A — Floe as a persistent conversational command surface
 Floe is the always-available system interface. You talk to the company from anywhere and it
 navigates and acts *through* the substrate (`emit`, never a private path). In the executive loop you
-mostly *tell Floe* and *respond to cards*; entering a Field to look closely is the exception.
+mostly *tell Floe* and *respond to cards*; opening a Scope to look closely is the exception.
 
 ### Cross-cutting B — Feedback attachable to any element
 Select any Event, Block, result, or artifact and attach an evaluation ("this is wrong — find the
@@ -86,8 +86,8 @@ embedded evaluation"). This is what makes feedback feel like conversation, not r
 | Primitive | Visual treatment |
 |---|---|
 | **Workspace** | The shell/frame — the company. |
-| **Scope** | Not rendered as an object; entered *as* a Field. A tinted territory. |
-| **Context** | The thing you open. In a Field: a rounded "floe" tile — scope-tinted header, stable participant-Actor glyphs, one-line `first_message_preview`, relative `last_event_at`, and a status edge (soft glow active / **amber waiting-on-you** / calm idle). Open it → it becomes a stream (§6). |
+| **Scope** | Not rendered as an object; rendered directly. A tinted territory. |
+| **Context** | The thing you open. In a Scope projection: a rounded "floe" tile — scope-tinted header, stable participant-Actor glyphs, one-line `first_message_preview`, relative `last_event_at`, and a status edge (soft glow active / **amber waiting-on-you** / calm idle). Open it → it becomes a stream (§6). |
 | **Event** | The atom and the substance of the Timeline. Inside a Context it is split by the substrate's own communication/work-log distinction (§6). |
 | **Actor / Endpoint** | A *presence* — identity, role/remit, status, current Context. Never a draggable mascot, never a contact list. Surfaced as an **org lens** (§7). |
 | **Pulse** | How the system acts on its own accord — made visible with a **tide** motif (fits floe, avoids ice kitsch): a Workspace tide-line of upcoming fires ("what the company will do next while you sleep") plus small attached markers on Contexts/Scopes (next-fire, last-fired, fire count). Doubles as the unattended-cost/trust surface. |

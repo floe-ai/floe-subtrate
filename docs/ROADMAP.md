@@ -67,7 +67,7 @@ If any are not actually complete in code, treat them as immediate prerequisite w
 * broadcast selectors are actor-neutral and delivery-processor based
 * public extension hooks have real firing paths, typed payloads, docs, and tests
 * FloeWeb is a client/renderer over substrate state, not the substrate model
-* Scope is the workspace organising boundary; Field is FloeWeb's rendering of Scope
+* Scope is the workspace organising boundary; its visual representation is also a Scope
 * push-only delivery: bus pushes events to the bridge via WebSocket; no recurring polling timers anywhere in the substrate; the bridge reconnects with exponential back-off and runs a one-shot resync on each reconnect
 * session isolation per (actor, context): the bridge maintains one ephemeral session per (actor, context) pair; session is private working memory, never persisted; a cold-start session re-derives from context history and world files
 * instruction inject-once: hook results are deduplicated by content hash per (context, source) before injection; same hash means no re-injection; context clear or compact resets the baseline so instructions re-inject into the fresh window
@@ -84,7 +84,7 @@ Every major slice should re-check:
 * activity/work logs do not render as chat messages
 * pulse events do not pollute unrelated contexts
 * blocks do not become duplicate sources of truth
-* field/layout files do not own primitive membership
+* layout files do not own primitive membership
 * docs and code agree
 * vocabulary drift lint stays green (`floe-bus/src/docs-vocabulary.test.ts` — retired terms do not reappear as live concepts)
 * docs structure lint stays green (`floe-bus/src/docs-structure.test.ts` — standing docs are a closed registered set; knowledge routes into living documents)
@@ -150,19 +150,19 @@ This ensures instruction content enters a context once and re-enters only when t
 
 ---
 
-# 2. Scope-backed Field projection and block representation
+# 2. Scope projection and block representation
 
-This is the immediate correction before further Field/Block implementation.
+This is the immediate correction before further Scope projection/Block implementation.
 
-> **Framing correction (2026-05-22).** Scope is the substrate organising boundary inside a Workspace. Field is FloeWeb's rendering/projection of a Scope. Blocks are representational views of scoped substrate primitives and derived substrate relationships. The earlier Field-as-substrate-primitive direction is superseded by `docs/adr/0004-scope-as-substrate-organising-boundary.md`.
+> **Framing correction.** Scope is the substrate organising boundary inside a Workspace and its visual representation uses the same name. Blocks are representational views of scoped substrate primitives and derived substrate relationships. The earlier separate-renderer-vocabulary direction is superseded by `docs/adr/0007-renderer-identifier-and-field-retirement.md`.
 
 Blocks are not domain features.
 
-A block is a client's interpretation of substrate state in a Scope. Existing substrate primitives (actors, contexts, pulses, webhooks, extensions, files, work logs, events, tools) are NOT moved into a `.floe/blocks/` tree and are NOT made members by a Field-owned list.
+A block is a client's interpretation of substrate state in a Scope. Existing substrate primitives (actors, contexts, pulses, webhooks, extensions, files, work logs, events, tools) are NOT moved into a `.floe/blocks/` tree and are NOT made members by a separate list.
 
 Everything visible or composable in FloeWeb can be rendered as a block, but the source of truth remains the primitive itself.
 
-A surface is how a client renders substrate state. FloeWeb renders a Scope as a Field/canvas.
+A surface is how a client renders substrate state. FloeWeb renders a Scope on a canvas.
 
 A conversation view is a block.
 
@@ -172,13 +172,13 @@ A work-log view is a block.
 
 An extension panel is a block.
 
-An actor may be rendered as context/participant information, but actors remain workspace-scoped and are not "inside" a Field.
+An actor may be rendered as context/participant information, but actors remain workspace-scoped and are not "inside" a Scope projection.
 
 ## Core principle
 
 A Scope organises substrate primitives.
 
-A Field renders a Scope.
+A Scope is rendered directly.
 
 A block references substrate state.
 
@@ -198,11 +198,11 @@ Evaluate and implement propagation against current primitives:
 * event: derives Scope from its context or event source; event rows may denormalise `scope_id` for indexing, but the context/source primitive remains authoritative
 * pulse: carries `scope_id` separately from **Pulse Persistence**; `workspace`/`local` storage language must not be called Scope
 * pulse-fired events: inherit the Pulse's organising Scope or the subscriber Context's Scope as appropriate
-* webhook: route/config should carry `scope_id` when route config exists; current ad hoc ingress should default to the Workspace Default Scope rather than invent field membership
+* webhook: route/config should carry `scope_id` when route config exists; current ad hoc ingress should default to the Workspace Default Scope rather than invent projection membership
 * work log/activity: derives Scope from current delivery/context where available
 * file/resource metadata: deferred unless a minimal explicit metadata mechanism is approved; do not infer file Scope from actor/tool activity
 * extension/capability: can carry Scope if extension/capability configuration owns that association; otherwise remains workspace-level/default-scope visible
-* actor: remains workspace-scoped, not field-contained; render actor presence only through existing relationships such as context participants or pulse subscribers
+* actor: remains workspace-scoped, not projection-contained; render actor presence only through existing relationships such as context participants or pulse subscribers
 
 ## Derived relationships
 
@@ -233,7 +233,7 @@ Domain blocks should remain extensions or workspace conventions until proven oth
 
 ## Required next slice
 
-Status: **in progress**. Scope substrate work has landed: audited context scope assignment and workspace context discovery are in the working tree (commits `f7dd031`, `6f1e64f`). Remaining: scope deletion safety, `scope_id` on Pulse, propagation rules, FloeWeb Scope-as-Field rendering.
+Status: **in progress**. Scope substrate work has landed: audited context scope assignment and workspace context discovery are in the working tree (commits `f7dd031`, `6f1e64f`). Remaining: scope deletion safety, `scope_id` on Pulse, propagation rules, FloeWeb Scope rendering.
 
 > **Note (2026-06-12):** proof points 1 and 3 below predate the ADR-0004 correction — there is no Default Scope as a product concept. Where they conflict, [ADR-0004](adr/0004-scope-as-substrate-organising-boundary.md) governs.
 
@@ -243,11 +243,11 @@ The focused slice should prove:
 2. substrate APIs to list Scopes and scoped primitives
 3. strict Scope deletion safety: Default Scope is never deletable, and non-empty deletion is deferred unless explicit reassignment exists
 4. `scope_id` on Context and Pulse at minimum
-5. Pulse Persistence terminology replacing old Pulse "scope" wording in public docs/API language
+5. Pulse Persistence terminology replacing retired storage wording in public docs/API language
 6. explicit event/work-log propagation rules
-7. FloeWeb lists Scopes as Fields and renders the selected Scope from substrate queries
-8. Field layout persists as renderer metadata only
-9. no Field-owned item list, connection list, or `.floe/blocks` substrate is introduced
+7. FloeWeb lists Scopes and renders the selected Scope from substrate queries
+8. Scope projection layout persists as renderer metadata only
+9. no projection-owned item list, connection list, or `.floe/blocks` substrate is introduced
 
 ---
 

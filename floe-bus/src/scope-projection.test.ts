@@ -143,7 +143,7 @@ describe("Scope Projection API", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("projects a scoped Context as one Field-level ref even with multiple Events", async () => {
+  it("projects a scoped Context as one scope-projection ref even with multiple Events", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const operator = `actor:${workspaceId}:operator`;
     const floe = `actor:${workspaceId}:floe`;
@@ -449,10 +449,10 @@ describe("Scope Projection API", () => {
     ]);
     expect(projectionRes.body).not.toContain(unscopedEvent.context_id);
     expect(projectionRes.body).not.toContain("Default Scope");
-    expect(projectionRes.body).not.toContain("Default Field");
+    expect(projectionRes.body).not.toContain("Default Scope");
   });
 
-  it("does not project Context-owned runtime telemetry as Field Activity", async () => {
+  it("does not project Context-owned runtime telemetry as projection activity", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const operator = `actor:${workspaceId}:operator`;
     const floe = `actor:${workspaceId}:floe`;
@@ -546,7 +546,7 @@ describe("Scope Projection API", () => {
     });
   });
 
-  it("keeps the projection contract read-only and free of renderer or Field membership vocabulary", async () => {
+  it("keeps the projection contract read-only and free of renderer or separate membership vocabulary", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const operator = `actor:${workspaceId}:operator`;
     const floe = `actor:${workspaceId}:floe`;

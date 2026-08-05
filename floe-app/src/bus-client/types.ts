@@ -332,28 +332,28 @@ export type ScopeProjection = {
 };
 
 // ---------------------------------------------------------------------------
-// Field layout (persisted renderer layout for scope projection)
+// Scope projection layout (persisted renderer layout for a Scope projection)
 // ---------------------------------------------------------------------------
 
-export type FieldLayoutNode = {
+export type ScopeProjectionLayoutNode = {
   id: string;
   position: { x: number; y: number };
   data: Record<string, unknown>;
 };
 
-export type FieldLayoutEdge = {
+export type ScopeProjectionLayoutEdge = {
   id: string;
   source: string;
   target: string;
   data?: Record<string, unknown>;
 };
 
-export type FieldLayout = {
+export type ScopeProjectionLayout = {
   workspace_id: string;
   scope_id: string;
   renderer: string;
-  nodes: FieldLayoutNode[];
-  edges: FieldLayoutEdge[];
+  nodes: ScopeProjectionLayoutNode[];
+  edges: ScopeProjectionLayoutEdge[];
   updated_at: string;
 };
 

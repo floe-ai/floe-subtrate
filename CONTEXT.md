@@ -18,25 +18,23 @@ _Avoid_: fake default scope, field-owned membership.
 A substrate primitive that declares a non-null `scope_id` or derives one from its owning primitive.
 _Avoid_: Field Item, canvas item, block storage.
 
-### Field
-A FloeWeb rendering/projection of a Scope.
-_Avoid_: substrate primitive, source of truth, item list, connection list.
-
 ### Scope Projection
 A read-only substrate-derived view of the primitives and relationships visible in a Scope. It returns substrate refs and derived relationships, not React Flow state. Future clients may consume the same projection without knowing FloeWeb internals.
 _Avoid_: storage source, Field-owned item list, Field-owned connection graph, client-side membership derivation.
 
-### Field Layout
-Renderer-specific arrangement state for how a Field displays scoped primitives and derived relationships. It is keyed by stable projected refs, not old Field Item ids.
+### Scope Projection Layout
+Renderer-specific arrangement state for how a Scope projection displays scoped primitives and derived relationships. It is keyed by stable projected refs.
 _Avoid_: membership, semantic graph, source of truth.
+
+Visual representations of substrate primitives use the primitive's own name; no separate user-facing rendering vocabulary is introduced.
 
 ### Block
 A representational view of a scoped substrate primitive or derived substrate relationship.
 _Avoid_: storage category, substrate primitive, `.floe/blocks`.
 
 ### Derived Relationship
-A relationship rendered in a Field because it already exists on the underlying substrate primitives.
-_Avoid_: Field Connection, relationship ontology, field-owned edge.
+A relationship rendered in a Scope projection because it already exists on the underlying substrate primitives.
+_Avoid_: separate connection model, relationship ontology, projection-owned edge.
 
 ### Pulse
 Bus-owned scheduled event creation. A pulse fires at a configured time and creates the canonical `pulse.fired` event for its subscribers. Pulse is NOT heartbeat, keepalive, runtime wait-refresh, or inherently actor activation.
@@ -70,7 +68,7 @@ An addressable participant/interface in the substrate. Humans, agents, webhooks,
 
 ### Actor
 A workspace-scoped Endpoint participant that may communicate through Events.
-_Avoid_: field-owned object, draggable actor object.
+_Avoid_: projection-owned object, draggable actor object.
 
 ### Context
 A bounded stream in which stream entries occur. A Context is anchored by actor participants, a Scope, or both; it is not always a chat conversation.
@@ -140,21 +138,21 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 - **Workspace Home** is an index/dashboard over Workspace state; it is not a **Scope**
 - A **Scope** organises **Scoped Primitives**; it does not execute work, contain Actors, or own a duplicated membership list
 - A **Scope Projection** derives visible primitives and relationships from substrate state; it is not a storage source
-- A **Field** renders one **Scope** for FloeWeb
-- A **Field Layout** belongs to the Field rendering of a **Scope** and must not determine membership
+- A **Scope** is the user-facing visual representation of itself
+- A **Scope Projection Layout** belongs to a renderer's projection of a **Scope** and must not determine membership
 - A **Context** is valid when anchored by actor participants, a **Scope**, or both
 - A **Context** with actor participants may have `scope_id: null`
 - A **Context** without actor participants must have a non-null `scope_id`
 - A **Context** with neither actor participants nor Scope is invalid
 - **Events** derive Scope from their **Context** or source ownership; Event Scope may be null for unscoped actor Contexts and must not become an independent source of truth
-- A **Field** renders a **Context** as the top-level conversation/work node; Events inside that Context are its history and are not separate Field-level blocks
+- A **Scope Projection** renders a **Context** as the top-level conversation/work node; Events inside that Context are its history and are not separate projection-level blocks
 - A **Pulse** has **Pulse Persistence** and must have either a Scope or an explicit valid Context/subscriber anchor
 - A **Pulse** creates a canonical **Event** with type `pulse.fired`
 - A **Context Subscriber** appends `pulse.fired` to an explicit **Context** without creating a **Delivery**; the Context may be an unscoped actor Context
 - An **Endpoint Subscriber** creates a **Delivery** for an **Endpoint** and may activate that endpoint's processor; without explicit `context_id`, it requires Pulse Scope and uses one stable generated scoped delivery Context for that Pulse + Endpoint Subscriber rather than creating a new Context per fire
 - A **Webhook** is an event source; actorless webhook Events must create or use a scoped Context, not a hidden Default Scope
 - A **Work Log** derives Scope from its delivery/context when available, and may carry `scope_id: null` for direct unscoped actor Contexts
-- **Actors** are workspace-scoped and are not contained by Fields
+- **Actors** are workspace-scoped and are not contained by Scope projections
 - **Derived Relationships** are rendered from existing substrate state; editing one must update the primitive that owns the relationship
 - An **Extension** provides **Tools**, optional **Pulse** declarations, and optional **Extension Hooks**
 - An **Endpoint** declares which **Extensions** it uses via frontmatter `extensions: []`
@@ -167,7 +165,7 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 ## Flagged ambiguities
 
 - "Scope" previously appeared in Pulse APIs and docs to mean workspace-backed versus local/runtime-backed storage. Resolved: use **Pulse Persistence** for storage/lifecycle location, and reserve **Scope** for the workspace organising boundary.
-- The earlier Field model made `.floe/fields/<id>.yaml` own Field Items and Field Connections. Resolved: future work treats **Scope** as the substrate primitive and **Field** as the FloeWeb rendering; field-owned item and connection lists are superseded.
+- The earlier layout model made `.floe/fields/<id>.yaml` own items and connections. Resolved: **Scope** is the substrate primitive; projection-owned item and connection lists are superseded.
 - Earlier Scope work introduced **Default Scope** as an automatic bucket for every Context. Superseded: Scope is nullable for actor-anchored Contexts, required for actorless/scoped operational Contexts, and must not be used as a product fallback.
 
 ## Deferred Concepts

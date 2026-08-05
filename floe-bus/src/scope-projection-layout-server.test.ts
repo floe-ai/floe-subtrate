@@ -42,22 +42,10 @@ async function makeServer(): Promise<{
   };
 }
 
-function makeSemantic(id: string): Record<string, unknown> {
-  return {
-    schema: "floe.field.v1",
-    id,
-    title: "Field " + id,
-    items: [],
-    connections: [],
-    created_at: "2025-01-01T00:00:00.000Z",
-    updated_at: "2025-01-01T00:00:00.000Z"
-  };
-}
-
 function makeLayout(scopeId: string): Record<string, unknown> {
   return {
-    schema: "floe.field.layout.floeweb.v1",
-    field_id: scopeId,
+    schema: "floe.scope-projection.layout.floe-app.v1",
+    scope_id: scopeId,
     viewport: { x: 0, y: 0, zoom: 1 },
     items: {
       "context:ctx_research": { x: 120, y: 220 },
@@ -81,26 +69,26 @@ describe("Scope Projection layout HTTP routes", () => {
   });
   afterEach(async () => { await cleanup(); });
 
-  it("does not expose legacy Field semantic list/get/put/delete routes", async () => {
+  it("does not expose legacy retired semantic list/get/put/delete routes", async () => {
     for (const request of [
       { method: "GET", url: `/v1/workspaces/${wsId}/fields` },
       { method: "GET", url: `/v1/workspaces/${wsId}/fields/alpha` },
-      { method: "PUT", url: `/v1/workspaces/${wsId}/fields/alpha`, payload: makeSemantic("alpha") },
+      { method: "PUT", url: `/v1/workspaces/${wsId}/fields/alpha`, payload: {} },
       { method: "DELETE", url: `/v1/workspaces/${wsId}/fields/alpha` },
-      { method: "PUT", url: `/v1/workspaces/${wsId}/fields/default/layout/floeweb`, payload: makeLayout("default") }
+      { method: "PUT", url: `/v1/workspaces/${wsId}/fields/default/layout/floe-app`, payload: makeLayout("default") }
     ] as const) {
       const res = await handle.app.inject(request);
       expect(res.statusCode).toBe(404);
     }
     expect(existsSync(join(wsLocator, ".floe", "fields", "alpha.yaml"))).toBe(false);
-    expect(existsSync(join(wsLocator, ".floe", "fields", "default.layout.floeweb.yaml"))).toBe(false);
+    expect(existsSync(join(wsLocator, ".floe", "fields", "default.layout.floe-app.yaml"))).toBe(false);
   });
 
-  it("persists Scope Projection layout without creating Field-owned semantic state", async () => {
+  it("persists Scope Projection layout without creating separate semantic state", async () => {
     const layout = makeLayout(SCOPE_ID);
     const put = await handle.app.inject({
       method: "PUT",
-      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`,
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`,
       payload: layout
     });
     expect(put.statusCode).toBe(200);
@@ -110,7 +98,7 @@ describe("Scope Projection layout HTTP routes", () => {
 
     const get = await handle.app.inject({
       method: "GET",
-      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`
     });
     expect(get.statusCode).toBe(200);
     expect(get.json()).toEqual({ layout });
@@ -127,14 +115,14 @@ describe("Scope Projection layout HTTP routes", () => {
   it("returns explicit layout errors for missing sidecars, missing Scopes, invalid renderers, and mismatched ids", async () => {
     const missing = await handle.app.inject({
       method: "GET",
-      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`
     });
     expect(missing.statusCode).toBe(404);
     expect(missing.json()).toEqual({ error: "scope_projection_layout_not_found" });
 
     const missingScope = await handle.app.inject({
       method: "PUT",
-      url: `/v1/workspaces/${wsId}/scopes/unknown/projection/layout/floeweb`,
+      url: `/v1/workspaces/${wsId}/scopes/unknown/projection/layout/floe-app`,
       payload: makeLayout("unknown")
     });
     expect(missingScope.statusCode).toBe(404);
@@ -150,7 +138,7 @@ describe("Scope Projection layout HTTP routes", () => {
 
     const mismatch = await handle.app.inject({
       method: "PUT",
-      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`,
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`,
       payload: makeLayout("other")
     });
     expect(mismatch.statusCode).toBe(400);
@@ -174,7 +162,7 @@ describe("Scope Projection layout HTTP routes", () => {
 
     await handle.app.inject({
       method: "PUT",
-      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floeweb`,
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`,
       payload: makeLayout(SCOPE_ID)
     });
 
@@ -186,7 +174,7 @@ describe("Scope Projection layout HTTP routes", () => {
       workspace_id: wsId,
       scope_id: SCOPE_ID,
       source: "api",
-      renderer: "floeweb"
+      renderer: "floe-app"
     });
   });
 });

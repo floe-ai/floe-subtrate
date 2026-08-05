@@ -11,8 +11,8 @@ const ScopeProjectionLayoutIdSchema = z
   .max(200);
 
 export const ScopeProjectionLayoutSchema = z.object({
-  schema: z.literal("floe.field.layout.floeweb.v1"),
-  field_id: ScopeProjectionLayoutIdSchema,
+  schema: z.literal("floe.scope-projection.layout.floe-app.v1"),
+  scope_id: ScopeProjectionLayoutIdSchema,
   viewport: z.object({
     x: z.number(),
     y: z.number(),
@@ -58,10 +58,6 @@ function layoutsDir(workspacePath: string): string {
 
 function layoutPath(workspacePath: string, scopeId: string, renderer: string): string {
   return join(layoutsDir(workspacePath), `${encodeURIComponent(scopeId)}.layout.${renderer}.yaml`);
-}
-
-function legacyFieldLayoutPath(workspacePath: string, scopeId: string, renderer: string): string {
-  return join(workspacePath, ".floe", "fields", `${scopeId}.layout.${renderer}.yaml`);
 }
 
 function ensureDir(path: string): void {
@@ -115,9 +111,9 @@ export function upsertScopeProjectionLayout(
   }
   const layout = result.data;
 
-  if (layout.field_id !== scopeId) {
+  if (layout.scope_id !== scopeId) {
     throw new ScopeProjectionLayoutIdMismatchError(
-      `layout field_id '${layout.field_id}' does not match path scope id '${scopeId}'`
+      `layout scope_id '${layout.scope_id}' does not match path scope id '${scopeId}'`
     );
   }
 
@@ -135,9 +131,7 @@ export function loadScopeProjectionLayout(
   validateScopeId(scopeId);
   validateRenderer(renderer);
 
-  const path = existsSync(layoutPath(workspacePath, scopeId, renderer))
-    ? layoutPath(workspacePath, scopeId, renderer)
-    : legacyFieldLayoutPath(workspacePath, scopeId, renderer);
+  const path = layoutPath(workspacePath, scopeId, renderer);
   if (!existsSync(path)) return null;
 
   const parsed = parseYamlFile<unknown>(path);
