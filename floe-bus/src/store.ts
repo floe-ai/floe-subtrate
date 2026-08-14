@@ -27,6 +27,16 @@ import {
   applyScopeSchema,
   type ScopeRecord
 } from "./scopes/store.js";
+import {
+  ScopeGraphNodeNotATriggerError,
+  ScopeGraphNodeNotFoundError,
+  ScopeGraphNotFoundError,
+  ScopeGraphStore,
+  applyScopeGraphSchema,
+  validateScopeGraphNodes,
+  type ScopeGraphNode,
+  type ScopeGraphRecord
+} from "./scope-graphs.js";
 
 type Broadcast = (type: string, payload: Record<string, unknown>) => void;
 
@@ -258,6 +268,7 @@ export class BusStore {
   readonly db: DatabaseSync;
   readonly contextStore: ContextStore;
   readonly scopeStore: ScopeStore;
+  readonly scopeGraphStore: ScopeGraphStore;
   readonly endpointWatermarkStore: EndpointWatermarkStore;
   /** Broadcast function injected by the server after initialisation. */
   private broadcastFn: Broadcast | null = null;
@@ -273,6 +284,7 @@ export class BusStore {
     this.migrate();
     this.contextStore = new ContextStore(this.db);
     this.scopeStore = new ScopeStore(this.db);
+    this.scopeGraphStore = new ScopeGraphStore(this.db);
     this.endpointWatermarkStore = new EndpointWatermarkStore(this.db);
   }
 
@@ -494,6 +506,7 @@ export class BusStore {
     `);
     applyContextSchema(this.db);
     applyScopeSchema(this.db);
+    applyScopeGraphSchema(this.db);
     applyEndpointWatermarkSchema(this.db);
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_events_workspace_created
@@ -741,6 +754,100 @@ export class BusStore {
     }
     this.scopeStore.deleteScope(workspaceId, scopeId);
     broadcast("scope_deleted", { workspace_id: workspaceId, scope_id: scopeId });
+  }
+
+  listScopeGraphs(workspaceId: string, scopeId: string): ScopeGraphRecord[] {
+    return this.scopeGraphStore.listScopeGraphs(workspaceId, scopeId);
+  }
+
+  getScopeGraph(workspaceId: string, graphId: string): ScopeGraphRecord | null {
+    return this.scopeGraphStore.getScopeGraph(workspaceId, graphId);
+  }
+
+  /**
+   * Authors a Scope Graph. The wiring is realised entirely through EXISTING
+   * Context primitives, not a bespoke edge record:
+   * - One Context is created (ContextStore.createContext) to carry the graph.
+   * - Each actor node is added as a participant AND subscribed to its event
+   *   types in that Context (ContextStore.applyContextSubscriptions) — the
+   *   same primitive used elsewhere for wiring an actor into a Context.
+   * A trigger node is pure config: no Context side effect until it fires.
+   */
+  createScopeGraph(input: {
+    workspace_id: string;
+    scope_id: string;
+    created_by_endpoint_id?: string | null;
+    nodes: ScopeGraphNode[];
+  }, broadcast: Broadcast): ScopeGraphRecord {
+    validateScopeGraphNodes(input.nodes);
+
+    const contextId = this.contextStore.createContext({
+      workspace_id: input.workspace_id,
+      scope_id: input.scope_id,
+      created_by_endpoint_id: input.created_by_endpoint_id ?? null,
+      participants: []
+    });
+
+    for (const node of input.nodes) {
+      if (node.kind !== "actor") continue;
+      this.contextStore.applyContextSubscriptions(contextId, [
+        { endpoint_id: node.endpoint_id, event_types: node.event_types ?? ["*"] }
+      ]);
+    }
+
+    const graph = this.scopeGraphStore.insertScopeGraph({
+      workspace_id: input.workspace_id,
+      scope_id: input.scope_id,
+      context_id: contextId,
+      nodes: input.nodes
+    });
+    broadcast("scope_graph_created", { graph });
+    return graph;
+  }
+
+  /**
+   * Fires a trigger node: emits into the graph's Context once per endpoint
+   * whose EXISTING context subscription (ContextStore.getContextSubscriptions)
+   * matches the trigger's event type, via emitTriggerEvent — the same
+   * bus-originated wake primitive pulse firing already uses. There is no
+   * separate edge table to walk; the Context's own subscription state decides
+   * who wakes, exactly as it would for any other Context.
+   */
+  fireScopeGraphTrigger(input: {
+    workspace_id: string;
+    graph_id: string;
+    node_id: string;
+    content: Record<string, unknown>;
+    correlation_id?: string | null;
+  }, broadcast: Broadcast): EventEnvelope[] {
+    const graph = this.scopeGraphStore.getScopeGraph(input.workspace_id, input.graph_id);
+    if (!graph) throw new ScopeGraphNotFoundError(input.workspace_id, input.graph_id);
+
+    const node = graph.nodes.find((candidate) => candidate.node_id === input.node_id);
+    if (!node) throw new ScopeGraphNodeNotFoundError(input.graph_id, input.node_id);
+    if (node.kind !== "trigger") throw new ScopeGraphNodeNotATriggerError(input.graph_id, input.node_id);
+
+    const subscriptions = this.contextStore.getContextSubscriptions(graph.context_id)
+      .filter((subscription) => subscription.event_types.includes("*") || subscription.event_types.includes(node.event_type));
+
+    return subscriptions.map((subscription) =>
+      this.emitTriggerEvent(
+        {
+          type: node.event_type,
+          workspace_id: input.workspace_id,
+          target_endpoint_id: subscription.endpoint_id,
+          context_id: graph.context_id,
+          correlation_id: input.correlation_id ?? null,
+          content: input.content,
+          metadata: {
+            trigger_kind: "scope_graph",
+            graph_id: input.graph_id,
+            node_id: input.node_id
+          }
+        },
+        broadcast
+      )
+    );
   }
 
   private validateScopeId(workspaceId: string, scopeId: string): string {

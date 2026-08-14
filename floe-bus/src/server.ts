@@ -18,6 +18,13 @@ import {
   upsertScopeProjectionLayout
 } from "./scope-projection-layout-store.js";
 import { ScopeAlreadyExistsError, ScopeNotEmptyError, ScopeNotFoundError, ScopeReservedIdError } from "./scopes/store.js";
+import {
+  ScopeGraphInvalidError,
+  ScopeGraphNodeNotATriggerError,
+  ScopeGraphNodeNotFoundError,
+  ScopeGraphNotFoundError,
+  type ScopeGraphNode
+} from "./scope-graphs.js";
 import { encodeEventCursor, InvalidEventCursorError } from "./event-cursor.js";
 import { buildScopeProjection } from "./scopes/projection.js";
 import { listAuthModels, listAuthProfiles } from "./auth.js";
@@ -244,6 +251,136 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       });
     }
     return { projection: buildScopeProjection(store, params.workspace_id, params.scope_id) };
+  });
+
+  const ScopeGraphNodeSchema = z.union([
+    z.object({
+      node_id: z.string().min(1),
+      kind: z.literal("trigger"),
+      label: z.string().optional(),
+      event_type: z.string().min(1)
+    }),
+    z.object({
+      node_id: z.string().min(1),
+      kind: z.literal("actor"),
+      label: z.string().optional(),
+      endpoint_id: z.string().min(1),
+      event_types: z.array(z.string().min(1)).optional()
+    })
+  ]);
+
+  app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/graphs", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      scope_id: z.string().min(1)
+    }).parse(request.params);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    if (!store.getScope(params.workspace_id, params.scope_id)) {
+      return reply.code(404).send({
+        error: "scope_not_found",
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id
+      });
+    }
+    return { graphs: store.listScopeGraphs(params.workspace_id, params.scope_id) };
+  });
+
+  app.post("/v1/workspaces/:workspace_id/scopes/:scope_id/graphs", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      scope_id: z.string().min(1)
+    }).parse(request.params);
+    const body = z.object({
+      nodes: z.array(ScopeGraphNodeSchema).min(1),
+      created_by_endpoint_id: z.string().min(1).nullable().optional()
+    }).parse(request.body);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    if (!store.getScope(params.workspace_id, params.scope_id)) {
+      return reply.code(404).send({
+        error: "scope_not_found",
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id
+      });
+    }
+    try {
+      const graph = store.createScopeGraph({
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id,
+        created_by_endpoint_id: body.created_by_endpoint_id ?? null,
+        nodes: body.nodes as ScopeGraphNode[]
+      }, broadcast);
+      return reply.code(201).send({ graph });
+    } catch (err) {
+      if (err instanceof ScopeGraphInvalidError) {
+        return reply.code(400).send({ error: "scope_graph_invalid", reason: err.reason });
+      }
+      throw err;
+    }
+  });
+
+  app.get("/v1/workspaces/:workspace_id/graphs/:graph_id", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      graph_id: z.string().min(1)
+    }).parse(request.params);
+    const graph = store.getScopeGraph(params.workspace_id, params.graph_id);
+    if (!graph) {
+      return reply.code(404).send({
+        error: "scope_graph_not_found",
+        workspace_id: params.workspace_id,
+        graph_id: params.graph_id
+      });
+    }
+    return { graph };
+  });
+
+  app.post("/v1/workspaces/:workspace_id/graphs/:graph_id/nodes/:node_id/fire", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      graph_id: z.string().min(1),
+      node_id: z.string().min(1)
+    }).parse(request.params);
+    const body = z.object({
+      content: z.record(z.unknown()).default({}),
+      correlation_id: z.string().nullable().optional()
+    }).parse(request.body ?? {});
+    try {
+      const events = store.fireScopeGraphTrigger({
+        workspace_id: params.workspace_id,
+        graph_id: params.graph_id,
+        node_id: params.node_id,
+        content: body.content,
+        correlation_id: body.correlation_id ?? null
+      }, broadcast);
+      return reply.code(201).send({ events });
+    } catch (err) {
+      if (err instanceof ScopeGraphNotFoundError) {
+        return reply.code(404).send({
+          error: "scope_graph_not_found",
+          workspace_id: err.workspace_id,
+          graph_id: err.graph_id
+        });
+      }
+      if (err instanceof ScopeGraphNodeNotFoundError) {
+        return reply.code(404).send({
+          error: "scope_graph_node_not_found",
+          graph_id: err.graph_id,
+          node_id: err.node_id
+        });
+      }
+      if (err instanceof ScopeGraphNodeNotATriggerError) {
+        return reply.code(400).send({
+          error: "scope_graph_node_not_a_trigger",
+          graph_id: err.graph_id,
+          node_id: err.node_id
+        });
+      }
+      throw err;
+    }
   });
 
   app.post("/v1/workspaces/:workspace_id/scopes", async (request, reply) => {
