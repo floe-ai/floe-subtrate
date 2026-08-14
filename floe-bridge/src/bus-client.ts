@@ -223,6 +223,11 @@ export class BusClient {
     return this.post(`/v1/pulses/${encodeURIComponent(pulseId)}/cancel`, {});
   }
 
+  /** All scope graphs in a workspace, across every scope — used to discover command nodes to attach at workspace-attach time. */
+  async listScopeGraphsForWorkspace(workspaceId: string): Promise<{ graphs: any[] }> {
+    return this.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs`) as Promise<{ graphs: any[] }>;
+  }
+
   async requestConfigSnapshot(workspaceId: string): Promise<unknown> {
     return this.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/config-snapshot`, {});
   }

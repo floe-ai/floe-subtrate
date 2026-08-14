@@ -972,3 +972,114 @@ describe("BridgeDaemon – D4 bridge_hello sent on WS open", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Command node delivery routing (#156) — a delivery destined to a command
+// node's endpoint runs the shell command instead of the LLM adapter. The
+// substrate never learns the difference: this is bridge-local runtime
+// embodiment substitution, exactly as `@invariant` at the top of this file
+// describes.
+// ---------------------------------------------------------------------------
+
+describe("BridgeDaemon – command node delivery routing", () => {
+  it("runs the command and emits its result instead of calling the adapter", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const emitted: any[] = [];
+    const statuses: string[] = [];
+    const adapterCalls: number[] = [];
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).adapter = {
+        name: "test-adapter",
+        async handleBundle() { adapterCalls.push(1); }
+      };
+      (daemon as any).bus = {
+        async reportDeliveryStatus(_bridgeId: string, _deliveryId: string, state: string) { statuses.push(state); },
+        async emit(event: any) { emitted.push(event); },
+        async reportTurnEnd() {},
+        async updateEndpointStatus() {}
+      };
+      (daemon as any).commandNodes.set("endpoint:check", {
+        graph_id: "graph_1",
+        node_id: "check_node",
+        context_id: "ctx_1",
+        endpoint_id: "endpoint:check",
+        command: `node -e "process.exit(0)"`,
+        inputs: [],
+        outputs: [{ name: "passed", from: "passed" }],
+        result_event_type: "command.result",
+        workspace_locator: process.cwd()
+      });
+
+      await (daemon as any).handleDelivery({
+        delivery_id: "del-cmd-1",
+        endpoint_id: "endpoint:check",
+        workspace_id: "workspace:test",
+        trigger_event_id: "evt:1",
+        events: [{ content: {} }],
+        delivered_at: new Date().toISOString()
+      });
+
+      expect(adapterCalls).toHaveLength(0);
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0].destination).toEqual({ kind: "context", context_id: "ctx_1" });
+      expect(emitted[0].source_endpoint_id).toBe("endpoint:check");
+      expect(emitted[0].content).toEqual({ command: `node -e "process.exit(0)"`, passed: true });
+      expect(statuses).toEqual(["injected_to_runtime", "acknowledged"]);
+    } finally {
+      made.cleanup();
+    }
+  });
+
+  it("reports a failed delivery status when a required input is missing", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const statuses: Array<{ state: string; error: string | null }> = [];
+    const adapterCalls: number[] = [];
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).adapter = {
+        name: "test-adapter",
+        async handleBundle() { adapterCalls.push(1); }
+      };
+      (daemon as any).bus = {
+        async reportDeliveryStatus(_bridgeId: string, _deliveryId: string, state: string, error?: string) {
+          statuses.push({ state, error: error ?? null });
+        },
+        async emit() {},
+        async reportTurnEnd() {},
+        async updateEndpointStatus() {}
+      };
+      (daemon as any).commandNodes.set("endpoint:check", {
+        graph_id: "graph_1",
+        node_id: "check_node",
+        context_id: "ctx_1",
+        endpoint_id: "endpoint:check",
+        command: `node -e "process.exit(process.argv[1] === 'true' ? 0 : 1)" {{should_pass}}`,
+        inputs: [{ name: "should_pass", content_key: "should_pass", required: true }],
+        outputs: [],
+        result_event_type: "command.result",
+        workspace_locator: process.cwd()
+      });
+
+      await (daemon as any).handleDelivery({
+        delivery_id: "del-cmd-2",
+        endpoint_id: "endpoint:check",
+        workspace_id: "workspace:test",
+        trigger_event_id: "evt:2",
+        events: [{ content: {} }],
+        delivered_at: new Date().toISOString()
+      });
+
+      expect(adapterCalls).toHaveLength(0);
+      const failed = statuses.find(s => s.state === "failed");
+      expect(failed).toBeDefined();
+      expect(failed?.error).toContain("missing required input 'should_pass'");
+    } finally {
+      made.cleanup();
+    }
+  });
+});

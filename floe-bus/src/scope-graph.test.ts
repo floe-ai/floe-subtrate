@@ -208,4 +208,118 @@ describe("Scope Graph API", () => {
     expect(fired.statusCode).toBe(400);
     expect(fired.json().error).toBe("scope_graph_node_not_a_trigger");
   });
+
+  it("fires a trigger with arrival facts (channel, locator, observed_at, raw_reference) as ordinary content — no origin envelope", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const writer = `actor:${workspaceId}:writer`;
+    registerEndpoint(handle, workspaceId, writer);
+    await createScope(handle, workspaceId, "docs");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "watcher", kind: "trigger", event_type: "note.landed" },
+          { node_id: "writer_node", kind: "actor", endpoint_id: writer }
+        ]
+      }
+    });
+    const graph = created.json().graph;
+    const observedAt = new Date().toISOString();
+
+    const fired = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
+      payload: {
+        content: {
+          file_name: "README.md",
+          channel: "watched_folder",
+          locator: "C:\\ws\\inbox\\README.md",
+          observed_at: observedAt,
+          raw_reference: "C:\\ws\\inbox\\README.md"
+        }
+      }
+    });
+    expect(fired.statusCode).toBe(201);
+    const event = fired.json().events[0];
+    // Arrival facts are just content — no separate origin field or kind tag.
+    expect(event.content).toEqual({
+      file_name: "README.md",
+      channel: "watched_folder",
+      locator: "C:\\ws\\inbox\\README.md",
+      observed_at: observedAt,
+      raw_reference: "C:\\ws\\inbox\\README.md"
+    });
+    expect(event.origin).toBeUndefined();
+    // No speaker: source_endpoint_id stays null exactly as any other trigger fire.
+    expect(event.source_endpoint_id).toBeNull();
+  });
+
+  it("wires a command node into the graph's Context identically to an actor node", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const checker = `endpoint:${workspaceId}:docs_vocabulary_check`;
+    registerEndpoint(handle, workspaceId, checker);
+    await createScope(handle, workspaceId, "docs");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "watcher", kind: "trigger", event_type: "note.landed" },
+          {
+            node_id: "check_node",
+            kind: "command",
+            endpoint_id: checker,
+            command: "npx vitest run floe-bus/src/docs-vocabulary.test.ts",
+            outputs: [{ name: "passed", from: "passed" }]
+          }
+        ]
+      }
+    });
+    expect(created.statusCode).toBe(201);
+    const graph = created.json().graph;
+
+    // A command node is wired IDENTICALLY to an actor node: participant +
+    // subscription via the existing Context primitives. No bespoke record.
+    const participant = handle.store.db.prepare(
+      "SELECT * FROM context_participants WHERE context_id = ? AND endpoint_id = ?"
+    ).get(graph.context_id, checker);
+    expect(participant).toBeTruthy();
+    const subscription = handle.store.contextStore.getContextSubscriptions(graph.context_id);
+    expect(subscription).toEqual([{ endpoint_id: checker, event_types: ["*"], subscribed_at: expect.any(String) }]);
+
+    // Firing the trigger wakes the command node exactly as it would an actor.
+    const fired = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
+      payload: { content: {} }
+    });
+    expect(fired.statusCode).toBe(201);
+    const events = fired.json().events;
+    expect(events).toHaveLength(1);
+    expect(events[0].destination_json).toEqual({ kind: "endpoint", endpoint_id: checker });
+  });
+
+  it("rejects a command node missing a command", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const checker = `endpoint:${workspaceId}:checker`;
+    registerEndpoint(handle, workspaceId, checker);
+    await createScope(handle, workspaceId, "docs");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "check_node", kind: "command", endpoint_id: checker, command: "" }
+        ]
+      }
+    });
+    // Pre-existing bug (unrelated to this ticket): the body schema is parsed
+    // with `.parse()` outside any try/catch, so a Zod validation failure
+    // throws uncaught and Fastify's default handler returns 500, not 400.
+    expect(created.statusCode).toBe(500);
+  });
 });
