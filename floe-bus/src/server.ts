@@ -265,7 +265,11 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       kind: z.literal("actor"),
       label: z.string().optional(),
       endpoint_id: z.string().min(1),
-      event_types: z.array(z.string().min(1)).optional()
+      event_types: z.array(z.string().min(1)).optional(),
+      bindings: z.array(z.object({
+        kind: z.literal("instructions"),
+        text: z.string().min(1)
+      })).optional()
     }),
     z.object({
       node_id: z.string().min(1),

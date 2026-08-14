@@ -322,4 +322,50 @@ describe("Scope Graph API", () => {
     // throws uncaught and Fastify's default handler returns 500, not 400.
     expect(created.statusCode).toBe(500);
   });
+
+  it("stores an actor node's instructions binding — node-specific material, not the actor's general instructions", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const writer = `actor:${workspaceId}:writer`;
+    registerEndpoint(handle, workspaceId, writer);
+    await createScope(handle, workspaceId, "docs");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "watcher", kind: "trigger", event_type: "note.landed" },
+          {
+            node_id: "writer_node",
+            kind: "actor",
+            endpoint_id: writer,
+            bindings: [{ kind: "instructions", text: "Draft docs for the note that just landed." }]
+          }
+        ]
+      }
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().graph.nodes[1].bindings).toEqual([
+      { kind: "instructions", text: "Draft docs for the note that just landed." }
+    ]);
+  });
+
+  it("rejects an actor node's instructions binding with empty text", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const writer = `actor:${workspaceId}:writer`;
+    registerEndpoint(handle, workspaceId, writer);
+    await createScope(handle, workspaceId, "docs");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "writer_node", kind: "actor", endpoint_id: writer, bindings: [{ kind: "instructions", text: "" }] }
+        ]
+      }
+    });
+    // Same pre-existing Zod .parse()-outside-try/catch behaviour as above: min(1) fails -> 500.
+    expect(created.statusCode).toBe(500);
+  });
 });
