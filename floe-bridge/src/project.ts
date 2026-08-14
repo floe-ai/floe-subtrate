@@ -22,10 +22,26 @@ export type PulseConfig = {
   subscribers?: Array<{ endpoint_ref: string }>;
 };
 
+/**
+ * A watched folder is a deterministic monitor: it observes a path and fires
+ * an existing Scope Graph trigger node when a file arrives or changes. It is
+ * not a new wake mechanism — it is a config for the existing
+ * fireScopeGraphTrigger emit path, exactly like a trigger node's event_type
+ * is config for emitTriggerEvent. No bespoke primitive is introduced here.
+ */
+export type WatcherConfig = {
+  id: string;
+  graph_id: string;
+  node_id: string;
+  /** Path relative to the workspace root. */
+  path: string;
+};
+
 export type ProjectLoadResult = {
   config_hash: string;
   agents: AgentConfig[];
   pulses: PulseConfig[];
+  watchers: WatcherConfig[];
   validation: {
     ok: boolean;
     warnings: string[];
@@ -122,6 +138,7 @@ export function loadProject(workspacePath: string): ProjectLoadResult {
       config_hash: "",
       agents: [],
       pulses: [],
+      watchers: [],
       validation: { ok: false, warnings, errors: [".floe folder is missing"] }
     };
   }
@@ -190,10 +207,22 @@ export function loadProject(workspacePath: string): ProjectLoadResult {
       }))
     : [];
 
+  const watchers: WatcherConfig[] = Array.isArray(projectConfig.watchers)
+    ? projectConfig.watchers
+        .filter((w: any) => w && typeof w.graph_id === "string" && typeof w.node_id === "string" && typeof w.path === "string")
+        .map((w: any) => ({
+          id: String(w.id ?? `${w.graph_id}:${w.node_id}`),
+          graph_id: String(w.graph_id),
+          node_id: String(w.node_id),
+          path: String(w.path)
+        }))
+    : [];
+
   return {
     config_hash: hashFloeDir(floeDir),
     agents,
     pulses,
+    watchers,
     validation: {
       ok: errors.length === 0,
       warnings,

@@ -19,6 +19,7 @@ import { PiAgentCoreAdapter, TurnFailedError } from "./adapters/pi-agent-core-ad
 import { loadExtensions, type LoadedExtension } from "./extension-loader.js";
 import { HookRegistry } from "./hooks.js";
 import { startExtensionRelayServer } from "./extension-relay.js";
+import { watchFolder } from "./folder-watcher.js";
 
 const WEBHOOK_DEDUPE_MAX_EVENTS = 10_000;
 const STREAM_INITIAL_BACKOFF_MS = 250;
@@ -38,6 +39,7 @@ export class BridgeDaemon {
   private endpointRuntime = new Map<string, EndpointEntry>();
   private workspaceExtensions = new Map<string, LoadedExtension[]>();
   private workspaceHooks = new Map<string, HookRegistry>();
+  private workspaceWatchers = new Map<string, Array<() => void>>();
   private workspaceRelays = new Map<string, { server: Server; exitHandler: () => void }>();
   private attaching = false;
   private processingEndpoints = new Set<string>();
@@ -85,6 +87,11 @@ export class BridgeDaemon {
       relay.server.close();
     }
     this.workspaceRelays.clear();
+    // Close all folder watchers so daemon shutdown leaves no dangling fs handles
+    for (const [, stops] of this.workspaceWatchers) {
+      for (const stop of stops) stop();
+    }
+    this.workspaceWatchers.clear();
     await this.adapter.dispose?.("bridge_shutdown");
   }
 
@@ -394,6 +401,35 @@ export class BridgeDaemon {
           console.error("[bridge] pulse registration failed", { pulse_id: pulseDef.id, error });
         }
       }
+
+      // Start watched folders defined in floe.yaml. Each is a deterministic
+      // monitor node — no new wake mechanism, just a config for the existing
+      // fireScopeGraphTrigger emit path (see folder-watcher.ts).
+      for (const stop of this.workspaceWatchers.get(workspace.workspace_id) ?? []) stop();
+      const watcherStops: Array<() => void> = [];
+      for (const watcherDef of project.watchers) {
+        const watchPath = resolve(locator, watcherDef.path);
+        if (!existsSync(watchPath)) {
+          console.error("[bridge] watcher path does not exist — skipping", { watcher_id: watcherDef.id, path: watchPath });
+          continue;
+        }
+        const stop = watchFolder(watchPath, (arrival) => {
+          this.bus.fireScopeGraphTriggerNode(workspace.workspace_id, watcherDef.graph_id, watcherDef.node_id, {
+            content: { file_name: arrival.file_name, file_path: arrival.file_path },
+            origin: {
+              kind: "world",
+              channel: "watched_folder",
+              locator: arrival.file_path,
+              observed_at: arrival.observed_at,
+              raw_reference: arrival.file_path
+            }
+          }).catch((error) => {
+            console.error("[bridge] watcher trigger fire failed", { watcher_id: watcherDef.id, error });
+          });
+        });
+        watcherStops.push(stop);
+      }
+      this.workspaceWatchers.set(workspace.workspace_id, watcherStops);
 
       // Load extensions
       const extensionsDir = join(locator, ".floe", "extensions");

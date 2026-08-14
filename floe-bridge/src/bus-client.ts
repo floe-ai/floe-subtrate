@@ -30,6 +30,8 @@ export type EventEnvelope = {
     timeout_at?: string | null;
   };
   metadata: Record<string, unknown>;
+  /** Arrival envelope — see EventOrigin in floe-bus. Optional here since older bus payloads may omit it. */
+  origin?: { kind: "actor" } | { kind: "world"; channel: string; locator: string; observed_at: string; raw_reference: string };
   created_at: string;
 };
 
@@ -221,6 +223,28 @@ export class BusClient {
 
   async cancelPulse(pulseId: string): Promise<unknown> {
     return this.post(`/v1/pulses/${encodeURIComponent(pulseId)}/cancel`, {});
+  }
+
+  /**
+   * Fires an existing Scope Graph trigger node — no new wake mechanism, the
+   * same `fireScopeGraphTrigger` emit path a manual trigger fire would use.
+   * `origin` lets a world-facing doorway (e.g. a watched folder) stamp
+   * arrival facts on the resulting event(s); omit it for actor-sourced fires.
+   */
+  async fireScopeGraphTriggerNode(
+    workspaceId: string,
+    graphId: string,
+    nodeId: string,
+    input: {
+      content?: Record<string, unknown>;
+      correlation_id?: string | null;
+      origin?: { kind: "actor" } | { kind: "world"; channel: string; locator: string; observed_at: string; raw_reference: string };
+    } = {}
+  ): Promise<{ events: EventEnvelope[] }> {
+    return this.post(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${encodeURIComponent(graphId)}/nodes/${encodeURIComponent(nodeId)}/fire`,
+      input
+    ) as Promise<{ events: EventEnvelope[] }>;
   }
 
   async requestConfigSnapshot(workspaceId: string): Promise<unknown> {
