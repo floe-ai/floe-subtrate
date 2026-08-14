@@ -33,8 +33,8 @@ import {
   ScopeGraphNotFoundError,
   ScopeGraphStore,
   applyScopeGraphSchema,
+  validateScopeGraphNodes,
   type ScopeGraphNode,
-  type ScopeGraphEdge,
   type ScopeGraphRecord
 } from "./scope-graphs.js";
 
@@ -764,21 +764,54 @@ export class BusStore {
     return this.scopeGraphStore.getScopeGraph(workspaceId, graphId);
   }
 
+  /**
+   * Authors a Scope Graph. The wiring is realised entirely through EXISTING
+   * Context primitives, not a bespoke edge record:
+   * - One Context is created (ContextStore.createContext) to carry the graph.
+   * - Each actor node is added as a participant AND subscribed to its event
+   *   types in that Context (ContextStore.applyContextSubscriptions) — the
+   *   same primitive used elsewhere for wiring an actor into a Context.
+   * A trigger node is pure config: no Context side effect until it fires.
+   */
   createScopeGraph(input: {
     workspace_id: string;
     scope_id: string;
+    created_by_endpoint_id?: string | null;
     nodes: ScopeGraphNode[];
-    edges: ScopeGraphEdge[];
   }, broadcast: Broadcast): ScopeGraphRecord {
-    const graph = this.scopeGraphStore.createScopeGraph(input);
+    validateScopeGraphNodes(input.nodes);
+
+    const contextId = this.contextStore.createContext({
+      workspace_id: input.workspace_id,
+      scope_id: input.scope_id,
+      created_by_endpoint_id: input.created_by_endpoint_id ?? null,
+      participants: []
+    });
+
+    for (const node of input.nodes) {
+      if (node.kind !== "actor") continue;
+      this.contextStore.applyContextSubscriptions(contextId, [
+        { endpoint_id: node.endpoint_id, event_types: node.event_types ?? ["*"] }
+      ]);
+    }
+
+    const graph = this.scopeGraphStore.insertScopeGraph({
+      workspace_id: input.workspace_id,
+      scope_id: input.scope_id,
+      context_id: contextId,
+      nodes: input.nodes
+    });
     broadcast("scope_graph_created", { graph });
     return graph;
   }
 
   /**
-   * Fires a trigger node: walks its outgoing edges and wakes every actor node
-   * they reach via emitTriggerEvent (the same bus-originated wake primitive
-   * pulse firing uses). One EventEnvelope is returned per actor woken.
+   * Fires a trigger node: emits into the graph's Context once per endpoint
+   * whose EXISTING context subscription (ContextStore.getContextSubscriptions)
+   * matches the trigger's event type, via emitTriggerEvent — the same
+   * bus-originated wake primitive pulse firing already uses. There is no
+   * separate edge table to walk; the Context's own subscription state decides
+   * who wakes, exactly as it would for any other Context.
    */
   fireScopeGraphTrigger(input: {
     workspace_id: string;
@@ -794,14 +827,16 @@ export class BusStore {
     if (!node) throw new ScopeGraphNodeNotFoundError(input.graph_id, input.node_id);
     if (node.kind !== "trigger") throw new ScopeGraphNodeNotATriggerError(input.graph_id, input.node_id);
 
-    const targets = this.scopeGraphStore.resolveTriggerTargets(input.workspace_id, input.graph_id, input.node_id);
-    return targets.map((actorNode) =>
+    const subscriptions = this.contextStore.getContextSubscriptions(graph.context_id)
+      .filter((subscription) => subscription.event_types.includes("*") || subscription.event_types.includes(node.event_type));
+
+    return subscriptions.map((subscription) =>
       this.emitTriggerEvent(
         {
           type: node.event_type,
           workspace_id: input.workspace_id,
-          target_endpoint_id: actorNode.endpoint_id,
-          scope_id: graph.scope_id,
+          target_endpoint_id: subscription.endpoint_id,
+          context_id: graph.context_id,
           correlation_id: input.correlation_id ?? null,
           content: input.content,
           metadata: {

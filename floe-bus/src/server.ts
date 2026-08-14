@@ -23,7 +23,6 @@ import {
   ScopeGraphNodeNotATriggerError,
   ScopeGraphNodeNotFoundError,
   ScopeGraphNotFoundError,
-  type ScopeGraphEdge,
   type ScopeGraphNode
 } from "./scope-graphs.js";
 import { encodeEventCursor, InvalidEventCursorError } from "./event-cursor.js";
@@ -265,14 +264,10 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       node_id: z.string().min(1),
       kind: z.literal("actor"),
       label: z.string().optional(),
-      endpoint_id: z.string().min(1)
+      endpoint_id: z.string().min(1),
+      event_types: z.array(z.string().min(1)).optional()
     })
   ]);
-
-  const ScopeGraphEdgeSchema = z.object({
-    from_node_id: z.string().min(1),
-    to_node_id: z.string().min(1)
-  });
 
   app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/graphs", async (request, reply) => {
     const params = z.object({
@@ -299,7 +294,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }).parse(request.params);
     const body = z.object({
       nodes: z.array(ScopeGraphNodeSchema).min(1),
-      edges: z.array(ScopeGraphEdgeSchema).default([])
+      created_by_endpoint_id: z.string().min(1).nullable().optional()
     }).parse(request.body);
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
@@ -315,8 +310,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       const graph = store.createScopeGraph({
         workspace_id: params.workspace_id,
         scope_id: params.scope_id,
-        nodes: body.nodes as ScopeGraphNode[],
-        edges: body.edges as ScopeGraphEdge[]
+        created_by_endpoint_id: body.created_by_endpoint_id ?? null,
+        nodes: body.nodes as ScopeGraphNode[]
       }, broadcast);
       return reply.code(201).send({ graph });
     } catch (err) {

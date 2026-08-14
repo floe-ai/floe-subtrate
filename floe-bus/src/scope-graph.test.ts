@@ -70,7 +70,10 @@ describe("Scope Graph API", () => {
     registerEndpoint(handle, workspaceId, writer);
     await createScope(handle, workspaceId, "docs");
 
-    // The graph is authored — stored — before it ever runs.
+    // The graph is authored — stored — before it ever runs. No bespoke "edge"
+    // is authored: the actor node's connection is realised via existing
+    // Context participant + subscription primitives, which the graph's
+    // shared context_id ties together.
     const created = await handle.app.inject({
       method: "POST",
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
@@ -78,21 +81,31 @@ describe("Scope Graph API", () => {
         nodes: [
           { node_id: "watcher", kind: "trigger", event_type: "note.landed", label: "note landed" },
           { node_id: "writer_node", kind: "actor", endpoint_id: writer, label: "writer" }
-        ],
-        edges: [{ from_node_id: "watcher", to_node_id: "writer_node" }]
+        ]
       }
     });
     expect(created.statusCode).toBe(201);
     const graph = created.json().graph;
     expect(graph.graph_id).toMatch(/^graph_/);
     expect(graph.nodes).toHaveLength(2);
-    expect(graph.edges).toEqual([{ from_node_id: "watcher", to_node_id: "writer_node" }]);
+    expect(graph.context_id).toMatch(/^ctx_/);
+
+    // Authoring the actor node already wired it into the graph's Context via
+    // the EXISTING participant + subscription primitives — verified directly
+    // against those tables, not a bespoke scope-graph routing record.
+    const participant = handle.store.db.prepare(
+      "SELECT * FROM context_participants WHERE context_id = ? AND endpoint_id = ?"
+    ).get(graph.context_id, writer);
+    expect(participant).toBeTruthy();
+    const subscription = handle.store.contextStore.getContextSubscriptions(graph.context_id);
+    expect(subscription).toEqual([{ endpoint_id: writer, event_types: ["*"], subscribed_at: expect.any(String) }]);
 
     // Nothing has run yet: no event exists for the writer.
     const beforeFire = handle.store.db.prepare("SELECT COUNT(*) AS count FROM events").get() as { count: number };
     expect(beforeFire.count).toBe(0);
 
-    // Firing the trigger node causes the actor node to be woken.
+    // Firing the trigger node causes the actor node to be woken — resolved by
+    // reading the Context's own EXISTING subscription state, not a stored edge.
     const fired = await handle.app.inject({
       method: "POST",
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
@@ -103,6 +116,7 @@ describe("Scope Graph API", () => {
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe("note.landed");
     expect(events[0].destination_json).toEqual({ kind: "endpoint", endpoint_id: writer });
+    expect(events[0].context_id).toBe(graph.context_id);
     expect(events[0].source_endpoint_id).toBeNull();
     expect(events[0].content).toEqual({ path: "docs/README.md" });
 
@@ -121,7 +135,35 @@ describe("Scope Graph API", () => {
     expect(reread.json().graph.graph_id).toBe(graph.graph_id);
   });
 
-  it("rejects an edge that references an unknown node", async () => {
+  it("does not wake an actor whose Context subscription does not match the trigger's event type", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const writer = `actor:${workspaceId}:writer`;
+    registerEndpoint(handle, workspaceId, writer);
+    await createScope(handle, workspaceId, "docs");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "watcher", kind: "trigger", event_type: "note.landed" },
+          { node_id: "writer_node", kind: "actor", endpoint_id: writer, event_types: ["review.requested"] }
+        ]
+      }
+    });
+    expect(created.statusCode).toBe(201);
+    const graph = created.json().graph;
+
+    const fired = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
+      payload: { content: {} }
+    });
+    expect(fired.statusCode).toBe(201);
+    expect(fired.json().events).toHaveLength(0);
+  });
+
+  it("rejects a graph with a duplicate node id", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     await createScope(handle, workspaceId, "docs");
 
@@ -129,8 +171,10 @@ describe("Scope Graph API", () => {
       method: "POST",
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
       payload: {
-        nodes: [{ node_id: "watcher", kind: "trigger", event_type: "note.landed" }],
-        edges: [{ from_node_id: "watcher", to_node_id: "ghost" }]
+        nodes: [
+          { node_id: "watcher", kind: "trigger", event_type: "note.landed" },
+          { node_id: "watcher", kind: "trigger", event_type: "note.landed" }
+        ]
       }
     });
     expect(created.statusCode).toBe(400);
@@ -150,8 +194,7 @@ describe("Scope Graph API", () => {
         nodes: [
           { node_id: "watcher", kind: "trigger", event_type: "note.landed" },
           { node_id: "writer_node", kind: "actor", endpoint_id: writer }
-        ],
-        edges: [{ from_node_id: "watcher", to_node_id: "writer_node" }]
+        ]
       }
     });
     expect(created.statusCode).toBe(201);

@@ -3,17 +3,28 @@
  *
  * `buildScopeProjection` (scopes/projection.ts) is DESCRIPTIVE: it derives refs
  * and relationships from contexts, pulses, events and activity that have
- * already happened. A Scope Graph is the opposite — PRESCRIPTIVE: nodes and
- * edges authored before anything happens, that then cause the work.
+ * already happened. A Scope Graph is the opposite — PRESCRIPTIVE: nodes
+ * authored before anything happens, that then cause the work.
  *
- * This slice supports exactly two node kinds: `trigger` and `actor`. Firing a
- * trigger node walks the graph's edges and wakes every actor node it points
- * to (via BusStore.emitTriggerEvent — the substrate's existing bus-originated
- * wake primitive, also used by pulse firing). Node ownership, typed ports and
- * nesting are deliberately out of scope for this slice.
+ * This slice supports exactly two node kinds: `trigger` and `actor`. There is
+ * deliberately no stored "edge" record. A graph owns exactly one Context (an
+ * EXISTING substrate primitive), and that shared context_id IS the wiring:
+ * - An actor node's connection is realised, at authoring time, purely through
+ *   existing Context primitives — ContextStore.applyContextSubscriptions adds
+ *   it as a participant AND subscribes it to the node's event types.
+ * - Firing a trigger node emits into the graph's context via
+ *   BusStore.emitTriggerEvent (the same bus-originated wake primitive pulse
+ *   firing already uses) once per endpoint whose EXISTING context subscription
+ *   matches the trigger's event type — read via ContextStore.getContextSubscriptions.
+ * No new routing table is introduced; "the edge" is inferred from shared
+ * context membership, not stored as a separate concept.
  *
- * A Scope Graph never claims to describe a Scope's derived history — the two
- * are separate records, never merged into one "the" graph for a scope.
+ * Node ownership, typed ports and nesting are deliberately out of scope for
+ * this slice.
+ *
+ * A Scope Graph never claims to describe a Scope's derived history — it and
+ * buildScopeProjection are separate records, never merged into one "the"
+ * graph for a scope.
  */
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -31,21 +42,19 @@ export type ScopeGraphActorNode = {
   kind: "actor";
   label?: string;
   endpoint_id: string;
+  /** Event types this actor wakes for within the graph's Context. Defaults to ["*"]. */
+  event_types?: string[];
 };
 
 export type ScopeGraphNode = ScopeGraphTriggerNode | ScopeGraphActorNode;
-
-export type ScopeGraphEdge = {
-  from_node_id: string;
-  to_node_id: string;
-};
 
 export type ScopeGraphRecord = {
   graph_id: string;
   workspace_id: string;
   scope_id: string;
+  /** The Context that ties this graph's nodes together — the wiring, not a separate edge record. */
+  context_id: string;
   nodes: ScopeGraphNode[];
-  edges: ScopeGraphEdge[];
   created_at: string;
   updated_at: string;
 };
@@ -92,8 +101,8 @@ export function applyScopeGraphSchema(db: DatabaseSync): void {
       graph_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       scope_id TEXT NOT NULL,
+      context_id TEXT NOT NULL,
       nodes_json TEXT NOT NULL,
-      edges_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -103,7 +112,7 @@ export function applyScopeGraphSchema(db: DatabaseSync): void {
   `);
 }
 
-function validateGraphShape(nodes: ScopeGraphNode[], edges: ScopeGraphEdge[]): void {
+export function validateScopeGraphNodes(nodes: ScopeGraphNode[]): void {
   const seenNodeIds = new Set<string>();
   for (const node of nodes) {
     if (seenNodeIds.has(node.node_id)) {
@@ -117,16 +126,13 @@ function validateGraphShape(nodes: ScopeGraphNode[], edges: ScopeGraphEdge[]): v
       throw new ScopeGraphInvalidError(`trigger node '${node.node_id}' is missing event_type`);
     }
   }
-  for (const edge of edges) {
-    if (!seenNodeIds.has(edge.from_node_id)) {
-      throw new ScopeGraphInvalidError(`edge references unknown node '${edge.from_node_id}'`);
-    }
-    if (!seenNodeIds.has(edge.to_node_id)) {
-      throw new ScopeGraphInvalidError(`edge references unknown node '${edge.to_node_id}'`);
-    }
-  }
 }
 
+/**
+ * Pure node-list + Context-id persistence. Realising the wiring (participants,
+ * subscriptions) is the caller's job (BusStore.createScopeGraph), using
+ * ContextStore — the existing primitive — not this store.
+ */
 export class ScopeGraphStore {
   constructor(readonly db: DatabaseSync) {}
 
@@ -144,52 +150,30 @@ export class ScopeGraphStore {
     return row ? this.rowToGraph(row) : null;
   }
 
-  createScopeGraph(input: {
+  insertScopeGraph(input: {
     workspace_id: string;
     scope_id: string;
+    context_id: string;
     nodes: ScopeGraphNode[];
-    edges: ScopeGraphEdge[];
   }): ScopeGraphRecord {
-    validateGraphShape(input.nodes, input.edges);
+    validateScopeGraphNodes(input.nodes);
     const graphId = `graph_${randomUUID()}`;
     const timestamp = nowIso();
     this.db.prepare(`
       INSERT INTO scope_graphs (
-        graph_id, workspace_id, scope_id, nodes_json, edges_json, created_at, updated_at
+        graph_id, workspace_id, scope_id, context_id, nodes_json, created_at, updated_at
       )
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       graphId,
       input.workspace_id,
       input.scope_id,
+      input.context_id,
       JSON.stringify(input.nodes),
-      JSON.stringify(input.edges),
       timestamp,
       timestamp
     );
     return this.getScopeGraph(input.workspace_id, graphId) as ScopeGraphRecord;
-  }
-
-  /**
-   * Resolves which actor nodes a trigger node's edges point to. Throws if the
-   * graph, node, or node kind is invalid. Callers wake each returned actor
-   * node via BusStore.emitTriggerEvent — this store holds no runtime state.
-   */
-  resolveTriggerTargets(workspaceId: string, graphId: string, nodeId: string): ScopeGraphActorNode[] {
-    const graph = this.getScopeGraph(workspaceId, graphId);
-    if (!graph) throw new ScopeGraphNotFoundError(workspaceId, graphId);
-
-    const node = graph.nodes.find((candidate) => candidate.node_id === nodeId);
-    if (!node) throw new ScopeGraphNodeNotFoundError(graphId, nodeId);
-    if (node.kind !== "trigger") throw new ScopeGraphNodeNotATriggerError(graphId, nodeId);
-
-    const targetNodeIds = graph.edges
-      .filter((edge) => edge.from_node_id === nodeId)
-      .map((edge) => edge.to_node_id);
-
-    return graph.nodes.filter(
-      (candidate): candidate is ScopeGraphActorNode => candidate.kind === "actor" && targetNodeIds.includes(candidate.node_id)
-    );
   }
 
   private rowToGraph(row: any): ScopeGraphRecord {
@@ -197,8 +181,8 @@ export class ScopeGraphStore {
       graph_id: String(row.graph_id),
       workspace_id: String(row.workspace_id),
       scope_id: String(row.scope_id),
+      context_id: String(row.context_id),
       nodes: JSON.parse(row.nodes_json),
-      edges: JSON.parse(row.edges_json),
       created_at: String(row.created_at),
       updated_at: String(row.updated_at)
     };
