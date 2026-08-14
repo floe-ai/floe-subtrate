@@ -338,17 +338,6 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { graph };
   });
 
-  const EventOriginSchema = z.union([
-    z.object({ kind: z.literal("actor") }),
-    z.object({
-      kind: z.literal("world"),
-      channel: z.string().min(1),
-      locator: z.string().min(1),
-      observed_at: z.string().min(1),
-      raw_reference: z.string().min(1)
-    })
-  ]);
-
   app.post("/v1/workspaces/:workspace_id/graphs/:graph_id/nodes/:node_id/fire", async (request, reply) => {
     const params = z.object({
       workspace_id: z.string(),
@@ -357,8 +346,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }).parse(request.params);
     const body = z.object({
       content: z.record(z.unknown()).default({}),
-      correlation_id: z.string().nullable().optional(),
-      origin: EventOriginSchema.optional()
+      correlation_id: z.string().nullable().optional()
     }).parse(request.body ?? {});
     try {
       const events = store.fireScopeGraphTrigger({
@@ -366,8 +354,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
         graph_id: params.graph_id,
         node_id: params.node_id,
         content: body.content,
-        correlation_id: body.correlation_id ?? null,
-        origin: body.origin
+        correlation_id: body.correlation_id ?? null
       }, broadcast);
       return reply.code(201).send({ events });
     } catch (err) {

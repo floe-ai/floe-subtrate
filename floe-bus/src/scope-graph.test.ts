@@ -209,34 +209,7 @@ describe("Scope Graph API", () => {
     expect(fired.json().error).toBe("scope_graph_node_not_a_trigger");
   });
 
-  it("defaults a fired trigger's origin to kind 'actor' when none is supplied", async () => {
-    const workspaceId = await registerWorkspace(handle, tmp);
-    const writer = `actor:${workspaceId}:writer`;
-    registerEndpoint(handle, workspaceId, writer);
-    await createScope(handle, workspaceId, "docs");
-
-    const created = await handle.app.inject({
-      method: "POST",
-      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
-      payload: {
-        nodes: [
-          { node_id: "watcher", kind: "trigger", event_type: "note.landed" },
-          { node_id: "writer_node", kind: "actor", endpoint_id: writer }
-        ]
-      }
-    });
-    const graph = created.json().graph;
-
-    const fired = await handle.app.inject({
-      method: "POST",
-      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
-      payload: { content: {} }
-    });
-    expect(fired.statusCode).toBe(201);
-    expect(fired.json().events[0].origin).toEqual({ kind: "actor" });
-  });
-
-  it("stamps a world origin (channel, locator, observed_at, raw_reference) on a fire from a watched folder", async () => {
+  it("fires a trigger with arrival facts (channel, locator, observed_at, raw_reference) as ordinary content — no origin envelope", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const writer = `actor:${workspaceId}:writer`;
     registerEndpoint(handle, workspaceId, writer);
@@ -259,9 +232,8 @@ describe("Scope Graph API", () => {
       method: "POST",
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
       payload: {
-        content: { file_name: "README.md" },
-        origin: {
-          kind: "world",
+        content: {
+          file_name: "README.md",
           channel: "watched_folder",
           locator: "C:\\ws\\inbox\\README.md",
           observed_at: observedAt,
@@ -271,46 +243,16 @@ describe("Scope Graph API", () => {
     });
     expect(fired.statusCode).toBe(201);
     const event = fired.json().events[0];
-    expect(event.origin).toEqual({
-      kind: "world",
+    // Arrival facts are just content — no separate origin field or kind tag.
+    expect(event.content).toEqual({
+      file_name: "README.md",
       channel: "watched_folder",
       locator: "C:\\ws\\inbox\\README.md",
       observed_at: observedAt,
       raw_reference: "C:\\ws\\inbox\\README.md"
     });
+    expect(event.origin).toBeUndefined();
     // No speaker: source_endpoint_id stays null exactly as any other trigger fire.
     expect(event.source_endpoint_id).toBeNull();
-
-    // Persists — a re-read of the event carries the same origin, not just the in-memory response.
-    const row = handle.store.db.prepare("SELECT origin_json FROM events WHERE event_id = ?").get(event.event_id) as { origin_json: string };
-    expect(JSON.parse(row.origin_json)).toEqual(event.origin);
-  });
-
-  it("rejects a world origin missing required arrival fields", async () => {
-    const workspaceId = await registerWorkspace(handle, tmp);
-    const writer = `actor:${workspaceId}:writer`;
-    registerEndpoint(handle, workspaceId, writer);
-    await createScope(handle, workspaceId, "docs");
-
-    const created = await handle.app.inject({
-      method: "POST",
-      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
-      payload: {
-        nodes: [
-          { node_id: "watcher", kind: "trigger", event_type: "note.landed" },
-          { node_id: "writer_node", kind: "actor", endpoint_id: writer }
-        ]
-      }
-    });
-    const graph = created.json().graph;
-
-    const fired = await handle.app.inject({
-      method: "POST",
-      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
-      payload: { content: {}, origin: { kind: "world", channel: "watched_folder" } }
-    });
-    // Body validation failures are a pre-existing 500 across this server (no
-    // global ZodError handler) — not something this slice introduces or fixes.
-    expect(fired.statusCode).toBe(500);
   });
 });

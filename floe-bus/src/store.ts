@@ -177,8 +177,6 @@ export type TriggerEventCommand = {
   metadata: Record<string, unknown> & { trigger_kind: "pulse" | "webhook" | string };
   correlation_id?: string | null;
   idempotency_key?: string | null;
-  /** Defaults to `{ kind: "actor" }` when omitted — see EventOrigin. */
-  origin?: EventOrigin;
 };
 
 export type PulseSubscriber =
@@ -186,24 +184,6 @@ export type PulseSubscriber =
   | { kind?: "endpoint"; endpoint_ref: string; context_id?: string | null };
 
 export type PulsePersistence = "workspace" | "local";
-
-/**
- * What a world-facing emission records about its origin (design decision
- * https://github.com/floe-ai/floe-subtrate/issues/145).
- *
- * `actor` — an emission from an actor inside this workspace; the existing
- * source_endpoint_id / correlation_id / created_at fields already carry that
- * record, so this kind adds nothing further.
- *
- * `world` — something ingested from outside (a watched folder, a webhook, a
- * mailbox). No speaker. Records arrival facts only: the ingress channel, the
- * external locator it was observed at, when floe saw it, and a raw reference
- * to the unaltered thing as received. Causation belongs in the payload, never
- * in this envelope.
- */
-export type EventOrigin =
-  | { kind: "actor" }
-  | { kind: "world"; channel: string; locator: string; observed_at: string; raw_reference: string };
 
 export type EventEnvelope = {
   event_id: string;
@@ -218,7 +198,6 @@ export type EventEnvelope = {
   content: Record<string, unknown>;
   response: ResponseExpectation;
   metadata: Record<string, unknown>;
-  origin: EventOrigin;
   created_at: string;
 };
 
@@ -512,7 +491,6 @@ export class BusStore {
     this.addColumnIfMissing("events", "response_json", "TEXT");
     this.addColumnIfMissing("events", "context_id", "TEXT");
     this.addColumnIfMissing("events", "scope_id", "TEXT");
-    this.addColumnIfMissing("events", "origin_json", "TEXT");
     this.relaxEventScopeColumn();
     this.addColumnIfMissing("delivery_bundles", "wait_id", "TEXT");
     this.addColumnIfMissing("delivery_bundles", "resume_reason", "TEXT NOT NULL DEFAULT 'event'");
@@ -570,14 +548,13 @@ export class BusStore {
         content_json TEXT NOT NULL,
         response_json TEXT,
         metadata_json TEXT NOT NULL,
-        origin_json TEXT,
         idempotency_key TEXT,
         created_at TEXT NOT NULL
       );
 
       INSERT INTO events_next (
         event_id, type, workspace_id, source_endpoint_id, destination_endpoint_id, thread_id, context_id,
-        scope_id, correlation_id, destination_json, content_json, response_json, metadata_json, origin_json, idempotency_key, created_at
+        scope_id, correlation_id, destination_json, content_json, response_json, metadata_json, idempotency_key, created_at
       )
       SELECT
         event_id,
@@ -593,7 +570,6 @@ export class BusStore {
         content_json,
         response_json,
         metadata_json,
-        origin_json,
         idempotency_key,
         created_at
       FROM events;
@@ -843,8 +819,6 @@ export class BusStore {
     node_id: string;
     content: Record<string, unknown>;
     correlation_id?: string | null;
-    /** Defaults to `{ kind: "actor" }` when omitted — see EventOrigin. */
-    origin?: EventOrigin;
   }, broadcast: Broadcast): EventEnvelope[] {
     const graph = this.scopeGraphStore.getScopeGraph(input.workspace_id, input.graph_id);
     if (!graph) throw new ScopeGraphNotFoundError(input.workspace_id, input.graph_id);
@@ -869,8 +843,7 @@ export class BusStore {
             trigger_kind: "scope_graph",
             graph_id: input.graph_id,
             node_id: input.node_id
-          },
-          origin: input.origin
+          }
         },
         broadcast
       )
@@ -1452,8 +1425,7 @@ export class BusStore {
           correlation_id: command.correlation_id ?? null,
           content: command.content,
           metadata: command.metadata,
-          idempotency_key: command.idempotency_key ?? null,
-          origin: command.origin
+          idempotency_key: command.idempotency_key ?? null
         },
         this.normalizeResponse({ expected: false }),
         contextId
@@ -2219,7 +2191,6 @@ export class BusStore {
       content: Record<string, unknown>;
       metadata: Record<string, unknown>;
       idempotency_key: string | null;
-      origin?: EventOrigin;
     },
     response: ResponseExpectation,
     contextId: string
@@ -2246,15 +2217,14 @@ export class BusStore {
       content: input.content,
       response,
       metadata: input.metadata ?? {},
-      origin: input.origin ?? { kind: "actor" },
       created_at: now()
     };
     this.db.prepare(`
       INSERT INTO events (
         event_id, type, workspace_id, source_endpoint_id, destination_endpoint_id, thread_id, context_id, correlation_id,
-        scope_id, destination_json, content_json, response_json, metadata_json, origin_json, idempotency_key, created_at
+        scope_id, destination_json, content_json, response_json, metadata_json, idempotency_key, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       envelope.event_id,
       envelope.type,
@@ -2269,7 +2239,6 @@ export class BusStore {
       json(envelope.content),
       json(envelope.response),
       json(envelope.metadata),
-      json(envelope.origin),
       input.idempotency_key ?? null,
       envelope.created_at
     );
@@ -2529,7 +2498,6 @@ export class BusStore {
       content: parseJson<Record<string, unknown>>(row.content_json),
       response: parseJson<ResponseExpectation>(row.response_json),
       metadata: parseJson<Record<string, unknown>>(row.metadata_json),
-      origin: row.origin_json ? parseJson<EventOrigin>(row.origin_json) : { kind: "actor" },
       created_at: row.created_at
     };
   }

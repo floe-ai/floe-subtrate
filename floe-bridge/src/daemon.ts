@@ -415,9 +415,9 @@ export class BridgeDaemon {
         }
         const stop = watchFolder(watchPath, (arrival) => {
           this.bus.fireScopeGraphTriggerNode(workspace.workspace_id, watcherDef.graph_id, watcherDef.node_id, {
-            content: { file_name: arrival.file_name, file_path: arrival.file_path },
-            origin: {
-              kind: "world",
+            content: {
+              file_name: arrival.file_name,
+              file_path: arrival.file_path,
               channel: "watched_folder",
               locator: arrival.file_path,
               observed_at: arrival.observed_at,

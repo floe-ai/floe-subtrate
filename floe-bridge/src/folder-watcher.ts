@@ -4,10 +4,10 @@
  * This is not a new wake mechanism. It is a doorway that observes a path and
  * fires an EXISTING Scope Graph trigger node (BusStore.fireScopeGraphTrigger,
  * which itself reuses emitTriggerEvent) exactly as any other trigger firing
- * would. The only thing this primitive owns is noticing that a file arrived
- * or changed and stamping the resulting emission's `origin` with `kind:
- * "world"` — arrival facts only, no speaker, per
- * https://github.com/floe-ai/floe-subtrate/issues/145.
+ * would. The caller folds the arrival facts (channel, locator, observed_at,
+ * raw_reference) into that fire's ordinary `content` — there is no separate
+ * origin envelope. What lands is just data; what a node does with it is
+ * entirely up to that node's own config, never a tag the substrate branches on.
  *
  * A later mutation of the same file is just another observation, another
  * event — not a correction of the first one. What floe acted on is fixed at
