@@ -266,6 +266,24 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       label: z.string().optional(),
       endpoint_id: z.string().min(1),
       event_types: z.array(z.string().min(1)).optional()
+    }),
+    z.object({
+      node_id: z.string().min(1),
+      kind: z.literal("command"),
+      label: z.string().optional(),
+      endpoint_id: z.string().min(1),
+      event_types: z.array(z.string().min(1)).optional(),
+      result_event_type: z.string().min(1).optional(),
+      command: z.string().min(1),
+      inputs: z.array(z.object({
+        name: z.string().min(1),
+        content_key: z.string().min(1),
+        required: z.boolean().optional()
+      })).optional(),
+      outputs: z.array(z.object({
+        name: z.string().min(1),
+        from: z.enum(["exit_code", "passed", "stdout", "stderr"])
+      })).optional()
     })
   ]);
 
@@ -320,6 +338,16 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       }
       throw err;
     }
+  });
+
+  app.get("/v1/workspaces/:workspace_id/graphs", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string()
+    }).parse(request.params);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    return { graphs: store.listScopeGraphsForWorkspace(params.workspace_id) };
   });
 
   app.get("/v1/workspaces/:workspace_id/graphs/:graph_id", async (request, reply) => {

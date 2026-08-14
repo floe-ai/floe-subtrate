@@ -760,6 +760,11 @@ export class BusStore {
     return this.scopeGraphStore.listScopeGraphs(workspaceId, scopeId);
   }
 
+  /** All graphs in a workspace, across every scope — used by the bridge to discover command nodes at attach time. */
+  listScopeGraphsForWorkspace(workspaceId: string): ScopeGraphRecord[] {
+    return this.scopeGraphStore.listScopeGraphsForWorkspace(workspaceId);
+  }
+
   getScopeGraph(workspaceId: string, graphId: string): ScopeGraphRecord | null {
     return this.scopeGraphStore.getScopeGraph(workspaceId, graphId);
   }
@@ -768,9 +773,11 @@ export class BusStore {
    * Authors a Scope Graph. The wiring is realised entirely through EXISTING
    * Context primitives, not a bespoke edge record:
    * - One Context is created (ContextStore.createContext) to carry the graph.
-   * - Each actor node is added as a participant AND subscribed to its event
-   *   types in that Context (ContextStore.applyContextSubscriptions) — the
-   *   same primitive used elsewhere for wiring an actor into a Context.
+   * - Each actor OR command node is added as a participant AND subscribed to
+   *   its event types in that Context (ContextStore.applyContextSubscriptions)
+   *   — the same primitive used elsewhere for wiring an actor into a Context.
+   *   A command node is wired identically to an actor node: the substrate
+   *   does not distinguish what runs behind an endpoint.
    * A trigger node is pure config: no Context side effect until it fires.
    */
   createScopeGraph(input: {
@@ -789,7 +796,7 @@ export class BusStore {
     });
 
     for (const node of input.nodes) {
-      if (node.kind !== "actor") continue;
+      if (node.kind !== "actor" && node.kind !== "command") continue;
       this.contextStore.applyContextSubscriptions(contextId, [
         { endpoint_id: node.endpoint_id, event_types: node.event_types ?? ["*"] }
       ]);

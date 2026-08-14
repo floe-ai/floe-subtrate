@@ -19,6 +19,7 @@ import { PiAgentCoreAdapter, TurnFailedError } from "./adapters/pi-agent-core-ad
 import { loadExtensions, type LoadedExtension } from "./extension-loader.js";
 import { HookRegistry } from "./hooks.js";
 import { startExtensionRelayServer } from "./extension-relay.js";
+import { runCommandNode, CommandInputMissingError, type CommandNodeConfig } from "./command-runner.js";
 import { watchFolder } from "./folder-watcher.js";
 
 const WEBHOOK_DEDUPE_MAX_EVENTS = 10_000;
@@ -39,6 +40,8 @@ export class BridgeDaemon {
   private endpointRuntime = new Map<string, EndpointEntry>();
   private workspaceExtensions = new Map<string, LoadedExtension[]>();
   private workspaceHooks = new Map<string, HookRegistry>();
+  /** Command node config, keyed by endpoint_id — endpoints whose delivery runs a shell command instead of the LLM adapter. */
+  private commandNodes = new Map<string, CommandNodeConfig>();
   private workspaceWatchers = new Map<string, Array<() => void>>();
   private workspaceRelays = new Map<string, { server: Server; exitHandler: () => void }>();
   private attaching = false;
@@ -402,6 +405,43 @@ export class BridgeDaemon {
         }
       }
 
+      // Discover command nodes from this workspace's scope graphs and attach
+      // them as bridge-owned endpoints — the SAME registration path project
+      // agents already use. Nothing new is invented at the bus: a command
+      // node is an ordinary participant/endpoint. The only new behaviour is
+      // bridge-local (handleDelivery below runs the command instead of the
+      // adapter for these endpoints); see command-runner.ts.
+      try {
+        const { graphs } = await this.bus.listScopeGraphsForWorkspace(workspace.workspace_id);
+        for (const graph of graphs as Array<{ graph_id: string; context_id: string; nodes: any[] }>) {
+          for (const node of graph.nodes) {
+            if (node.kind !== "command") continue;
+            const config: CommandNodeConfig = {
+              graph_id: graph.graph_id,
+              node_id: node.node_id,
+              context_id: graph.context_id,
+              endpoint_id: node.endpoint_id,
+              command: node.command,
+              inputs: node.inputs ?? [],
+              outputs: node.outputs ?? [],
+              result_event_type: node.result_event_type ?? "command.result",
+              workspace_locator: locator
+            };
+            this.commandNodes.set(node.endpoint_id, config);
+            await this.bus.registerEndpoint({
+              endpoint_id: node.endpoint_id,
+              workspace_id: workspace.workspace_id,
+              name: node.label ?? node.node_id,
+              bridge_id: this.bridgeId,
+              status: "idle",
+              metadata: { command_node: true, graph_id: graph.graph_id, node_id: node.node_id }
+            });
+          }
+        }
+      } catch (error) {
+        console.error("[bridge] command node discovery failed", { workspace_id: workspace.workspace_id, error });
+      }
+
       // Start watched folders defined in floe.yaml. Each is a deterministic
       // monitor node — no new wake mechanism, just a config for the existing
       // fireScopeGraphTrigger emit path (see folder-watcher.ts).
@@ -694,6 +734,13 @@ export class BridgeDaemon {
       workspace_id: delivery.workspace_id,
       event_count: delivery.events.length
     });
+
+    const commandConfig = this.commandNodes.get(delivery.endpoint_id);
+    if (commandConfig) {
+      await this.handleCommandDelivery(delivery, commandConfig);
+      return;
+    }
+
     try {
       const endpointEntry = this.endpointRuntime.get(delivery.endpoint_id);
       const runtimeConfig = endpointEntry?.config;
@@ -818,6 +865,39 @@ export class BridgeDaemon {
         error: (error as Error).message
       });
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", (error as Error).message);
+      await this.bus.updateEndpointStatus(delivery.endpoint_id, "error");
+    }
+  }
+
+  /**
+   * Runs a command node's delivery: no LLM adapter involved. The bridge
+   * substitutes what runs behind this endpoint — the substrate never learns
+   * the difference (no `actor_kind`). The result is emitted with the SAME
+   * `bus.emit` path any actor's `emit` tool uses, into the graph's Context,
+   * so subscribed actors wake exactly as they would for any other message.
+   */
+  private async handleCommandDelivery(delivery: DeliveryBundle, config: CommandNodeConfig): Promise<void> {
+    try {
+      await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "injected_to_runtime");
+      const triggerContent = delivery.events[delivery.events.length - 1]?.content ?? {};
+      const resultContent = await runCommandNode(config, triggerContent);
+      await this.bus.emit({
+        type: config.result_event_type,
+        workspace_id: delivery.workspace_id,
+        source_endpoint_id: config.endpoint_id,
+        destination: { kind: "context", context_id: config.context_id },
+        thread_id: config.context_id,
+        content: resultContent,
+        metadata: { command_node: true, graph_id: config.graph_id, node_id: config.node_id }
+      });
+      await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
+      await this.bus.reportTurnEnd(delivery.endpoint_id);
+    } catch (error) {
+      const message = error instanceof CommandInputMissingError
+        ? error.message
+        : `command node execution failed: ${(error as Error).message}`;
+      console.error("[bridge] command node delivery failed", { delivery_id: delivery.delivery_id, node_id: config.node_id, error: message });
+      await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", message);
       await this.bus.updateEndpointStatus(delivery.endpoint_id, "error");
     }
   }

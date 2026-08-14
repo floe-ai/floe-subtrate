@@ -6,12 +6,21 @@
  * already happened. A Scope Graph is the opposite — PRESCRIPTIVE: nodes
  * authored before anything happens, that then cause the work.
  *
- * This slice supports exactly two node kinds: `trigger` and `actor`. There is
- * deliberately no stored "edge" record. A graph owns exactly one Context (an
- * EXISTING substrate primitive), and that shared context_id IS the wiring:
+ * This slice supports three node kinds: `trigger`, `actor` and `command`.
+ * There is deliberately no stored "edge" record. A graph owns exactly one
+ * Context (an EXISTING substrate primitive), and that shared context_id IS
+ * the wiring:
  * - An actor node's connection is realised, at authoring time, purely through
  *   existing Context primitives — ContextStore.applyContextSubscriptions adds
  *   it as a participant AND subscribes it to the node's event types.
+ * - A command node is wired IDENTICALLY to an actor node (participant +
+ *   subscription) — it is an ordinary Context participant whose endpoint just
+ *   happens to be backed by a deterministic runtime instead of a model
+ *   (BridgeDaemon substitutes the runtime behind the endpoint; the substrate
+ *   has no `actor_kind` and does not know or care). Its specific behaviour —
+ *   which script, which named inputs/outputs — is its own instance config,
+ *   exactly as an actor's specific behaviour comes entirely from its own
+ *   bindings, never a bespoke substrate field per node.
  * - Firing a trigger node emits into the graph's context via
  *   BusStore.emitTriggerEvent (the same bus-originated wake primitive pulse
  *   firing already uses) once per endpoint whose EXISTING context subscription
@@ -46,7 +55,39 @@ export type ScopeGraphActorNode = {
   event_types?: string[];
 };
 
-export type ScopeGraphNode = ScopeGraphTriggerNode | ScopeGraphActorNode;
+export type ScopeGraphCommandInput = {
+  /** Placeholder name usable in `command` as `{{name}}`. */
+  name: string;
+  /** Key read from the triggering event's `content`. */
+  content_key: string;
+  required?: boolean;
+};
+
+export type ScopeGraphCommandOutput = {
+  /** Content key the result is emitted under. */
+  name: string;
+  /** Which raw execution fact this output renames. */
+  from: "exit_code" | "passed" | "stdout" | "stderr";
+};
+
+export type ScopeGraphCommandNode = {
+  node_id: string;
+  kind: "command";
+  label?: string;
+  endpoint_id: string;
+  /** Event types this node wakes for within the graph's Context. Defaults to ["*"]. */
+  event_types?: string[];
+  /** Event type stamped on the result this node emits. Defaults to "command.result". */
+  result_event_type?: string;
+  /** Shell command to run. May reference `inputs[].name` as `{{name}}` placeholders. */
+  command: string;
+  /** Named parameters resolved from the triggering event's `content` before running. */
+  inputs?: ScopeGraphCommandInput[];
+  /** Named fields the result is exposed as. With none declared, the raw execution facts (exit_code, passed, stdout, stderr) are emitted as-is. */
+  outputs?: ScopeGraphCommandOutput[];
+};
+
+export type ScopeGraphNode = ScopeGraphTriggerNode | ScopeGraphActorNode | ScopeGraphCommandNode;
 
 export type ScopeGraphRecord = {
   graph_id: string;
@@ -125,6 +166,14 @@ export function validateScopeGraphNodes(nodes: ScopeGraphNode[]): void {
     if (node.kind === "trigger" && !node.event_type) {
       throw new ScopeGraphInvalidError(`trigger node '${node.node_id}' is missing event_type`);
     }
+    if (node.kind === "command") {
+      if (!node.endpoint_id) {
+        throw new ScopeGraphInvalidError(`command node '${node.node_id}' is missing endpoint_id`);
+      }
+      if (!node.command) {
+        throw new ScopeGraphInvalidError(`command node '${node.node_id}' is missing command`);
+      }
+    }
   }
 }
 
@@ -140,6 +189,14 @@ export class ScopeGraphStore {
     const rows = this.db.prepare(`
       SELECT * FROM scope_graphs WHERE workspace_id = ? AND scope_id = ? ORDER BY created_at ASC
     `).all(workspaceId, scopeId) as any[];
+    return rows.map((row) => this.rowToGraph(row));
+  }
+
+  /** All graphs in a workspace, across every scope — used by the bridge to discover command nodes at attach time. */
+  listScopeGraphsForWorkspace(workspaceId: string): ScopeGraphRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM scope_graphs WHERE workspace_id = ? ORDER BY created_at ASC
+    `).all(workspaceId) as any[];
     return rows.map((row) => this.rowToGraph(row));
   }
 
