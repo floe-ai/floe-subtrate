@@ -36,6 +36,45 @@ afterEach(() => {
 // Tests – Issue 1 (fresh default agent template)
 // ---------------------------------------------------------------------------
 
+describe("loadProject – watchers (Issue 155)", () => {
+  it("parses declared watchers from floe.yaml", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test Project");
+    const floeDir = join(workspace, ".floe");
+    const projectConfigPath = join(floeDir, "floe.yaml");
+    const projectConfig = YAML.parse(readFileSync(projectConfigPath, "utf8"));
+    projectConfig.watchers = [
+      { id: "inbox", graph_id: "graph_123", node_id: "watcher", path: "./inbox" }
+    ];
+    writeFileSync(projectConfigPath, YAML.stringify(projectConfig), "utf8");
+
+    const project = loadProject(workspace);
+    expect(project.watchers).toEqual([
+      { id: "inbox", graph_id: "graph_123", node_id: "watcher", path: "./inbox" }
+    ]);
+  });
+
+  it("defaults watchers to an empty list when floe.yaml declares none", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test Project");
+    const project = loadProject(workspace);
+    expect(project.watchers).toEqual([]);
+  });
+
+  it("skips a malformed watcher entry missing required fields", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test Project");
+    const floeDir = join(workspace, ".floe");
+    const projectConfigPath = join(floeDir, "floe.yaml");
+    const projectConfig = YAML.parse(readFileSync(projectConfigPath, "utf8"));
+    projectConfig.watchers = [{ id: "inbox", path: "./inbox" }]; // missing graph_id/node_id
+    writeFileSync(projectConfigPath, YAML.stringify(projectConfig), "utf8");
+
+    const project = loadProject(workspace);
+    expect(project.watchers).toEqual([]);
+  });
+});
+
 describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
   it("does not write provider or model in the default agent runtime block", () => {
     const workspace = makeTmp();

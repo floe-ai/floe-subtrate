@@ -223,6 +223,29 @@ export class BusClient {
     return this.post(`/v1/pulses/${encodeURIComponent(pulseId)}/cancel`, {});
   }
 
+  /**
+   * Fires an existing Scope Graph trigger node — no new wake mechanism, just
+   * the same `fireScopeGraphTrigger` emit path a manual trigger fire would
+   * use. A world-facing doorway (e.g. a watched folder) passes arrival facts
+   * (channel, locator, observed_at, raw_reference) as ordinary `content` —
+   * there is no separate origin envelope; the shape of `content` is exactly
+   * what the receiving node's own config decides to make of it.
+   */
+  async fireScopeGraphTriggerNode(
+    workspaceId: string,
+    graphId: string,
+    nodeId: string,
+    input: {
+      content?: Record<string, unknown>;
+      correlation_id?: string | null;
+    } = {}
+  ): Promise<{ events: EventEnvelope[] }> {
+    return this.post(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${encodeURIComponent(graphId)}/nodes/${encodeURIComponent(nodeId)}/fire`,
+      input
+    ) as Promise<{ events: EventEnvelope[] }>;
+  }
+
   async requestConfigSnapshot(workspaceId: string): Promise<unknown> {
     return this.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/config-snapshot`, {});
   }
