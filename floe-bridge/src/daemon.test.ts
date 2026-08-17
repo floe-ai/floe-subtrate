@@ -1083,3 +1083,53 @@ describe("BridgeDaemon – command node delivery routing", () => {
     }
   });
 });
+
+describe("BridgeDaemon – node instructions binding injection", () => {
+  it("injects an actor node's instructions binding as a BeforeTurn hook result, scoped to that endpoint+context", async () => {
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).nodeInstructionBindings.set("actor:writer:ctx_1", "Draft docs for the landed note.");
+
+      const hookRegistry = new HookRegistry();
+      (daemon as any).registerNodeInstructionsHook(hookRegistry);
+
+      const results = await hookRegistry.fire("BeforeTurn", {
+        endpoint_id: "actor:writer",
+        workspace_id: "workspace:test",
+        delivery_id: "del-1",
+        trigger_event_id: "evt:1",
+        origin: { id: "ctx_1", kind: "context" }
+      } as HookPayload<"BeforeTurn">);
+
+      expect(results).toEqual([
+        { inject: { source: "node_instructions:actor:writer", content: "Draft docs for the landed note." } }
+      ]);
+    } finally {
+      made.cleanup();
+    }
+  });
+
+  it("does not inject for an endpoint+context pair with no bound node instructions", async () => {
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).nodeInstructionBindings.set("actor:writer:ctx_1", "Draft docs for the landed note.");
+
+      const hookRegistry = new HookRegistry();
+      (daemon as any).registerNodeInstructionsHook(hookRegistry);
+
+      const results = await hookRegistry.fire("BeforeTurn", {
+        endpoint_id: "actor:reviewer",
+        workspace_id: "workspace:test",
+        delivery_id: "del-2",
+        trigger_event_id: "evt:2",
+        origin: { id: "ctx_1", kind: "context" }
+      } as HookPayload<"BeforeTurn">);
+
+      expect(results).toEqual([]);
+    } finally {
+      made.cleanup();
+    }
+  });
+});

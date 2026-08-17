@@ -37,6 +37,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import type { Binding } from "./bindings.js";
 
 export type ScopeGraphTriggerNode = {
   node_id: string;
@@ -53,6 +54,14 @@ export type ScopeGraphActorNode = {
   endpoint_id: string;
   /** Event types this actor wakes for within the graph's Context. Defaults to ["*"]. */
   event_types?: string[];
+  /**
+   * Node-specific material given to the actor for turns arising from this
+   * node, e.g. `{ kind: "instructions", text: "..." }`. Distinct from the
+   * actor's own general instructions file: this is what the actor is
+   * supposed to be doing AS this node, in this graph — never baked into the
+   * actor's identity, never hardcoded per graph. See bindings.ts.
+   */
+  bindings?: Binding[];
 };
 
 export type ScopeGraphCommandInput = {
@@ -162,6 +171,13 @@ export function validateScopeGraphNodes(nodes: ScopeGraphNode[]): void {
     seenNodeIds.add(node.node_id);
     if (node.kind === "actor" && !node.endpoint_id) {
       throw new ScopeGraphInvalidError(`actor node '${node.node_id}' is missing endpoint_id`);
+    }
+    if (node.kind === "actor" && node.bindings) {
+      for (const binding of node.bindings) {
+        if (binding.kind === "instructions" && !binding.text) {
+          throw new ScopeGraphInvalidError(`actor node '${node.node_id}' has an instructions binding missing text`);
+        }
+      }
     }
     if (node.kind === "trigger" && !node.event_type) {
       throw new ScopeGraphInvalidError(`trigger node '${node.node_id}' is missing event_type`);

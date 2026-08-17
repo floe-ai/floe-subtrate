@@ -42,6 +42,13 @@ export class BridgeDaemon {
   private workspaceHooks = new Map<string, HookRegistry>();
   /** Command node config, keyed by endpoint_id — endpoints whose delivery runs a shell command instead of the LLM adapter. */
   private commandNodes = new Map<string, CommandNodeConfig>();
+  /**
+   * Node-specific instructions bindings, keyed by `${endpoint_id}:${context_id}` — an actor
+   * node's own material, injected into that actor's turns arising from that node's Context
+   * via the BeforeTurn hook (same inject-once mechanism extension overlays already use).
+   * Never merged into the actor's general `.floe/agents/*.md` instructions.
+   */
+  private nodeInstructionBindings = new Map<string, string>();
   private workspaceWatchers = new Map<string, Array<() => void>>();
   private workspaceRelays = new Map<string, { server: Server; exitHandler: () => void }>();
   private attaching = false;
@@ -415,6 +422,13 @@ export class BridgeDaemon {
         const { graphs } = await this.bus.listScopeGraphsForWorkspace(workspace.workspace_id);
         for (const graph of graphs as Array<{ graph_id: string; context_id: string; nodes: any[] }>) {
           for (const node of graph.nodes) {
+            if (node.kind === "actor" && Array.isArray(node.bindings) && node.bindings.length > 0) {
+              const text = node.bindings
+                .filter((binding: any) => binding.kind === "instructions" && typeof binding.text === "string")
+                .map((binding: any) => binding.text)
+                .join("\n\n");
+              if (text) this.nodeInstructionBindings.set(`${node.endpoint_id}:${graph.context_id}`, text);
+            }
             if (node.kind !== "command") continue;
             const config: CommandNodeConfig = {
               graph_id: graph.graph_id,
@@ -475,6 +489,7 @@ export class BridgeDaemon {
       const extensionsDir = join(locator, ".floe", "extensions");
       try {
         const hookRegistry = new HookRegistry();
+        this.registerNodeInstructionsHook(hookRegistry);
         const loaded = await loadExtensions(extensionsDir, {
           workspacePath: locator,
           busClient: this.bus,
@@ -870,6 +885,25 @@ export class BridgeDaemon {
   }
 
   /**
+   * Registers the BeforeTurn handler that injects an actor node's own
+   * instructions binding — node-specific material, distinct from the actor's
+   * general `.floe/agents/*.md` instructions — using the exact inject-once
+   * mechanism extension overlays already use (dedup happens in the adapter's
+   * InjectionBaseline, keyed by context_id + this result's `source`). Keying
+   * `source` by endpoint_id keeps each actor node's baseline independent
+   * within a shared graph Context, so alternating actors don't stomp on each
+   * other's dedup state.
+   */
+  private registerNodeInstructionsHook(hookRegistry: HookRegistry): void {
+    hookRegistry.on("BeforeTurn", "_substrate_node_bindings", (payload) => {
+      if (payload.origin?.kind !== "context") return;
+      const text = this.nodeInstructionBindings.get(`${payload.endpoint_id}:${payload.origin.id}`);
+      if (!text) return;
+      return { inject: { source: `node_instructions:${payload.endpoint_id}`, content: text } };
+    });
+  }
+
+  /**
    * Runs a command node's delivery: no LLM adapter involved. The bridge
    * substitutes what runs behind this endpoint — the substrate never learns
    * the difference (no `actor_kind`). The result is emitted with the SAME
@@ -886,6 +920,7 @@ export class BridgeDaemon {
         workspace_id: delivery.workspace_id,
         source_endpoint_id: config.endpoint_id,
         destination: { kind: "context", context_id: config.context_id },
+        context_id: config.context_id,
         thread_id: config.context_id,
         content: resultContent,
         metadata: { command_node: true, graph_id: config.graph_id, node_id: config.node_id }
