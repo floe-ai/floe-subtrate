@@ -14,7 +14,7 @@
 import React, { useEffect, useState } from "react";
 import { tk } from "../../theme.ts";
 import {
-  nodeOf, findRun, graphOf,
+  nodeOf, findRun, graphOf, runsForSubject,
   STATE_COLOR, STATE_LABEL, NODE_KIND_LABEL, wantsAttention, ago,
   type Run, type RunState,
 } from "./fixture.ts";
@@ -181,6 +181,79 @@ function RunDetail({ runId, nodeId }: { runId: string; nodeId: string | null }):
         <div style={{ fontSize: 11, color: tk.ink4, marginBottom: 12 }}>
           {STATE_LABEL[run.state]} · {ago(run.age_min)} ago · {run.actors.join(", ")}
         </div>
+
+        {run.called_by && (() => {
+          const caller = findRun(run.called_by!);
+          return (
+            <div style={{
+              border: `1px solid ${run.returning ? "#b85a5a" : tk.border}`,
+              background: tk.surfaceSunk, borderRadius: tk.r2,
+              padding: "8px 10px", marginBottom: 14, fontSize: 11.5,
+              color: tk.ink3, lineHeight: 1.5,
+            }}>
+              {run.returning ? (
+                <>
+                  <strong style={{ color: "#b85a5a", fontWeight: 510 }}>Failed — going back.</strong>{" "}
+                  A command has no reasoning of its own, so its result returns to the
+                  run that called it and nowhere else:
+                </>
+              ) : (
+                <>This command run was <em>called by</em> a working space:</>
+              )}
+              <div style={{ marginTop: 6 }}>
+                <button
+                  onClick={() => caller && setProtoSelection({
+                    nodeId: caller.node.node_id, runId: caller.run.run_id,
+                  })}
+                  style={{
+                    background: "transparent", border: `1px solid ${tk.border}`,
+                    borderRadius: tk.r2, padding: "4px 9px", cursor: "pointer",
+                    color: tk.ink2, fontSize: 11.5, fontFamily: tk.fontUi, textAlign: "left",
+                  }}
+                >
+                  ↩ {caller ? `${caller.run.label} — in “${caller.node.label}”` : run.called_by}
+                </button>
+              </div>
+              <div style={{ marginTop: 6, color: tk.ink4 }}>
+                Other documents are in flight at the same time. It returns to this
+                one, because the caller is a <em>run</em>, not a node.
+              </div>
+            </div>
+          );
+        })()}
+
+        {run.subject && runsForSubject(run.subject).length > 1 && (
+          <div style={{
+            border: `1px solid ${tk.border}`, background: tk.surfaceSunk,
+            borderRadius: tk.r2, padding: "8px 10px", marginBottom: 14,
+          }}>
+            <div style={{ fontSize: 10.5, color: tk.ink4, marginBottom: 6 }}>
+              This item across the pipeline
+            </div>
+            {runsForSubject(run.subject).map(({ run: r, node: n }) => (
+              <div
+                key={r.run_id}
+                onClick={() => setProtoSelection({ nodeId: n.node_id, runId: r.run_id })}
+                style={{
+                  display: "flex", alignItems: "center", gap: 7, cursor: "pointer",
+                  padding: "3px 0", fontSize: 11.5,
+                  color: r.run_id === run.run_id ? tk.ink : tk.ink3,
+                }}
+              >
+                <span style={{
+                  width: 6, height: 6, borderRadius: 6, flexShrink: 0,
+                  background: STATE_COLOR[r.state],
+                }} />
+                <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {n.label}
+                </span>
+                <span style={{ marginLeft: "auto", fontSize: 10, color: tk.ink4, flexShrink: 0 }}>
+                  {STATE_LABEL[r.state]}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {run.passes && run.passes > 1 && (
           <div style={{

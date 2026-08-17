@@ -13,7 +13,7 @@
 import React, { useEffect, useState } from "react";
 import { tk } from "../../theme.ts";
 import {
-  PROTOTYPE_GRAPHS, CANVAS_W, CANVAS_H, NODE_W, NODE_KIND_LABEL,
+  PROTOTYPE_GRAPHS, CANVAS_W, CANVAS_H, NODE_W, NODE_KIND_LABEL, RETURN_COLOR,
   STATE_COLOR, STATE_LABEL, countBy, wantsAttention, ago, nodeOf, graphOf,
   type Run, type Graph,
 } from "./fixture.ts";
@@ -64,14 +64,25 @@ function RunTile({ run, onClick }: { run: Run; onClick: () => void }): React.Rea
 function GraphEdges({ graph, dim }: { graph: Graph; dim: boolean }): React.ReactElement {
   return (
     <g style={{ opacity: dim ? 0.25 : 1, transition: "opacity 260ms ease" }}>
-      {graph.edges.map(([from, to]) => {
-        const a = graph.nodes.find(n => n.node_id === from)!;
-        const b = graph.nodes.find(n => n.node_id === to)!;
-        const x1 = a.x + NODE_W, y1 = a.y + 46;
-        const x2 = b.x, y2 = b.y + 46;
+      {graph.edges.map(e => {
+        const a = graph.nodes.find(n => n.node_id === e.from)!;
+        const b = graph.nodes.find(n => n.node_id === e.to)!;
+        if (e.kind === "return") {
+          const live = a.runs.some(r => r.returning);
+          const x1 = a.x + NODE_W / 2, x2 = b.x + NODE_W / 2;
+          const y = a.y + NODE_H, drop = y + 46;
+          return (
+            <path key={`${e.from}-${e.to}-r`}
+              d={`M${x1},${y} C${x1},${drop} ${x2},${drop} ${x2},${y}`}
+              stroke={live ? RETURN_COLOR : tk.border} strokeWidth={live ? 1.8 : 1.2}
+              strokeDasharray="4 4" fill="none" opacity={live ? 1 : 0.5} />
+          );
+        }
+        const x1 = a.x + NODE_W, y1 = a.y + 42;
+        const x2 = b.x, y2 = b.y + 42;
         const mid = (x1 + x2) / 2;
         return (
-          <path key={`${from}-${to}`}
+          <path key={`${e.from}-${e.to}`}
             d={`M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`}
             stroke={tk.border} strokeWidth={1.5} fill="none" />
         );
