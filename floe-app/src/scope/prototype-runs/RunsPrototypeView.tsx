@@ -4,7 +4,7 @@
  * vacuum.
  *
  * Three variants of "a node with fifty runs behind it", switchable via
- * ?variant=A|B|C on the existing scope route, or the floating bottom bar.
+ * ?variant=A|B|C|D on the existing scope route, or the floating bottom bar.
  *
  * Question under test (#184): does "a node is the work, a context is one run of
  * it" survive contact with fifty conversations behind three boxes?
@@ -17,11 +17,13 @@ import { setProtoSelection } from "./runSelection.ts";
 import { VariantA, VARIANT_A_NAME } from "./VariantA.tsx";
 import { VariantB, VARIANT_B_NAME } from "./VariantB.tsx";
 import { VariantC, VARIANT_C_NAME } from "./VariantC.tsx";
+import { VariantD, VARIANT_D_NAME } from "./VariantD.tsx";
 
 const VARIANTS: VariantDef[] = [
   { key: "A", name: VARIANT_A_NAME },
   { key: "B", name: VARIANT_B_NAME },
   { key: "C", name: VARIANT_C_NAME },
+  { key: "D", name: VARIANT_D_NAME },
 ];
 
 function readVariant(): string {
@@ -49,7 +51,9 @@ export function RunsPrototypeView(): React.ReactElement {
       {variant === "A" && <VariantA />}
       {variant === "B" && <VariantB />}
       {variant === "C" && <VariantC />}
+      {variant === "D" && <VariantD />}
       <PrototypeSwitcher variants={VARIANTS} current={variant} onChange={change} />
     </>
   );
 }
+

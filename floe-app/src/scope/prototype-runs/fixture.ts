@@ -390,7 +390,148 @@ const branchGraph: Graph = {
   ],
 };
 
-export const PROTOTYPE_GRAPHS: Graph[] = [imageGraph, docsGraph, branchGraph];
+/* ---------------------------------------------------------------------- */
+/* GRAPH 4 — building floe itself.                                         */
+/*                                                                          */
+/* The operator's question: "what if one pipeline is like what we are doing */
+/* right now, building an application like floe?"                           */
+/*                                                                          */
+/* This is the scale test. The other three graphs have 3, 5 and 3 items in  */
+/* flight — small enough that you could enumerate them in a header bar.     */
+/* This one has 140. That kills enumeration outright, which is the finding: */
+/* you cannot LIST items, you have to SEARCH them, and the only ones the    */
+/* canvas should volunteer unprompted are the ones asking for a human.      */
+/*                                                                          */
+/* Nothing else changes. Same three node kinds, same per-run return path.   */
+/* If the model only works at three items, it does not work.                */
+/* ---------------------------------------------------------------------- */
+
+const FLOE_AREAS = [
+  "context isolation", "delivery bundles", "scope graph", "watcher lifecycle",
+  "extension relay", "bundled agents", "pulse subscriptions", "hook registry",
+  "auth profiles", "thread slice injection", "session eviction", "peer contexts",
+  "bus websocket", "lease expiry", "endpoint bindings", "workspace attach",
+  "inject-once baseline", "context compaction", "runtime status", "actor refs",
+];
+const FLOE_VERBS = ["fix", "add", "harden", "rework", "document", "test", "simplify"];
+
+/** 140 tickets, deterministic, no randomness — a prototype must look the same twice. */
+function floeItems(n: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const verb = FLOE_VERBS[i % FLOE_VERBS.length];
+    const area = FLOE_AREAS[(i * 7) % FLOE_AREAS.length];
+    out.push(`#${200 + i} ${verb} ${area}`);
+  }
+  return out;
+}
+
+const FLOE_ITEMS = floeItems(140);
+
+const FLOE_ACTORS = ["opus", "sonnet", "terra", "you"];
+
+function floeRuns(
+  prefix: string, items: string[], shape: (i: number, item: string) => Partial<Run>,
+): Run[] {
+  return items.map((item, i) => ({
+    run_id: `${prefix}_${i}`,
+    label: item,
+    subject: item,
+    state: "settled" as RunState,
+    age_min: 20 + ((i * 37) % 900),
+    actors: [FLOE_ACTORS[i % FLOE_ACTORS.length]],
+    last: "—",
+    ...shape(i, item),
+  }));
+}
+
+const floeGraph: Graph = {
+  graph_id: "g_floe",
+  label: "Building floe — 140 tickets in flight",
+  nodes: [
+    {
+      node_id: "f_raised", kind: "event", label: "A ticket is raised",
+      x: 60, y: 1060,
+      runs: floeRuns("f_raised", FLOE_ITEMS, (i, item) => ({
+        actors: ["you"],
+        last: `issue.opened — ${item}`,
+      })),
+    },
+    {
+      node_id: "f_chart", kind: "working-space", label: "Chart it",
+      x: 360, y: 980,
+      runs: floeRuns("f_chart", FLOE_ITEMS.slice(0, 46), (i, item) => ({
+        state: i === 0 ? "needs-you" : i < 4 ? "running" : "settled",
+        passes: 1 + (i % 3),
+        last: i === 0
+          ? "Two ways to model this and they disagree. Which one do you want?"
+          : `Shape agreed. Handing ${item} to build.`,
+      })),
+    },
+    {
+      node_id: "f_build", kind: "working-space", label: "Build it",
+      x: 660, y: 980,
+      runs: floeRuns("f_build", FLOE_ITEMS.slice(0, 31), (i, item) => ({
+        state: i < 5 ? "running" : i === 5 ? "needs-you" : "settled",
+        passes: 1 + (i % 4),
+        last: i === 5
+          ? "Tests pass but I have had to change a shape you locked. Worth a look."
+          : `Implemented. Calling the checks on ${item}.`,
+      })),
+    },
+    {
+      node_id: "f_check", kind: "command", label: "typecheck + tests",
+      declares: "out: passed, exit_code, stdout, stderr",
+      x: 960, y: 980,
+      runs: floeRuns("f_check", FLOE_ITEMS.slice(0, 22), (i, item) => ({
+        actors: ["npm test"],
+        called_by: `f_build_${i}`,
+        state: i < 3 ? "failed" : "settled",
+        returning: i < 3,
+        last: i < 3
+          ? `passed=false · 2 failing in ${FLOE_AREAS[(i * 7) % FLOE_AREAS.length]}`
+          : "passed=true · exit_code 0",
+      })),
+    },
+    {
+      node_id: "f_review", kind: "working-space", label: "Review it",
+      x: 1260, y: 980,
+      runs: floeRuns("f_review", FLOE_ITEMS.slice(0, 12), (i, item) => ({
+        state: i < 2 ? "needs-you" : i < 5 ? "running" : "settled",
+        actors: [FLOE_ACTORS[i % 3], "you"],
+        passes: 1 + (i % 2),
+        last: i < 2
+          ? "I would approve this, but it touches an invariant. Your call."
+          : `Approved ${item}. Ready to merge.`,
+      })),
+    },
+    {
+      node_id: "f_merge", kind: "command", label: "merge",
+      declares: "in: approved branch · out: exit code",
+      x: 1560, y: 980,
+      runs: floeRuns("f_merge", FLOE_ITEMS.slice(0, 7), (i, item) => ({
+        actors: ["gh"],
+        called_by: `f_review_${i + 5}`,
+        state: i === 0 ? "failed" : "settled",
+        returning: i === 0,
+        last: i === 0
+          ? "passed=false · branch is behind main, rebase required."
+          : "merged · exit_code 0",
+      })),
+    },
+  ],
+  edges: [
+    { from: "f_raised", to: "f_chart", kind: "flow", multiplicity: "140 → 46" },
+    { from: "f_chart", to: "f_build", kind: "flow", multiplicity: "46 → 31" },
+    { from: "f_build", to: "f_check", kind: "flow" },
+    { from: "f_check", to: "f_review", kind: "flow" },
+    { from: "f_review", to: "f_merge", kind: "flow" },
+    { from: "f_check", to: "f_build", kind: "return" },
+    { from: "f_merge", to: "f_review", kind: "return" },
+  ],
+};
+
+export const PROTOTYPE_GRAPHS: Graph[] = [imageGraph, docsGraph, branchGraph, floeGraph];
 
 export const ALL_NODES: Node[] = PROTOTYPE_GRAPHS.flatMap(g => g.nodes);
 
@@ -433,8 +574,7 @@ export function followableSubjects(graph: Graph): string[] {
 }
 
 /** Runs currently on their way back to whoever called them. */
-export function returningRuns(): Array<{ run: Run; node: Node }> {
-  const out: Array<{ run: Run; node: Node }> = [];
+export function returningRuns(): Array<{ run: Run; node: Node }> {  const out: Array<{ run: Run; node: Node }> = [];
   for (const n of ALL_NODES) {
     for (const r of n.runs) if (r.returning) out.push({ run: r, node: n });
   }
@@ -485,6 +625,79 @@ export function ago(min: number): string {
 }
 
 export const CANVAS_W = 1820;
-export const CANVAS_H = 900;
+export const CANVAS_H = 1320;
 export const NODE_W = 210;
 export const RETURN_COLOR = "#b85a5a";
+
+
+/* ---------------------------------------------------------------------- */
+/* Finding an item when there are hundreds of them.                         */
+/*                                                                          */
+/* Variant D's whole bet. With 140 items in flight you cannot enumerate     */
+/* them in a header bar, so these two helpers replace the pill list:        */
+/*                                                                          */
+/*   searchItems  — you type, it finds. The normal way in.                  */
+/*   attentionItems — the only items the canvas volunteers unprompted,      */
+/*                    because something is stuck or waiting on a human.     */
+/* ---------------------------------------------------------------------- */
+
+export type ItemHit = {
+  subject: string;
+  graph: string;
+  /** Where it is right now — the furthest node it has a run in. */
+  at: string;
+  state: RunState;
+  /** True if a command run for this item is on its way back to its caller. */
+  returning: boolean;
+};
+
+function itemHit(subject: string): ItemHit | null {
+  const runs = runsForSubject(subject);
+  if (runs.length === 0) return null;
+  const last = runs[runs.length - 1];
+  const worst = runs.find(r => r.run.state === "needs-you")
+    ?? runs.find(r => r.run.state === "failed")
+    ?? last;
+  return {
+    subject,
+    graph: graphOf(last.node.node_id).label,
+    at: last.node.label,
+    state: worst.run.state,
+    returning: runs.some(r => r.run.returning === true),
+  };
+}
+
+export function allItems(): ItemHit[] {
+  const seen = new Set<string>();
+  const out: ItemHit[] = [];
+  for (const n of ALL_NODES) {
+    for (const r of n.runs) {
+      if (!r.subject || seen.has(r.subject)) continue;
+      seen.add(r.subject);
+      const hit = itemHit(r.subject);
+      if (hit) out.push(hit);
+    }
+  }
+  return out;
+}
+
+export function searchItems(query: string, limit = 8): ItemHit[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return allItems()
+    .filter(i => i.subject.toLowerCase().includes(q) || i.at.toLowerCase().includes(q))
+    .slice(0, limit);
+}
+
+/** Items asking for a human, or stuck coming back. Ranked, because this is what gets shown. */
+export function attentionItems(limit = 6): ItemHit[] {
+  const rank: Partial<Record<RunState, number>> = { "needs-you": 0, failed: 1 };
+  return allItems()
+    .filter(i => i.state === "needs-you" || i.state === "failed" || i.returning)
+    .sort((a, b) => (rank[a.state] ?? 2) - (rank[b.state] ?? 2))
+    .slice(0, limit);
+}
+
+export function itemCount(): number {
+  return allItems().length;
+}
