@@ -5,6 +5,7 @@
  * being judged. Hidden in production builds.
  */
 import React, { useEffect } from "react";
+import { useExplain, setExplain } from "./explain";
 
 export type VariantDef = { key: string; name: string };
 
@@ -16,6 +17,7 @@ export function PrototypeSwitcher({
   onChange: (key: string) => void;
 }): React.ReactElement | null {
   const idx = Math.max(0, variants.findIndex(v => v.key === current));
+  const explain = useExplain();
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -52,6 +54,21 @@ export function PrototypeSwitcher({
       <span style={{ paddingLeft: 8, color: "#666", fontSize: 10.5, whiteSpace: "nowrap" }}>
         ← → to cycle
       </span>
+      <span style={{ width: 1, alignSelf: "stretch", background: "#d5d8d8", margin: "0 10px" }} />
+      <button
+        onClick={() => setExplain(!explain)}
+        title="Explanatory prose is prototype commentary, not product. Turn it off to judge the real surface."
+        style={{
+          background: explain ? "#111" : "transparent",
+          color: explain ? "#f7f8f8" : "#666",
+          border: `1px solid ${explain ? "#111" : "#c9cccc"}`,
+          borderRadius: 999, padding: "3px 10px", cursor: "pointer",
+          fontSize: 10.5, fontWeight: 600, whiteSpace: "nowrap",
+          fontFamily: "inherit",
+        }}
+      >
+        {explain ? "explain: on" : "explain: off — real surface"}
+      </button>
     </div>
   );
 }

@@ -13,6 +13,7 @@
  */
 import React, { useEffect, useState } from "react";
 import { tk } from "../../theme.ts";
+import { useExplain } from "./explain.tsx";
 import {
   nodeOf, findRun, graphOf, runsForSubject,
   STATE_COLOR, STATE_LABEL, NODE_KIND_LABEL, wantsAttention, ago,
@@ -140,6 +141,7 @@ function NodeRuns({ nodeId }: { nodeId: string }): React.ReactElement | null {
 
 /** Level 2 — one run's conversation. */
 function RunDetail({ runId, nodeId }: { runId: string; nodeId: string | null }): React.ReactElement | null {
+  const explain = useExplain();
   const hit = findRun(runId);
   if (!hit) return null;
   const { run, node } = hit;
@@ -193,12 +195,18 @@ function RunDetail({ runId, nodeId }: { runId: string; nodeId: string | null }):
             }}>
               {run.returning ? (
                 <>
-                  <strong style={{ color: "#b85a5a", fontWeight: 510 }}>Failed — going back.</strong>{" "}
-                  A command has no reasoning of its own, so its result returns to the
-                  run that called it and nowhere else:
+                  <strong style={{ color: "#b85a5a", fontWeight: 510 }}>
+                    Failed · returning to caller
+                  </strong>
+                  {explain && (
+                    <>
+                      {" "}— a command has no reasoning of its own, so its result
+                      returns to the run that called it and nowhere else:
+                    </>
+                  )}
                 </>
               ) : (
-                <>This command run was <em>called by</em> a working space:</>
+                <span style={{ color: tk.ink4 }}>Called by</span>
               )}
               <div style={{ marginTop: 6 }}>
                 <button
@@ -214,7 +222,7 @@ function RunDetail({ runId, nodeId }: { runId: string; nodeId: string | null }):
                   ↩ {caller ? `${caller.run.label} — in “${caller.node.label}”` : run.called_by}
                 </button>
               </div>
-              <div style={{ marginTop: 6, color: tk.ink4 }}>
+              <div style={{ marginTop: 6, color: tk.ink4, display: explain ? "block" : "none" }}>
                 Other documents are in flight at the same time. It returns to this
                 one, because the caller is a <em>run</em>, not a node.
               </div>
@@ -261,9 +269,13 @@ function RunDetail({ runId, nodeId }: { runId: string; nodeId: string | null }):
             borderRadius: tk.r2, padding: "8px 10px", marginBottom: 14,
             fontSize: 11.5, color: tk.ink3, lineHeight: 1.5,
           }}>
-            <strong style={{ color: tk.ink2, fontWeight: 510 }}>Pass {run.passes}.</strong>{" "}
-            Review and rework happened <em>here</em>, inside this run — there is no
-            second node and no arrow pointing backwards.
+            <strong style={{ color: tk.ink2, fontWeight: 510 }}>Pass {run.passes}</strong>
+            {explain && (
+              <>
+                {" "}— review and rework happened <em>here</em>, inside this run; there
+                is no second node and no arrow pointing backwards.
+              </>
+            )}
           </div>
         )}
         {run.gathers && (
@@ -272,8 +284,12 @@ function RunDetail({ runId, nodeId }: { runId: string; nodeId: string | null }):
             borderRadius: tk.r2, padding: "8px 10px", marginBottom: 14,
             fontSize: 11.5, color: tk.ink3, lineHeight: 1.5,
           }}>
-            This run reads {run.gathers} upstream artifacts. Fan-in is a run that
-            takes in many things — not a shape on the canvas.
+            Reads {run.gathers} upstream artifacts
+            {explain && (
+              <>
+                . Fan-in is a run that takes in many things — not a shape on the canvas.
+              </>
+            )}
           </div>
         )}
 
