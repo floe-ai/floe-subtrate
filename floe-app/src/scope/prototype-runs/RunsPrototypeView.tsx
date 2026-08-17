@@ -11,8 +11,9 @@
  *
  * DELETE THIS DIRECTORY once the ticket is resolved.
  */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { PrototypeSwitcher, type VariantDef } from "./PrototypeSwitcher.tsx";
+import { setProtoSelection } from "./runSelection.ts";
 import { VariantA, VARIANT_A_NAME } from "./VariantA.tsx";
 import { VariantB, VARIANT_B_NAME } from "./VariantB.tsx";
 import { VariantC, VARIANT_C_NAME } from "./VariantC.tsx";
@@ -31,8 +32,12 @@ function readVariant(): string {
 export function RunsPrototypeView(): React.ReactElement {
   const [variant, setVariant] = useState<string>(readVariant);
 
+  // Leaving the prototype tab must hand the app's inspector back.
+  useEffect(() => () => setProtoSelection({ nodeId: null, runId: null }), []);
+
   // The app has no router; keep the URL shareable/reload-stable by hand.
   function change(key: string) {
+    setProtoSelection({ nodeId: null, runId: null });
     const url = new URL(window.location.href);
     url.searchParams.set("variant", key);
     window.history.replaceState(null, "", url.toString());

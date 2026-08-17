@@ -1,27 +1,39 @@
 /**
- * PROTOTYPE VARIANT A — "The canvas is the place. Runs arrive in a drawer."
+ * PROTOTYPE VARIANT A — "The canvas is the place. Runs open in the app's own
+ * inspector."
  *
- * Structure: the graph owns the whole surface and never changes. A node shows
- * how many runs are behind it as a physical stack, plus a single pip if any of
- * them want a person. Clicking a node slides a drawer in from the right; the
- * canvas stays visible and in place behind it, so you never lose where you are.
+ * Revision 2. In revision 1 this variant invented its own drawer; the operator
+ * said that in a real environment it belongs in the second aside. So the
+ * drawer is gone. The canvas now owns the whole main area, and clicking a node
+ * fills the app's REAL right-hand inspector with that node's runs — click one
+ * and the inspector goes a level deeper into the conversation.
  *
- * Bet: the graph is the operator's home, and runs are a side-panel detail.
+ * Two graphs share the scope, stacked, exactly as the substrate allows.
+ *
+ * Bet: the graph is the operator's home, and the app's existing inspector is
+ * already the right place for detail — no new surface required.
  */
-import React, { useState } from "react";
+import React, { useEffect } from "react";
 import { tk } from "../../theme.ts";
 import {
-  PROTOTYPE_NODES, PROTOTYPE_EDGES, NODE_KIND_LABEL,
-  STATE_COLOR, STATE_LABEL, countBy, wantsAttention, ago,
-  type Node, type Run, type RunState,
+  PROTOTYPE_GRAPHS, CANVAS_W, CANVAS_H, NODE_W, NODE_KIND_LABEL,
+  STATE_COLOR, countBy, wantsAttention,
+  type Node, type Graph,
 } from "./fixture.ts";
-import { RunConversation } from "./RunConversation.tsx";
+import { setProtoSelection, subscribeProtoSelection, getProtoSelection } from "./runSelection.ts";
 
-export const VARIANT_A_NAME = "Canvas with a drawer";
+export const VARIANT_A_NAME = "Canvas, runs in the inspector";
 
-function Stack({ n }: { n: number }): React.ReactElement {
+function useSelectedNode(): string | null {
+  const [id, setId] = React.useState<string | null>(getProtoSelection().nodeId);
+  useEffect(() => subscribeProtoSelection(s => setId(s.nodeId)), []);
+  return id;
+}
+
+function Stack({ n }: { n: number }): React.ReactElement | null {
   // A physical stack: up to 3 sheets behind the node, thickness implies volume.
   const sheets = Math.min(3, Math.max(0, n - 1));
+  if (sheets === 0) return null;
   return (
     <>
       {Array.from({ length: sheets }).map((_, i) => (
@@ -41,13 +53,11 @@ function CanvasNode({
 }: { node: Node; selected: boolean; onClick: () => void }): React.ReactElement {
   const counts = countBy(node.runs);
   const attention = node.runs.filter(wantsAttention).length;
+  const iterating = node.runs.filter(r => (r.passes ?? 1) > 1).length;
   return (
     <div
       onClick={onClick}
-      style={{
-        position: "absolute", left: node.x, top: node.y, width: 210,
-        cursor: "pointer", zIndex: 1,
-      }}
+      style={{ position: "absolute", left: node.x, top: node.y, width: NODE_W, cursor: "pointer", zIndex: 1 }}
     >
       <div style={{ position: "relative" }}>
         <Stack n={node.runs.length} />
@@ -63,9 +73,14 @@ function CanvasNode({
           }}>
             {NODE_KIND_LABEL[node.kind]}
           </div>
-          <div style={{ fontSize: 13.5, color: tk.ink, fontWeight: 510, lineHeight: 1.3 }}>
+          <div style={{ fontSize: 13, color: tk.ink, fontWeight: 510, lineHeight: 1.3 }}>
             {node.label}
           </div>
+          {node.declares && (
+            <div style={{ fontSize: 10, color: tk.ink4, marginTop: 5, lineHeight: 1.4 }}>
+              {node.declares}
+            </div>
+          )}
           <div style={{
             display: "flex", alignItems: "center", gap: 8, marginTop: 10,
             fontSize: 11.5, color: tk.ink3,
@@ -79,187 +94,84 @@ function CanvasNode({
                 marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5,
                 color: STATE_COLOR["needs-you"], fontWeight: 510,
               }}>
-                <span style={{
-                  width: 7, height: 7, borderRadius: 7, background: STATE_COLOR["needs-you"],
-                }} />
+                <span style={{ width: 7, height: 7, borderRadius: 7, background: STATE_COLOR["needs-you"] }} />
                 {attention}
               </span>
             )}
           </div>
+          {iterating > 0 && (
+            <div style={{ fontSize: 10.5, color: tk.ink4, marginTop: 5 }}>
+              {iterating} on a second pass or later
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function RunRow({ run, onClick }: { run: Run; onClick: () => void }): React.ReactElement {
-  const [hov, setHov] = useState(false);
+function GraphEdges({ graph }: { graph: Graph }): React.ReactElement {
   return (
-    <div
-      onClick={onClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      style={{
-        display: "flex", alignItems: "center", gap: 10,
-        padding: "9px 16px", cursor: "pointer",
-        background: hov ? tk.surfaceHov : "transparent",
-        borderBottom: `1px solid ${tk.border2}`,
-      }}
-    >
-      <span style={{
-        width: 7, height: 7, borderRadius: 7, flexShrink: 0,
-        background: STATE_COLOR[run.state],
-      }} />
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{
-          fontSize: 12.5, color: tk.ink2, whiteSpace: "nowrap",
-          overflow: "hidden", textOverflow: "ellipsis",
-        }}>
-          {run.label}
-          {run.reworked_from && (
-            <span style={{ color: tk.ink4, fontSize: 11 }}> · reworking</span>
-          )}
-          {run.gathers && (
-            <span style={{ color: tk.ink4, fontSize: 11 }}> · gathers {run.gathers}</span>
-          )}
-        </div>
-        <div style={{
-          fontSize: 11, color: tk.ink4, whiteSpace: "nowrap",
-          overflow: "hidden", textOverflow: "ellipsis",
-        }}>
-          {run.last}
-        </div>
-      </div>
-      <span style={{ fontSize: 10.5, color: tk.ink4, flexShrink: 0 }}>{ago(run.age_min)}</span>
-    </div>
+    <>
+      {graph.edges.map(([from, to]) => {
+        const a = graph.nodes.find(n => n.node_id === from)!;
+        const b = graph.nodes.find(n => n.node_id === to)!;
+        const x1 = a.x + NODE_W, y1 = a.y + 46;
+        const x2 = b.x, y2 = b.y + 46;
+        const mid = (x1 + x2) / 2;
+        return (
+          <path
+            key={`${from}-${to}`}
+            d={`M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`}
+            stroke={tk.border} strokeWidth={1.5} fill="none"
+          />
+        );
+      })}
+    </>
   );
 }
 
 export function VariantA(): React.ReactElement {
-  const [nodeId, setNodeId] = useState<string | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<RunState | "all" | "attention">("all");
-
-  const node = PROTOTYPE_NODES.find(n => n.node_id === nodeId) ?? null;
-  const run = node?.runs.find(r => r.run_id === runId) ?? null;
-
-  const shown = !node ? [] :
-    filter === "all" ? node.runs :
-    filter === "attention" ? node.runs.filter(wantsAttention) :
-    node.runs.filter(r => r.state === filter);
+  const selectedNodeId = useSelectedNode();
 
   return (
-    <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden", background: tk.canvas }}>
-      {/* ---------------------------------------------------------------- */}
-      {/* The canvas — never changes, never scrolls away                     */}
-      {/* ---------------------------------------------------------------- */}
-      <div style={{ position: "absolute", inset: 0, overflow: "auto" }}>
-        <div style={{ position: "relative", width: 980, height: 460 }}>
-          <svg width={980} height={460} style={{ position: "absolute", inset: 0 }}>
-            {PROTOTYPE_EDGES.map(([from, to]) => {
-              const a = PROTOTYPE_NODES.find(n => n.node_id === from)!;
-              const b = PROTOTYPE_NODES.find(n => n.node_id === to)!;
-              const x1 = a.x + 210, y1 = a.y + 46;
-              const x2 = b.x, y2 = b.y + 46;
-              const mid = (x1 + x2) / 2;
-              return (
-                <path
-                  key={`${from}-${to}`}
-                  d={`M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`}
-                  stroke={tk.border} strokeWidth={1.5} fill="none"
-                />
-              );
-            })}
-          </svg>
-          {PROTOTYPE_NODES.map(n => (
-            <CanvasNode
-              key={n.node_id}
-              node={n}
-              selected={n.node_id === nodeId}
-              onClick={() => { setNodeId(n.node_id); setRunId(null); setFilter("all"); }}
-            />
-          ))}
-        </div>
+    <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: "auto", background: tk.canvas }}>
+      <div style={{ position: "relative", width: CANVAS_W, height: CANVAS_H }}>
+        <svg width={CANVAS_W} height={CANVAS_H} style={{ position: "absolute", inset: 0 }}>
+          {PROTOTYPE_GRAPHS.map(g => <GraphEdges key={g.graph_id} graph={g} />)}
+        </svg>
+
+        {PROTOTYPE_GRAPHS.map(g => (
+          <React.Fragment key={g.graph_id}>
+            {/* The graph is not a primitive — it is just a picture, so its name
+                sits on the canvas as a caption, not as a container. */}
+            <div style={{
+              position: "absolute",
+              left: g.nodes[0].x,
+              top: g.nodes[0].y - 26,
+              fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase",
+              color: tk.ink4, fontWeight: 510,
+            }}>
+              {g.label}
+            </div>
+            {g.nodes.map(n => (
+              <CanvasNode
+                key={n.node_id}
+                node={n}
+                selected={n.node_id === selectedNodeId}
+                onClick={() => setProtoSelection({ nodeId: n.node_id, runId: null })}
+              />
+            ))}
+          </React.Fragment>
+        ))}
       </div>
 
-      {/* ---------------------------------------------------------------- */}
-      {/* The drawer                                                        */}
-      {/* ---------------------------------------------------------------- */}
-      {node && (
+      {!selectedNodeId && (
         <div style={{
-          position: "absolute", top: 0, right: 0, bottom: 0, width: 400,
-          background: tk.surface, borderLeft: `1px solid ${tk.border}`,
-          display: "flex", flexDirection: "column", minHeight: 0,
-          boxShadow: "-16px 0 40px rgba(0,0,0,0.45)",
+          position: "sticky", bottom: 14, left: 20, width: "fit-content",
+          marginLeft: 20, fontSize: 11.5, color: tk.ink4,
         }}>
-          {run ? (
-            <RunConversation
-              run={run}
-              nodeLabel={node.label}
-              onBack={() => setRunId(null)}
-              backLabel={`${node.runs.length} runs`}
-            />
-          ) : (
-            <>
-              <div style={{ padding: "14px 16px 10px", borderBottom: `1px solid ${tk.border}` }}>
-                <div style={{ display: "flex", alignItems: "start", gap: 8 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13.5, color: tk.ink, fontWeight: 510 }}>{node.label}</div>
-                    <div style={{ fontSize: 11, color: tk.ink4, marginTop: 2 }}>
-                      {node.runs.length} runs of this node
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setNodeId(null)}
-                    style={{
-                      marginLeft: "auto", background: "transparent", border: "none",
-                      color: tk.ink3, cursor: "pointer", fontSize: 16, lineHeight: 1,
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-                <div style={{ display: "flex", gap: 4, marginTop: 10, flexWrap: "wrap" }}>
-                  {(["all", "attention", "running", "idle", "settled"] as const).map(f => {
-                    const n = f === "all" ? node.runs.length
-                      : f === "attention" ? node.runs.filter(wantsAttention).length
-                      : node.runs.filter(r => r.state === f).length;
-                    return (
-                      <button
-                        key={f}
-                        onClick={() => setFilter(f)}
-                        style={{
-                          background: filter === f ? tk.accentSoft2 : "transparent",
-                          border: `1px solid ${filter === f ? tk.accent : tk.border}`,
-                          color: filter === f ? tk.ink : tk.ink3,
-                          borderRadius: 999, padding: "3px 9px", fontSize: 11,
-                          cursor: "pointer", fontFamily: tk.fontUi,
-                        }}
-                      >
-                        {f === "attention" ? "needs you" : f === "all" ? "all" : STATE_LABEL[f as RunState]} {n}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-                {shown.map(r => (
-                  <RunRow key={r.run_id} run={r} onClick={() => setRunId(r.run_id)} />
-                ))}
-                {shown.length === 0 && (
-                  <div style={{ padding: 20, fontSize: 12, color: tk.ink4 }}>Nothing here.</div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {!node && (
-        <div style={{
-          position: "absolute", right: 20, bottom: 20, fontSize: 11.5, color: tk.ink4,
-        }}>
-          Click a node to see its runs.
+          Click a node — its runs open in the inspector on the right.
         </div>
       )}
     </div>

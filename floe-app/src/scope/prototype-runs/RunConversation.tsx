@@ -1,19 +1,16 @@
 /**
- * PROTOTYPE — throwaway. Shared stub for "you have opened one run".
+ * PROTOTYPE — throwaway. The conversation, rendered INSIDE the canvas.
  *
- * Every variant disagrees about HOW you get here and how you get back out —
- * that is the thing being judged. What you see once you are inside is the same
- * in all three, so it is shared, the way a header would be.
+ * Only Variant B uses this: its whole bet is that there is no second panel, so
+ * it cannot borrow the app's inspector the way A and C now do. A and C render
+ * their detail in PrototypeInspector instead.
  */
 import React from "react";
 import { tk } from "../../theme.ts";
 import { type Run, STATE_COLOR, STATE_LABEL, ago } from "./fixture.ts";
 
 export function RunConversation({
-  run,
-  nodeLabel,
-  onBack,
-  backLabel,
+  run, nodeLabel, onBack, backLabel,
 }: {
   run: Run;
   nodeLabel: string;
@@ -22,7 +19,6 @@ export function RunConversation({
 }): React.ReactElement {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {/* Where am I, and how do I leave */}
       <div style={{
         display: "flex", alignItems: "center", gap: 10,
         padding: "12px 20px", borderBottom: `1px solid ${tk.border}`, flexShrink: 0,
@@ -49,33 +45,33 @@ export function RunConversation({
         }} />
       </div>
 
-      {/* The conversation */}
       <div style={{ flex: 1, overflow: "auto", padding: "16px 20px", minHeight: 0 }}>
-        {run.reworked_from && (
+        {(run.passes ?? 1) > 1 && (
           <div style={{
             border: `1px solid ${tk.border}`, background: tk.surfaceSunk,
             borderRadius: tk.r2, padding: "8px 10px", marginBottom: 14,
-            fontSize: 11.5, color: tk.ink3,
+            fontSize: 11.5, color: tk.ink3, lineHeight: 1.5,
           }}>
-            Re-opened from an earlier run. It never became an arrow on the canvas —
-            it is just this conversation, still going.
+            <strong style={{ color: tk.ink2, fontWeight: 510 }}>Pass {run.passes}.</strong>{" "}
+            Review and rework happened here, inside this run — no second node, no
+            arrow pointing backwards.
           </div>
         )}
         {run.gathers && (
           <div style={{
             border: `1px solid ${tk.border}`, background: tk.surfaceSunk,
             borderRadius: tk.r2, padding: "8px 10px", marginBottom: 14,
-            fontSize: 11.5, color: tk.ink3,
+            fontSize: 11.5, color: tk.ink3, lineHeight: 1.5,
           }}>
-            This run is taking in {run.gathers} upstream artifacts. Fan-in is a run
-            that reads many things — not a shape on the canvas.
+            This run reads {run.gathers} upstream artifacts. Fan-in is a run that
+            takes in many things — not a shape on the canvas.
           </div>
         )}
 
         {[
           { who: run.actors[0], text: run.last },
-          { who: "you", text: "Looks close. Push the silhouette 10% wider and re-render." },
-          { who: run.actors[0], text: "Re-rendering now — will write to assets/concepts/." },
+          { who: "you", text: "Looks close. Push the silhouette 10% wider and go again." },
+          { who: run.actors[run.actors.length - 1], text: "Re-rendering — will write to assets/concepts/." },
         ].map((m, i) => (
           <div key={i} style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: tk.ink4, marginBottom: 3 }}>{m.who}</div>
@@ -84,7 +80,6 @@ export function RunConversation({
         ))}
       </div>
 
-      {/* Composer — a person joins a run as just another actor */}
       <div style={{ padding: "10px 20px 14px", borderTop: `1px solid ${tk.border}`, flexShrink: 0 }}>
         <div style={{
           border: `1px solid ${tk.border}`, borderRadius: tk.r2, background: tk.surfaceSunk,

@@ -34,6 +34,8 @@ import { SubstrateSettingsView } from "./features/substrate/SubstrateSettingsVie
 import { useNavigation } from "./hooks/useNavigation.ts";
 import { WorkspaceSwitcher, RegisterWorkspaceScreen } from "./workspace/WorkspaceSwitcher.tsx";
 import { ScopeInspectorEmpty, DefaultInspector, useInspectorResize, readRinspWidth } from "./scope/ScopeInspector.tsx";
+// PROTOTYPE (#184) — throwaway, delete with src/scope/prototype-runs/
+import { PrototypeInspector, useProtoSelection } from "./scope/prototype-runs/PrototypeInspector.tsx";
 import { tk } from "./theme.ts";
 
 // ---------------------------------------------------------------------------
@@ -321,6 +323,8 @@ export function App(): React.ReactElement {
   }, [refreshActors, nav]);
 
   const inspResizeRef = useInspectorResize(setInspWidth);
+  // PROTOTYPE (#184) — throwaway
+  const protoSel = useProtoSelection();
 
   // Auto-refresh actors when registered by bridge
   useEffect(() => {
@@ -599,8 +603,10 @@ export function App(): React.ReactElement {
                 title="Drag to resize"
               />
               {/* Inspector body */}
-              <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: (nav.selectedContextId || nav.selectedActorId) ? 0 : "18px 16px 24px" }}>
-                {nav.selectedContextId ? (
+              <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: (nav.selectedContextId || nav.selectedActorId || protoSel.nodeId || protoSel.runId) ? 0 : "18px 16px 24px" }}>
+                {protoSel.nodeId || protoSel.runId ? (
+                  <PrototypeInspector />
+                ) : nav.selectedContextId ? (
                   <ContextInspector
                     contextId={nav.selectedContextId}
                     scope={selectedScope}

@@ -1,34 +1,43 @@
 /**
  * PROTOTYPE VARIANT C — "The runs are the product. The graph is a legend."
  *
- * Structure: the surface is the WORK — every run in the scope, in columns, one
- * column per node, in pipeline order. The three-node graph is demoted to a thin
- * strip along the top that you read to orient yourself and click to filter.
- * A lane at the very top collects only the runs asking for a person.
+ * Revision 2: like A, this no longer opens conversations inside itself — a run
+ * opens in the app's real right-hand inspector. What stays different is the
+ * SURFACE: this one is the work, not the diagram. Every run in the scope, in
+ * columns, one column per node, across BOTH graphs, with a lane along the top
+ * holding only what is waiting on a person.
  *
- * Bet: an operator with fifty live conversations does not want a diagram — the
- * diagram is three boxes they already know. They want the fifty, sorted.
+ * Bet: with fifty live conversations you do not want a diagram — the diagram is
+ * a handful of boxes you already know.
  */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { tk } from "../../theme.ts";
 import {
-  PROTOTYPE_NODES, NODE_KIND_LABEL,
+  PROTOTYPE_GRAPHS, NODE_KIND_LABEL,
   STATE_COLOR, STATE_LABEL, wantsAttention, ago,
-  type Run,
+  type Run, type Node,
 } from "./fixture.ts";
-import { RunConversation } from "./RunConversation.tsx";
+import { setProtoSelection, subscribeProtoSelection, getProtoSelection } from "./runSelection.ts";
 
 export const VARIANT_C_NAME = "Runs first, graph as a legend";
 
-type Located = { run: Run; nodeId: string; nodeLabel: string };
+type Located = { run: Run; node: Node; graphLabel: string };
 
-const ALL: Located[] = PROTOTYPE_NODES.flatMap(n =>
-  n.runs.map(r => ({ run: r, nodeId: n.node_id, nodeLabel: n.label }))
+const ALL: Located[] = PROTOTYPE_GRAPHS.flatMap(g =>
+  g.nodes.flatMap(n => n.runs.map(r => ({ run: r, node: n, graphLabel: g.label })))
 );
 
+function useSelectedRun(): string | null {
+  const [id, setId] = useState<string | null>(getProtoSelection().runId);
+  useEffect(() => subscribeProtoSelection(s => setId(s.runId)), []);
+  return id;
+}
+
 function Card({
-  item, compact, onClick,
-}: { item: Located; compact?: boolean; onClick: () => void }): React.ReactElement {
+  item, showWhere, selected, onClick,
+}: {
+  item: Located; showWhere?: boolean; selected: boolean; onClick: () => void;
+}): React.ReactElement {
   const [hov, setHov] = useState(false);
   const { run } = item;
   return (
@@ -39,8 +48,11 @@ function Card({
       style={{
         cursor: "pointer", borderRadius: tk.r2, padding: "9px 11px",
         background: hov ? tk.surfaceHov : tk.surface,
-        border: `1px solid ${wantsAttention(run) ? STATE_COLOR[run.state] : tk.border}`,
-        minWidth: compact ? 230 : 0, flexShrink: 0,
+        border: `1px solid ${
+          selected ? tk.accent : wantsAttention(run) ? STATE_COLOR[run.state] : tk.border
+        }`,
+        boxShadow: selected ? `0 0 0 2px ${tk.accentRing}` : "none",
+        minWidth: showWhere ? 250 : 0, flexShrink: 0,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -57,9 +69,9 @@ function Card({
           {ago(run.age_min)}
         </span>
       </div>
-      {compact && (
+      {showWhere && (
         <div style={{ fontSize: 10.5, color: tk.ink4, marginTop: 3 }}>
-          in “{item.nodeLabel}”
+          {item.graphLabel} · {item.node.label}
         </div>
       )}
       <div style={{
@@ -68,9 +80,9 @@ function Card({
       }}>
         {run.last}
       </div>
-      {(run.reworked_from || run.gathers) && (
+      {((run.passes ?? 1) > 1 || run.gathers) && (
         <div style={{ fontSize: 10, color: tk.ink4, marginTop: 6 }}>
-          {run.reworked_from ? "re-opened by review · still going" : `gathers ${run.gathers} upstream`}
+          {run.gathers ? `gathers ${run.gathers} upstream` : `pass ${run.passes} · reworked in place`}
         </div>
       )}
     </div>
@@ -78,24 +90,9 @@ function Card({
 }
 
 export function VariantC(): React.ReactElement {
-  const [openId, setOpenId] = useState<string | null>(null);
+  const selectedRunId = useSelectedRun();
   const [onlyNode, setOnlyNode] = useState<string | null>(null);
   const [hideSettled, setHideSettled] = useState(true);
-
-  const open = ALL.find(i => i.run.run_id === openId) ?? null;
-
-  if (open) {
-    return (
-      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: tk.canvas }}>
-        <RunConversation
-          run={open.run}
-          nodeLabel={open.nodeLabel}
-          onBack={() => setOpenId(null)}
-          backLabel="all runs"
-        />
-      </div>
-    );
-  }
 
   const attention = ALL.filter(i => wantsAttention(i.run));
 
@@ -105,41 +102,47 @@ export function VariantC(): React.ReactElement {
       background: tk.canvas, overflow: "hidden",
     }}>
       {/* ------------------------------------------------------------------ */}
-      {/* The graph, demoted to a strip. Click a box to filter the board.      */}
+      {/* Both graphs, demoted to strips. Click a box to filter the board.     */}
       {/* ------------------------------------------------------------------ */}
       <div style={{
-        display: "flex", alignItems: "center", gap: 0, padding: "10px 20px",
-        borderBottom: `1px solid ${tk.border}`, background: tk.surface, flexShrink: 0,
+        padding: "8px 20px 10px", borderBottom: `1px solid ${tk.border}`,
+        background: tk.surface, flexShrink: 0, overflowX: "auto",
       }}>
-        {PROTOTYPE_NODES.map((n, i) => (
-          <React.Fragment key={n.node_id}>
-            {i > 0 && <span style={{ color: tk.ink4, padding: "0 10px", fontSize: 13 }}>→</span>}
-            <button
-              onClick={() => setOnlyNode(onlyNode === n.node_id ? null : n.node_id)}
-              style={{
-                background: onlyNode === n.node_id ? tk.accentSoft2 : "transparent",
-                border: `1px solid ${onlyNode === n.node_id ? tk.accent : tk.border}`,
-                borderRadius: tk.r2, padding: "5px 10px", cursor: "pointer",
-                textAlign: "left", fontFamily: tk.fontUi,
-              }}
-            >
-              <div style={{ fontSize: 9, letterSpacing: "0.08em", textTransform: "uppercase", color: tk.ink4 }}>
-                {NODE_KIND_LABEL[n.kind]}
-              </div>
-              <div style={{ fontSize: 12, color: tk.ink, fontWeight: 510 }}>{n.label}</div>
-              <div style={{ fontSize: 10.5, color: tk.ink3 }}>{n.runs.length} runs</div>
-            </button>
-          </React.Fragment>
+        {PROTOTYPE_GRAPHS.map(g => (
+          <div key={g.graph_id} style={{ display: "flex", alignItems: "center", marginTop: 6 }}>
+            <div style={{
+              fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase",
+              color: tk.ink4, width: 150, flexShrink: 0,
+            }}>
+              {g.label}
+            </div>
+            {g.nodes.map((n, i) => (
+              <React.Fragment key={n.node_id}>
+                {i > 0 && <span style={{ color: tk.ink4, padding: "0 8px", fontSize: 12 }}>→</span>}
+                <button
+                  onClick={() => setOnlyNode(onlyNode === n.node_id ? null : n.node_id)}
+                  style={{
+                    background: onlyNode === n.node_id ? tk.accentSoft2 : "transparent",
+                    border: `1px solid ${onlyNode === n.node_id ? tk.accent : tk.border}`,
+                    borderRadius: tk.r2, padding: "4px 9px", cursor: "pointer",
+                    textAlign: "left", fontFamily: tk.fontUi, flexShrink: 0,
+                  }}
+                >
+                  <div style={{ fontSize: 8.5, letterSpacing: "0.08em", textTransform: "uppercase", color: tk.ink4 }}>
+                    {NODE_KIND_LABEL[n.kind]}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: tk.ink, fontWeight: 510 }}>{n.label}</div>
+                  <div style={{ fontSize: 10, color: tk.ink3 }}>{n.runs.length} runs</div>
+                </button>
+              </React.Fragment>
+            ))}
+          </div>
         ))}
         <label style={{
-          marginLeft: "auto", display: "flex", alignItems: "center", gap: 6,
-          fontSize: 11.5, color: tk.ink3, cursor: "pointer",
+          display: "flex", alignItems: "center", gap: 6, marginTop: 10,
+          fontSize: 11.5, color: tk.ink3, cursor: "pointer", width: "fit-content",
         }}>
-          <input
-            type="checkbox"
-            checked={hideSettled}
-            onChange={e => setHideSettled(e.target.checked)}
-          />
+          <input type="checkbox" checked={hideSettled} onChange={e => setHideSettled(e.target.checked)} />
           hide settled
         </label>
       </div>
@@ -160,53 +163,62 @@ export function VariantC(): React.ReactElement {
           </div>
           <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
             {attention.map(i => (
-              <Card key={i.run.run_id} item={i} compact onClick={() => setOpenId(i.run.run_id)} />
+              <Card
+                key={i.run.run_id}
+                item={i}
+                showWhere
+                selected={i.run.run_id === selectedRunId}
+                onClick={() => setProtoSelection({ nodeId: i.node.node_id, runId: i.run.run_id })}
+              />
             ))}
           </div>
         </div>
       )}
 
       {/* ------------------------------------------------------------------ */}
-      {/* The board: one column per node                                       */}
+      {/* The board: one column per node, across both graphs                   */}
       {/* ------------------------------------------------------------------ */}
       <div style={{
         flex: 1, minHeight: 0, overflow: "auto", display: "flex", gap: 14,
         padding: "14px 20px", alignItems: "stretch",
       }}>
-        {PROTOTYPE_NODES.filter(n => !onlyNode || n.node_id === onlyNode).map(n => {
-          const runs = n.runs.filter(r => !(hideSettled && r.state === "settled"));
-          return (
-            <div key={n.node_id} style={{
-              flex: 1, minWidth: 260, display: "flex", flexDirection: "column", minHeight: 0,
-            }}>
-              <div style={{
-                display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexShrink: 0,
+        {PROTOTYPE_GRAPHS.flatMap(g => g.nodes)
+          .filter(n => !onlyNode || n.node_id === onlyNode)
+          .map(n => {
+            const runs = n.runs.filter(r => !(hideSettled && r.state === "settled"));
+            return (
+              <div key={n.node_id} style={{
+                flex: 1, minWidth: 240, display: "flex", flexDirection: "column", minHeight: 0,
               }}>
-                <span style={{ fontSize: 12.5, color: tk.ink2, fontWeight: 510 }}>{n.label}</span>
-                <span style={{ fontSize: 11, color: tk.ink4 }}>
-                  {runs.length}{hideSettled && runs.length !== n.runs.length ? ` of ${n.runs.length}` : ""}
-                </span>
+                <div style={{
+                  display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexShrink: 0,
+                }}>
+                  <span style={{ fontSize: 12, color: tk.ink2, fontWeight: 510 }}>{n.label}</span>
+                  <span style={{ fontSize: 11, color: tk.ink4 }}>
+                    {runs.length}{hideSettled && runs.length !== n.runs.length ? ` of ${n.runs.length}` : ""}
+                  </span>
+                </div>
+                <div style={{
+                  flex: 1, minHeight: 0, overflow: "auto",
+                  display: "flex", flexDirection: "column", gap: 7, paddingRight: 4,
+                }}>
+                  {runs.map(r => (
+                    <Card
+                      key={r.run_id}
+                      item={{ run: r, node: n, graphLabel: "" }}
+                      selected={r.run_id === selectedRunId}
+                      onClick={() => setProtoSelection({ nodeId: n.node_id, runId: r.run_id })}
+                    />
+                  ))}
+                  {runs.length === 0 && (
+                    <div style={{ fontSize: 11.5, color: tk.ink4, padding: "8px 2px" }}>
+                      Nothing open here.
+                    </div>
+                  )}
+                </div>
               </div>
-              <div style={{
-                flex: 1, minHeight: 0, overflow: "auto",
-                display: "flex", flexDirection: "column", gap: 7, paddingRight: 4,
-              }}>
-                {runs.map(r => (
-                  <Card
-                    key={r.run_id}
-                    item={{ run: r, nodeId: n.node_id, nodeLabel: n.label }}
-                    onClick={() => setOpenId(r.run_id)}
-                  />
-                ))}
-                {runs.length === 0 && (
-                  <div style={{ fontSize: 11.5, color: tk.ink4, padding: "8px 2px" }}>
-                    Nothing open here.
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
       </div>
 
       <div style={{

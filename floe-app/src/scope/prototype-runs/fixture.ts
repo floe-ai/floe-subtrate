@@ -3,16 +3,30 @@
  *
  * Ticket: "One node, many runs" (#184) on map #166.
  *
- * The worked example from the operator: a three-node pipeline —
- *   explode a concept image into components
- *     -> for each component, create a concept image
- *       -> review, provide feedback and rework
+ * REVISION 2, after the operator looked at revision 1:
  *
- * Three nodes. Fifty conversations. The whole point of the prototype is to see
- * whether the canvas and the running system still describe the same thing.
+ *   1. "Review and rework doesn't really make sense as its own node — that
+ *      would be the same step as draw each component. The last node would be
+ *      do something with the asset, that's separate. Because if there is a
+ *      review step we would need to go backwards in some cases."
  *
- * Candidate model under test (from #179):
- *   A node is the work to be done. A context is one run of it.
+ *      So: iteration lives INSIDE a run. A step you would have to draw a
+ *      backwards arrow to is the tell that it was never a separate step. The
+ *      image pipeline is now: image lands -> draw each component (which
+ *      includes its own review and rework) -> pack the approved set.
+ *
+ *   2. "Add the earlier documentation pipeline as a parallel graph in the same
+ *      scope so we can see them side by side."
+ *
+ *      So: a scope holds MANY graphs. The second one below is the real
+ *      documentation pipeline read off the running bus (scope `docs`,
+ *      graph_e147ddbc) from #157 / PR #165 — trigger, writer, reviewer,
+ *      command, approver.
+ *
+ *      Note what it proves: the writer and reviewer DO pass work back and
+ *      forth, and there is still no backwards arrow — they emit to each other
+ *      inside one run. That is the same claim as (1), arrived at from the
+ *      other direction.
  */
 
 export type RunState =
@@ -38,8 +52,11 @@ export type Run = {
   actors: string[];
   /** last thing said, for previews */
   last: string;
-  /** set when this run was re-opened by a downstream review — the loop-back case */
-  reworked_from?: string;
+  /**
+   * How many times this run has been round the review loop. Iteration is a
+   * property of a run, not a shape on the canvas — this is the claim on trial.
+   */
+  passes?: number;
   /** set when a run consumes many upstream artifacts — the fan-in case */
   gathers?: number;
 };
@@ -50,12 +67,19 @@ export type Node = {
   node_id: string;
   kind: NodeKind;
   label: string;
+  /** only a command declares a shape; a conversation has none */
+  declares?: string;
   x: number;
   y: number;
   runs: Run[];
 };
 
-const ACTORS = ["art-director", "concept-artist", "critic"];
+export type Graph = {
+  graph_id: string;
+  label: string;
+  nodes: Node[];
+  edges: Array<[string, string]>;
+};
 
 const COMPONENTS = [
   "hull plating", "cockpit glass", "thruster cowl", "landing strut", "cargo hatch",
@@ -75,111 +99,257 @@ function seeded(i: number, mod: number): number {
   return (i * 2654435761) % mod;
 }
 
-function makeRun(i: number, label: string, prefix: string): Run {
+// ---------------------------------------------------------------------------
+// GRAPH 1 — the image pipeline, reshaped after the operator's note
+// ---------------------------------------------------------------------------
+
+/**
+ * Fifty runs of the one drawing step. Review and rework are NOT downstream —
+ * they happen inside each of these, which is why some are on their third pass.
+ */
+const drawRuns: Run[] = COMPONENTS.map((c, i) => {
   const roll = seeded(i, 100);
   let state: RunState;
   if (roll < 6) state = "needs-you";
   else if (roll < 10) state = "failed";
-  else if (roll < 22) state = "running";
-  else if (roll < 55) state = "idle";
+  else if (roll < 26) state = "running";
+  else if (roll < 52) state = "idle";
   else state = "settled";
 
+  const passes = 1 + seeded(i + 3, 3);
+
   const last =
-    state === "needs-you" ? "Two readings of this component conflict — which do you want?"
-    : state === "failed" ? "Render step exited 1: source asset missing."
-    : state === "running" ? "Sketching the third pass now."
-    : state === "settled" ? "Final plate written to assets/concepts/."
-    : "Waiting on the reviewer.";
+    state === "needs-you"
+      ? `Pass ${passes}: two readings of this component conflict — which do you want?`
+      : state === "failed"
+      ? "Render step exited 1: source asset missing."
+      : state === "running"
+      ? passes > 1
+        ? `Critic sent it back — silhouette reads wrong. Pass ${passes} under way.`
+        : "Blocking in the first pass now."
+      : state === "settled"
+      ? `Approved on pass ${passes}. Plate written to assets/concepts/.`
+      : "Waiting on the critic to look again.";
 
   return {
-    run_id: `${prefix}_${i}`,
-    label,
+    run_id: `run_draw_${i}`,
+    label: c,
     state,
     age_min: seeded(i + 7, 900),
-    actors: [ACTORS[seeded(i, 3)]],
+    actors: passes > 1 ? ["concept-artist", "critic"] : ["concept-artist"],
     last,
+    passes,
   };
+});
+
+const imageGraph: Graph = {
+  graph_id: "g_images",
+  label: "Concept art pipeline",
+  nodes: [
+    {
+      node_id: "n_image_lands",
+      kind: "event",
+      label: "A concept image lands",
+      x: 60,
+      y: 90,
+      runs: [
+        {
+          run_id: "run_explode_1",
+          label: "concept-ship-alpha.png",
+          state: "settled",
+          age_min: 902,
+          actors: ["art-director"],
+          last: "Split into 50 components. Handing each one downstream.",
+        },
+      ],
+    },
+    {
+      node_id: "n_draw",
+      kind: "working-space",
+      // The name now says what the whole step is, iteration included.
+      label: "Draw each component, until it is approved",
+      x: 330,
+      y: 90,
+      runs: drawRuns,
+    },
+    {
+      node_id: "n_pack",
+      kind: "command",
+      label: "Pack the approved set",
+      declares: "in: approved plates · out: sprite sheet, exit code",
+      x: 600,
+      y: 90,
+      runs: [
+        {
+          run_id: "run_pack_1",
+          label: "Assemble the approved set",
+          state: "idle",
+          age_min: 41,
+          actors: ["art-director"],
+          last: "Holding until every component is approved. 34 of 50 in.",
+          gathers: 50,
+        },
+      ],
+    },
+  ],
+  edges: [
+    ["n_image_lands", "n_draw"],
+    ["n_draw", "n_pack"],
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// GRAPH 2 — the real documentation pipeline, read off the running bus
+// (workspace floe, scope `docs`, graph_e147ddbc — from #157 / PR #165)
+// ---------------------------------------------------------------------------
+
+const docsGraph: Graph = {
+  graph_id: "g_docs",
+  label: "Documentation pipeline",
+  nodes: [
+    {
+      node_id: "note_arrived",
+      kind: "event",
+      label: "A note lands in docs/",
+      x: 60,
+      y: 330,
+      runs: [
+        {
+          run_id: "run_note_1",
+          label: "session-context-thread-model.md",
+          state: "settled",
+          age_min: 320,
+          actors: ["folder watcher"],
+          last: "docs.note.landed — docs/notes/session-context-thread-model.md",
+        },
+        {
+          run_id: "run_note_2",
+          label: "peer-contexts.md",
+          state: "settled",
+          age_min: 88,
+          actors: ["folder watcher"],
+          last: "docs.note.landed — docs/notes/peer-contexts.md",
+        },
+      ],
+    },
+    {
+      node_id: "writer_node",
+      kind: "working-space",
+      label: "Writer drafts it",
+      x: 330,
+      y: 330,
+      runs: [
+        {
+          run_id: "run_write_1",
+          label: "session-context-thread-model.md",
+          state: "settled",
+          age_min: 300,
+          actors: ["writer", "reviewer"],
+          last: "Reviewer approved on the second pass. Handing to the check.",
+          passes: 2,
+        },
+        {
+          run_id: "run_write_2",
+          label: "peer-contexts.md",
+          state: "running",
+          age_min: 6,
+          actors: ["writer", "reviewer"],
+          last: "Reviewer wants the invariant stated before the example. Revising.",
+          passes: 3,
+        },
+      ],
+    },
+    {
+      node_id: "reviewer_node",
+      kind: "working-space",
+      label: "Reviewer critiques it",
+      x: 600,
+      y: 330,
+      runs: [
+        {
+          run_id: "run_review_1",
+          label: "session-context-thread-model.md",
+          state: "settled",
+          age_min: 298,
+          actors: ["reviewer", "writer"],
+          last: "Approved. Emitted review.approved to docs_check.",
+          passes: 2,
+        },
+        {
+          run_id: "run_review_2",
+          label: "peer-contexts.md",
+          state: "needs-you",
+          age_min: 4,
+          actors: ["reviewer", "writer"],
+          last: "This contradicts CONTEXT.md on thread_id. Change the doc or the invariant?",
+          passes: 3,
+        },
+      ],
+    },
+    {
+      node_id: "check_node",
+      kind: "command",
+      label: "Run the docs check",
+      declares: "out: passed, exit_code, stdout, stderr",
+      x: 870,
+      y: 330,
+      runs: [
+        {
+          run_id: "run_check_1",
+          label: "vitest docs-structure.test.ts",
+          state: "settled",
+          age_min: 296,
+          actors: ["docs_check"],
+          last: "passed=true · exit_code 0 · 3 tests",
+        },
+      ],
+    },
+    {
+      node_id: "approver_node",
+      kind: "working-space",
+      label: "Approver writes the file",
+      x: 1140,
+      y: 330,
+      runs: [
+        {
+          run_id: "run_approve_1",
+          label: "session-context-thread-model.md",
+          state: "settled",
+          age_min: 294,
+          actors: ["approver"],
+          last: "Wrote docs/plans/session-context-thread-model.md.",
+        },
+      ],
+    },
+  ],
+  edges: [
+    ["note_arrived", "writer_node"],
+    ["writer_node", "reviewer_node"],
+    ["reviewer_node", "check_node"],
+    ["check_node", "approver_node"],
+  ],
+};
+
+export const PROTOTYPE_GRAPHS: Graph[] = [imageGraph, docsGraph];
+
+/** Flat view, for the variants that do not care which graph a node is in. */
+export const ALL_NODES: Node[] = PROTOTYPE_GRAPHS.flatMap(g => g.nodes);
+
+export function graphOf(nodeId: string): Graph {
+  return PROTOTYPE_GRAPHS.find(g => g.nodes.some(n => n.node_id === nodeId))!;
 }
 
-/** Node 1: the event that starts the whole thing. One run — it fired once. */
-const explodeRuns: Run[] = [
-  {
-    run_id: "run_explode_1",
-    label: "concept-ship-alpha.png",
-    state: "settled",
-    age_min: 902,
-    actors: ["art-director"],
-    last: "Split into 50 components. Handing each one downstream.",
-  },
-];
+export function nodeOf(nodeId: string): Node | null {
+  return ALL_NODES.find(n => n.node_id === nodeId) ?? null;
+}
 
-/** Node 2: fifty runs. This is the node the whole ticket is about. */
-const renderRuns: Run[] = COMPONENTS.map((c, i) => makeRun(i, c, "run_render"));
-
-/**
- * Node 3: only some components have reached review yet, so this node has fewer
- * runs than the one before it — the counts along a pipeline do not match, and
- * that is the honest picture.
- *
- * Three of them were sent back for rework: under the model on trial, that is
- * simply a context that has not finished, NOT an arrow pointing backwards.
- * One of them gathers fifty upstream artifacts — the fan-in case.
- */
-const reviewRuns: Run[] = [
-  ...COMPONENTS.slice(0, 18).map((c, i) => {
-    const r = makeRun(i + 200, c, "run_review");
-    if (i === 2 || i === 7 || i === 13) {
-      return {
-        ...r,
-        state: "running" as RunState,
-        last: "Silhouette reads as a fuel line, not a strut. Reworking against note 3.",
-        reworked_from: `run_render_${i}`,
-      };
-    }
-    return r;
-  }),
-  {
-    run_id: "run_assemble_set",
-    label: "Assemble the approved set",
-    state: "idle",
-    age_min: 41,
-    actors: ["art-director"],
-    last: "Holding until every component is approved. 34 of 50 in.",
-    gathers: 50,
-  },
-];
-
-export const PROTOTYPE_NODES: Node[] = [
-  {
-    node_id: "n_source",
-    kind: "event",
-    label: "A concept image lands",
-    x: 60,
-    y: 170,
-    runs: explodeRuns,
-  },
-  {
-    node_id: "n_render",
-    kind: "working-space",
-    label: "Draw each component",
-    x: 380,
-    y: 170,
-    runs: renderRuns,
-  },
-  {
-    node_id: "n_review",
-    kind: "working-space",
-    label: "Review and rework",
-    x: 700,
-    y: 170,
-    runs: reviewRuns,
-  },
-];
-
-export const PROTOTYPE_EDGES: Array<[string, string]> = [
-  ["n_source", "n_render"],
-  ["n_render", "n_review"],
-];
+export function findRun(runId: string): { run: Run; node: Node } | null {
+  for (const n of ALL_NODES) {
+    const run = n.runs.find(r => r.run_id === runId);
+    if (run) return { run, node: n };
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Shared helpers — the only thing variants are allowed to agree on.
@@ -199,6 +369,12 @@ export const STATE_LABEL: Record<RunState, string> = {
   "needs-you": "needs you",
   failed: "failed",
   settled: "settled",
+};
+
+export const NODE_KIND_LABEL: Record<NodeKind, string> = {
+  event: "event",
+  "working-space": "working space",
+  command: "command",
 };
 
 /** Runs that would make a person want to look. Everything else can stay folded. */
@@ -221,8 +397,6 @@ export function ago(min: number): string {
   return `${Math.floor(min / 1440)}d`;
 }
 
-export const NODE_KIND_LABEL: Record<NodeKind, string> = {
-  event: "event",
-  "working-space": "working space",
-  command: "command",
-};
+export const CANVAS_W = 1420;
+export const CANVAS_H = 520;
+export const NODE_W = 210;
