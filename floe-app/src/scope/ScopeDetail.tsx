@@ -19,6 +19,8 @@ import {
 } from "../bus-client/client.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
 import { Ops } from "./Ops.tsx";
+// PROTOTYPE (#184) — throwaway, delete with src/scope/prototype-runs/
+import { RunsPrototypeView } from "./prototype-runs/RunsPrototypeView.tsx";
 
 export interface ExtensionViewProps {
   workspaceId: string;
@@ -405,6 +407,8 @@ export type ScopeDetailProps = {
 const BUILTIN_VIEWS = [
   { id: "contexts", label: "Contexts" },
   { id: "ops",      label: "Ops" },
+  // PROTOTYPE (#184) — throwaway tab, remove when the ticket resolves
+  { id: "graph-prototype", label: "Graph (prototype)" },
 ] as const;
 
 type BuiltinViewId = (typeof BUILTIN_VIEWS)[number]["id"];
@@ -596,7 +600,9 @@ export function ScopeDetail({
       {/* ------------------------------------------------------------------ */}
       {/* Body: Contexts list or Ops (events & pulses) or extension view       */}
       {/* ------------------------------------------------------------------ */}
-      {view === "ops" ? (
+      {view === "graph-prototype" ? (
+        <RunsPrototypeView />
+      ) : view === "ops" ? (
         <Ops workspaceId={workspaceId} scopeId={scope.scope_id} />
       ) : (() => {
         // Check if current view is an extension view
