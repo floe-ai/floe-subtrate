@@ -32,7 +32,7 @@ What a command file must provide: named inputs, named outputs, and raw execution
 
 ## Context
 
-One run of a [[Node]] — a bounded stream where work happens and outcomes appear. Anchored by actor participants, a [[Scope]], or both. See [[Context]].
+A bounded stream of [[Event]]s with participants, where work happens and outcomes appear. Anchored by actor participants, a [[Scope]], or both. On a scope it is one run of a [[Node]]; off any scope it is a conversation. See [[Context]].
 
 ## Delivery
 
@@ -72,7 +72,7 @@ Content a `BeforeTurn` [[Hook]] adds into a turn's prompt. Inject-once / resolve
 
 ## Node
 
-A citizen placed on a [[Scope]]'s canvas. A node is the work to be done; a [[Context]] is one run of it. Three kinds: event node, working space node, [[Command]] node. See [[Node]].
+A citizen placed on a [[Scope]]'s canvas. A node is the work to be done; a [[Context]] on that scope is one run of it. Three kinds: event node, working space node, [[Command]] node. See [[Node]].
 
 ## Pulse
 

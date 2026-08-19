@@ -2,10 +2,14 @@
 
 **A node is a citizen placed on a scope's canvas.**
 
-A node is the work to be done. A [[Context]] is one run of it. One node spawns as
-many contexts as the work needs — a three-node pipeline and fifty documents don't
-disagree, because the pipeline is three nodes and the run is fifty contexts, one
-per document moving through it.
+A node is the work to be done. A [[Context]] on that node's scope is one run of it.
+One node spawns as many contexts as the work needs — a three-node pipeline and fifty
+documents don't disagree, because the pipeline is three nodes and the run is fifty
+contexts, one per document moving through it.
+
+The relationship only runs one way: every node's runs are contexts, but not every
+context is a node's run. Contexts also exist off any canvas as plain conversations
+between [[Actor]]s (see [[Context]]).
 
 ## The three kinds
 

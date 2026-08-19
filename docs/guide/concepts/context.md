@@ -1,10 +1,36 @@
 # Context
 
-**A context is where work happens and outcomes appear — a multi-agent session, a conversation. It's one run of a node.**
+**A context is a bounded stream of [[Event]]s with participants — where work happens and outcomes appear.**
 
 Events land in a context, actors and commands take part in it, and its history is
 the record of what actually happened, as opposed to what was authored on the
 [[Scope]] canvas.
+
+## A context is anchored, not owned
+
+A context must be anchored by **a [[Scope]], by participants, or both**. That is
+the only rule. It gives contexts two everyday shapes:
+
+- **On a scope** — the context is one run of a [[Node]] on that scope's canvas.
+  One node spawns as many contexts as the work needs.
+- **Off any scope** — the context is simply a conversation between one or more
+  [[Actor]]s. It belongs to no canvas, and nothing about it is lesser for that:
+  it has the same history, participation, subscriptions and compaction as any
+  other context.
+
+A context that has a scope *and* participants is both at once.
+
+Nothing in storage ties a context to a node — there is no node id on a context.
+The scope is the only structural anchor, so "one run of a node" describes a
+context's *situation*, never its definition.
+
+## Events wake participants, wherever the context sits
+
+An event can be injected into any context, including a scope-less one, to wake
+the actors in it and get a reaction. This is how a bare conversation becomes
+active work: something lands, a subscribed actor is woken, it responds. A
+[[Node]] is not required for an actor to be woken — only a context, a
+participant and a subscription that matches.
 
 ## Participation vs subscription
 

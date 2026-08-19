@@ -104,7 +104,7 @@ An [[Endpoint]] is the substrate's addressable identity for an [[Actor]].
 
 ## Contexts
 
-A [[Context]] is one run of a node — where work happens and outcomes appear.
+A [[Context]] is a bounded event stream with participants — where work happens and outcomes appear. `scope_id` is optional; a context with no scope must be created with at least one participant.
 
 | Method | Path | Body | Notes |
 |---|---|---|---|

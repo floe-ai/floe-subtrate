@@ -2,7 +2,7 @@
 
 **Floe is a substrate: a small set of primitives that agents and people use to build the environment around their work.**
 
-It is not an agent framework and not a workflow tool. A [[Workspace]] holds [[Scope]]s, [[Actor]]s and [[Extension]]s. A scope is a canvas: you place [[Node]]s on it and connect them. A node is the work; a [[Context]] is one run of it. [[Event]]s land and wake things. That's the whole shape — everything else in this guide is detail on top of it.
+It is not an agent framework and not a workflow tool. A [[Workspace]] holds [[Scope]]s, [[Actor]]s and [[Extension]]s. A scope is a canvas: you place [[Node]]s on it and connect them. A node is the work; a [[Context]] on that scope is one run of it — and a context can equally stand alone, off any canvas, as a conversation between actors. [[Event]]s land in contexts and wake things. That's the whole shape — everything else in this guide is detail on top of it.
 
 Read [[What floe is]] for why this exists, or jump straight to [[Install and first run]] to get something running.
 

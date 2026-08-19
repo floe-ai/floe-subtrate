@@ -35,7 +35,7 @@ curl -X POST http://localhost:5377/v1/workspaces/$WORKSPACE_ID/scopes \
   -d '{"title": "Billing"}'
 ```
 
-Create a [[Context]] (one run of work — here, a bare context with a participant [[Endpoint]]):
+Create a [[Context]] (here, a scope-less one — a bare conversation, which is why it needs a participant [[Endpoint]]):
 
 ```bash
 curl -X POST http://localhost:5377/v1/workspaces/$WORKSPACE_ID/contexts \
