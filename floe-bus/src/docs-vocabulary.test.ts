@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Standing regression check (ROADMAP "Standing regression checks": docs and code agree).
+// Standing regression check: docs and code agree on retired vocabulary.
 // Retired vocabulary must not reappear as live concepts. Canonical terminology and
 // invariants live in CONTEXT.md; the per-rule `allowed` lists below are the explicit
 // legacy-debt registry — every entry says why it is allowed and when to remove it.
@@ -48,8 +48,6 @@ const RULES: VocabularyRule[] = [
       "PRODUCT.md": "states the ban (no inventing a Default Scope)",
       "docs/adr/0004-scope-as-substrate-organising-boundary.md":
         "the decision record that defines the correction",
-      "docs/ROADMAP.md":
-        "section 2 proof points and propagation bullets predate the correction; annotated, ADR-0004 governs",
       "docs/plans/slice-2-scope-field-remainder.md":
         "unexecuted 2026-06 plan pending operator review; retained as live analysis"
     }
@@ -106,7 +104,6 @@ const RULES: VocabularyRule[] = [
     extensions: [".ts", ".tsx", ".md"],
     allowed: {
       "CONTEXT.md": "names the rejected substrate in _Avoid_ lists",
-      "docs/ROADMAP.md": "proof point 9 states the ban",
       "docs/adr/0003-field-substrate-primitive.md": "decision record that rejected it",
       "floe-bus/src/scope-projection.test.ts": "asserts the substrate stays absent",
       "docs/plans/slice-2-scope-field-remainder.md":

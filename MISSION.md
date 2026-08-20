@@ -10,7 +10,9 @@ The substrate makes no assumption about the work. It provides open primitives fo
 
 ## The near-term path
 
-Prove it by running one real autonomous operation end-to-end — this one (see dogfooding): agents and humans as peer actors, the operator steering by exception. A universal substrate earns the name by first carrying a real company, not by being designed as a platform. (See "What Floe is not".)
+Prove it by **relying on** one real autonomous operation — this one (see dogfooding). Not demonstrating it: depending on it, daily, such that switching it off would hurt. A pipeline that runs once and is never used again has proven a mechanism, not a substrate.
+
+Agents and humans as peer actors, the operator steering by exception. A universal substrate earns the name by first carrying a real company, not by being designed as a platform. (See "What Floe is not".)
 
 ## The bet
 
@@ -55,4 +57,4 @@ Every slice must shorten that loop. A slice that makes the substrate more comple
 
 ---
 
-This document is canonical (tier 1, alongside `CONTEXT.md` and accepted ADRs). If the ROADMAP, a plan, or a slice conflicts with this document's intent, raise it to the operator — never silently follow either side.
+This document is canonical (tier 1, alongside `CONTEXT.md` and accepted ADRs). If a plan or a slice conflicts with this document's intent, raise it to the operator — never silently follow either side.
