@@ -10,7 +10,7 @@ Models are labor. The substrate is the company.
 
 Every model release makes the labor smarter and cheaper. No model release gives you the company — the durable record of who did what, why, and what happened, or the coordination fabric that turns interchangeable model capability into something that compounds. Floe is that layer.
 
-The bet is that a few primitives — [[Workspace]], [[Scope]], [[Node]], [[Actor]], [[Context]], [[Event]] — plus a real objective can express anything a workspace needs, and that the system should be able to extend *itself* toward whatever that objective is, rather than needing every capability designed in up front.
+The bet is that a few primitives — [[Actor]], [[Command]], [[Context]], and [[Scope]] — plus a real objective can express anything a workspace needs, and that the system should be able to extend *itself* toward whatever that objective is, rather than needing every capability designed in up front. [[Event]]s are how the world lands in that system; they are not one more citizen beside it.
 
 The operator's own bar for this, which the whole guide is written against:
 

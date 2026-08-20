@@ -1,8 +1,8 @@
 # Working without floe-app
 
-**You can run and drive floe entirely from a terminal, but the `floe` CLI does not cover the substrate — you talk to it over HTTP.**
+**The terminal is lens zero: every substrate capability must be reachable headlessly. Today that means `floe-cli` for service/auth flow and the bus HTTP contract for the rest.**
 
-The bus is a plain HTTP + WebSocket server on port 5377. Every [[Scope]], [[Context]], [[Event]] and [[Event|Pulse]] the substrate can hold is reachable with `curl`. The `floe` CLI is a separate, much smaller thing: it starts services, checks health, manages auth, and resets local state. It has **no commands for scopes, contexts, nodes or extensions.** For those, you use the bus's HTTP API directly.
+The bus is a plain HTTP + WebSocket server on port 5377. Every [[Scope]], [[Context]], [[Event]] and schedule source the substrate can hold is reachable headlessly. The current split is simple: `floe` starts services, checks health, manages auth, and resets local state; the bus HTTP API carries the broader substrate contract. That gap is real, but it does not change the rule: the terminal comes first.
 
 ## What the CLI covers
 
@@ -14,9 +14,9 @@ The bus is a plain HTTP + WebSocket server on port 5377. Every [[Scope]], [[Cont
 
 Full detail: [[CLI reference]].
 
-## What the CLI does not cover
+## What the CLI does not cover yet
 
-Nothing in `floe-cli/src/` creates a [[Scope]], creates a [[Context]], emits an [[Event]], registers an [[Actor]]/[[Endpoint]], or schedules a [[Event|Pulse]]. There is no `floe scope`, `floe context`, `floe node`, or `floe extension` command family. If you want to do any of that from a terminal, you call the bus directly.
+Nothing in `floe-cli/src/` yet creates a [[Scope]], creates a [[Context]], emits an [[Event]], registers an [[Actor]]/[[Endpoint]], or schedules an event source. There is no `floe scope`, `floe context`, `floe node`, or `floe extension` command family. If you want to do any of that from a terminal today, you call the bus directly.
 
 ## The real workflow
 
@@ -25,9 +25,9 @@ Nothing in `floe-cli/src/` creates a [[Scope]], creates a [[Context]], emits an 
 3. Find your workspace id: `curl http://localhost:5377/v1/workspaces`.
 4. Drive the substrate with the routes in [[Bus API]].
 
-## Worked example: scope → context → event → read → pulse
+## Worked example: scope → context → event → read → schedule
 
-Create a [[Scope]] (the canvas nodes are placed on) in a workspace:
+Create a [[Scope]] in a workspace:
 
 ```bash
 curl -X POST http://localhost:5377/v1/workspaces/$WORKSPACE_ID/scopes \
@@ -64,7 +64,7 @@ Read the context's events back:
 curl "http://localhost:5377/v1/contexts/$CONTEXT_ID/events"
 ```
 
-Create a [[Event|Pulse]] (a schedule that fires an event) that wakes a context once, five minutes out:
+Create a pulse — a schedule source that fires an event — that wakes a context once, five minutes out:
 
 ```bash
 curl -X POST http://localhost:5377/v1/pulses \
@@ -89,4 +89,4 @@ See [[Glossary]] for term definitions.
 - `POST /v1/workspaces/:workspace_id/contexts` — create a context
 - `POST /v1/events/emit` — emit an event
 - `GET /v1/contexts/:id/events` — read a context's events
-- `POST /v1/pulses` — create a pulse
+- `POST /v1/pulses` — create a schedule source

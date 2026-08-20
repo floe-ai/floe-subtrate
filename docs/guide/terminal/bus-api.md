@@ -1,6 +1,6 @@
 # Bus API
 
-**The bus is a plain HTTP + WebSocket server on port 5377, and its routes are the substrate's complete, real contract.**
+**The bus is a plain HTTP + WebSocket server on port 5377, and its routes are the substrate's complete, real headless contract.**
 
 Everything below is read straight from `floe-bus/src/server.ts`. This page is grouped by area. See [[Working without floe-app]] for a worked end-to-end example, and [[CLI reference]] for the `floe` binary.
 
@@ -56,7 +56,7 @@ Gated on `bridge.workspace_access.local_paths` in config; returns 403 `fs_disabl
 
 ## Scopes
 
-A [[Scope]] is the canvas nodes are placed on and connected within.
+A [[Scope]] is the organising boundary nodes are placed on and connected within.
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
@@ -173,7 +173,7 @@ Delivery in normal operation rides the WebSocket (`delivery_bundle_available` br
 
 ## Pulses
 
-A [[Event|Pulse]] is a schedule (once or cron) that fires an event.
+A [[Event|Pulse]] is a schedule source (once or cron) that fires an event.
 
 | Method | Path | Body | Notes |
 |---|---|---|---|

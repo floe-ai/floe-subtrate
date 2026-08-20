@@ -1,6 +1,6 @@
 # floe-app
 
-**floe-app is the visual surface on top of the [[What floe is|substrate]] — a window onto the [[Services|Bus]], never a second brain.**
+**floe-app is the shell that hosts lenses on top of the [[What floe is|substrate]] — a window onto the [[Services|Bus]], never a second brain and never the whole product.**
 
 ## The governing rule
 
@@ -8,16 +8,17 @@ floe-app never holds logic the substrate lacks. Every button in the app calls a 
 
 This matters because the app is optional. A [[Workspace]] runs fine with no UI open at all — [[Actor]]s deliver over the bridge↔bus WebSocket regardless of whether anyone is looking. The app is a way of looking, not a way of working that only it can do.
 
-## What the UI actually adds
+## What the shell actually adds
 
 The substrate does not get easier to use just because it has a UI. What changes is the cost of looking:
 
+- **Hosting lenses in one place.** Arrival, workspace selection, navigation, the right-hand aside, and routing live here.
 - **Seeing what exists without composing a query.** [[Scope]]s, [[Context]]s and [[Actor]]s render as lists and cards instead of `GET` responses you have to shape yourself.
 - **Watching work happen live.** The substrate is push-only — no polling anywhere. floe-app rides the same event stream the [[Services|Bridge]] does, so a [[Context]] you have open updates the moment a [[Delivery and Turn|Delivery]] lands, with no refresh.
 - **Reading a conversation as a conversation.** A [[Context]]'s events render as a message list with actor names, not raw JSON envelopes.
 - **Editing an actor without hand-writing YAML.** An [[Actor]]'s [[Binding]] — auth profile, model, thinking level — is a form, not a file you edit and hope you got the shape right.
 
-None of this is new capability. It is the same bus, read and written through a friendlier surface.
+None of this is new capability. It is the same bus, read and written through a lens shell.
 
 ## One server, one UI
 

@@ -1,15 +1,15 @@
 # Services
 
-**Floe runs as four pieces: a substrate daemon, an agent runtime, a UI, and a command-line tool.**
+**Floe runs as four pieces: a substrate daemon, an agent runtime, a lens shell, and a command-line tool.**
 
 | Piece | What it is | Port |
 |---|---|---|
 | bus | The [[What floe is|substrate]]. SQLite + HTTP + WebSocket. Owns contexts, events, deliveries, scopes, pulses. | 5377 |
 | bridge | Runs [[Actor]]s. Attaches workspaces, claims deliveries, executes [[Delivery and Turn|Turn]]s, loads [[Extension]]s. | — |
-| floe-app | The UI. Works as a plain browser page and as a Tauri desktop shell. | 5379 |
+| floe-app | The lens shell. Works as a plain browser page and as a Tauri desktop shell. | 5379 |
 | floe-cli | The `floe` command. Setup, services, auth. | — |
 
-floe-app is only ever a visual layer on top of the substrate. It never holds logic the bus and bridge don't already have — anything the UI shows, the bus can also answer over HTTP or WebSocket.
+floe-app is only ever a visual layer on top of the substrate. It hosts lenses, but it never holds logic the bus and bridge don't already have — anything a lens shows, the bus can also answer headlessly over HTTP or WebSocket.
 
 ## Starting services
 

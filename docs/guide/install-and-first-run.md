@@ -68,14 +68,14 @@ curl -X POST http://localhost:5377/v1/workspaces/register \
 
 ## What you see when nothing exists yet
 
-A freshly attached workspace has no [[Scope]]s, no [[Actor]]s beyond a seeded default operator, and no history. floe-app shows an empty workspace home — there's nothing to fan out into a scope canvas until you create one. This is expected: floe doesn't ship example scopes or example work. See [[The documentation pipeline]] for a full worked example built from nothing.
+A freshly attached workspace has no [[Scope]]s, no [[Actor]]s beyond a seeded default operator, and no history. floe-app shows an empty workspace home. This is expected: floe doesn't ship example scopes or example work. See [[The documentation pipeline]] for a full worked example built from nothing.
 
 ## If it breaks
 
 `~/.floe/config.yaml` is never migrated. If it's incompatible with the version of floe you're running, floe fails fast with a message instead of trying to patch it. The fix is always:
 
 ```bash
-rm -rf ~/.floe
+rm ~/.floe/config.yaml
 floe setup
 ```
 

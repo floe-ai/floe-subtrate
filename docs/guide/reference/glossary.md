@@ -4,7 +4,7 @@ Alphabetical definitions of every term used across this guide, each linking to i
 
 ## Actor
 
-Non-deterministic participant, backed by a model or a person. Lives at workspace level; assigned into [[Node|working space nodes]]. Peers cannot tell what backs one. See [[Actor]].
+One of the workspace's four citizens. Non-deterministic participant, backed by a model or a person. Lives at workspace level; assigned into work. Peers cannot tell what backs one. See [[Actor]].
 
 ## Artifact
 
@@ -24,7 +24,7 @@ The substrate daemon. SQLite plus HTTP and WebSocket. Owns [[Context]]s, [[Event
 
 ## Command
 
-A deterministic [[Node]], backed by a file meeting the command contract. Given the same inputs, it produces the same raw facts every time. See [[Command]].
+One of the workspace's four citizens. Deterministic work, backed by a file meeting the command contract. Given the same inputs, it produces the same raw facts every time. See [[Command]].
 
 ## Command contract
 
@@ -32,7 +32,7 @@ What a command file must provide: named inputs, named outputs, and raw execution
 
 ## Context
 
-A bounded stream of [[Event]]s with participants, where work happens and outcomes appear. Anchored by actor participants, a [[Scope]], or both. On a scope it is one run of a [[Node]]; off any scope it is a conversation. See [[Context]].
+One of the workspace's four citizens. A bounded stream of [[Event]]s with participants, where work happens and outcomes appear. Anchored by actor participants, a [[Scope]], or both. On a scope it is one run of a [[Node]]; off any scope it is a conversation. See [[Context]].
 
 ## Delivery
 
@@ -52,7 +52,7 @@ A persisted, per-endpoint [[Endpoint|Event cursor]] marking how far that endpoin
 
 ## Event
 
-Not a citizen — something that lands, carrying a source: schedule, folder, webhook, or manual. See [[Event]].
+Not a workspace citizen — something that lands, carrying a source: schedule, folder, webhook, or manual. See [[Event]].
 
 ## Event cursor
 
@@ -72,15 +72,15 @@ Content a `BeforeTurn` [[Hook]] adds into a turn's prompt. Inject-once / resolve
 
 ## Node
 
-A citizen placed on a [[Scope]]'s canvas. A node is the work to be done; a [[Context]] on that scope is one run of it. Three kinds: event node, working space node, [[Command]] node. See [[Node]].
+A citizen placed on a [[Scope]] — the work to be done, not a primitive of its own. A [[Context]] is one run of it, so one node spawns as many contexts as the work needs. See [[Node]].
 
 ## Pulse
 
-A schedule — once or cron — that fires an [[Event]] for its subscribers. Not a heartbeat or keepalive.
+A schedule source for an [[Event]] — once or cron. Not a primitive, not a heartbeat, and not a keepalive.
 
 ## Scope
 
-A way of organising the pieces of a product that make sense together, and the canvas those pieces are placed on. Scopes nest. See [[Scope]].
+One of the workspace's four citizens. A way of organising the pieces of a product that make sense together. Scopes nest. See [[Scope]].
 
 ## Session
 
@@ -96,7 +96,7 @@ Context membership. Any participant may always emit, regardless of subscription.
 
 ## Thread
 
-Retired as a primitive — see the table below. Where it appears in code (`events.thread_id`) it is deferred schema-collapse storage, not a concept to design around.
+Legacy wording for [[Context]]. The Thread primitive is retired; where `thread_id` still appears in code or routes it is compatibility storage, not a concept to design around.
 
 ## Turn
 
@@ -116,7 +116,7 @@ The outer boundary of all work for a product. Holds actors, scopes, extensions, 
 
 ## Working space
 
-A [[Node]] kind: where work happens. Not an actor itself — actors are assigned into it. See [[Node]].
+Legacy guide wording for work done by an [[Actor]] in a scope. Keep the underlying primitive in view: the actor and its context. See [[Node]].
 
 ---
 

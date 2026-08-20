@@ -1,6 +1,6 @@
 # CLI reference
 
-**The `floe` binary covers setup, service management and auth only — nothing about scopes, contexts, nodes or extensions.**
+**`floe-cli` is lens zero: the headless entry point into floe. In today's code it covers setup, service management and auth directly; broader substrate operations still go through the bus API.**
 
 | Command | What it does | Key flags |
 |---|---|---|
@@ -118,13 +118,13 @@ floe reset --yes
 floe uninstall
 ```
 
-## Not covered by the CLI
+## Not covered by the CLI yet
 
 There is no `floe` command for any of the following. Use [[Bus API]] instead:
 
 - **Scopes** — create, update, delete, list. See `POST/PATCH/DELETE/GET /v1/workspaces/:workspace_id/scopes`.
 - **Contexts** — create, list, read events, participants, subscriptions, compaction. See the `/v1/contexts` and `/v1/workspaces/:workspace_id/contexts` routes.
-- **Nodes / graphs** — the picture of connected nodes in a scope. See `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs`.
+- **Nodes / graphs** — the current storage vocabulary for what is placed on a scope. See `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs`.
 - **Events** — emit, list, trace. See `POST /v1/events/emit`, `GET /v1/events`.
 - **Pulses** — create, pause, resume, cancel, subscribe. See `/v1/pulses`.
 - **Endpoints / actors** — register, list, delete. See `/v1/endpoints`.

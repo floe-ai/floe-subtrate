@@ -1,8 +1,8 @@
 # Node
 
-**A node is a citizen placed on a scope's canvas.**
+**A node is guide shorthand for something shown on a scope.**
 
-A node is the work to be done. A [[Context]] on that node's scope is one run of it.
+A node is the work as pictured on a scope. A [[Context]] on that scope is one run of it.
 One node spawns as many contexts as the work needs — a three-node pipeline and fifty
 documents don't disagree, because the pipeline is three nodes and the run is fifty
 contexts, one per document moving through it.
@@ -11,13 +11,13 @@ The relationship only runs one way: every node's runs are contexts, but not ever
 context is a node's run. Contexts also exist off any canvas as plain conversations
 between [[Actor]]s (see [[Context]]).
 
-## The three kinds
+## The three guide shapes
 
 | Kind | What it is | Notes |
 |---|---|---|
 | Event node | Something that lands and wakes the system | Carries a source: schedule, folder, webhook, or manual |
 | Working space node | Where work happens | Not an [[Actor]] itself — actors are assigned into it |
-| [[Command]] node | Deterministic, backed by a file meeting the command contract | The only kind that declares a shape (named inputs/outputs) |
+| [[Command]] node | Deterministic work backed by a file meeting the command contract | The only kind that declares a shape (named inputs/outputs) |
 
 A working space node has no identity of its own. It's a place on the canvas that
 one or more actors are assigned into; the actor brings the judgement, the node

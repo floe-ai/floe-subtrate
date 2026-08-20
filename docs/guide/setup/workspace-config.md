@@ -23,8 +23,8 @@ state:
 ```
 
 - `agents` — the list of agent definition files this workspace declares
-- `pulses` — workspace-level pulse declarations (schedule sources for [[Event]]s)
-- `watchers` — folder-watch configs, each pointing at an existing node
+- `pulses` — workspace-level schedule declarations (sources for [[Event]]s)
+- `watchers` — folder-watch configs; a folder change is an event source, not a primitive in its own right
 - `state` — where ephemeral, non-config runtime state is written
 
 ## `.floe/agents/<id>.md`

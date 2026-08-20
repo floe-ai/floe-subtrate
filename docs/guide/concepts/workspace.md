@@ -2,7 +2,7 @@
 
 **A workspace is the outer boundary of all work for a product.**
 
-One repo, one folder. It holds [[Actor]]s, [[Scope]]s, [[Extension]]s and settings.
+One repo, one folder. It holds the four citizens — [[Actor]], [[Command]], [[Context]] and [[Scope]] — plus the files and settings that let them run.
 
 ## What lives in git
 

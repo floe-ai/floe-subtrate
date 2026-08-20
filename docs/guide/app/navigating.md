@@ -1,6 +1,6 @@
 # Navigating floe-app
 
-**The app is one screen with three panes: a left nav, a main column, and a right-hand inspector.**
+**The app is one shell with three panes: a left nav, a main column, and a right-hand inspector.**
 
 ## The shell
 
@@ -12,7 +12,7 @@ The left nav ([[Workspace]]-scoped) lists, top to bottom:
 - An **Actors** section — every [[Actor]] registered in the workspace, plus "New actor".
 - **Substrate Settings**, pinned to the bottom, below a divider — this switches the whole app into machine-level settings mode (see [[Settings in floe-app]]).
 
-Selecting anything in the nav drives the main column. Opening a [[Node]], [[Actor]] or [[Context]] can also open detail in the right-hand inspector aside.
+Selecting anything in the nav drives the main column. Opening a [[Node]], [[Actor]] or [[Context]] can also open detail in the right-hand inspector aside. The shell owns this navigation; the domain views inside it are lenses.
 
 ## Home
 
