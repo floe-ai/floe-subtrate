@@ -22,7 +22,6 @@ const REGISTERED: Record<string, string> = {
   "CONTEXT.md": "canonical",
   "PRODUCT.md": "canonical",
   "README.md": "operational",
-  "docs/ROADMAP.md": "working",
   "docs/tech-debt.md": "working (removal queue)",
   "docs/floe_thought_log.md": "working (owner's direction log)",
   "docs/contracts.md": "working",
@@ -43,7 +42,8 @@ const FREE_FORM_DOC_DIRS = new Set([
   "evidence",
   "qa",
   "reference", // non-markdown reference assets
-  "architecture" // living architecture graph (operator-approved, standing — docs/architecture/overview.md)
+  "architecture", // living architecture graph (operator-approved, standing — docs/architecture/overview.md)
+  "guide" // user documentation (operator-approved, standing — docs/guide/README.md)
 ]);
 
 const ADR_NAME = /^\d{4}-[a-z0-9-]+\.md$/;

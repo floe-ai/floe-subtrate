@@ -47,7 +47,14 @@ message instead of migrating or crashing. The correct response is always to
 reset the config and re-run setup:
 
 ```bash
-rm -rf ~/.floe        # or: rm ~/.floe/config.yaml
+rm ~/.floe/config.yaml   # deletes only the config file (safe default)
+npm run floe -- setup
+```
+
+If you need a full factory reset (wipes all workspace history and credentials):
+
+```bash
+rm -rf ~/.floe           # destroys event history, auth credentials, logs, skills, extensions
 npm run floe -- setup
 ```
 

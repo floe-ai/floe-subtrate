@@ -21,6 +21,6 @@ export function resolveContext(input: ResolveContextInput, ctxStore: ContextStor
   const destination_endpoint_id = destinationEndpoint(destination);
   if (current_delivery_context_id && destination_endpoint_id && ctxStore.isParticipant(current_delivery_context_id, destination_endpoint_id)) return { context_id: current_delivery_context_id, created: false };
   const participants = destination_endpoint_id && destination_endpoint_id !== source_endpoint_id ? [source_endpoint_id, destination_endpoint_id] : [source_endpoint_id];
-  // ponytail: Reuse parent_context_id as the peer link until the ROADMAP's neutral link and peer-context UI land; revisit then.
+  // ponytail: Reuse parent_context_id as the peer link until a neutral link and peer-context UI land; revisit then.
   return { context_id: newContextId(), created: true, participants, parent_context_id: current_delivery_context_id ?? null };
 }

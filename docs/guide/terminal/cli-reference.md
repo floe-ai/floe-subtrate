@@ -1,0 +1,153 @@
+# CLI reference
+
+**`floe-cli` is lens zero: the headless entry point into floe. In today's code it covers setup, service management and auth directly; broader substrate operations still go through the bus API.**
+
+| Command | What it does | Key flags |
+|---|---|---|
+| `floe setup` | Create config, optionally enable autostart, start services, verify health, open web | `--yes`, `--no-autostart`, `--no-open`, `--repair` |
+| `floe status` | Show service health and configured URLs | — |
+| `floe open` | Open the web UI | — |
+| `floe start` | Start local services (bus, bridge, frontend) | — |
+| `floe desktop` | Start services if needed, then open the desktop window attached to the running frontend | — |
+| `floe stop` | Stop local services | — |
+| `floe restart` | Restart local services | — |
+| `floe logs [service]` | Print service logs (`bus`, `bridge`, or `app`; all three if omitted) | — |
+| `floe login` | Configure an auth profile | `--provider`, `--profile`, `--model`, `--api-key-env` |
+| `floe auth list` | List configured auth profiles | — |
+| `floe auth doctor` | Validate auth/profile setup | — |
+| `floe logout <profile>` | Remove an auth profile | — |
+| `floe doctor` | Diagnose local setup | — |
+| `floe config path` | Print active config path | — |
+| `floe config edit` | Open config in `$EDITOR`, or print the path | — |
+| `floe autostart on` | Enable user-level autostart | — |
+| `floe autostart off` | Disable user-level autostart | — |
+| `floe uninstall` | Remove autostart entries and stop services; preserve `~/.floe` data | — |
+| `floe reset` | Factory reset: wipe workspaces, contexts, boards, agents; preserve provider credentials and service config | `--yes` |
+| `floe` (no args) | Start services, verify health, and (if a workspace is found in the current directory) attach it | — |
+
+## `floe setup`
+
+First-run entry point. Writes `~/.floe/config.yaml` if missing, then starts services and checks health.
+
+```bash
+floe setup --yes
+```
+
+`--repair` reconciles local service records (PID files, ports) without wiping data.
+
+## `floe status`
+
+```bash
+floe status
+```
+
+Prints whether bus/bridge/app are running and the URLs they're bound to.
+
+## `floe open` / `floe start` / `floe stop` / `floe restart`
+
+```bash
+floe start     # bus + bridge + frontend, no window
+floe stop
+floe restart
+floe open       # opens http://localhost:5379 in a browser
+```
+
+## `floe desktop`
+
+Starts services if not already running, waits for the frontend to be healthy, then opens the Tauri desktop shell attached to the same 5379 frontend. It never starts a second frontend. Requires `cargo` on `PATH`; fails fast with an install link if missing.
+
+```bash
+floe desktop
+```
+
+## `floe logs`
+
+```bash
+floe logs           # bus, bridge, app
+floe logs bridge     # bridge only
+```
+
+## `floe login`
+
+Configures a provider auth profile (API key or OAuth, depending on the provider).
+
+```bash
+floe login --provider anthropic --profile default
+floe login --provider openai --api-key-env OPENAI_API_KEY
+```
+
+## `floe auth list` / `floe auth doctor` / `floe logout`
+
+```bash
+floe auth list
+floe auth doctor
+floe logout default
+```
+
+## `floe config path` / `floe config edit`
+
+```bash
+floe config path
+floe config edit
+```
+
+## `floe autostart on` / `floe autostart off`
+
+```bash
+floe autostart on
+floe autostart off
+```
+
+## `floe doctor`
+
+```bash
+floe doctor
+```
+
+## `floe reset`
+
+Destructive. Prompts for confirmation unless `--yes` is passed.
+
+```bash
+floe reset --yes
+```
+
+## `floe uninstall`
+
+```bash
+floe uninstall
+```
+
+## Not covered by the CLI yet
+
+There is no `floe` command for any of the following. Use [[Bus API]] instead:
+
+- **Scopes** — create, update, delete, list. See `POST/PATCH/DELETE/GET /v1/workspaces/:workspace_id/scopes`.
+- **Contexts** — create, list, read events, participants, subscriptions, compaction. See the `/v1/contexts` and `/v1/workspaces/:workspace_id/contexts` routes.
+- **Nodes / graphs** — the current storage vocabulary for what is placed on a scope. See `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs`.
+- **Events** — emit, list, trace. See `POST /v1/events/emit`, `GET /v1/events`.
+- **Pulses** — create, pause, resume, cancel, subscribe. See `/v1/pulses`.
+- **Endpoints / actors** — register, list, delete. See `/v1/endpoints`.
+- **Extensions** — report, list, relay. See `/v1/extensions`.
+
+## `npm run build` (developer tool, not a `floe` command)
+
+`npm run build` at the repo root is a dev/dogfooding build picker. It is entirely separate from the `floe` CLI and must never become a `floe` command.
+
+Entry point: `scripts/build.mjs`. Targets: `bus` (`floe-bus`, `tsc`), `bridge` (`floe-bridge`, `tsc`), `cli` (`floe-cli`, `tsc`), `app` (`floe-app`, `tsc -b` + `vite build`).
+
+```bash
+npm run build              # interactive multi-select on a TTY, all pre-ticked
+npm run build -- --all     # build all targets, non-interactive
+npm run build -- bus app   # build named targets
+```
+
+On a non-TTY (agent/CI), if no targets are given, all four are built automatically — it never hangs waiting for input. The Tauri desktop exe build (`tauri:build`) is deliberately excluded; run it manually inside `floe-app` when needed.
+
+See [[Glossary]] for term definitions.
+
+## Implementation
+
+- `floe-cli/src/cli.ts` — the full command registry
+- `floe-cli/src/index.ts` — CLI entry point / dependency preflight
+- `scripts/build.mjs` — the dev build picker (not part of the CLI)
