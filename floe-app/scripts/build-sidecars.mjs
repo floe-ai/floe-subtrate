@@ -31,3 +31,8 @@ const desktopBundle = readFileSync(scriptOutput, "utf8");
 for (const providerLogin of ["loginOpenAICodex", "loginGitHubCopilot"]) {
   if (!desktopBundle.includes(providerLogin)) throw new Error(`Desktop bundle omitted Pi OAuth flow: ${providerLogin}`);
 }
+const oauthRegistration = desktopBundle.lastIndexOf("registerBunOAuthFlows();");
+const commandDispatch = desktopBundle.indexOf('if (command === "auth")');
+if (oauthRegistration < 0 || commandDispatch < 0 || oauthRegistration > commandDispatch) {
+  throw new Error("Desktop bundle registers Pi OAuth flows after command dispatch");
+}

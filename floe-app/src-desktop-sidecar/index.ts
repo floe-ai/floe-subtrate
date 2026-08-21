@@ -1,4 +1,10 @@
 #!/usr/bin/env bun
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
+
+// Both provider setup and the live bridge resolve subscription credentials.
+// Register Pi's static OAuth loaders before dispatching either packaged path.
+registerBunOAuthFlows();
+
 const [command, ...args] = process.argv.slice(2);
 
 try {

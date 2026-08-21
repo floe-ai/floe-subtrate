@@ -10,14 +10,8 @@ import {
   type CredentialStore,
   type Model,
 } from "@earendil-works/pi-ai";
-import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import YAML from "yaml";
-
-// Pi keeps browser/device OAuth implementations behind bundler-opaque imports.
-// The packaged desktop companion is a standalone bundle, so register Pi's
-// static loaders before any provider attempts login or token refresh.
-registerBunOAuthFlows();
 
 type Profile = {
   id: string;
