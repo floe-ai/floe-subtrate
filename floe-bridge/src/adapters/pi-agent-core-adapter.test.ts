@@ -1095,6 +1095,50 @@ describe("Substrate model — explicit emit only", () => {
     expect(capturedPrompts[2]).toContain("response_expected: true");
   });
 
+  it("queues one communication follow-up when a response-required turn would end silently", async () => {
+    const followUps: any[] = [];
+    const telemetryCalls: any[] = [];
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      followUp(message: any) { followUps.push(message); },
+      async prompt() {
+        const terminalMessage = {
+          role: "assistant",
+          content: [],
+          stopReason: "stop",
+          usage: null,
+          model: "mock-model",
+          provider: "mock-provider"
+        };
+        for (const l of this.listeners) await l({ type: "turn_end", message: terminalMessage, toolResults: [] });
+        // A duplicate terminal signal must not enqueue a second reminder.
+        for (const l of this.listeners) await l({ type: "turn_end", message: terminalMessage, toolResults: [] });
+        for (const l of this.listeners) await l({ type: "agent_end", messages: [terminalMessage] });
+      }
+    };
+
+    const adapter = makeTestAdapterWithEmit(fakeAgent);
+    const delivery = makeDelivery("del-silent-required", "thread-silent-required", "help me");
+    delivery.events[0].response = { expected: true };
+
+    await adapter.handleBundle(
+      {
+        bridge_id: "bridge:test",
+        bus: {
+          async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
+          async emit() {}
+        }
+      } as any,
+      delivery,
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    );
+
+    expect(followUps).toHaveLength(1);
+    expect(followUps[0].content[0].text).toContain("use the emit tool");
+    expect(telemetryCalls.filter((call) => call.kind === "communication_retry")).toHaveLength(1);
+  });
+
   it("runtime telemetry payloads include the active delivery context id", async () => {
     const fakeAgent = new FakeAgent();
     const telemetryCalls: any[] = [];

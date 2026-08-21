@@ -46,6 +46,7 @@ class PiErrorStopReasonSignal extends Error {
 type AgentLike = {
   prompt(input: unknown): Promise<void>;
   subscribe(listener: (event: any) => void | Promise<void>): void;
+  followUp?(input: unknown): void;
 };
 
 type AgentFactoryInput = {
@@ -79,6 +80,8 @@ type RuntimeTurnContext = {
   reply_destination_endpoint_id: string;
   context_id: string | null;
   current_context_participants: string[];
+  response_expected: boolean;
+  communication_reprompted: boolean;
   visible_output: string;
   last_visible_telemetry_text: string;
   finalized: boolean;
@@ -825,6 +828,34 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           }
         }
 
+        if (event.type === "turn_end") {
+          const messageContent = Array.isArray(event.message?.content) ? event.message.content : [];
+          const hasToolCalls = messageContent.some((item: any) => item?.type === "toolCall");
+          if (
+            turn.response_expected &&
+            turn.emitted_events.length === 0 &&
+            !turn.communication_reprompted &&
+            !hasToolCalls &&
+            typeof session.agent.followUp === "function"
+          ) {
+            turn.communication_reprompted = true;
+            session.agent.followUp({
+              role: "user",
+              timestamp: Date.now(),
+              content: [{
+                type: "text",
+                text:
+                  "This delivered event expects a response, but you have not emitted one. " +
+                  "Do not repeat the work. Before ending this run, use the emit tool to send " +
+                  "the source actor a concise outcome, progress update, or concrete blocker."
+              }]
+            });
+            await this.appendTelemetry(context, turn, "communication_retry", {
+              reason: "response_expected_without_emitted_event"
+            });
+          }
+        }
+
         // agent_end is the correct finalization signal — it fires ONCE after all
         // tool-call loops complete. turn_end fires after each inner iteration, so
         // finalizing on turn_end would cut the agent short when it uses multiple tools.
@@ -868,6 +899,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       reply_destination_endpoint_id: sourceEndpoint,
       context_id: trigger?.context_id ?? null,
       current_context_participants: [],
+      response_expected: deliveryExpectsResponse(bundle),
+      communication_reprompted: false,
       visible_output: "",
       last_visible_telemetry_text: "",
       finalized: false,
@@ -1187,10 +1220,7 @@ function deliveryToPrompt(
   const correlationId = trigger?.correlation_id ?? null;
   const currentContextId = trigger?.context_id ?? null;
 
-  const responseExpected = bundle.events.some((event) =>
-    event.response?.expected === true ||
-    (event.type === "message" && !!event.source_endpoint_id && toNeutralRef(event.source_endpoint_id) === "operator")
-  );
+  const responseExpected = deliveryExpectsResponse(bundle);
 
   const contextBlock = renderDestinationContext({
     source_endpoint_id: sourceEndpoint,
@@ -1218,6 +1248,13 @@ function deliveryToPrompt(
 
   const eventsBlock = eventLines.join("\n\n");
   return `${contextBlock}${endpointsBlock}\n\n${eventsBlock}`;
+}
+
+function deliveryExpectsResponse(bundle: DeliveryBundle): boolean {
+  return bundle.events.some((event) =>
+    event.response?.expected === true ||
+    (event.type === "message" && !!event.source_endpoint_id && toNeutralRef(event.source_endpoint_id) === "operator")
+  );
 }
 
 function extractText(message: any): string {
