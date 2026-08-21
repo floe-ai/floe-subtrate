@@ -20,6 +20,12 @@ describe("SUBSTRATE_GUIDANCE", () => {
     expect(SUBSTRATE_GUIDANCE).toContain("non-participant");
     expect(SUBSTRATE_GUIDANCE).toContain("channels or broadcasts");
   });
+
+  it("does not confuse provider-native coding with persistent Floe operation", () => {
+    expect(SUBSTRATE_GUIDANCE).toContain("they are not themselves substrate composition");
+    expect(SUBSTRATE_GUIDANCE).toContain("Creating a script or command does not activate persistent Floe operation");
+    expect(SUBSTRATE_GUIDANCE).toContain("report that concrete gap");
+  });
 });
 
 describe("buildSystemPrompt", () => {

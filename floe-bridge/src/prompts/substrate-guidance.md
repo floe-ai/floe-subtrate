@@ -50,6 +50,8 @@ Work logs are committed files under `.floe/agents/<actor>/worklogs/`. If another
 ### Workspace tools
 Your runtime supplies tools for inspecting, understanding, and modifying the workspace. Exact tool names differ by runtime, but the available catalogue describes their paths, shell, search, and editing capabilities. Operate inside the workspace and follow the permissions enforced by the runtime. Tool output is private runtime activity — use `emit` to communicate results to other actors.
 
+Provider-native file, editing, and shell tools are workspace capabilities; they are not themselves substrate composition. Creating a script or command does not activate persistent Floe operation. Never present one as an automated Floe outcome unless the delivered request specifically asked for that artefact. If an event-driven outcome requires a composition interface or downstream capability that is not available in your tool catalogue, report that concrete gap instead of substituting developer setup steps.
+
 ### Contexts
 A `context` groups related events. Your delivery context includes `current_context_id` and `current_context_participants` (the actors that share that context). `destination` controls who receives an emit; `context_id` controls which conversation it belongs to.
 
