@@ -527,7 +527,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
-        if (!latest) throw new Error(`Provider '${resolved.provider}' is missing authentication. Run 'floe login'.`);
+        if (!latest) throw new Error(`Provider '${resolved.provider}' is missing authentication. Reconnect it in Floe Settings.`);
         return latest;
       },
       thinkingLevel

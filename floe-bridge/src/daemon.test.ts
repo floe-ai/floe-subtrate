@@ -41,32 +41,32 @@ afterEach(() => {
 });
 
 describe("chooseAdapter", () => {
-  it("keeps the live provider router ready on a clean start", () => {
+  it("uses Pi as the live runtime on a clean start", () => {
     withoutAdapterEnv();
     const made = makeConfig();
     try {
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
+      expect(chooseAdapter(made.configPath, made.config).name).toBe("pi-agent-core");
     } finally {
       made.cleanup();
     }
   });
 
-  it("keeps explicit live configuration behind the provider router", () => {
+  it("keeps explicit live configuration on Pi", () => {
     withoutAdapterEnv();
     const made = makeConfig("pi-agent-core");
     try {
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
+      expect(chooseAdapter(made.configPath, made.config).name).toBe("pi-agent-core");
     } finally {
       made.cleanup();
     }
   });
 
-  it("routes profile-backed execution without changing the bridge at login time", () => {
+  it("uses Pi for a subscription-backed provider profile", () => {
     withoutAdapterEnv();
     const made = makeConfig();
     try {
       writeProfiles(made.config.home, [{ id: "copilot-atvi", provider: "github-copilot", model: "gpt-4.1" }]);
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
+      expect(chooseAdapter(made.configPath, made.config).name).toBe("pi-agent-core");
     } finally {
       made.cleanup();
     }
@@ -77,6 +77,16 @@ describe("chooseAdapter", () => {
     const made = makeConfig("copilot");
     try {
       expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported FLOE runtime adapter "copilot"/);
+    } finally {
+      made.cleanup();
+    }
+  });
+
+  it("does not retain the removed Codex app-server runtime path", () => {
+    withoutAdapterEnv();
+    const made = makeConfig("codex-app-server");
+    try {
+      expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported FLOE runtime adapter "codex-app-server"/);
     } finally {
       made.cleanup();
     }

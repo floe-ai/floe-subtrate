@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5379",
-    "beforeDevCommand": "npm run build:auth-sidecar && npm run dev",
-    "beforeBuildCommand": "npm run build:auth-sidecar && npm run build"
+    "beforeDevCommand": "npm run build:sidecars && npm run dev",
+    "beforeBuildCommand": "npm run build:sidecars && npm run build"
   },
   "app": {
     "windows": [
@@ -27,7 +27,11 @@
     "active": true,
     "targets": "all",
     "externalBin": [
-      "binaries/floe-auth"
+      "binaries/floe-node"
+    ],
+    "resources": [
+      "resources/floe-desktop.js",
+      "resources/prompts/*.md"
     ],
     "icon": [
       "icons/32x32.png",

@@ -153,7 +153,7 @@ describe("SubstrateSettingsView — desktop mode (isTauri = true)", () => {
   it("keeps normal provider sign-in outside the developer observatory", async () => {
     render(<SubstrateSettingsView />);
     await waitFor(() => {
-      expect(screen.getByText(/Normal provider connections.*are managed from the main Floe settings/i)).toBeTruthy();
+      expect(screen.getByText(/Normal subscription connections.*are managed from the main Floe settings/i)).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Sign in with ChatGPT" })).toBeNull();
   });
@@ -260,14 +260,14 @@ describe("SubstrateSettingsView — Runtime tab, desktop mode", () => {
     });
   });
 
-  it("uses the provider router for live operation", async () => {
+  it("uses Pi for live operation", async () => {
     const tauriCore = await import("@tauri-apps/api/core");
     render(<SubstrateSettingsView />);
     fireEvent.click(screen.getByText(/⚙️ Runtime/).closest("button")!);
     const liveBtn = await screen.findByRole("button", { name: /Live/ });
     fireEvent.click(liveBtn);
     await waitFor(() => {
-      expect(vi.mocked(tauriCore.invoke)).toHaveBeenCalledWith("set_runtime_adapter", { adapter: "floe-runtime" });
+      expect(vi.mocked(tauriCore.invoke)).toHaveBeenCalledWith("set_runtime_adapter", { adapter: "pi-agent-core" });
     });
   });
 

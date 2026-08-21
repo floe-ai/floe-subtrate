@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use tauri_plugin_shell::ShellExt;
+use tauri::{path::BaseDirectory, Manager};
+use tauri::ipc::Channel;
+use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthProfileRecord {
@@ -40,28 +42,29 @@ pub struct AuthStorageItem {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
-const CODEX_PROVIDER_ID: &str = "openai-codex-app-server";
-const CODEX_PROFILE_ID: &str = "chatgpt-codex";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodexModelRecord {
+pub struct ModelProviderModel {
     pub id: String,
     pub name: String,
-    pub description: String,
     pub is_default: bool,
     pub reasoning_efforts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodexProviderStatus {
+pub struct ModelProviderStatus {
+    pub r#type: String,
     pub provider: String,
-    pub available: bool,
+    pub name: String,
+    pub auth_name: String,
     pub connected: bool,
-    pub account_type: Option<String>,
-    pub plan_type: Option<String>,
-    pub models: Vec<CodexModelRecord>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub profile_id: String,
+    pub models: Vec<ModelProviderModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelProvidersResponse {
+    pub r#type: String,
+    pub providers: Vec<ModelProviderStatus>,
 }
 
 fn get_floe_auth_dir() -> Result<PathBuf, String> {
@@ -291,134 +294,99 @@ pub fn delete_substrate_auth_profile(profile_id: String) -> Result<(), String> {
     Ok(())
 }
 
-fn sync_codex_profile(status: &CodexProviderStatus, requested_model: Option<String>) -> Result<AuthProfileRecord, String> {
-    if !status.connected {
-        return Err("ChatGPT is not connected".to_string());
-    }
-    let auth_dir = get_floe_auth_dir()?;
-    fs::create_dir_all(&auth_dir)
-        .map_err(|e| format!("Failed to create Floe auth directory: {}", e))?;
-
-    let selected_model = requested_model
-        .filter(|value| status.models.iter().any(|model| model.id == *value))
-        .or_else(|| status.models.iter().find(|model| model.is_default).map(|model| model.id.clone()))
-        .or_else(|| status.models.first().map(|model| model.id.clone()));
-    let profile = AuthProfileRecord {
-        id: CODEX_PROFILE_ID.to_string(),
-        provider: CODEX_PROVIDER_ID.to_string(),
-        model: selected_model,
-        label: Some("ChatGPT subscription".to_string()),
-        created_at: None,
-        updated_at: None,
-    };
-
-    let profiles_path = auth_dir.join("profiles.yaml");
-    let mut profiles = read_profiles(&profiles_path)?;
-    upsert_profile(&mut profiles, profile.clone());
-    write_profiles(&profiles_path, &profiles)?;
-
-    // The bus exposes model metadata but never Codex credentials. Codex owns its
-    // account and refresh tokens; this local overlay only makes its current model
-    // catalogue selectable through Floe's existing workspace binding surface.
-    let models_path = auth_dir.join("models.json");
-    let mut models_doc: serde_json::Value = if models_path.exists() {
-        serde_json::from_str(&fs::read_to_string(&models_path)
-            .map_err(|e| format!("Failed to read models.json: {}", e))?)
-            .unwrap_or_else(|_| serde_json::json!({ "providers": {} }))
-    } else {
-        serde_json::json!({ "providers": {} })
-    };
-    if !models_doc.get("providers").is_some_and(|value| value.is_object()) {
-        models_doc["providers"] = serde_json::json!({});
-    }
-    models_doc["providers"][CODEX_PROVIDER_ID] = serde_json::json!({
-        "models": status.models.iter().map(|model| serde_json::json!({
-            "id": model.id,
-            "name": model.name,
-            "api": "codex-app-server",
-            "reasoning": !model.reasoning_efforts.is_empty(),
-            "input": ["text", "image"]
-        })).collect::<Vec<_>>()
-    });
-    fs::write(
-        &models_path,
-        format!("{}\n", serde_json::to_string_pretty(&models_doc)
-            .map_err(|e| format!("Failed to serialize models.json: {}", e))?),
-    ).map_err(|e| format!("Failed to write models.json: {}", e))?;
-    Ok(profile)
-}
-
-async fn run_codex_helper(app: &tauri::AppHandle, command: &str) -> Result<CodexProviderStatus, String> {
-    let output = app
-        .shell()
-        .sidecar("floe-auth")
-        .map_err(|e| format!("Failed to prepare Codex: {}", e))?
-        .arg(command)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run Codex: {}", e))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if detail.is_empty() { "Codex did not respond".to_string() } else { detail });
-    }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|_| "Codex returned invalid output".to_string())?;
-    parse_codex_provider_status(&stdout)
-}
-
-fn parse_codex_provider_status(stdout: &str) -> Result<CodexProviderStatus, String> {
-    // Opening the provider-owned browser flow can add blank or launcher output
-    // after the helper's structured result on Windows. Treat stdout as a framed
-    // stream and select the last valid provider-status record rather than the
-    // last physical line.
+fn parse_model_providers(stdout: &str) -> Result<Vec<ModelProviderStatus>, String> {
     for line in stdout.lines().rev().map(str::trim).filter(|line| !line.is_empty()) {
-        if let Ok(status) = serde_json::from_str::<CodexProviderStatus>(line) {
-            if status.provider == CODEX_PROVIDER_ID {
-                return Ok(status);
+        if let Ok(response) = serde_json::from_str::<ModelProvidersResponse>(line) {
+            if response.r#type == "provider_statuses" {
+                return Ok(response.providers);
             }
         }
     }
     Err(if stdout.trim().is_empty() {
-        "Codex returned no status".to_string()
+        "The provider helper returned no status".to_string()
     } else {
-        "Codex returned output without a provider status".to_string()
+        "The provider helper returned invalid status".to_string()
     })
 }
 
 #[tauri::command]
-pub async fn get_codex_provider_status(app: tauri::AppHandle) -> Result<CodexProviderStatus, String> {
-    run_codex_helper(&app, "status").await
+pub async fn get_model_providers(app: tauri::AppHandle) -> Result<Vec<ModelProviderStatus>, String> {
+    let auth_dir = get_floe_auth_dir()?;
+    let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)
+        .map_err(|e| format!("Failed to locate provider setup: {}", e))?;
+    let output = app
+        .shell()
+        .sidecar("floe-node")
+        .map_err(|e| format!("Failed to prepare provider setup: {}", e))?
+        .args([script.as_os_str(), "auth".as_ref(), "providers".as_ref(), auth_dir.as_os_str()])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to inspect model providers: {}", e))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() { "The provider helper did not respond".to_string() } else { detail });
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| "The provider helper returned invalid output".to_string())?;
+    parse_model_providers(&stdout)
 }
 
 #[tauri::command]
-pub async fn connect_codex_provider(
+pub async fn connect_model_provider(
     app: tauri::AppHandle,
-    model: Option<String>,
-) -> Result<CodexProviderStatus, String> {
-    let status = run_codex_helper(&app, "login").await?;
-    sync_codex_profile(&status, model)?;
+    provider: String,
+    on_event: Channel<serde_json::Value>,
+) -> Result<ModelProviderStatus, String> {
+    let auth_dir = get_floe_auth_dir()?;
+    let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)
+        .map_err(|e| format!("Failed to locate provider setup: {}", e))?;
+    let (mut receiver, _child) = app
+        .shell()
+        .sidecar("floe-node")
+        .map_err(|e| format!("Failed to prepare provider setup: {}", e))?
+        .args([
+            script.as_os_str(),
+            "auth".as_ref(),
+            "login".as_ref(),
+            auth_dir.as_os_str(),
+            provider.as_ref(),
+        ])
+        .spawn()
+        .map_err(|e| format!("Failed to start provider sign-in: {}", e))?;
+
+    let mut stderr = String::new();
+    let mut result: Option<ModelProviderStatus> = None;
+    let mut exit_code: Option<i32> = None;
+    while let Some(event) = receiver.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                let line = String::from_utf8_lossy(&bytes);
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
+                if value.get("type").and_then(|item| item.as_str()) == Some("provider_status") {
+                    result = serde_json::from_value(value)
+                        .map_err(|e| format!("The provider helper returned invalid account status: {}", e))?;
+                } else {
+                    on_event.send(value).map_err(|e| format!("Could not update the sign-in screen: {}", e))?;
+                }
+            }
+            CommandEvent::Stderr(bytes) => stderr.push_str(&String::from_utf8_lossy(&bytes)),
+            CommandEvent::Error(error) => return Err(error),
+            CommandEvent::Terminated(payload) => exit_code = payload.code,
+            _ => {}
+        }
+    }
+
+    if exit_code != Some(0) {
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() { "Provider sign-in did not complete".to_string() } else { detail.to_string() });
+    }
+    let status = result.ok_or_else(|| "Provider sign-in completed without account status".to_string())?;
+    write_runtime_adapter_to_config("pi-agent-core")?;
     Ok(status)
 }
 
-#[tauri::command]
-pub async fn login_substrate_oauth(
-    app: tauri::AppHandle,
-    provider: String,
-    profile_id: String,
-    model: Option<String>,
-) -> Result<AuthProfileRecord, String> {
-    if provider != "openai-codex" && provider != CODEX_PROVIDER_ID {
-        return Err(format!("Unsupported desktop OAuth provider: {}", provider));
-    }
-    if profile_id.trim().is_empty() {
-        return Err("Profile ID is required".to_string());
-    }
-    let status = run_codex_helper(&app, "login").await?;
-    sync_codex_profile(&status, model)
-}
-
 // ---------------------------------------------------------------------------
-// Runtime adapter — Test (fake) / Live (provider router) switch
+// Runtime adapter — Test (fake) / Live (Pi) switch
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -435,8 +403,8 @@ pub fn get_runtime_adapter() -> Result<RuntimeAdapterStatus, String> {
 }
 
 /// Persist runtime_adapter to ~/.floe/config.yaml bridge.runtime_adapter.
-/// Valid values: "fake" (Test) or "floe-runtime" (Live provider router).
-/// Legacy Pi values remain accepted for existing developer configurations.
+/// Valid values: "fake" (Test) or "pi-agent-core" (Live).
+/// The former "floe-runtime" name remains an alias for existing local configurations.
 /// The new value takes effect on the next bridge start.
 #[tauri::command]
 pub fn set_runtime_adapter(adapter: String) -> Result<(), String> {
@@ -447,7 +415,7 @@ pub fn set_runtime_adapter(adapter: String) -> Result<(), String> {
         && normalised != "pi-agent-core"
     {
         return Err(format!(
-            "Invalid adapter \"{}\". Use \"fake\" (Test) or \"floe-runtime\" (Live).",
+            "Invalid adapter \"{}\". Use \"fake\" (Test) or \"pi-agent-core\" (Live).",
             adapter
         ));
     }
@@ -485,34 +453,37 @@ mod tests {
         }
     }
 
-    fn codex_status_json() -> String {
+    fn providers_status_json() -> String {
         serde_json::json!({
-            "type": "provider_status",
-            "provider": CODEX_PROVIDER_ID,
-            "available": true,
-            "connected": true,
-            "account_type": "chatgpt",
-            "plan_type": "business",
-            "models": []
+            "type": "provider_statuses",
+            "providers": [{
+                "type": "provider_status",
+                "provider": "openai-codex",
+                "name": "ChatGPT",
+                "auth_name": "OpenAI (ChatGPT Plus/Pro)",
+                "connected": true,
+                "profile_id": "openai-codex-subscription",
+                "models": []
+            }]
         }).to_string()
     }
 
     #[test]
-    fn parses_codex_status_before_trailing_blank_or_launcher_output() {
-        let json = codex_status_json();
-        let status = parse_codex_provider_status(&format!("startup note\n{}\n\n", json)).unwrap();
-        assert!(status.connected);
+    fn parses_provider_statuses_before_trailing_blank_or_launcher_output() {
+        let json = providers_status_json();
+        let providers = parse_model_providers(&format!("startup note\n{}\n\n", json)).unwrap();
+        assert!(providers[0].connected);
 
-        let status = parse_codex_provider_status(&format!("{}\nlauncher finished\n", json)).unwrap();
-        assert_eq!(status.plan_type.as_deref(), Some("business"));
+        let providers = parse_model_providers(&format!("{}\nlauncher finished\n", json)).unwrap();
+        assert_eq!(providers[0].provider, "openai-codex");
     }
 
     #[test]
-    fn rejects_empty_or_unrelated_codex_helper_output_without_json_parser_noise() {
-        assert_eq!(parse_codex_provider_status("\r\n").unwrap_err(), "Codex returned no status");
+    fn rejects_empty_or_unrelated_provider_helper_output_without_json_parser_noise() {
+        assert_eq!(parse_model_providers("\r\n").unwrap_err(), "The provider helper returned no status");
         assert_eq!(
-            parse_codex_provider_status("browser launcher output\n").unwrap_err(),
-            "Codex returned output without a provider status"
+            parse_model_providers("browser launcher output\n").unwrap_err(),
+            "The provider helper returned invalid status"
         );
     }
 

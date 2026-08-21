@@ -1,6 +1,43 @@
 mod fs_commands;
 mod substrate_commands;
 
+use std::{net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream}, time::Duration};
+use tauri::{path::BaseDirectory, Manager};
+use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+
+fn substrate_is_running() -> bool {
+  let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5377);
+  TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok()
+}
+
+fn start_packaged_substrate(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+  if substrate_is_running() {
+    return Ok(());
+  }
+
+  let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)?;
+  let (mut events, _child) = app
+    .shell()
+    .sidecar("floe-node")?
+    .arg(script)
+    .arg("substrate")
+    .spawn()?;
+  tauri::async_runtime::spawn(async move {
+    while let Some(event) = events.recv().await {
+      match event {
+        CommandEvent::Stdout(line) => log::info!("substrate: {}", String::from_utf8_lossy(&line)),
+        CommandEvent::Stderr(line) => log::warn!("substrate: {}", String::from_utf8_lossy(&line)),
+        CommandEvent::Error(error) => log::error!("substrate: {error}"),
+        CommandEvent::Terminated(status) if status.code != Some(0) => {
+          log::error!("packaged substrate exited with status {:?}", status.code);
+        }
+        _ => {}
+      }
+    }
+  });
+  Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -13,6 +50,7 @@ pub fn run() {
             .build(),
         )?;
       }
+      start_packaged_substrate(app)?;
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -22,9 +60,8 @@ pub fn run() {
       substrate_commands::get_substrate_auth_profiles,
       substrate_commands::save_substrate_auth_profile,
       substrate_commands::delete_substrate_auth_profile,
-      substrate_commands::login_substrate_oauth,
-      substrate_commands::get_codex_provider_status,
-      substrate_commands::connect_codex_provider,
+      substrate_commands::get_model_providers,
+      substrate_commands::connect_model_provider,
       substrate_commands::get_runtime_adapter,
       substrate_commands::set_runtime_adapter,
     ])

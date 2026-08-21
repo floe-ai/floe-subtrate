@@ -1523,7 +1523,7 @@ export class BusStore {
         trigger_event_id: event.event_id,
         message:
           "No auth profile is bound to this agent/workspace, so the message was accepted but not delivered. " +
-          "Select an auth profile for this workspace (or run 'floe login') to enable replies."
+          "Connect a model provider in Floe Settings and select it for this workspace to enable replies."
       }
     }, broadcast);
   }

@@ -166,7 +166,7 @@ function useEffectiveRuntime(): { runtime: string | null; bridgeOnline: boolean;
 function adapterLabel(adapter: string | null): string {
   if (!adapter) return "Unknown";
   if (adapter === "fake") return "Test (fake)";
-  if (adapter === "floe-runtime") return "Live (provider runtimes)";
+  if (adapter === "floe-runtime") return "Live (Pi, legacy name)";
   if (adapter === "pi" || adapter === "pi-agent-core") return "Live (pi)";
   return adapter;
 }
@@ -181,7 +181,7 @@ function BrowserRuntimePillar(): React.ReactElement {
         <h2 style={{ fontSize: 16, fontWeight: 510, color: tk.ink, margin: "0 0 6px" }}>Runtime Adapter</h2>
         <p style={{ fontSize: 13, color: tk.ink3, margin: 0, lineHeight: 1.5 }}>
           Controls whether agents use the deterministic <strong>Test (fake)</strong> adapter or Floe's{" "}
-          <strong>live provider runtimes</strong>. Provider profiles select Codex or the Pi compatibility runtime.
+          <strong>live Pi runtime</strong>. Provider profiles select the account and model Pi uses.
         </p>
       </section>
 
@@ -227,7 +227,7 @@ function DesktopRuntimePillar(): React.ReactElement {
       .catch(() => setConfigLoading(false));
   }, []);
 
-  const handleSwitch = async (adapter: "fake" | "floe-runtime") => {
+  const handleSwitch = async (adapter: "fake" | "pi-agent-core") => {
     setSaving(true);
     setSaveError(null);
     setSaveOk(false);
@@ -336,7 +336,7 @@ function RuntimeStatusCard({ loading, error, runtime, bridgeOnline }: RuntimeSta
 type RuntimeSwitchCardProps = {
   desktop: boolean;
   configured: string | null;
-  onSwitch: (adapter: "fake" | "floe-runtime") => void;
+  onSwitch: (adapter: "fake" | "pi-agent-core") => void;
   saving: boolean;
   saveError: string | null;
 };
@@ -380,10 +380,10 @@ function RuntimeSwitchCard({ desktop, configured, onSwitch, saving, saveError }:
           />
           <AdapterButton
             label="⚡ Live"
-            sublabel="Provider-specific runtimes"
+            sublabel="Pi multi-provider runtime"
             active={isLive || (!isTest && !isLive)}
             disabled={!desktop || saving}
-            onClick={() => onSwitch("floe-runtime")}
+            onClick={() => onSwitch("pi-agent-core")}
           />
         </div>
         {configured === null && !desktop && (
@@ -643,7 +643,7 @@ function TauriAuthPillar(): React.ReactElement {
 
       <section style={{ background: "rgba(138,168,156,0.06)", border: `1px solid rgba(138,168,156,0.22)`, borderRadius: tk.r3, padding: 16 }}>
         <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5, lineHeight: 1.55 }}>
-          Normal provider connections, including ChatGPT through OpenAI Codex, are managed from the main Floe settings. This developer view remains available for inspecting profiles and testing API-key configurations.
+          Normal subscription connections are managed from the main Floe settings. This developer view remains available for inspecting profiles and testing API-key configurations.
         </p>
       </section>
 

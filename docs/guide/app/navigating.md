@@ -13,7 +13,7 @@ Selecting a developer tool drives the main column. Opening a [[Node]], [[Actor]]
 
 ## First use
 
-When no provider is configured, the desktop app first asks the user to connect ChatGPT through OpenAI Codex. When no workspace exists, it then asks for a folder. Floe applies the selected model as that workspace's default and lands in the Floe conversation. An existing workspace is reused; connecting a provider does not force the user to create another one.
+When no supported provider is configured, the desktop app first asks the user to choose and connect a subscription through the packaged Pi authentication flow. When no workspace exists, it then asks for a folder. Floe applies the selected model as that workspace's default and lands in the Floe conversation. An existing workspace is reused; connecting a provider does not force the user to create another one.
 
 After onboarding, the gear beside the workspace name opens normal **Settings**. Provider connections apply to this device; the workspace model applies only to the selected workspace. Substrate Settings remains under Developer tools for diagnostics and advanced configuration.
 

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5379",
-    "build:auth-sidecar": "node scripts/build-auth-sidecar.mjs",
+    "build:sidecars": "node scripts/build-sidecars.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5379",
     "test": "vitest run",
@@ -13,10 +13,11 @@
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:attach": "npm run build:auth-sidecar && tauri dev --config src-tauri/tauri.attach.conf.json",
+    "tauri:attach": "npm run build:sidecars && tauri dev --config src-tauri/tauri.attach.conf.json",
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "^0.84.2",
     "@tauri-apps/api": "^2.11.0",
     "@vitejs/plugin-react": "^6.0.2",
     "@xyflow/react": "^12.10.2",

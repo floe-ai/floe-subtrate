@@ -15,7 +15,8 @@ type Selection = { profileId: string; modelId: string; effort: string };
 
 export function profileDisplayName(profile: AuthProfileRecord): string {
   if (profile.label) return profile.label;
-  if (profile.provider === "openai-codex-app-server") return "ChatGPT";
+  if (profile.provider === "openai-codex") return "ChatGPT";
+  if (profile.provider === "anthropic") return "Claude";
   return profile.provider;
 }
 
@@ -56,7 +57,7 @@ export function FloeModelControl({
           modelId: binding?.model ?? "",
           effort: binding?.thinking_level ?? "off",
         };
-        setProfiles(auth.profiles);
+        setProfiles(auth.profiles.filter(profile => profile.provider !== "openai-codex-app-server"));
         setProfileId(selection.profileId);
         setModelId(selection.modelId);
         setEffort(selection.effort);

@@ -15,7 +15,7 @@ They appear together because users commonly need to connect an account and then 
 
 The Floe conversation shows the workspace's provider → model → effort choice directly above the composer. Floe does not accept an outcome or message until a connected provider and model have been saved for that workspace. Changing the inline choice updates the same workspace-default runtime binding used everywhere else.
 
-The gear next to the workspace switcher opens the fuller Settings surface. It contains the ChatGPT connection managed by official OpenAI Codex and the same workspace model choice. Both surfaces use provider names and model names rather than asking a normal user to create profile identifiers or paste tokens.
+The gear next to the workspace switcher opens the fuller Settings surface. It contains subscription connections managed through Floe's packaged Pi authentication helper and the same workspace model choice. Both surfaces use provider names and model names rather than asking a normal user to create profile identifiers or paste tokens.
 
 ## The actor Configure tab
 
@@ -44,7 +44,7 @@ See [[Glossary]].
 
 - `floe-app/src/workspace/WorkspaceSettings.tsx` — workspace-level default binding
 - `floe-app/src/workspace/FloeModelControl.tsx` — compact provider/model/effort control at the conversation boundary
-- `floe-app/src/providers/ProviderAccess.tsx` — device-level ChatGPT/Codex connection
+- `floe-app/src/providers/ProviderAccess.tsx` — device-level subscription connection
 - `floe-app/src/actors/ActorInspector.tsx` — actor Configure tab, binding form, resolved-binding display
 - `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — Substrate Settings shell and the six tabs (Authentication/Runtime real; Models/MCP/Workspaces/Diagnostics are stubs)
 - `GET /v1/auth/profiles`, `GET /v1/runtime/bindings`, `POST /v1/runtime/bindings` — auth profiles and binding reads/writes

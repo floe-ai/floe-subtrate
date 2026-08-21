@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import type { WorkspaceRef } from "../../bus-client/types.ts";
 import { ProviderAccess } from "../../providers/ProviderAccess.tsx";
-import { CODEX_PROFILE_ID, preferredCodexModel, type CodexProviderStatus } from "../../providers/codexProvider.ts";
+import type { ModelProviderStatus } from "../../providers/modelProviders.ts";
 import { RegisterWorkspaceScreen } from "../../workspace/WorkspaceSwitcher.tsx";
 import { tk } from "../../theme.ts";
 
@@ -16,31 +16,38 @@ export function OnboardingFlow({
   hasProvider,
   existingProfileId,
   existingModel,
-  codexStatus,
+  modelProviders,
   onReady,
 }: {
   workspaces: WorkspaceRef[];
   hasProvider: boolean;
   existingProfileId?: string;
   existingModel?: string;
-  codexStatus: CodexProviderStatus | null;
+  modelProviders: ModelProviderStatus[] | null;
   onReady: (selection: ReadySelection) => Promise<void>;
 }): React.ReactElement {
   const [step, setStep] = useState<"provider" | "workspace" | "finishing">(
     hasProvider ? "workspace" : "provider",
   );
-  const [profileId, setProfileId] = useState(hasProvider ? existingProfileId || CODEX_PROFILE_ID : "");
-  const [model, setModel] = useState(existingModel || (codexStatus ? preferredCodexModel(codexStatus) : ""));
+  const [profileId, setProfileId] = useState(hasProvider ? existingProfileId || "" : "");
+  const [model, setModel] = useState(existingModel || "");
   const [error, setError] = useState<string | null>(null);
 
   async function finish(workspace: WorkspaceRef, selection?: { profileId?: string; model?: string }) {
+    const selectedProfileId = selection?.profileId || profileId;
+    const selectedModel = selection?.model ?? model;
+    if (!selectedProfileId || !selectedModel) {
+      setError("Choose a provider and model before opening Floe");
+      setStep("provider");
+      return;
+    }
     setStep("finishing");
     setError(null);
     try {
       await onReady({
         workspace,
-        profileId: selection?.profileId || profileId || CODEX_PROFILE_ID,
-        model: selection?.model ?? model,
+        profileId: selectedProfileId,
+        model: selectedModel,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Floe could not finish setup");
@@ -70,15 +77,15 @@ export function OnboardingFlow({
               First, connect a model provider
             </h1>
             <p style={{ margin: "0 0 24px", color: tk.ink3, fontSize: 14, lineHeight: 1.55, maxWidth: 600 }}>
-              Floe uses this connection across your workspaces. ChatGPT through OpenAI Codex is currently available; more providers can appear here without changing how you use Floe.
+              Choose a subscription you already use. Floe will open the provider's sign-in and make its models available to your workspaces.
             </p>
             <ProviderAccess
-              initialStatus={codexStatus}
+              initialProviders={modelProviders}
               onReady={(status, selectedModel) => {
-                setProfileId(CODEX_PROFILE_ID);
-                setModel(selectedModel || preferredCodexModel(status));
+                setProfileId(status.profile_id);
+                setModel(selectedModel);
                 const existing = workspaces.find(workspace => workspace.selected_at !== null) ?? workspaces[0];
-                if (existing) void finish(existing, { profileId: CODEX_PROFILE_ID, model: selectedModel || preferredCodexModel(status) });
+                if (existing) void finish(existing, { profileId: status.profile_id, model: selectedModel });
                 else setStep("workspace");
               }}
             />

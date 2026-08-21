@@ -40,7 +40,7 @@ import { useNavigation } from "./hooks/useNavigation.ts";
 import { WorkspaceSwitcher } from "./workspace/WorkspaceSwitcher.tsx";
 import { ScopeInspectorEmpty, DefaultInspector, useInspectorResize, readRinspWidth } from "./scope/ScopeInspector.tsx";
 import { tk } from "./theme.ts";
-import { getCodexProviderStatus, type CodexProviderStatus } from "./providers/codexProvider.ts";
+import { getModelProviders, type ModelProviderStatus } from "./providers/modelProviders.ts";
 import { isTauri } from "./fs/workspaceFs.ts";
 
 // ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ export function App(): React.ReactElement {
   const [scopes, setScopes] = useState<ScopeRef[]>([]);
   const [actors, setActors] = useState<EndpointRef[]>([]);
   const [authProfiles, setAuthProfiles] = useState<AuthProfileRecord[]>([]);
-  const [codexStatus, setCodexStatus] = useState<CodexProviderStatus | null>(null);
+  const [modelProviders, setModelProviders] = useState<ModelProviderStatus[] | null>(null);
 
   const nav = useNavigation();
 
@@ -154,16 +154,17 @@ export function App(): React.ReactElement {
 
     async function boot() {
       try {
-        const codexPromise = isTauri()
-          ? getCodexProviderStatus().catch(() => null)
+        const providersPromise = isTauri()
+          ? getModelProviders().catch(() => null)
           : Promise.resolve(null);
         const substrate = await waitForSubstrate();
         const wss = substrate.workspaces;
+        const usableProfiles = substrate.profiles.filter(profile => profile.provider !== "openai-codex-app-server");
         if (cancelled) return;
         setWorkspaces(wss);
-        setAuthProfiles(substrate.profiles);
-        void codexPromise.then(status => { if (!cancelled) setCodexStatus(status); });
-        if (wss.length === 0 || substrate.profiles.length === 0) {
+        setAuthProfiles(usableProfiles);
+        void providersPromise.then(providers => { if (!cancelled) setModelProviders(providers); });
+        if (wss.length === 0 || usableProfiles.length === 0) {
           if (wss.length > 0) setActiveWorkspace(wss.find(w => w.selected_at !== null) ?? wss[0]!);
           setAppState("onboarding");
           return;
@@ -426,7 +427,7 @@ export function App(): React.ReactElement {
           hasProvider={authProfiles.length > 0}
           existingProfileId={existingProfile?.id}
           existingModel={existingProfile?.model}
-          codexStatus={codexStatus}
+          modelProviders={modelProviders}
           onReady={async ({ workspace, profileId, model }) => {
             await upsertRuntimeBinding({
               scope: "workspace_default",
@@ -442,7 +443,7 @@ export function App(): React.ReactElement {
               getAuthProfiles(),
             ]);
             setWorkspaces(refreshed);
-            setAuthProfiles(auth.profiles);
+            setAuthProfiles(auth.profiles.filter(profile => profile.provider !== "openai-codex-app-server"));
             setActiveWorkspace(refreshed.find(item => item.workspace_id === workspace.workspace_id) ?? workspace);
             setScopes(scs);
             setActors(eps);

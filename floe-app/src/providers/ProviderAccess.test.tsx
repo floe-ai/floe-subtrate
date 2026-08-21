@@ -2,59 +2,71 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderAccess } from "./ProviderAccess.tsx";
-import * as provider from "./codexProvider.ts";
+import type { ModelProviderStatus } from "./modelProviders.ts";
+import * as provider from "./modelProviders.ts";
 
-vi.mock("./codexProvider.ts", async importOriginal => {
-  const actual = await importOriginal<typeof import("./codexProvider.ts")>();
-  return {
-    ...actual,
-    getCodexProviderStatus: vi.fn(),
-    connectCodexProvider: vi.fn(),
-  };
+vi.mock("./modelProviders.ts", async importOriginal => {
+  const actual = await importOriginal<typeof import("./modelProviders.ts")>();
+  return { ...actual, getModelProviders: vi.fn(), connectModelProvider: vi.fn() };
 });
 
-const status: provider.CodexProviderStatus = {
-  provider: provider.CODEX_PROVIDER_ID,
-  available: true,
-  connected: true,
-  account_type: "chatgpt",
-  plan_type: "business",
+const chatgpt: ModelProviderStatus = {
+  type: "provider_status",
+  provider: "openai-codex",
+  name: "ChatGPT",
+  auth_name: "OpenAI (ChatGPT Plus/Pro)",
+  connected: false,
+  profile_id: "openai-codex-subscription",
   models: [
-    { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", description: "", is_default: true, reasoning_efforts: ["high"] },
-    { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", description: "", is_default: false, reasoning_efforts: ["high"] },
+    { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", is_default: true, reasoning_efforts: ["high"] },
+    { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", is_default: false, reasoning_efforts: ["high"] },
   ],
+};
+
+const copilot: ModelProviderStatus = {
+  type: "provider_status",
+  provider: "github-copilot",
+  name: "GitHub Copilot",
+  auth_name: "GitHub Copilot",
+  connected: true,
+  profile_id: "github-copilot-subscription",
+  models: [{ id: "claude-sonnet-5", name: "Claude Sonnet 5", is_default: true, reasoning_efforts: ["high"] }],
 };
 
 describe("ProviderAccess", () => {
   beforeEach(() => vi.clearAllMocks());
-  afterEach(() => cleanup());
+  afterEach(cleanup);
 
-  it("presents the official ChatGPT account and current Codex models in user language", () => {
-    render(<ProviderAccess initialStatus={status} />);
-    expect(screen.getByText("ChatGPT")).toBeTruthy();
-    expect(screen.getByText(/Connected · business/)).toBeTruthy();
-    expect((screen.getByRole("combobox", { name: "ChatGPT default model" }) as HTMLSelectElement).value).toBe("gpt-5.6-sol");
+  it("presents multiple subscription providers without profile ids or API keys", () => {
+    render(<ProviderAccess initialProviders={[chatgpt, copilot]} />);
+    const providerSelect = screen.getByRole("combobox", { name: "Subscription provider" });
+    expect(providerSelect.textContent).toContain("ChatGPT");
+    expect(providerSelect.textContent).toContain("GitHub Copilot · connected");
     expect(screen.queryByText(/profile id|api key|auth token/i)).toBeNull();
   });
 
-  it("syncs the selected model through Codex without exposing a credential", async () => {
-    vi.mocked(provider.connectCodexProvider).mockResolvedValue(status);
+  it("authenticates the selected provider through the desktop helper", async () => {
+    const connected = { ...chatgpt, connected: true };
+    vi.mocked(provider.connectModelProvider).mockResolvedValue(connected);
     const onReady = vi.fn();
-    render(<ProviderAccess initialStatus={status} onReady={onReady} />);
-    fireEvent.change(screen.getByRole("combobox", { name: "ChatGPT default model" }), {
+    render(<ProviderAccess initialProviders={[chatgpt]} onReady={onReady} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Provider default model" }), {
       target: { value: "gpt-5.6-terra" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use this account" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue with ChatGPT" }));
     await waitFor(() => {
-      expect(provider.connectCodexProvider).toHaveBeenCalledWith("gpt-5.6-terra");
-      expect(onReady).toHaveBeenCalledWith(status, "gpt-5.6-terra");
+      expect(provider.connectModelProvider).toHaveBeenCalledWith("openai-codex", expect.any(Function));
+      expect(onReady).toHaveBeenCalledWith(connected, "gpt-5.6-terra");
     });
   });
 
-  it("explains when Codex is unavailable instead of offering technical profile fields", () => {
-    render(<ProviderAccess initialStatus={{ ...status, available: false, connected: false, models: [], error: "Codex command not found" }} />);
-    expect(screen.getByRole("alert").textContent).toContain("Codex is not available on this device");
-    expect((screen.getByRole("button", { name: "Continue with ChatGPT" }) as HTMLButtonElement).disabled).toBe(true);
+  it("shows a provider device code while subscription login is pending", async () => {
+    vi.mocked(provider.connectModelProvider).mockImplementation(async (_provider, onEvent) => {
+      onEvent({ type: "device_code", userCode: "ABCD-1234", verificationUri: "https://github.com/login/device" });
+      return new Promise(() => {});
+    });
+    render(<ProviderAccess initialProviders={[chatgpt]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue with ChatGPT" }));
+    expect(await screen.findByText(/ABCD-1234/)).toBeTruthy();
   });
-
 });

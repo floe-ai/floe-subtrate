@@ -18,10 +18,10 @@ vi.mock("../actors/modelsForProfile.ts", () => ({
   withSelectedModelOption: vi.fn(),
 }));
 
-const profiles = [{ id: "chatgpt", provider: "openai-codex-app-server", label: "ChatGPT" }];
+const profiles = [{ id: "chatgpt", provider: "openai-codex", label: "ChatGPT" }];
 const models = [
-  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai-codex-app-server", api: "codex", reasoning: true },
-  { id: "gpt-basic", name: "GPT Basic", provider: "openai-codex-app-server", api: "codex", reasoning: false },
+  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai-codex", api: "codex", reasoning: true },
+  { id: "gpt-basic", name: "GPT Basic", provider: "openai-codex", api: "codex", reasoning: false },
 ];
 
 beforeEach(() => {
@@ -31,7 +31,7 @@ beforeEach(() => {
   vi.mocked(client.upsertRuntimeBinding).mockResolvedValue({} as never);
   vi.mocked(client.clearRuntimeBindings).mockResolvedValue({ ok: true, binding_key: "workspace" });
   vi.mocked(modelHelpers.modelsForProfile).mockResolvedValue(models);
-  vi.mocked(modelHelpers.providerForProfile).mockReturnValue("openai-codex-app-server");
+  vi.mocked(modelHelpers.providerForProfile).mockReturnValue("openai-codex");
   vi.mocked(modelHelpers.withSelectedModelOption).mockImplementation(list => list);
 });
 

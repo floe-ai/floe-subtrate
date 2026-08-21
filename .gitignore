@@ -18,5 +18,10 @@ test-results/
 .floe/state/
 *.tsbuildinfo
 
-# Platform-specific packaged desktop auth sidecar (rebuilt for each Tauri target)
+# Platform-specific packaged desktop companion (rebuilt for each Tauri target)
+floe-app/src-tauri/binaries/floe-desktop-*
+floe-app/src-tauri/binaries/floe-node-*
 floe-app/src-tauri/binaries/floe-auth-*
+floe-app/src-tauri/binaries/floe-substrate-*
+floe-app/src-tauri/resources/floe-desktop.js
+floe-app/src-tauri/resources/prompts/

@@ -1,46 +1,71 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { tk } from "../theme.ts";
 import {
-  connectCodexProvider,
-  getCodexProviderStatus,
-  preferredCodexModel,
-  type CodexProviderStatus,
-} from "./codexProvider.ts";
+  connectModelProvider,
+  getModelProviders,
+  preferredModel,
+  type ModelProviderAuthEvent,
+  type ModelProviderStatus,
+} from "./modelProviders.ts";
 
 type ProviderAccessProps = {
   compact?: boolean;
-  initialStatus?: CodexProviderStatus | null;
-  onReady?: (status: CodexProviderStatus, model: string) => void;
+  initialProviders?: ModelProviderStatus[] | null;
+  onReady?: (status: ModelProviderStatus, model: string) => void;
 };
 
-export function ProviderAccess({ compact = false, initialStatus = null, onReady }: ProviderAccessProps): React.ReactElement {
-  const [status, setStatus] = useState<CodexProviderStatus | null>(initialStatus);
-  const [model, setModel] = useState(initialStatus ? preferredCodexModel(initialStatus) : "");
-  const [loading, setLoading] = useState(initialStatus === null);
+export function ProviderAccess({ compact = false, initialProviders = null, onReady }: ProviderAccessProps): React.ReactElement {
+  const [providers, setProviders] = useState<ModelProviderStatus[]>(initialProviders ?? []);
+  const [providerId, setProviderId] = useState(initialProviderId(initialProviders ?? []));
+  const [model, setModel] = useState(initialModel(initialProviders ?? []));
+  const [loading, setLoading] = useState(initialProviders === null);
   const [connecting, setConnecting] = useState(false);
+  const [authEvent, setAuthEvent] = useState<ModelProviderAuthEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (initialStatus) return;
+    if (initialProviders !== null) return;
     let cancelled = false;
-    getCodexProviderStatus()
+    getModelProviders()
       .then(next => {
         if (cancelled) return;
-        setStatus(next);
-        setModel(preferredCodexModel(next));
+        setProviders(next);
+        const nextProviderId = initialProviderId(next);
+        setProviderId(nextProviderId);
+        setModel(preferredModel(next.find(item => item.provider === nextProviderId) ?? next[0]!));
       })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [initialStatus]);
+  }, [initialProviders]);
+
+  const status = useMemo(
+    () => providers.find(item => item.provider === providerId) ?? providers[0] ?? null,
+    [providers, providerId],
+  );
+
+  function selectProvider(nextProviderId: string) {
+    const next = providers.find(item => item.provider === nextProviderId);
+    setProviderId(nextProviderId);
+    setModel(next ? preferredModel(next) : "");
+    setAuthEvent(null);
+    setError(null);
+  }
 
   async function connect() {
+    if (!status || !model) return;
+    if (status.connected) {
+      onReady?.(status, model);
+      return;
+    }
+
     setConnecting(true);
+    setAuthEvent(null);
     setError(null);
     try {
-      const next = await connectCodexProvider(model || null);
-      const selected = model || preferredCodexModel(next);
-      setStatus(next);
+      const next = await connectModelProvider(status.provider, setAuthEvent);
+      setProviders(current => current.map(item => item.provider === next.provider ? next : item));
+      const selected = next.models.some(item => item.id === model) ? model : preferredModel(next);
       setModel(selected);
       onReady?.(next, selected);
     } catch (err) {
@@ -51,62 +76,83 @@ export function ProviderAccess({ compact = false, initialStatus = null, onReady 
   }
 
   if (loading) {
-    return <div style={{ color: tk.ink3, padding: compact ? 8 : 20 }}>Checking ChatGPT…</div>;
+    return <div style={{ color: tk.ink3, padding: compact ? 8 : 20 }}>Checking available subscriptions…</div>;
   }
 
-  const unavailable = status && !status.available;
-  const connected = status?.connected === true;
+  if (!status) {
+    return <div role="alert" style={{ color: tk.danger, padding: compact ? 8 : 20 }}>{error ?? "No subscription providers are available"}</div>;
+  }
 
   return (
     <section style={{
       background: tk.surface,
-      border: `1px solid ${connected ? "rgba(138,168,156,0.45)" : tk.border}`,
+      border: `1px solid ${status.connected ? "rgba(138,168,156,0.45)" : tk.border}`,
       borderRadius: tk.r3,
       padding: compact ? 16 : 20,
       maxWidth: 620,
-    }} data-testid="codex-provider-card">
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+    }} data-testid="provider-access-card">
+      <label style={{ display: "flex", flexDirection: "column", gap: 5, color: tk.ink3, fontSize: 11.5 }}>
+        Provider
+        <select
+          aria-label="Subscription provider"
+          value={status.provider}
+          onChange={event => selectProvider(event.target.value)}
+          disabled={connecting}
+          style={selectStyle}
+        >
+          {providers.map(item => (
+            <option key={item.provider} value={item.provider}>
+              {item.name}{item.connected ? " · connected" : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 14, marginTop: 16 }}>
         <div style={{
           width: 38, height: 38, flex: "0 0 38px", borderRadius: 10,
           display: "flex", alignItems: "center", justifyContent: "center",
           background: "rgba(138,168,156,0.12)", color: tk.accent, fontWeight: 650,
-        }}>C</div>
+        }}>{status.name.slice(0, 1)}</div>
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <h3 style={{ margin: 0, color: tk.ink, fontSize: 15, fontWeight: 560 }}>ChatGPT</h3>
-            {connected && (
+            <h3 style={{ margin: 0, color: tk.ink, fontSize: 15, fontWeight: 560 }}>{status.name}</h3>
+            {status.connected && (
               <span style={{ color: tk.accent, fontSize: 11, padding: "2px 7px", borderRadius: 999, background: "rgba(138,168,156,0.12)" }}>
-                Connected{status?.plan_type ? ` · ${status.plan_type}` : ""}
+                Connected
               </span>
             )}
           </div>
           <p style={{ margin: "5px 0 0", color: tk.ink3, fontSize: 12.5, lineHeight: 1.5 }}>
-            Uses OpenAI Codex to sign in and run Floe with your ChatGPT subscription. OpenAI manages the login and credentials.
+            Use your {status.auth_name.replace(/^.*?\((.*)\)$/, "$1")} subscription. Sign-in opens in your browser and credentials stay on this device.
           </p>
         </div>
       </div>
 
-      {!unavailable && status && status.models.length > 0 && (
-        <label style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 16, color: tk.ink3, fontSize: 11.5 }}>
-          Default model
-          <select
-            aria-label="ChatGPT default model"
-            value={model}
-            onChange={event => setModel(event.target.value)}
-            disabled={connecting}
-            style={{
-              background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
-              borderRadius: tk.r2, padding: "8px 10px", color: tk.ink, fontSize: 13,
-            }}
-          >
-            {status.models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-          </select>
-        </label>
-      )}
+      <label style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 16, color: tk.ink3, fontSize: 11.5 }}>
+        Default model
+        <select
+          aria-label="Provider default model"
+          value={model}
+          onChange={event => setModel(event.target.value)}
+          disabled={connecting || status.models.length === 0}
+          style={selectStyle}
+        >
+          {status.models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select>
+      </label>
 
-      {unavailable && (
-        <p role="alert" style={{ margin: "14px 0 0", color: tk.danger, fontSize: 12.5 }}>
-          Codex is not available on this device. {status.error || "Install the official Codex application and try again."}
+      {authEvent?.type === "device_code" && (
+        <div role="status" style={{ marginTop: 14, padding: 12, borderRadius: tk.r2, background: "rgba(255,255,255,0.04)", color: tk.ink2 }}>
+          Enter this code in the provider page: <strong style={{ letterSpacing: "0.12em", color: tk.ink }}>{authEvent.userCode}</strong>
+        </div>
+      )}
+      {(authEvent?.type === "progress" || authEvent?.type === "info") && (
+        <p role="status" style={{ margin: "12px 0 0", color: tk.ink3, fontSize: 12.5 }}>{authEvent.message}</p>
+      )}
+      {authEvent?.type === "auth_url" && (
+        <p role="status" style={{ margin: "12px 0 0", color: tk.ink3, fontSize: 12.5 }}>
+          {authEvent.instructions ?? "Complete sign-in in the browser window."}
         </p>
       )}
       {error && <p role="alert" style={{ margin: "14px 0 0", color: tk.danger, fontSize: 12.5 }}>{error}</p>}
@@ -115,17 +161,32 @@ export function ProviderAccess({ compact = false, initialStatus = null, onReady 
         <button
           type="button"
           onClick={() => void connect()}
-          disabled={connecting || unavailable === true}
+          disabled={connecting || !model}
           style={{
             border: "none", borderRadius: tk.r2, padding: "8px 14px",
             background: tk.accent, color: "#0c1714", fontWeight: 590, fontSize: 12.5,
-            opacity: connecting || unavailable ? 0.55 : 1,
+            opacity: connecting || !model ? 0.55 : 1,
           }}
         >
-          {connecting ? (connected ? "Saving…" : "Waiting for ChatGPT…") : connected ? "Use this account" : "Continue with ChatGPT"}
+          {connecting ? `Waiting for ${status.name}…` : status.connected ? "Use this account" : `Continue with ${status.name}`}
         </button>
-        {connecting && !connected && <span style={{ color: tk.ink3, fontSize: 12 }}>Complete the sign-in in your browser.</span>}
+        {connecting && <span style={{ color: tk.ink3, fontSize: 12 }}>Complete the sign-in in your browser.</span>}
       </div>
     </section>
   );
 }
+
+function initialProviderId(providers: ModelProviderStatus[]): string {
+  return providers.find(item => item.connected)?.provider ?? providers[0]?.provider ?? "";
+}
+
+function initialModel(providers: ModelProviderStatus[]): string {
+  const providerId = initialProviderId(providers);
+  const status = providers.find(item => item.provider === providerId) ?? providers[0];
+  return status ? preferredModel(status) : "";
+}
+
+const selectStyle: React.CSSProperties = {
+  background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+  borderRadius: tk.r2, padding: "8px 10px", color: tk.ink, fontSize: 13,
+};

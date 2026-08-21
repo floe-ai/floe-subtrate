@@ -43,7 +43,8 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as 
 
 function profileDisplayName(profile: AuthProfileRecord): string {
   if (profile.label) return profile.label;
-  if (profile.provider === "openai-codex-app-server") return "ChatGPT";
+  if (profile.provider === "openai-codex") return "ChatGPT";
+  if (profile.provider === "anthropic") return "Claude";
   return profile.provider;
 }
 
@@ -105,7 +106,7 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
   const loadProfiles = useCallback(() => {
     let cancelled = false;
     getAuthProfiles()
-      .then((res) => { if (!cancelled) setProfiles(res.profiles); })
+      .then((res) => { if (!cancelled) setProfiles(res.profiles.filter(profile => profile.provider !== "openai-codex-app-server")); })
       .catch(() => { if (!cancelled) setProfiles([]); });
     return () => { cancelled = true; };
   }, []);

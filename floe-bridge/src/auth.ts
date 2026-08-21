@@ -364,7 +364,7 @@ export async function resolveRuntimeAuth(
   if (!profile) {
     throw new RuntimeAuthError(
       "runtime_profile_required",
-      `Unknown auth profile '${profileId}'. Run 'floe auth list' or 'floe login --profile ${profileId}'.`
+      `Unknown auth profile '${profileId}'. Connect an account in Floe Settings and select it for this workspace.`
     );
   }
 
@@ -465,7 +465,7 @@ export async function resolveRuntimeAuth(
     const profileHint = profileId ? ` for profile '${profileId}'` : "";
     throw new RuntimeAuthError(
       "provider_auth_missing",
-      `Missing provider auth for '${provider}'${profileHint}. Run 'floe login --provider ${provider}'.`
+      `Missing provider auth for '${provider}'${profileHint}. Connect that account in Floe Settings.`
     );
   }
 

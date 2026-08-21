@@ -6,7 +6,7 @@ Every actor needs three things resolved before it can take a turn: which auth pr
 
 ## Model registry
 
-Model catalogues come from the runtime that will execute the work. Pi-compatible providers contribute their built-in catalogue. The ChatGPT connection asks official `codex app-server` for the models currently available to that account and writes their non-secret metadata into `~/.floe/auth/models.json` so the existing binding UI can select them. Floe does not hardcode a Codex model list. A model is usable only when its provider connection and account entitlement allow it (see [[Providers and auth]]).
+Model catalogues come from the packaged Pi runtime that will execute the work. Each provider contributes its current built-in catalogue, and providers such as GitHub Copilot can narrow it after authentication to the models available to that account. Floe does not maintain a separate provider-specific model list. A model is usable only when its provider connection and account entitlement allow it (see [[Providers and auth]]).
 
 ## Models are constrained to the profile's provider
 

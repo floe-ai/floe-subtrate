@@ -56,7 +56,7 @@ Once the native shell opens, it renders a lightweight **Starting Floe…** state
 
 ## First-use onboarding
 
-A [[Workspace]] is a repo or folder where Floe works. On a clean desktop installation, the app first connects ChatGPT through official OpenAI Codex, then asks for an existing or new workspace folder, applies the chosen model as the workspace default, and opens the Floe conversation.
+A [[Workspace]] is a repo or folder where Floe works. On a clean desktop installation, opening Floe starts or attaches to its packaged local substrate in the background. The app then offers the subscription providers supported by its packaged Pi runtime, asks for an existing or new workspace folder, applies the chosen model as the workspace default, and opens the Floe conversation. No CLI setup or login is required.
 
 `floe setup` and `floe open` still walk up from the current directory and automatically register an ancestor that already contains `.floe/`. Headless users can register directly against the bus:
 
@@ -74,9 +74,11 @@ A freshly attached workspace lands in the conversation with Floe and asks what o
 
 ## If it breaks
 
-`~/.floe/config.yaml` is not migrated automatically. If it is incompatible, use `floe reset` or the repair instruction for the affected state. Do not delete the whole Floe home blindly when it contains valuable API credentials. Codex subscription credentials remain in Codex-owned storage.
+`~/.floe/config.yaml` is not migrated automatically. If it is incompatible, use `floe reset` or the repair instruction for the affected state. Do not delete the whole Floe home blindly when it contains valuable subscription or API credentials.
 
 ## Implementation
+
+The desktop installer includes the Node runtime used by Floe and one bundled desktop companion script. Together they run the real Floe bus and bridge as the background substrate and perform provider-neutral Pi authentication when requested by the Tauri shell. The window appears immediately while the frontend waits briefly for the local substrate to become ready. If a substrate is already listening, the app attaches to it instead of starting another one.
 
 - `floe-cli/src/cli.ts` — `setup`, `start`, `desktop`, `open` commands; `registerCurrentWorkspace`, `findAncestorWithFloe`
 - `floe-cli/src/desktop.ts` — `checkCargoAvailable`, `missingCargoMessage`
