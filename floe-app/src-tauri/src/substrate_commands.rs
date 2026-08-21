@@ -3,9 +3,42 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{path::BaseDirectory, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+use tauri::{path::BaseDirectory, Manager};
+use tauri_plugin_shell::{
+    process::{CommandChild, CommandEvent},
+    ShellExt,
+};
+
+static PROVIDER_LOGIN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct ProviderLoginGuard;
+
+impl ProviderLoginGuard {
+    fn acquire() -> Result<Self, String> {
+        PROVIDER_LOGIN_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| "A provider sign-in is already in progress".to_string())
+    }
+}
+
+impl Drop for ProviderLoginGuard {
+    fn drop(&mut self) {
+        PROVIDER_LOGIN_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+struct ProviderLoginChild(Option<CommandChild>);
+
+impl Drop for ProviderLoginChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.take() {
+            let _ = child.kill();
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthProfileRecord {
@@ -340,12 +373,13 @@ pub async fn connect_model_provider(
     provider: String,
     on_event: Channel<serde_json::Value>,
 ) -> Result<ModelProviderStatus, String> {
+    let _login_guard = ProviderLoginGuard::acquire()?;
     let auth_dir = get_floe_auth_dir()?;
     let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)
         .map_err(|e| format!("Failed to locate provider setup: {}", e))?;
     let script_dir = script.parent()
         .ok_or_else(|| "The provider setup resource has no parent directory".to_string())?;
-    let (mut receiver, _child) = app
+    let (mut receiver, child) = app
         .shell()
         .sidecar("floe-node")
         .map_err(|e| format!("Failed to prepare provider setup: {}", e))?
@@ -359,6 +393,7 @@ pub async fn connect_model_provider(
         ])
         .spawn()
         .map_err(|e| format!("Failed to start provider sign-in: {}", e))?;
+    let _child_guard = ProviderLoginChild(Some(child));
 
     let mut stderr = String::new();
     let mut result: Option<ModelProviderStatus> = None;
@@ -491,6 +526,17 @@ mod tests {
             parse_model_providers("browser launcher output\n").unwrap_err(),
             "The provider helper returned invalid status"
         );
+    }
+
+    #[test]
+    fn permits_only_one_provider_login_at_a_time() {
+        let first = ProviderLoginGuard::acquire().unwrap();
+        assert_eq!(
+            ProviderLoginGuard::acquire().err().as_deref(),
+            Some("A provider sign-in is already in progress")
+        );
+        drop(first);
+        assert!(ProviderLoginGuard::acquire().is_ok());
     }
 
     #[test]
