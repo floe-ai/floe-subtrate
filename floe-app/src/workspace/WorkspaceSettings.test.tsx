@@ -1,6 +1,6 @@
 import React from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { WorkspaceSettings } from "./WorkspaceSettings.tsx";
 import * as client from "../bus-client/client.ts";
 import * as modelsForProfileHelper from "../actors/modelsForProfile.ts";
@@ -16,6 +16,10 @@ vi.mock("../actors/modelsForProfile.ts", () => ({
   modelsForProfile: vi.fn(),
   withSelectedModelOption: vi.fn(),
   providerForProfile: vi.fn(),
+}));
+
+vi.mock("../providers/ProviderAccess.tsx", () => ({
+  ProviderAccess: ({ purpose }: { purpose?: string }) => <div data-testid="provider-access">{purpose}</div>,
 }));
 
 const mockProfiles = [
@@ -38,6 +42,8 @@ const mockWorkspace = {
 };
 
 describe("WorkspaceSettings - Effort reset behavior", () => {
+  afterEach(cleanup);
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(client.getAuthProfiles).mockResolvedValue({ profiles: mockProfiles, default_auth_profile: null });
@@ -89,5 +95,14 @@ describe("WorkspaceSettings - Effort reset behavior", () => {
       model: "gpt-4o",
       thinking_level: "off",
     });
+  });
+
+  it("opens provider connection beside the workspace provider selection", async () => {
+    render(<WorkspaceSettings workspace={mockWorkspace} onRemove={vi.fn()} />);
+
+    await screen.findByRole("combobox", { name: "Default profile" });
+    expect(screen.queryByTestId("provider-access")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    expect(screen.getByTestId("provider-access").textContent).toBe("add");
   });
 });

@@ -12,12 +12,13 @@ type ProviderAccessProps = {
   compact?: boolean;
   initialProviders?: ModelProviderStatus[] | null;
   onReady?: (status: ModelProviderStatus, model: string) => void;
+  purpose?: "choose" | "add";
 };
 
-export function ProviderAccess({ compact = false, initialProviders = null, onReady }: ProviderAccessProps): React.ReactElement {
+export function ProviderAccess({ compact = false, initialProviders = null, onReady, purpose = "choose" }: ProviderAccessProps): React.ReactElement {
   const [providers, setProviders] = useState<ModelProviderStatus[]>(initialProviders ?? []);
-  const [providerId, setProviderId] = useState(initialProviderId(initialProviders ?? []));
-  const [model, setModel] = useState(initialModel(initialProviders ?? []));
+  const [providerId, setProviderId] = useState(initialProviderId(initialProviders ?? [], purpose));
+  const [model, setModel] = useState(initialModel(initialProviders ?? [], purpose));
   const [loading, setLoading] = useState(initialProviders === null);
   const [connecting, setConnecting] = useState(false);
   const [authEvent, setAuthEvent] = useState<ModelProviderAuthEvent | null>(null);
@@ -30,14 +31,14 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
       .then(next => {
         if (cancelled) return;
         setProviders(next);
-        const nextProviderId = initialProviderId(next);
+        const nextProviderId = initialProviderId(next, purpose);
         setProviderId(nextProviderId);
         setModel(preferredModel(next.find(item => item.provider === nextProviderId) ?? next[0]!));
       })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [initialProviders]);
+  }, [initialProviders, purpose]);
 
   const status = useMemo(
     () => providers.find(item => item.provider === providerId) ?? providers[0] ?? null,
@@ -53,9 +54,9 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
   }
 
   async function connect() {
-    if (!status || !model) return;
+    if (!status || (purpose === "choose" && !model)) return;
     if (status.connected) {
-      onReady?.(status, model);
+      if (purpose === "choose") onReady?.(status, model);
       return;
     }
 
@@ -129,18 +130,20 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
         </div>
       </div>
 
-      <label style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 16, color: tk.ink3, fontSize: 11.5 }}>
-        Default model
-        <select
-          aria-label="Provider default model"
-          value={model}
-          onChange={event => setModel(event.target.value)}
-          disabled={connecting || status.models.length === 0}
-          style={selectStyle}
-        >
-          {status.models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select>
-      </label>
+      {purpose === "choose" && (
+        <label style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 16, color: tk.ink3, fontSize: 11.5 }}>
+          Default model
+          <select
+            aria-label="Provider default model"
+            value={model}
+            onChange={event => setModel(event.target.value)}
+            disabled={connecting || status.models.length === 0}
+            style={selectStyle}
+          >
+            {status.models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+        </label>
+      )}
 
       {authEvent?.type === "device_code" && (
         <div role="status" style={{ marginTop: 14, padding: 12, borderRadius: tk.r2, background: "rgba(255,255,255,0.04)", color: tk.ink2 }}>
@@ -161,14 +164,18 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
         <button
           type="button"
           onClick={() => void connect()}
-          disabled={connecting || !model}
+          disabled={connecting || (purpose === "choose" && !model) || (purpose === "add" && status.connected)}
           style={{
             border: "none", borderRadius: tk.r2, padding: "8px 14px",
             background: tk.accent, color: "#0c1714", fontWeight: 590, fontSize: 12.5,
-            opacity: connecting || !model ? 0.55 : 1,
+            opacity: connecting || (purpose === "choose" && !model) || (purpose === "add" && status.connected) ? 0.55 : 1,
           }}
         >
-          {connecting ? `Waiting for ${status.name}…` : status.connected ? "Use this account" : `Continue with ${status.name}`}
+          {connecting
+            ? `Waiting for ${status.name}…`
+            : status.connected
+              ? purpose === "add" ? "Connected" : "Use this account"
+              : `Continue with ${status.name}`}
         </button>
         {connecting && <span style={{ color: tk.ink3, fontSize: 12 }}>Complete the sign-in in your browser.</span>}
       </div>
@@ -176,12 +183,15 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
   );
 }
 
-function initialProviderId(providers: ModelProviderStatus[]): string {
-  return providers.find(item => item.connected)?.provider ?? providers[0]?.provider ?? "";
+function initialProviderId(providers: ModelProviderStatus[], purpose: "choose" | "add"): string {
+  const preferred = purpose === "add"
+    ? providers.find(item => !item.connected)
+    : providers.find(item => item.connected);
+  return preferred?.provider ?? providers[0]?.provider ?? "";
 }
 
-function initialModel(providers: ModelProviderStatus[]): string {
-  const providerId = initialProviderId(providers);
+function initialModel(providers: ModelProviderStatus[], purpose: "choose" | "add"): string {
+  const providerId = initialProviderId(providers, purpose);
   const status = providers.find(item => item.provider === providerId) ?? providers[0];
   return status ? preferredModel(status) : "";
 }

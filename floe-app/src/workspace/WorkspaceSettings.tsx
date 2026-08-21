@@ -59,6 +59,24 @@ const inputStyle: React.CSSProperties = {
   outline: "none",
 };
 
+const secondaryButtonStyle: React.CSSProperties = {
+  flex: "0 0 auto",
+  background: "rgba(255,255,255,0.04)",
+  border: `1px solid ${tk.border}`,
+  borderRadius: tk.r2,
+  padding: "7px 10px",
+  color: tk.ink2,
+  fontSize: 12,
+};
+
+const linkButtonStyle: React.CSSProperties = {
+  border: "none",
+  background: "transparent",
+  color: tk.accent,
+  padding: 0,
+  fontSize: 12,
+};
+
 type SaveState = { phase: "idle" } | { phase: "saving" } | { phase: "saved" } | { phase: "error"; message: string };
 
 function SaveStatus({ state }: { state: SaveState }): React.ReactElement | null {
@@ -82,6 +100,7 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
   const [modelId, setModelId] = useState("");
   const [effort, setEffort] = useState("off");
   const [save, setSave] = useState<SaveState>({ phase: "idle" });
+  const [showProviderSetup, setShowProviderSetup] = useState(false);
 
   const loadResolution = useCallback(() => {
     // workspace_default has no single endpoint to resolve against — read the
@@ -183,16 +202,8 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
           Settings
         </h1>
         <p style={{ color: tk.ink3, fontSize: 13.5, margin: 0 }}>
-          Providers for Floe, and defaults for {workspace.name || workspace.workspace_id}.
+          Defaults for {workspace.name || workspace.workspace_id}.
         </p>
-      </section>
-
-      <section style={{ marginBottom: 28 }}>
-        <h2 style={{ fontSize: 14, fontWeight: 560, color: tk.ink, margin: "0 0 4px" }}>Model providers</h2>
-        <p style={{ fontSize: 12.5, color: tk.ink3, lineHeight: 1.5, margin: "0 0 14px", maxWidth: 620 }}>
-          Connections made here are available to Floe on this device. Individual workspaces choose from these providers below.
-        </p>
-        <ProviderAccess compact onReady={() => { loadProfiles(); }} />
       </section>
 
       <section style={{
@@ -207,25 +218,29 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
         </p>
 
         {profiles.length === 0 ? (
-          <p style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>
-            Connect a model provider above to choose a workspace model.
-          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12, color: tk.ink4 }}>Connect a provider to choose a workspace model.</span>
+            <button type="button" onClick={() => setShowProviderSetup(true)} style={secondaryButtonStyle}>Add provider</button>
+          </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-              Provider
-              <select
-                aria-label="Default profile"
-                value={profileId}
-                onChange={(e) => handleProfileChange(e.target.value)}
-                style={inputStyle}
-              >
-                <option value="">Choose a provider</option>
-                {profiles.map((p) => (
-                  <option key={p.id} value={p.id}>{profileDisplayName(p)}</option>
-                ))}
-              </select>
-            </label>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+              <label style={{ display: "flex", flex: 1, flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
+                Provider
+                <select
+                  aria-label="Default profile"
+                  value={profileId}
+                  onChange={(e) => handleProfileChange(e.target.value)}
+                  style={inputStyle}
+                >
+                  <option value="">Choose a provider</option>
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.id}>{profileDisplayName(p)}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" onClick={() => setShowProviderSetup(true)} style={secondaryButtonStyle}>Add provider</button>
+            </div>
 
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
               Model
@@ -264,6 +279,23 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
             )}
 
             <SaveStatus state={save} />
+          </div>
+        )}
+
+        {showProviderSetup && (
+          <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px solid ${tk.border}` }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <h3 style={{ margin: 0, color: tk.ink, fontSize: 13.5, fontWeight: 540 }}>Add a provider</h3>
+              <button type="button" onClick={() => setShowProviderSetup(false)} style={linkButtonStyle}>Close</button>
+            </div>
+            <ProviderAccess
+              compact
+              purpose="add"
+              onReady={() => {
+                loadProfiles();
+                setShowProviderSetup(false);
+              }}
+            />
           </div>
         )}
       </section>

@@ -14,7 +14,10 @@ const BUS_WS_URL = "ws://127.0.0.1:5377/v1/events/stream";
 const INITIAL_BACKOFF_MS = 250;
 const MAX_BACKOFF_MS = 16_000;
 
-export function subscribeEvents(handler: (msg: StreamMsg) => void): () => void {
+export function subscribeEvents(
+  handler: (msg: StreamMsg) => void,
+  options: { onOpen?: () => void } = {},
+): () => void {
   let cancelled = false;
   let ws: WebSocket | null = null;
   let backoffMs = INITIAL_BACKOFF_MS;
@@ -46,6 +49,7 @@ export function subscribeEvents(handler: (msg: StreamMsg) => void): () => void {
       }
       // Reset back-off on successful connection.
       backoffMs = INITIAL_BACKOFF_MS;
+      options.onOpen?.();
     };
 
     ws.onclose = () => {

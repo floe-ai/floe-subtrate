@@ -69,4 +69,15 @@ describe("ProviderAccess", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue with ChatGPT" }));
     expect(await screen.findByText(/ABCD-1234/)).toBeTruthy();
   });
+
+  it("treats connected accounts as status when adding another provider", () => {
+    render(<ProviderAccess initialProviders={[copilot, chatgpt]} purpose="add" />);
+
+    const providerSelect = screen.getByRole("combobox", { name: "Subscription provider" }) as HTMLSelectElement;
+    expect(providerSelect.value).toBe("openai-codex");
+    expect(screen.queryByRole("combobox", { name: "Provider default model" })).toBeNull();
+
+    fireEvent.change(providerSelect, { target: { value: "github-copilot" } });
+    expect((screen.getByRole("button", { name: "Connected" }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });

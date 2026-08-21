@@ -384,6 +384,11 @@ export function App(): React.ReactElement {
           void refreshActors();
         }
       }
+    }, {
+      // Subscribe first, then take a fresh snapshot. This closes the startup
+      // race where the bridge registered Floe between the onboarding snapshot
+      // and the live stream becoming ready.
+      onOpen: () => { void refreshActors(); },
     });
     return unsub;
   }, [activeWorkspace?.workspace_id, refreshActors]);
