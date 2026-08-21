@@ -16,10 +16,12 @@ fn start_packaged_substrate(app: &tauri::App) -> Result<(), Box<dyn std::error::
   }
 
   let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)?;
+  let script_dir = script.parent().ok_or("desktop resource has no parent directory")?;
   let (mut events, _child) = app
     .shell()
     .sidecar("floe-node")?
-    .arg(script)
+    .current_dir(script_dir)
+    .arg("floe-desktop.js")
     .arg("substrate")
     .spawn()?;
   tauri::async_runtime::spawn(async move {

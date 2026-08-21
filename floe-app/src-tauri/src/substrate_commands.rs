@@ -314,11 +314,14 @@ pub async fn get_model_providers(app: tauri::AppHandle) -> Result<Vec<ModelProvi
     let auth_dir = get_floe_auth_dir()?;
     let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)
         .map_err(|e| format!("Failed to locate provider setup: {}", e))?;
+    let script_dir = script.parent()
+        .ok_or_else(|| "The provider setup resource has no parent directory".to_string())?;
     let output = app
         .shell()
         .sidecar("floe-node")
         .map_err(|e| format!("Failed to prepare provider setup: {}", e))?
-        .args([script.as_os_str(), "auth".as_ref(), "providers".as_ref(), auth_dir.as_os_str()])
+        .current_dir(script_dir)
+        .args(["floe-desktop.js".as_ref(), "auth".as_ref(), "providers".as_ref(), auth_dir.as_os_str()])
         .output()
         .await
         .map_err(|e| format!("Failed to inspect model providers: {}", e))?;
@@ -340,12 +343,15 @@ pub async fn connect_model_provider(
     let auth_dir = get_floe_auth_dir()?;
     let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)
         .map_err(|e| format!("Failed to locate provider setup: {}", e))?;
+    let script_dir = script.parent()
+        .ok_or_else(|| "The provider setup resource has no parent directory".to_string())?;
     let (mut receiver, _child) = app
         .shell()
         .sidecar("floe-node")
         .map_err(|e| format!("Failed to prepare provider setup: {}", e))?
+        .current_dir(script_dir)
         .args([
-            script.as_os_str(),
+            "floe-desktop.js".as_ref(),
             "auth".as_ref(),
             "login".as_ref(),
             auth_dir.as_os_str(),

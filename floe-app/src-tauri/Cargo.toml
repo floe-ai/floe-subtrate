@@ -1,6 +1,6 @@
 [package]
 name = "floe-console"
-version = "0.1.0"
+version = "0.1.1"
 description = "Floe substrate console (Tauri shell)"
 authors = ["floe"]
 license = ""
