@@ -8,8 +8,13 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
-import { getOAuthApiKey } from "@earendil-works/pi-ai/oauth";
-import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import type {
+  AuthOperationOptions,
+  Credential,
+  CredentialInfo,
+  CredentialStore,
+} from "@earendil-works/pi-ai";
 import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
@@ -127,9 +132,47 @@ function writeAuthStorage(authJsonPath: string, data: AuthStorageData): void {
   chmodSafe(authJsonPath, 0o600);
 }
 
+class BusCredentialStore implements CredentialStore {
+  constructor(
+    private readonly authJsonPath: string,
+    private readonly authData: AuthStorageData,
+  ) {}
+
+  async read(providerId: string, _options?: AuthOperationOptions): Promise<Credential | undefined> {
+    return this.authData[providerId];
+  }
+
+  async list(_options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+    return Object.entries(this.authData).map(([providerId, credential]) => ({
+      providerId,
+      type: credential.type,
+    }));
+  }
+
+  async modify(
+    providerId: string,
+    fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+    _options?: AuthOperationOptions,
+  ): Promise<Credential | undefined> {
+    const current = this.authData[providerId];
+    const next = await fn(current);
+    if (next !== undefined) {
+      this.authData[providerId] = next as StoredCredential;
+      writeAuthStorage(this.authJsonPath, this.authData);
+      return next;
+    }
+    return current;
+  }
+
+  async delete(providerId: string, _options?: AuthOperationOptions): Promise<void> {
+    delete this.authData[providerId];
+    writeAuthStorage(this.authJsonPath, this.authData);
+  }
+}
+
 /**
  * Resolve a stored credential to a probe-ready token.
- * For OAuth credentials: calls pi's getOAuthApiKey which refreshes expired tokens.
+ * For OAuth credentials: resolves through pi's provider-owned auth contract, which refreshes expired tokens.
  * Persists refreshed credentials back to auth.json (same 0600 care as ensureAuthFiles).
  * Returns undefined (fail-open) on any error.
  */
@@ -146,18 +189,11 @@ async function resolveStoredCredential(
   }
   if (credential.type === "oauth") {
     try {
-      const oauthCredentials: Record<string, OAuthCredentials> = {};
-      for (const [key, value] of Object.entries(authData)) {
-        if (value.type === "oauth") oauthCredentials[key] = value;
-      }
-      const refreshed = await getOAuthApiKey(provider, oauthCredentials);
-      if (!refreshed) return undefined;
-      // Persist refreshed credentials back to auth.json if token changed
-      if (refreshed.newCredentials.access !== credential.access) {
-        authData[provider] = { type: "oauth", ...refreshed.newCredentials };
-        writeAuthStorage(authJsonPath, authData);
-      }
-      const token = refreshed.apiKey.trim();
+      const models = builtinModels({
+        credentials: new BusCredentialStore(authJsonPath, authData),
+      });
+      const resolved = await models.getAuth(provider);
+      const token = resolved?.auth.apiKey?.trim();
       return token ? { token, isOAuth: true } : undefined;
     } catch {
       return undefined;

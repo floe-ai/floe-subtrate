@@ -8,7 +8,7 @@
  * used by the actor inspector (see ../actors/modelsForProfile.ts).
  */
 import React, { useCallback, useEffect, useState } from "react";
-import type { AuthModelRecord, AuthProfileRecord, RuntimeBindingRecord, WorkspaceRef } from "../bus-client/types.ts";
+import type { AuthModelRecord, AuthProfileRecord, WorkspaceRef } from "../bus-client/types.ts";
 import {
   getAuthProfiles,
   getRuntimeBindings,
@@ -16,6 +16,7 @@ import {
   clearRuntimeBindings,
 } from "../bus-client/client.ts";
 import { modelsForProfile, withSelectedModelOption, providerForProfile } from "../actors/modelsForProfile.ts";
+import { ProviderAccess } from "../providers/ProviderAccess.tsx";
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk)
@@ -39,6 +40,12 @@ const tk = {
 } as const;
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+function profileDisplayName(profile: AuthProfileRecord): string {
+  if (profile.label) return profile.label;
+  if (profile.provider === "openai-codex-app-server") return "ChatGPT";
+  return profile.provider;
+}
 
 const inputStyle: React.CSSProperties = {
   background: "rgba(255,255,255,0.04)",
@@ -75,12 +82,7 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
   const [effort, setEffort] = useState("off");
   const [save, setSave] = useState<SaveState>({ phase: "idle" });
 
-  const [workspaceBinding, setWorkspaceBinding] = useState<RuntimeBindingRecord | null>(null);
-  const [globalBinding, setGlobalBinding] = useState<RuntimeBindingRecord | null>(null);
-  const [resolutionLoading, setResolutionLoading] = useState(true);
-
   const loadResolution = useCallback(() => {
-    setResolutionLoading(true);
     // workspace_default has no single endpoint to resolve against — read the
     // raw bindings list for this workspace (includes global_default rows too,
     // per GET /v1/runtime/bindings?workspace_id=...) and pick out the
@@ -88,15 +90,11 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
     getRuntimeBindings(workspace.workspace_id)
       .then((bindings) => {
         const wsBinding = bindings.find((b) => b.scope === "workspace_default" && b.workspace_id === workspace.workspace_id) ?? null;
-        const glBinding = bindings.find((b) => b.scope === "global_default") ?? null;
-        setWorkspaceBinding(wsBinding);
-        setGlobalBinding(glBinding);
-        setResolutionLoading(false);
         setProfileId(wsBinding?.auth_profile ?? "");
         setModelId(wsBinding?.model ?? "");
         setEffort(wsBinding?.thinking_level ?? "off");
       })
-      .catch(() => setResolutionLoading(false));
+      .catch(() => {});
   }, [workspace.workspace_id]);
 
   useEffect(() => {
@@ -104,13 +102,15 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
     loadResolution();
   }, [workspace.workspace_id, loadResolution]);
 
-  useEffect(() => {
+  const loadProfiles = useCallback(() => {
     let cancelled = false;
     getAuthProfiles()
       .then((res) => { if (!cancelled) setProfiles(res.profiles); })
       .catch(() => { if (!cancelled) setProfiles([]); });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => loadProfiles(), [loadProfiles]);
 
   useEffect(() => {
     if (!profileId) {
@@ -176,45 +176,52 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
     <div style={{ padding: "24px 32px 40px", overflow: "auto", flex: 1, fontFamily: tk.fontUi }} data-testid="workspace-settings">
       <section style={{ marginBottom: 28 }}>
         <div style={{ fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510, marginBottom: 8 }}>
-          Workspace
+          Floe
         </div>
         <h1 style={{ fontWeight: 510, fontSize: 30, lineHeight: 1.1, letterSpacing: "-0.02em", color: tk.ink, margin: "0 0 6px" }}>
           Settings
         </h1>
         <p style={{ color: tk.ink3, fontSize: 13.5, margin: 0 }}>
-          {workspace.name || workspace.workspace_id}
+          Providers for Floe, and defaults for {workspace.name || workspace.workspace_id}.
         </p>
+      </section>
+
+      <section style={{ marginBottom: 28 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 560, color: tk.ink, margin: "0 0 4px" }}>Model providers</h2>
+        <p style={{ fontSize: 12.5, color: tk.ink3, lineHeight: 1.5, margin: "0 0 14px", maxWidth: 620 }}>
+          Connections made here are available to Floe on this device. Individual workspaces choose from these providers below.
+        </p>
+        <ProviderAccess compact onReady={() => { loadProfiles(); }} />
       </section>
 
       <section style={{
         background: tk.surface, border: `1px solid ${tk.border}`, borderRadius: tk.r3,
-        padding: 20, maxWidth: 480,
+        padding: 20, maxWidth: 620,
       }}>
         <h2 style={{ fontSize: 14, fontWeight: 510, color: tk.ink, margin: "0 0 4px" }}>
-          New actors inherit
+          Workspace model
         </h2>
         <p style={{ fontSize: 12.5, color: tk.ink3, lineHeight: 1.5, margin: "0 0 16px" }}>
-          Default profile, model, and effort for actors that don't set their own binding.
-          This is the <code>workspace_default</code> runtime binding.
+          Choose what Floe normally uses in {workspace.name || "this workspace"}. More specialised actors can still use a different model when needed.
         </p>
 
         {profiles.length === 0 ? (
           <p style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>
-            No auth profiles found. Run <code>npm run floe -- login</code>.
+            Connect a model provider above to choose a workspace model.
           </p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-              Profile
+              Provider
               <select
                 aria-label="Default profile"
                 value={profileId}
                 onChange={(e) => handleProfileChange(e.target.value)}
                 style={inputStyle}
               >
-                <option value="">Unconfigured</option>
+                <option value="">Choose a provider</option>
                 {profiles.map((p) => (
-                  <option key={p.id} value={p.id}>{p.id} ({p.provider})</option>
+                  <option key={p.id} value={p.id}>{profileDisplayName(p)}</option>
                 ))}
               </select>
             </label>
@@ -256,24 +263,6 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
             )}
 
             <SaveStatus state={save} />
-          </div>
-        )}
-      </section>
-
-      <section style={{ marginTop: 20, maxWidth: 480 }}>
-        <h3 style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510, marginBottom: 8 }}>
-          Effective default (resolved)
-        </h3>
-        {resolutionLoading ? (
-          <span style={{ fontSize: 12, color: tk.ink3 }}>Loading…</span>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: "4px 8px", fontSize: 12 }}>
-            <span style={{ color: tk.ink3 }}>Profile</span>
-            <span><code>{workspaceBinding?.auth_profile ?? globalBinding?.auth_profile ?? "(none)"}</code></span>
-            <span style={{ color: tk.ink3 }}>Model</span>
-            <span><code>{workspaceBinding?.model ?? globalBinding?.model ?? "(inherit)"}</code></span>
-            <span style={{ color: tk.ink3 }}>Effort</span>
-            <span><code>{workspaceBinding?.thinking_level ?? globalBinding?.thinking_level ?? "(inherit)"}</code></span>
           </div>
         )}
       </section>

@@ -4,7 +4,7 @@
 
 ## The governing rule
 
-floe-app never holds logic the substrate lacks. Every button in the app calls a real [[Bus API]] route. Anything you can do in the app you can do by calling that route directly — over `curl`, a script, or another actor. If a feature in the app cannot be traced to a bus route, it is a bug, not a feature.
+floe-app does not invent substrate behaviour. Workspace operations call real [[Bus API]] routes. Host-local responsibilities that must not cross the bus — credentials and native filesystem access — go through the Tauri desktop boundary defined by ADR-0005.
 
 This matters because the app is optional. A [[Workspace]] runs fine with no UI open at all — [[Actor]]s deliver over the bridge↔bus WebSocket regardless of whether anyone is looking. The app is a way of looking, not a way of working that only it can do.
 
@@ -17,7 +17,17 @@ The substrate does not get easier to use just because it has a UI. What changes 
 - **Reading a conversation as a conversation.** A [[Context]]'s events render as a message list with actor names, not raw JSON envelopes.
 - **Editing an actor without hand-writing YAML.** An [[Actor]]'s [[Binding]] — auth profile, model, thinking level — is a form, not a file you edit and hope you got the shape right.
 
-None of this is new capability. It is the same bus, read and written through a friendlier surface.
+None of this is a new substrate primitive. It is the same bus and the same local configuration contracts, presented through a friendlier surface.
+
+## First use
+
+The desktop app opens its shell immediately while it waits for local Floe services. A clean installation is guided through three product steps:
+
+1. connect a model provider;
+2. choose or create a workspace;
+3. enter the Floe conversation.
+
+The first provider offered is **ChatGPT through the official OpenAI Codex app-server**. Provider credentials remain owned by Codex. Floe records only the non-secret provider profile and current model catalogue needed for workspace selection.
 
 ## One server, one UI
 
@@ -27,7 +37,7 @@ There is one bus (port `5377`) and one UI surface (port `5379`). That UI surface
 
 Two things are gated to the desktop shell, not the browser:
 
-- **Auth writes.** Per ADR-0005, writing authentication credentials is desktop/CLI only. The browser can read configured auth profiles but cannot add or edit them — it shows a note to use the CLI or desktop app instead.
+- **Provider setup.** Per ADR-0005, provider setup is desktop/CLI only. Normal ChatGPT setup is available from onboarding and Floe Settings. The browser can read configured profiles but cannot connect an account.
 - **Native filesystem access.** Reading and writing files in a [[Workspace]]'s folder (for example, an actor's agent file) uses Tauri's native filesystem APIs, unavailable to a plain browser tab.
 
 Everything else — scopes, contexts, actors, conversations, settings reads — works identically in browser and desktop.
@@ -37,7 +47,9 @@ See [[Glossary]].
 ## Implementation
 
 - `floe-app/src/App.tsx` — the shell, workspace bootstrap, WebSocket subscription
-- `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — `isTauri()` branch gating auth writes
+- `floe-app/src/features/onboarding/OnboardingFlow.tsx` — provider → workspace → chat first-use flow
+- `floe-app/src/providers/ProviderAccess.tsx` — normal ChatGPT/Codex provider surface
+- `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — secondary developer observatory and advanced API-key profiles
 - `floe-app/src/fs/workspaceFs.ts` — `isTauri()`, native file read/write
 - `floe-cli/src/desktop.ts` — `floe desktop` command, cargo preflight
 - Bus WebSocket: `GET /v1/events/stream` (also used by the bridge)

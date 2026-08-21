@@ -4,6 +4,7 @@ mod substrate_commands;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    .plugin(tauri_plugin_shell::init())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -21,6 +22,9 @@ pub fn run() {
       substrate_commands::get_substrate_auth_profiles,
       substrate_commands::save_substrate_auth_profile,
       substrate_commands::delete_substrate_auth_profile,
+      substrate_commands::login_substrate_oauth,
+      substrate_commands::get_codex_provider_status,
+      substrate_commands::connect_codex_provider,
       substrate_commands::get_runtime_adapter,
       substrate_commands::set_runtime_adapter,
     ])

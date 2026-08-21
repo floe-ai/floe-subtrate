@@ -9,7 +9,7 @@
 | floe-app | The UI. Works as a plain browser page and as a Tauri desktop shell. | 5379 |
 | floe-cli | The `floe` command. Setup, services, auth. | — |
 
-floe-app is only ever a visual layer on top of the substrate. It never holds logic the bus and bridge don't already have — anything the UI shows, the bus can also answer over HTTP or WebSocket.
+floe-app is a client of the substrate. Workspace operations and conversations go through the bus and bridge. Host-local provider setup and filesystem access use the native Tauri boundary defined by ADR-0005 instead of carrying credentials through the bus.
 
 ## Starting services
 

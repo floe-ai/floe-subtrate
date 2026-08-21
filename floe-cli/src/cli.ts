@@ -7,7 +7,6 @@ import { Command } from "commander";
 import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./config.js";
 import { buildResetPlan, executeReset } from "./reset.js";
 import { seedDefaultActor } from "./actor-seed.js";
-import type { OAuthProviderId } from "@earendil-works/pi-ai/oauth";
 import {
   createAuthRuntime,
   findProfile,
@@ -447,33 +446,33 @@ async function resolveProfileId(profiles: ProfilesDocument, provider: string, pr
 async function loginWithOAuth(runtime: ReturnType<typeof createAuthRuntime>, providerId: string, providerName: string): Promise<void> {
   const rl = createInterface({ input, output });
   try {
-    await runtime.authStorage.login(providerId as OAuthProviderId, {
-      onAuth: (info) => {
-        console.log(`Open this URL to authenticate ${providerName}:`);
-        console.log(info.url);
-        if (info.instructions) console.log(info.instructions);
-        openUrl(info.url);
+    await runtime.authStorage.login(providerId, {
+      notify: (event) => {
+        if (event.type === "auth_url") {
+          console.log(`Open this URL to authenticate ${providerName}:`);
+          console.log(event.url);
+          if (event.instructions) console.log(event.instructions);
+          openUrl(event.url);
+        } else if (event.type === "device_code") {
+          console.log(`Device code: ${event.userCode}`);
+          console.log(`Verify at: ${event.verificationUri}`);
+          openUrl(event.verificationUri);
+        } else if (event.type === "progress" || event.type === "info") {
+          console.log(event.message);
+        }
       },
-      onDeviceCode: (info) => {
-        console.log(`Device code: ${info.userCode}`);
-        console.log(`Verify at: ${info.verificationUri}`);
-        openUrl(info.verificationUri);
-      },
-      onPrompt: async (prompt) => {
+      prompt: async (prompt) => {
+        if (prompt.type === "select") {
+          console.log(prompt.message);
+          prompt.options.forEach((option, index) => console.log(`  ${index + 1}. ${option.label}`));
+          const answer = (await rl.question("Select option number: ")).trim();
+          const selected = prompt.options[parseInt(answer, 10) - 1];
+          if (!selected) throw new Error("Invalid selection");
+          return selected.id;
+        }
         const hint = prompt.placeholder ? ` (${prompt.placeholder})` : "";
         return rl.question(`${prompt.message}${hint}: `);
       },
-      onProgress: (message) => {
-        console.log(message);
-      },
-      onManualCodeInput: async () => rl.question("Paste redirect URL or auth code: "),
-      onSelect: async (prompt) => {
-        console.log(prompt.message);
-        prompt.options.forEach((opt, i) => console.log(`  ${i + 1}. ${opt.label}`));
-        const answer = (await rl.question("Select option number: ")).trim();
-        const idx = parseInt(answer, 10) - 1;
-        return prompt.options[idx]?.id;
-      }
     });
   } finally {
     rl.close();

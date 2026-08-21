@@ -14,6 +14,7 @@ vi.mock("../../fs/workspaceFs.ts", () => ({
 }));
 
 vi.mock("../../bus-client/client.ts", () => ({
+  getAuthModels: vi.fn(),
   getAuthProfiles: vi.fn(),
   getRuntimeStatus: vi.fn(),
 }));
@@ -40,6 +41,7 @@ describe("SubstrateSettingsView — browser mode (isTauri = false)", () => {
     vi.mocked(client.getRuntimeStatus).mockResolvedValue({
       bridge: { online: true, runtime_adapter: "pi" },
     });
+    vi.mocked(client.getAuthModels).mockResolvedValue([]);
   });
 
   afterEach(() => cleanup());
@@ -115,6 +117,9 @@ describe("SubstrateSettingsView — desktop mode (isTauri = true)", () => {
     vi.mocked(client.getRuntimeStatus).mockResolvedValue({
       bridge: { online: true, runtime_adapter: "pi" },
     });
+    vi.mocked(client.getAuthModels).mockResolvedValue([
+      { id: "gpt-current", name: "GPT Current", provider: "openai-codex", api: "openai-codex-responses", reasoning: true },
+    ]);
     // Desktop path: Tauri invoke returns the profiles by default;
     // individual tests may override with mockImplementation.
     const tauriCore = await import("@tauri-apps/api/core");
@@ -143,6 +148,14 @@ describe("SubstrateSettingsView — desktop mode (isTauri = true)", () => {
     await waitFor(() => {
       expect(screen.getByText("+ Add Profile")).toBeTruthy();
     });
+  });
+
+  it("keeps normal provider sign-in outside the developer observatory", async () => {
+    render(<SubstrateSettingsView />);
+    await waitFor(() => {
+      expect(screen.getByText(/Normal provider connections.*are managed from the main Floe settings/i)).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "Sign in with ChatGPT" })).toBeNull();
   });
 
   it("does NOT call the bus getAuthProfiles", async () => {
@@ -225,7 +238,7 @@ describe("SubstrateSettingsView — Runtime tab, desktop mode", () => {
         return Promise.resolve({ profiles: [], default_auth_profile: null });
       }
       if (cmd === "get_runtime_adapter") {
-        return Promise.resolve({ configured_adapter: "pi" });
+        return Promise.resolve({ configured_adapter: "floe-runtime" });
       }
       if (cmd === "set_runtime_adapter") {
         return Promise.resolve(undefined);
@@ -244,6 +257,17 @@ describe("SubstrateSettingsView — Runtime tab, desktop mode", () => {
       // Both Test and Live buttons should appear
       expect(screen.getAllByText(/Test/).length).toBeGreaterThan(0);
       expect(screen.getAllByText(/Live/).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("uses the provider router for live operation", async () => {
+    const tauriCore = await import("@tauri-apps/api/core");
+    render(<SubstrateSettingsView />);
+    fireEvent.click(screen.getByText(/⚙️ Runtime/).closest("button")!);
+    const liveBtn = await screen.findByRole("button", { name: /Live/ });
+    fireEvent.click(liveBtn);
+    await waitFor(() => {
+      expect(vi.mocked(tauriCore.invoke)).toHaveBeenCalledWith("set_runtime_adapter", { adapter: "floe-runtime" });
     });
   });
 

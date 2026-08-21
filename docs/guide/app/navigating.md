@@ -1,22 +1,31 @@
 # Navigating floe-app
 
-**The app is one screen with three panes: a left nav, a main column, and a right-hand inspector.**
+**The app opens on a workspace conversation with Floe. Developer inspection remains available without being the default product path.**
 
 ## The shell
 
-The left nav ([[Workspace]]-scoped) lists, top to bottom:
+The left nav ([[Workspace]]-scoped) has two entries:
 
-- **Home** — the default view.
-- **Activity** — the workspace-wide event stream.
-- A **Scopes** section — every [[Scope]] in the workspace, plus "New scope".
-- An **Actors** section — every [[Actor]] registered in the workspace, plus "New actor".
-- **Substrate Settings**, pinned to the bottom, below a divider — this switches the whole app into machine-level settings mode (see [[Settings in floe-app]]).
+- **Floe** — the default operator view.
+- **Developer tools** — a collapsed disclosure containing the existing workspace overview, Activity, Scopes, Actors, creation controls, and Substrate Settings.
 
-Selecting anything in the nav drives the main column. Opening a [[Node]], [[Actor]] or [[Context]] can also open detail in the right-hand inspector aside.
+Selecting a developer tool drives the main column. Opening a [[Node]], [[Actor]] or [[Context]] can also open detail in the right-hand inspector aside. The inspector is not shown on the normal Floe entry.
 
-## Home
+## First use
 
-Home shows a grid of scope cards — one per [[Scope]], each showing its title, description, and a live count of contexts and pulses. Clicking a card opens that scope's detail view. A "New scope" tile sits at the end of the grid.
+When no provider is configured, the desktop app first asks the user to connect ChatGPT through OpenAI Codex. When no workspace exists, it then asks for a folder. Floe applies the selected model as that workspace's default and lands in the Floe conversation. An existing workspace is reused; connecting a provider does not force the user to create another one.
+
+After onboarding, the gear beside the workspace name opens normal **Settings**. Provider connections apply to this device; the workspace model applies only to the selected workspace. Substrate Settings remains under Developer tools for diagnostics and advanced configuration.
+
+## Floe
+
+Opening or selecting a workspace opens its most recent conversation between the ordinary `operator` and `floe` endpoints, whether or not Floe has since attached that Context to a Scope. If none exists, the app asks what outcome the operator wants. Submitting the first outcome creates a direct [[Context]], emits the message to Floe, and opens the conversation. Merely opening the workspace does not create a Context.
+
+The operator view fixes the speaking identity to the operator and omits context labels, participant controls, substrate inventory, and the inspector. Those details remain available through Developer tools.
+
+## Workspace overview
+
+The Developer tools workspace overview preserves the previous scope-card grid — one per [[Scope]], each showing its title, description, and a live count of contexts and pulses. Clicking a card opens that scope's detail view. A "New scope" tile sits at the end of the grid.
 
 ## Opening a scope
 
@@ -38,9 +47,9 @@ Clicking an actor in the nav opens the **actor view** with two tabs:
 
 Clicking a context — from a scope's Contexts tab, an actor's Conversations tab, or Activity — opens it as a conversation: message list, participant pills, and a "Speaking as" composer. See [[Conversations in floe-app]].
 
-## A gap: direct contexts are not reachable
+## Other direct contexts
 
-The source has a `DirectContexts` component (`floe-app/src/scope/DirectContexts.tsx`) for listing contexts that have no [[Scope]] — the substrate allows this (a context does not require a scope). But nothing in `App.tsx` imports or renders it: there is no nav entry, no route, no button that opens it. A context with no scope exists in the bus and is reachable individually (for example from Activity or from an actor's context list), but there is no view that lists "all direct contexts" together. This is a real gap in the shipped UI, not a documentation omission.
+The default Floe entry reaches the most recent operator/Floe conversation. Other unscoped contexts remain reachable individually from Activity or an actor's context list. The source still contains a `DirectContexts` list component, but it is not wired as a separate nav destination.
 
 See [[Glossary]].
 
@@ -49,7 +58,8 @@ See [[Glossary]].
 - `floe-app/src/App.tsx` — routing/state, main column switch
 - `floe-app/src/app/layout/LeftNav.tsx` — the left nav
 - `floe-app/src/hooks/useNavigation.ts` — navigation state machine
+- `floe-app/src/features/home/FloeHome.tsx` — default operator/Floe entry
 - `floe-app/src/features/home/HomeView.tsx` — scope grid
 - `floe-app/src/scope/ScopeDetail.tsx` — Contexts/Ops/extension tabs
 - `floe-app/src/features/actor/ActorView.tsx` — Conversations/Configure tabs
-- `floe-app/src/scope/DirectContexts.tsx` — exists, not wired into any route: **not reachable from the nav**
+- `floe-app/src/scope/DirectContexts.tsx` — general direct-context list, not wired into a route

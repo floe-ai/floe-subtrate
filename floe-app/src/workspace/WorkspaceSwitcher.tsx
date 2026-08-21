@@ -196,8 +196,16 @@ export function WorkspaceSwitcher({
 
 export function RegisterWorkspaceScreen({
   onRegistered,
+  title = "Choose a workspace",
+  description = "Select the folder where Floe should work.",
+  submitLabel = "Open workspace",
+  embedded = false,
 }: {
   onRegistered: (ws: WorkspaceRef) => void;
+  title?: string;
+  description?: string;
+  submitLabel?: string;
+  embedded?: boolean;
 }): React.ReactElement {
   const [locator, setLocator] = useState("");
   const [name, setName] = useState("");
@@ -236,11 +244,13 @@ export function RegisterWorkspaceScreen({
   return (
     <div style={{
       display: "flex", alignItems: "center", justifyContent: "center",
-      height: "100vh", background: tk.canvas, color: tk.ink3,
+      height: embedded ? "100%" : "100vh", flex: embedded ? 1 : undefined,
+      minHeight: 0, background: tk.canvas, color: tk.ink3,
       fontFamily: tk.fontUi, fontSize: 13,
     }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, width: 340 }}>
-        <p style={{ color: tk.ink3, marginBottom: 4 }}>No workspaces. Register one to get started.</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, width: 380 }}>
+        <h1 style={{ color: tk.ink, fontSize: 26, fontWeight: 520, letterSpacing: "-0.02em", margin: 0 }}>{title}</h1>
+        <p style={{ color: tk.ink3, margin: "0 0 8px", fontSize: 13.5 }}>{description}</p>
         <input
           autoFocus
           placeholder="Workspace path"
@@ -289,7 +299,7 @@ export function RegisterWorkspaceScreen({
             borderRadius: tk.r2, padding: "7px 16px", fontSize: 13, cursor: "pointer", fontWeight: 510,
           }}
         >
-          {adding ? "Registering…" : "Register workspace"}
+          {adding ? "Opening…" : submitLabel}
         </button>
       </div>
     </div>

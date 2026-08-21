@@ -17,3 +17,6 @@ test-results/
 .floe/agents/*/worklogs/
 .floe/state/
 *.tsbuildinfo
+
+# Platform-specific packaged desktop auth sidecar (rebuilt for each Tauri target)
+floe-app/src-tauri/binaries/floe-auth-*

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import type { ScopeRef, EndpointRef } from "../../bus-client/types.ts";
 import { tk } from "../../theme.ts";
 
-export type NavView = "home" | "activity";
+export type NavView = "floe" | "home" | "activity";
 
 export type NavProps = {
   view: NavView;
@@ -26,6 +26,7 @@ export function LeftNav({
   appMode, onViewSystem,
 }: NavProps): React.ReactElement {
   const isSystemActive = appMode === "system";
+  const [developerOpen, setDeveloperOpen] = useState(false);
 
   return (
     <aside style={{
@@ -38,101 +39,96 @@ export function LeftNav({
       padding: "8px 0",
       display: "flex", flexDirection: "column",
     }}>
-      {/* Home */}
+      {/* Normal operator entry */}
       <NavRow
-        label="Home"
-        glyph="⌂"
-        isOn={!isSystemActive && view === "home" && selectedScopeId === null}
-        onClick={() => { onView("home"); onSelectScope(""); /* empty string → null in handleSelectScope */ }}
-      />
-      {/* Activity */}
-      <NavRow
-        label="Activity"
-        glyph="≋"
-        isOn={!isSystemActive && view === "activity"}
-        onClick={() => { onView("activity"); onSelectScope(""); /* empty string → null in handleSelectScope; also clears context/actor/settings */ }}
+        label="Floe"
+        glyph="◇"
+        isOn={!isSystemActive && view === "floe"}
+        onClick={() => { onView("floe"); onSelectScope(""); }}
       />
 
-      {/* Scopes section */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8,
-        padding: "16px 14px 6px",
-        fontWeight: 510, fontSize: 10.5, letterSpacing: "0.10em",
-        textTransform: "uppercase", color: tk.ink3,
-      }}>
-        <span>Scopes</span>
-        <span style={{ marginLeft: "auto", color: tk.ink4, fontWeight: 400, letterSpacing: 0, textTransform: "none", fontVariantNumeric: "tabular-nums", fontSize: 11 }}>
-          {scopes.length}
-        </span>
+      {/* Existing observatory, deliberately secondary. */}
+      <div style={{ marginTop: 10, borderTop: `1px solid ${tk.border2}`, paddingTop: 6 }}>
+        <button
+          type="button"
+          aria-expanded={developerOpen}
+          onClick={() => setDeveloperOpen(open => !open)}
+          style={{
+            display: "flex", alignItems: "center", gap: 8,
+            width: "100%", padding: "6px 14px",
+            border: "none", background: "transparent",
+            color: tk.ink3, fontSize: 11.5, textAlign: "left",
+          }}
+        >
+          <span style={{ width: 16, color: tk.ink4 }}>{developerOpen ? "▾" : "▸"}</span>
+          <span>Developer tools</span>
+        </button>
+
+        {developerOpen && (
+          <>
+            <NavRow
+              label="Workspace overview"
+              glyph="⌂"
+              isOn={!isSystemActive && view === "home" && selectedScopeId === null && selectedActorId === null}
+              onClick={() => { onView("home"); onSelectScope(""); }}
+            />
+            <NavRow
+              label="Activity"
+              glyph="≋"
+              isOn={!isSystemActive && view === "activity"}
+              onClick={() => { onView("activity"); onSelectScope(""); }}
+            />
+
+            <NavSection label="Scopes" count={scopes.length} />
+            {scopes.map(s => (
+              <NavRow
+                key={s.scope_id}
+                label={s.title || s.scope_id}
+                glyph={(s.title || s.scope_id).charAt(0).toUpperCase()}
+                isOn={!isSystemActive && selectedScopeId === s.scope_id}
+                onClick={() => onSelectScope(s.scope_id)}
+              />
+            ))}
+            <NavRow label="New scope" glyph="+" isOn={false} onClick={onNewScope} faint />
+
+            <NavSection label="Actors" count={actors.length} />
+            {actors.map(a => (
+              <NavRow
+                key={a.endpoint_id}
+                label={a.name || a.endpoint_id}
+                glyph={(a.name || a.endpoint_id).charAt(0).toUpperCase()}
+                isOn={!isSystemActive && selectedActorId === a.endpoint_id}
+                onClick={() => onSelectActor(a.endpoint_id)}
+              />
+            ))}
+            {actors.length === 0 && (
+              <div style={{ padding: "4px 14px", fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>
+                No actors registered
+              </div>
+            )}
+            <NavRow label="New actor" glyph="+" isOn={!isSystemActive && showNewActor} onClick={onNewActor} faint />
+
+            <NavRow label="Substrate Settings" glyph="⚙" isOn={isSystemActive} onClick={onViewSystem} />
+          </>
+        )}
       </div>
-
-      {scopes.map(s => (
-        <NavRow
-          key={s.scope_id}
-          label={s.title || s.scope_id}
-          glyph={(s.title || s.scope_id).charAt(0).toUpperCase()}
-          isOn={!isSystemActive && selectedScopeId === s.scope_id}
-          onClick={() => onSelectScope(s.scope_id)}
-        />
-      ))}
-
-      <NavRow
-        label="New scope"
-        glyph="+"
-        isOn={false}
-        onClick={onNewScope}
-        faint
-      />
-
-      {/* Actors section */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8,
-        padding: "16px 14px 6px",
-        fontWeight: 510, fontSize: 10.5, letterSpacing: "0.10em",
-        textTransform: "uppercase", color: tk.ink3,
-      }}>
-        <span>Actors</span>
-        <span style={{ marginLeft: "auto", color: tk.ink4, fontWeight: 400, letterSpacing: 0, textTransform: "none", fontVariantNumeric: "tabular-nums", fontSize: 11 }}>
-          {actors.length}
-        </span>
-      </div>
-
-      {actors.map(a => (
-        <NavRow
-          key={a.endpoint_id}
-          label={a.name || a.endpoint_id}
-          glyph={(a.name || a.endpoint_id).charAt(0).toUpperCase()}
-          isOn={!isSystemActive && selectedActorId === a.endpoint_id}
-          onClick={() => onSelectActor(a.endpoint_id)}
-        />
-      ))}
-
-      {actors.length === 0 && (
-        <div style={{ padding: "4px 14px", fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>
-          No actors registered
-        </div>
-      )}
-
-      <NavRow
-        label="New actor"
-        glyph="+"
-        isOn={!isSystemActive && showNewActor}
-        onClick={onNewActor}
-        faint
-      />
-
-      {/* Flexible Spacer to push settings to bottom */}
-      <div style={{ flex: "1 1 auto", minHeight: 16 }} />
-
-      {/* Substrate / System Settings Rule and Option */}
-      <hr style={{ border: "none", borderTop: `1px solid ${tk.border2}`, margin: "8px 0" }} />
-      <NavRow
-        label="Substrate Settings"
-        glyph="⚙"
-        isOn={isSystemActive}
-        onClick={onViewSystem}
-      />
     </aside>
+  );
+}
+
+function NavSection({ label, count }: { label: string; count: number }): React.ReactElement {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8,
+      padding: "16px 14px 6px",
+      fontWeight: 510, fontSize: 10.5, letterSpacing: "0.10em",
+      textTransform: "uppercase", color: tk.ink3,
+    }}>
+      <span>{label}</span>
+      <span style={{ marginLeft: "auto", color: tk.ink4, fontWeight: 400, letterSpacing: 0, textTransform: "none", fontVariantNumeric: "tabular-nums", fontSize: 11 }}>
+        {count}
+      </span>
+    </div>
   );
 }
 

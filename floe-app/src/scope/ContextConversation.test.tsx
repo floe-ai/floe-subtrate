@@ -7,14 +7,19 @@
  */
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
-import { ContextConversation } from "./ContextConversation.tsx";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { ContextConversation, conversationDeliveryState } from "./ContextConversation.tsx";
 import * as client from "../bus-client/client.ts";
 
 vi.mock("../bus-client/client.ts", () => ({
   getContext: vi.fn(),
   listContextEvents: vi.fn(),
+  listDeliveries: vi.fn(),
   emit: vi.fn(),
+}));
+
+vi.mock("../bus-client/stream.ts", () => ({
+  subscribeEvents: vi.fn(() => () => {}),
 }));
 
 // contextLabel from ScopeDetail is a pure helper — mock ScopeDetail minimally
@@ -46,6 +51,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(client.getContext).mockResolvedValue(mockContext as any);
   vi.mocked(client.listContextEvents).mockResolvedValue([]);
+  vi.mocked(client.listDeliveries).mockResolvedValue([]);
+  vi.mocked(client.emit).mockResolvedValue({} as never);
 
   // Clear localStorage between tests so speakingAs defaults are fresh
   try { localStorage.clear(); } catch { /* ignore */ }
@@ -103,5 +110,69 @@ describe("ContextConversation — participant gate", () => {
     const textarea = await screen.findByLabelText("Compose message");
     expect(textarea).toBeTruthy();
     expect(screen.queryByLabelText("Not a participant")).toBeNull();
+  });
+
+  it("presents the fixed operator conversation without substrate-oriented identity controls", async () => {
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP }}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Floe" })).toBeTruthy();
+    expect(screen.getByLabelText("Compose message")).toBeTruthy();
+    expect(screen.queryByLabelText("Speaking as")).toBeNull();
+    expect(screen.queryByText("Context")).toBeNull();
+  });
+
+  it("marks an operator message as expecting a reply", async () => {
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP }}
+      />,
+    );
+
+    const input = await screen.findByLabelText("Compose message");
+    fireEvent.change(input, { target: { value: "Help me reach this outcome" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(client.emit).toHaveBeenCalledWith(expect.objectContaining({
+      response: { expected: true },
+    })));
+  });
+});
+
+describe("conversation delivery state", () => {
+  const row = (state: string, error: string | null = null) => ({
+    delivery_id: `delivery-${state}`,
+    endpoint_id: "ep-floe",
+    workspace_id: "ws-1",
+    trigger_event_id: "event-1",
+    events_json: JSON.stringify([{ context_id: "ctx-1" }]),
+    state,
+    lease_expires_at: null,
+    attempt_count: 1,
+    last_error: error,
+    created_at: "2026-01-01T00:00:00Z",
+    claimed_at: null,
+  });
+
+  it("restores a working indicator when the conversation mounts after delivery began", () => {
+    const result = conversationDeliveryState([row("injected_to_runtime")], "ctx-1");
+    expect(result.working.get("ep-floe")).toBe("delivery-injected_to_runtime");
+    expect(result.notice).toBeNull();
+  });
+
+  it("turns a deferred authentication failure into an actionable operator notice", () => {
+    const result = conversationDeliveryState([
+      row("deferred", "provider_auth_missing: no credential"),
+    ], "ctx-1");
+    expect(result.notice).toMatch(/connected model/i);
   });
 });

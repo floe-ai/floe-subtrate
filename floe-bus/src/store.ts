@@ -1583,7 +1583,7 @@ export class BusStore {
     if (delivery.state === "acknowledged") return delivery;
 
     if (input.state === "deferred") {
-      this.db.prepare("UPDATE delivery_bundles SET state = 'deferred', last_error = ? WHERE delivery_id = ?")
+      this.db.prepare("UPDATE delivery_bundles SET state = 'deferred', lease_expires_at = NULL, last_error = ? WHERE delivery_id = ?")
         .run(input.error ?? null, input.delivery_id);
       this.db.prepare(`
         UPDATE event_queue
@@ -1606,6 +1606,7 @@ export class BusStore {
         error: input.error ?? null
       });
       broadcast("status_changed", { endpoint });
+      this.scheduleNextLeaseExpiryCheck();
       return this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id);
     }
 
@@ -1613,7 +1614,7 @@ export class BusStore {
       const attempts = Number(delivery.attempt_count ?? 1);
       const queueState = attempts >= 3 ? "dead_lettered" : "queued";
       const bundleState = attempts >= 3 ? "dead_lettered" : "failed";
-      this.db.prepare("UPDATE delivery_bundles SET state = ?, last_error = ? WHERE delivery_id = ?")
+      this.db.prepare("UPDATE delivery_bundles SET state = ?, lease_expires_at = NULL, last_error = ? WHERE delivery_id = ?")
         .run(bundleState, input.error ?? null, input.delivery_id);
       this.db.prepare(`
         UPDATE event_queue
@@ -1626,13 +1627,17 @@ export class BusStore {
         delivery_id: input.delivery_id,
         error: input.error ?? null
       });
+      this.scheduleNextLeaseExpiryCheck();
       return this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id);
     }
 
-    this.db.prepare("UPDATE delivery_bundles SET state = ?, last_error = NULL WHERE delivery_id = ?")
-      .run(input.state, input.delivery_id);
-    this.db.prepare("UPDATE event_queue SET state = ?, last_error = NULL WHERE delivery_id = ?")
-      .run(input.state, input.delivery_id);
+    const leaseExpiresAt = input.state === "injected_to_runtime"
+      ? this.runtimeTurnLeaseExpiresAt()
+      : null;
+    this.db.prepare("UPDATE delivery_bundles SET state = ?, lease_expires_at = ?, last_error = NULL WHERE delivery_id = ?")
+      .run(input.state, leaseExpiresAt, input.delivery_id);
+    this.db.prepare("UPDATE event_queue SET state = ?, lease_expires_at = ?, last_error = NULL WHERE delivery_id = ?")
+      .run(input.state, leaseExpiresAt, input.delivery_id);
     if (input.state === "acknowledged") {
       this.db.prepare("UPDATE event_queue SET delivered_at = ? WHERE delivery_id = ?").run(now(), input.delivery_id);
     }
@@ -1640,6 +1645,7 @@ export class BusStore {
       bridge_id: input.bridge_id,
       delivery_id: input.delivery_id
     });
+    this.scheduleNextLeaseExpiryCheck();
     return this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id);
   }
 
@@ -2423,6 +2429,15 @@ export class BusStore {
 
   private deliveryLeaseExpiresAt(): string {
     return new Date(Date.now() + 30_000).toISOString();
+  }
+
+  /**
+   * Once a bridge has injected a delivery, the lease covers the runtime turn,
+   * not merely transport to the bridge. Official provider turns can take
+   * minutes; the longest in-process runtime timeout is ten minutes.
+   */
+  private runtimeTurnLeaseExpiresAt(): string {
+    return new Date(Date.now() + 15 * 60_000).toISOString();
   }
 
   private requeueExpiredDeliveryLeases(broadcast: Broadcast): void {

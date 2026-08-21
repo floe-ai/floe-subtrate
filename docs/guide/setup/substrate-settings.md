@@ -1,10 +1,10 @@
 # Substrate settings
 
-**Substrate settings are machine-level: they apply to this install of floe, not to any one workspace.**
+**Substrate Settings is the secondary developer observatory for machine-level Floe state. Normal provider and workspace model choices live together in Floe Settings.**
 
 A workspace's own settings live in its `.floe/` directory (see [[Workspace config]]) and travel with the repo. Substrate settings live on your machine, under `~/.floe/`, and apply across every workspace you attach. The split matters: credentials, daemon ports, and the model registry are properties of *your machine*, not of any project — committing them to a repo would leak secrets and hard-code someone else's local paths.
 
-Substrate settings cover:
+The developer view covers:
 
 - auth credentials ([[Providers and auth]])
 - daemon runtime (which adapter the bridge, see [[Services]], uses to run actors)
@@ -21,14 +21,14 @@ The Substrate Settings view in floe-app has six tabs. Only two are implemented:
 
 | Tab | Status |
 |---|---|
-| Authentication | Real — desktop reads and writes credentials; browser reads only (see [[Providers and auth]]) |
-| Runtime | Real — shows and edits the bridge's runtime adapter |
+| Authentication | Real, developer/advanced — inspect profiles and manage API-key profiles; browser reads only (see [[Providers and auth]]) |
+| Runtime | Real, developer/advanced — inspect or force test versus live provider runtimes |
 | Model Registry | Stub — disabled, "coming soon" |
 | MCP Manager | Stub — disabled, "coming soon" |
 | Workspace Catalog | Stub — disabled, "coming soon" |
 | Diagnostics | Stub — disabled, "coming soon" |
 
-Be honest with yourself about this: clicking a stub tab does nothing. The model registry, MCP servers, and workspace catalogue are all real concepts in the substrate, but there is no settings UI for them yet — you manage them through `~/.floe/auth/models.json`, `.floe/mcp/`, and `floe-cli` directly.
+Normal ChatGPT connection is intentionally absent from this view. It belongs in first-use onboarding and the Settings gear beside the workspace name. Clicking a stub tab does nothing. The model registry, MCP servers, and workspace catalogue are real substrate concepts, but there is no settings UI for them yet.
 
 ## Implementation
 

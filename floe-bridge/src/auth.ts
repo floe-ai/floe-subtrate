@@ -7,7 +7,15 @@ import { execSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getEnvApiKey, getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
-import { getOAuthApiKey, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import type {
+  AuthOperationOptions,
+  Credential,
+  CredentialInfo,
+  CredentialStore,
+  ModelAuth,
+  Models,
+} from "@earendil-works/pi-ai";
 import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
@@ -72,16 +80,7 @@ const ModelsConfigSchema = z.object({
 type AuthProfile = z.infer<typeof ProfileSchema>;
 type ProfilesDocument = z.infer<typeof ProfilesDocumentSchema>;
 
-type ApiKeyCredential = {
-  type: "api_key";
-  key: string;
-};
-
-type OAuthCredential = {
-  type: "oauth";
-} & OAuthCredentials;
-
-type AuthCredential = ApiKeyCredential | OAuthCredential;
+type AuthCredential = Credential;
 type AuthStorageData = Record<string, AuthCredential>;
 
 const DEFAULT_PROFILES: ProfilesDocument = {
@@ -157,12 +156,14 @@ export class RuntimeAuthError extends Error {
   }
 }
 
-export class BridgeAuthStorage {
+export class BridgeAuthStorage implements CredentialStore {
   private data: AuthStorageData = {};
   private errors: Error[] = [];
+  private readonly oauthModels: Models;
 
   constructor(private readonly authPath: string) {
     this.reload();
+    this.oauthModels = builtinModels({ credentials: this });
   }
 
   reload(): void {
@@ -179,18 +180,11 @@ export class BridgeAuthStorage {
     // tokens on each refresh, so a stale in-memory token is immediately invalid.
     this.reload();
     const credential = this.data[provider];
-    if (credential?.type === "api_key") return credential.key.trim();
+    if (credential?.type === "api_key") return credential.key?.trim() || undefined;
     if (credential?.type === "oauth") {
       try {
-        const oauthCredentials: Record<string, OAuthCredentials> = {};
-        for (const [key, value] of Object.entries(this.data)) {
-          if (value.type === "oauth") oauthCredentials[key] = value;
-        }
-        const refreshed = await getOAuthApiKey(provider, oauthCredentials);
-        if (!refreshed) return undefined;
-        this.data[provider] = { type: "oauth", ...refreshed.newCredentials };
-        this.save();
-        return refreshed.apiKey;
+        const resolved = await this.oauthModels.getAuth(provider);
+        return resolved?.auth.apiKey?.trim() || undefined;
       } catch (error) {
         this.errors.push(error instanceof Error ? error : new Error(String(error)));
         return undefined;
@@ -198,6 +192,41 @@ export class BridgeAuthStorage {
     }
     if (process.env.FLOE_ALLOW_ENV_AUTH_FALLBACK === "1") return getEnvApiKey(provider);
     return undefined;
+  }
+
+  async read(providerId: string, _options?: AuthOperationOptions): Promise<Credential | undefined> {
+    this.reload();
+    return this.data[providerId];
+  }
+
+  async list(_options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+    this.reload();
+    return Object.entries(this.data).map(([providerId, credential]) => ({
+      providerId,
+      type: credential.type,
+    }));
+  }
+
+  async modify(
+    providerId: string,
+    fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+    _options?: AuthOperationOptions,
+  ): Promise<Credential | undefined> {
+    this.reload();
+    const current = this.data[providerId];
+    const next = await fn(current);
+    if (next !== undefined) {
+      this.data[providerId] = next;
+      this.save();
+      return next;
+    }
+    return current;
+  }
+
+  async delete(providerId: string, _options?: AuthOperationOptions): Promise<void> {
+    this.reload();
+    delete this.data[providerId];
+    this.save();
   }
 
   drainErrors(): Error[] {
@@ -282,6 +311,24 @@ class BridgeModelRegistry {
     const configured = this.providerApiKeys.get(provider);
     if (!configured) return undefined;
     return resolveConfiguredValue(configured);
+  }
+
+  async getAuthForModel(model: Model<any>): Promise<ModelAuth | undefined> {
+    const credential = await this.authStorage.read(model.provider);
+    if (credential?.type === "oauth") {
+      try {
+        const models = builtinModels({ credentials: this.authStorage });
+        return (await models.getAuth(model))?.auth;
+      } catch {
+        return undefined;
+      }
+    }
+    const stored = await this.authStorage.getApiKey(model.provider);
+    if (stored) return { apiKey: stored };
+    const configured = this.providerApiKeys.get(model.provider);
+    if (!configured) return undefined;
+    const apiKey = resolveConfiguredValue(configured);
+    return apiKey ? { apiKey } : undefined;
   }
 }
 
@@ -407,8 +454,13 @@ export async function resolveRuntimeAuth(
       `Model '${provider}/${modelId}' is not present in local model registry.`
     );
   }
+  let resolvedModel: Model<any> = model;
 
-  const apiKey = await runtime.modelRegistry.getApiKeyForProvider(provider);
+  const getAuthForModel = runtime.modelRegistry.getAuthForModel?.bind(runtime.modelRegistry);
+  const modelAuth = getAuthForModel
+    ? await getAuthForModel(resolvedModel)
+    : { apiKey: await runtime.modelRegistry.getApiKeyForProvider(provider) };
+  const apiKey = modelAuth?.apiKey;
   if (!apiKey) {
     const profileHint = profileId ? ` for profile '${profileId}'` : "";
     throw new RuntimeAuthError(
@@ -417,9 +469,20 @@ export async function resolveRuntimeAuth(
     );
   }
 
+  if (modelAuth.baseUrl || modelAuth.headers) {
+    const authHeaders = modelAuth.headers
+      ? Object.fromEntries(Object.entries(modelAuth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+      : undefined;
+    resolvedModel = {
+      ...resolvedModel,
+      ...(modelAuth.baseUrl ? { baseUrl: modelAuth.baseUrl } : {}),
+      ...(authHeaders ? { headers: { ...resolvedModel.headers, ...authHeaders } } : {}),
+    };
+  }
+
   return {
     provider,
-    model,
+    model: resolvedModel,
     modelId,
     apiKey,
     authProfileId: profile?.id ?? null,

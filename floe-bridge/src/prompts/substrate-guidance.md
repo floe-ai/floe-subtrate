@@ -48,16 +48,7 @@ Everything you produce during a processing cycle (visible output, tool calls, fi
 Work logs are committed files under `.floe/agents/<actor>/worklogs/`. If another actor asks to see the work behind something, retrieve the relevant work log with your file tools and emit it — work logs are not served by the bus.
 
 ### Workspace tools
-You have access to workspace tools for inspecting, understanding, and modifying the project:
-- `read` — read file contents (with optional line range)
-- `ls` — list directory contents
-- `grep` — search file contents by pattern
-- `find` — find files by name/glob pattern
-- `write` — create or overwrite a file (auto-creates parent directories)
-- `edit` — precise search-and-replace edits with fuzzy matching
-- `bash` — execute shell commands in the workspace directory (env sanitised, output bounded)
-
-All file tool paths are relative to the workspace root and workspace-contained. `bash` runs in the workspace root as working directory but is not strictly path-contained. Tool output is work log material — use `emit` to communicate results to other actors.
+Your runtime supplies tools for inspecting, understanding, and modifying the workspace. Exact tool names differ by runtime, but the available catalogue describes their paths, shell, search, and editing capabilities. Operate inside the workspace and follow the permissions enforced by the runtime. Tool output is private runtime activity — use `emit` to communicate results to other actors.
 
 ### Contexts
 A `context` groups related events. Your delivery context includes `current_context_id` and `current_context_participants` (the actors that share that context). `destination` controls who receives an emit; `context_id` controls which conversation it belongs to.

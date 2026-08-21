@@ -1,6 +1,6 @@
 # Install and first run
 
-**Getting from nothing installed to a working floe: install, `floe setup`, open the UI, attach a workspace.**
+**Getting from nothing installed to a working Floe: start local services, connect a provider, choose a workspace, and talk to Floe.**
 
 ## Prerequisites
 
@@ -52,11 +52,13 @@ floe desktop
 
 Starts services if they aren't already running, waits for the 5379 frontend to answer a health check, then opens a native Tauri window attached to that same running frontend — it never starts a second frontend. First launch compiles Rust and takes about 2–5 minutes; the build output streams to your terminal. Later launches are fast.
 
-## Attaching your first workspace
+Once the native shell opens, it renders a lightweight **Starting Floe…** state immediately and retries the local substrate while it becomes ready. The current development command still starts the services before opening the Tauri development window; making a packaged EXE own the bus/bridge service lifecycle requires packaged service binaries and is not implied by this UI behaviour.
 
-A [[Workspace]] is a repo or folder with a `.floe/` directory in it. `floe setup` and `floe open` both walk up from your current directory looking for one and register it with the bus automatically (`findAncestorWithFloe` in `floe-cli/src/cli.ts`).
+## First-use onboarding
 
-If you run `floe setup` or `floe open` from inside a directory that has no `.floe/` folder anywhere above it, nothing gets auto-registered — the CLI has no `floe init` command. You register a workspace directly against the bus instead:
+A [[Workspace]] is a repo or folder where Floe works. On a clean desktop installation, the app first connects ChatGPT through official OpenAI Codex, then asks for an existing or new workspace folder, applies the chosen model as the workspace default, and opens the Floe conversation.
+
+`floe setup` and `floe open` still walk up from the current directory and automatically register an ancestor that already contains `.floe/`. Headless users can register directly against the bus:
 
 ```bash
 curl -X POST http://localhost:5377/v1/workspaces/register \
@@ -68,16 +70,11 @@ curl -X POST http://localhost:5377/v1/workspaces/register \
 
 ## What you see when nothing exists yet
 
-A freshly attached workspace has no [[Scope]]s, no [[Actor]]s beyond a seeded default operator, and no history. floe-app shows an empty workspace home — there's nothing to fan out into a scope canvas until you create one. This is expected: floe doesn't ship example scopes or example work. See [[The documentation pipeline]] for a full worked example built from nothing.
+A freshly attached workspace lands in the conversation with Floe and asks what outcome you want. It does not require a Scope, Actor inventory, or substrate configuration before that first conversation. The richer developer views remain available under Developer tools.
 
 ## If it breaks
 
-`~/.floe/config.yaml` is never migrated. If it's incompatible with the version of floe you're running, floe fails fast with a message instead of trying to patch it. The fix is always:
-
-```bash
-rm -rf ~/.floe
-floe setup
-```
+`~/.floe/config.yaml` is not migrated automatically. If it is incompatible, use `floe reset` or the repair instruction for the affected state. Do not delete the whole Floe home blindly when it contains valuable API credentials. Codex subscription credentials remain in Codex-owned storage.
 
 ## Implementation
 

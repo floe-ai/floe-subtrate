@@ -1,18 +1,19 @@
 # Settings in floe-app
 
-**floe-app has two separate levels of settings — workspace and [[Substrate settings]] — because they answer different questions: what this project is, versus what this machine can do.**
+**Normal Floe Settings combines the two choices a user needs: which providers this device can use, and which model the current workspace should use.**
 
-## Why two levels
+## The user-facing distinction
 
-Workspace settings describe what this [[Workspace]] is: which [[Actor]]s and extensions it has, and how the app behaves when it writes a file back to your git working tree. This is project-level, checked into `.floe/` alongside your code.
+The interface avoids asking a user to understand "substrate settings":
 
-[[Substrate settings]] describe the machine underneath every workspace: auth credentials, the daemon runtime, the model registry, MCP, the workspace catalog, and diagnostics. This is machine-level, and lives in `~/.floe/config.yaml` — never checked into any project's git history, and never migrated (a broken config is reset with `rm -rf ~/.floe && floe setup`, not repaired in place).
+- **Model providers** are connections available to Floe on this device and can be reused by every workspace.
+- **Workspace model** selects which connected provider and model Floe normally uses in the current workspace.
 
-Keeping them separate means a change to your model registry does not touch any workspace's git history, and a workspace's committed settings never leak machine credentials.
+They appear together because users commonly need to connect an account and then choose it. Their storage and scope remain separate: provider credentials are local or provider-owned, while the workspace choice is an ordinary runtime binding.
 
 ## Workspace settings
 
-Reached via the settings affordance next to the workspace switcher. It currently holds one control: the [[Binding]] new actors inherit by default — profile → model → thinking level — shown alongside the same profile/model constraints used on an individual actor.
+Reached via the gear next to the workspace switcher. It contains the ChatGPT connection managed by official OpenAI Codex and the workspace's provider → model → effort default. It uses provider names and model names rather than asking a normal user to create profile identifiers or paste tokens.
 
 ## The actor Configure tab
 
@@ -22,12 +23,12 @@ This correctly lives on the actor, not in a separate settings drawer: a [[Bindin
 
 ## Substrate Settings
 
-Reached from the bottom of the left nav — switches the whole app into machine-level mode. It has six tabs:
+Reached by expanding **Developer tools** in the left nav and selecting **Substrate Settings** — switches the whole app into machine-level mode. It has six tabs:
 
 | Tab | Status |
 |---|---|
-| Authentication | Real. Desktop can read and write credentials; browser is read-only (see [[floe-app]]). |
-| Runtime | Real. Daemon runtime status/config. |
+| Authentication | Developer/advanced. Inspect profiles and manage API-key profiles; browser is read-only (see [[floe-app]]). Normal ChatGPT setup is in Floe Settings. |
+| Runtime | Developer/advanced. Inspect or force test versus live provider runtimes. |
 | Model Registry | Stub. |
 | MCP Manager | Stub. |
 | Workspace Catalog | Stub. |
@@ -40,6 +41,7 @@ See [[Glossary]].
 ## Implementation
 
 - `floe-app/src/workspace/WorkspaceSettings.tsx` — workspace-level default binding
+- `floe-app/src/providers/ProviderAccess.tsx` — device-level ChatGPT/Codex connection
 - `floe-app/src/actors/ActorInspector.tsx` — actor Configure tab, binding form, resolved-binding display
 - `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — Substrate Settings shell and the six tabs (Authentication/Runtime real; Models/MCP/Workspaces/Diagnostics are stubs)
 - `GET /v1/auth/profiles`, `GET /v1/runtime/bindings`, `POST /v1/runtime/bindings` — auth profiles and binding reads/writes

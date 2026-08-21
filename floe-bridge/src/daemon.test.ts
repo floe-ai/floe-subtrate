@@ -41,32 +41,32 @@ afterEach(() => {
 });
 
 describe("chooseAdapter", () => {
-  it("uses the deterministic fake adapter by default", () => {
+  it("keeps the live provider router ready on a clean start", () => {
     withoutAdapterEnv();
     const made = makeConfig();
     try {
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("fake");
+      expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
     } finally {
       made.cleanup();
     }
   });
 
-  it("uses pi-agent-core for real profile-backed runtime execution", () => {
+  it("keeps explicit live configuration behind the provider router", () => {
     withoutAdapterEnv();
     const made = makeConfig("pi-agent-core");
     try {
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("pi-agent-core");
+      expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
     } finally {
       made.cleanup();
     }
   });
 
-  it("auto-selects pi-agent-core when a real auth profile exists and no adapter is configured", () => {
+  it("routes profile-backed execution without changing the bridge at login time", () => {
     withoutAdapterEnv();
     const made = makeConfig();
     try {
       writeProfiles(made.config.home, [{ id: "copilot-atvi", provider: "github-copilot", model: "gpt-4.1" }]);
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("pi-agent-core");
+      expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
     } finally {
       made.cleanup();
     }

@@ -37,6 +37,46 @@ afterEach(() => {
 });
 
 describe("D5 — lease-expiry requeue via scheduled single-shot timer (no recurring poll)", () => {
+  it("extends the lease while a runtime turn is actively processing", () => {
+    vi.useFakeTimers();
+
+    const { store, cleanup } = makeStore();
+    const broadcasts: Array<{ type: string; payload: any }> = [];
+    const broadcast = (type: string, payload: any = {}) => broadcasts.push({ type, payload });
+
+    try {
+      store.setBroadcast(broadcast);
+      store.registerWorkspace({ locator: "/fake/path", name: "Runtime Lease Test", init_authorized: true }, broadcast);
+      store.registerEndpoint({ endpoint_id: EP, workspace_id: WS, name: "Agent", bridge_id: BRIDGE, status: "idle" }, broadcast);
+      store.submitEvent({
+        type: "message",
+        workspace_id: WS,
+        source_endpoint_id: "actor:lease:operator",
+        thread_id: "thread:lease:runtime",
+        destination: { kind: "endpoint", endpoint_id: EP },
+        content: { text: "take the time you need" },
+        response: { expected: true }
+      }, broadcast);
+
+      const delivery = store.claimDeliveries(BRIDGE, 1, broadcast)[0]!;
+      store.reportDeliveryStatus({
+        bridge_id: BRIDGE,
+        delivery_id: delivery.delivery_id,
+        state: "injected_to_runtime"
+      }, broadcast);
+
+      broadcasts.length = 0;
+      vi.advanceTimersByTime(31_000);
+      expect(broadcasts.find(b => b.type === "delivery_failed")).toBeUndefined();
+      expect((store.listDeliveries({ workspace_id: WS }) as any[])[0]?.state).toBe("injected_to_runtime");
+
+      vi.advanceTimersByTime(15 * 60_000);
+      expect(broadcasts.find(b => b.type === "delivery_failed")?.payload.delivery_id).toBe(delivery.delivery_id);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("requeues an expired delivery via the scheduled timer without any claimDeliveries call", async () => {
     vi.useFakeTimers();
 

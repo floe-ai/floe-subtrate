@@ -15,7 +15,9 @@ import { BusClient, type DeliveryBundle } from "./bus-client.js";
 import { ensureProjectTemplate, loadProject, materializeSavedConfig } from "./project.js";
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
-import { PiAgentCoreAdapter, TurnFailedError } from "./adapters/pi-agent-core-adapter.js";
+import { PiAgentCoreAdapter } from "./adapters/pi-agent-core-adapter.js";
+import { TurnFailedError } from "./adapters/turn-failed-error.js";
+import { ProviderRuntimeAdapter } from "./adapters/provider-runtime-adapter.js";
 import { loadExtensions, type LoadedExtension } from "./extension-loader.js";
 import { HookRegistry } from "./hooks.js";
 import { startExtensionRelayServer } from "./extension-relay.js";
@@ -1006,17 +1008,16 @@ export class BridgeDaemon {
 
 export function chooseAdapter(configPath: string, config: LocalConfig): RuntimeAdapter {
   const configured = process.env.FLOE_RUNTIME_ADAPTER ?? config.bridge.runtime_adapter;
-  if (!configured) {
-    const authRuntime = createBridgeAuthRuntime(configPath, config);
-    if (authRuntime.profiles.profiles.some((profile) => profile.provider !== "fake")) {
-      return new PiAgentCoreAdapter(authRuntime);
-    }
-    return new FakeRuntimeAdapter();
-  }
+  const live = () => new ProviderRuntimeAdapter(
+    configPath,
+    config,
+    new PiAgentCoreAdapter(createBridgeAuthRuntime(configPath, config)),
+  );
+  if (!configured) return live();
   const selected = configured.trim().toLowerCase();
   if (selected === "fake") return new FakeRuntimeAdapter();
-  if (selected === "pi" || selected === "pi-agent-core") return new PiAgentCoreAdapter(createBridgeAuthRuntime(configPath, config));
-  throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake" or "pi-agent-core".`);
+  if (["pi", "pi-agent-core", "codex-app-server", "floe-runtime"].includes(selected)) return live();
+  throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake" or "floe-runtime".`);
 }
 
 function actorEndpointId(workspaceId: string, agentId: string): string {

@@ -2,14 +2,15 @@ import { execSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getEnvApiKey, getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
-import {
-  getOAuthApiKey,
-  getOAuthProvider,
-  getOAuthProviders,
-  type OAuthCredentials,
-  type OAuthLoginCallbacks,
-  type OAuthProviderId
-} from "@earendil-works/pi-ai/oauth";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import type {
+  AuthInteraction,
+  AuthOperationOptions,
+  Credential,
+  CredentialInfo,
+  CredentialStore,
+  Models,
+} from "@earendil-works/pi-ai";
 import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
@@ -54,16 +55,7 @@ const ModelsConfigSchema = z.object({
 export type AuthProfile = z.infer<typeof ProfileSchema>;
 export type ProfilesDocument = z.infer<typeof ProfilesDocumentSchema>;
 
-type ApiKeyCredential = {
-  type: "api_key";
-  key: string;
-};
-
-type OAuthCredential = {
-  type: "oauth";
-} & OAuthCredentials;
-
-type AuthCredential = ApiKeyCredential | OAuthCredential;
+type AuthCredential = Credential;
 type AuthStorageData = Record<string, AuthCredential>;
 
 export type AuthStatus = {
@@ -102,12 +94,14 @@ const DEFAULT_MODELS_CONFIG = {
   providers: {}
 };
 
-export class FloeAuthStorage {
+export class FloeAuthStorage implements CredentialStore {
   private data: AuthStorageData = {};
   private errors: Error[] = [];
+  private readonly oauthModels: Models;
 
   constructor(private readonly authPath: string) {
     this.reload();
+    this.oauthModels = builtinModels({ credentials: this });
   }
 
   reload(): void {
@@ -137,43 +131,68 @@ export class FloeAuthStorage {
     this.remove(provider);
   }
 
-  list(): string[] {
+  listProviderIds(): string[] {
     return Object.keys(this.data).sort();
   }
 
   getOAuthProviders() {
-    return getOAuthProviders();
+    return this.oauthModels.getProviders().filter((provider) => provider.auth.oauth);
   }
 
-  async login(providerId: OAuthProviderId, callbacks: OAuthLoginCallbacks): Promise<void> {
-    const provider = getOAuthProvider(providerId);
-    if (!provider) throw new Error(`Unknown OAuth provider: ${providerId}`);
-    const credentials = await provider.login(callbacks);
-    this.set(providerId, { type: "oauth", ...credentials });
+  async login(providerId: string, interaction: AuthInteraction): Promise<void> {
+    await this.oauthModels.login(providerId, "oauth", interaction);
   }
 
   async getApiKey(provider: string): Promise<string | undefined> {
     const credential = this.data[provider];
     if (credential?.type === "api_key") {
-      return credential.key.trim();
+      return credential.key?.trim();
     }
     if (credential?.type === "oauth") {
       try {
-        const oauthCredentials = this.getOAuthCredentials();
-        const refreshed = await getOAuthApiKey(provider, oauthCredentials);
-        if (!refreshed) return undefined;
-        this.data[provider] = {
-          type: "oauth",
-          ...refreshed.newCredentials
-        };
-        this.save();
-        return refreshed.apiKey;
+        const resolved = await this.oauthModels.getAuth(provider);
+        return resolved?.auth.apiKey?.trim() || undefined;
       } catch (error) {
         this.errors.push(error instanceof Error ? error : new Error(String(error)));
         return undefined;
       }
     }
     return getEnvApiKey(provider);
+  }
+
+  async read(providerId: string, _options?: AuthOperationOptions): Promise<Credential | undefined> {
+    this.reload();
+    return this.data[providerId];
+  }
+
+  async list(_options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+    this.reload();
+    return Object.entries(this.data).map(([providerId, credential]) => ({
+      providerId,
+      type: credential.type,
+    }));
+  }
+
+  async modify(
+    providerId: string,
+    fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+    _options?: AuthOperationOptions,
+  ): Promise<Credential | undefined> {
+    this.reload();
+    const current = this.data[providerId];
+    const next = await fn(current);
+    if (next !== undefined) {
+      this.data[providerId] = next;
+      this.save();
+      return next;
+    }
+    return current;
+  }
+
+  async delete(providerId: string, _options?: AuthOperationOptions): Promise<void> {
+    this.reload();
+    delete this.data[providerId];
+    this.save();
   }
 
   getAuthStatus(provider: string): AuthStatus {
@@ -187,14 +206,6 @@ export class FloeAuthStorage {
     const drained = [...this.errors];
     this.errors = [];
     return drained;
-  }
-
-  private getOAuthCredentials(): Record<string, OAuthCredentials> {
-    const result: Record<string, OAuthCredentials> = {};
-    for (const [provider, credential] of Object.entries(this.data)) {
-      if (credential.type === "oauth") result[provider] = credential;
-    }
-    return result;
   }
 
   private save(): void {

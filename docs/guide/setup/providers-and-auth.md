@@ -1,76 +1,72 @@
 # Providers and auth
 
-**An auth profile ties a provider account or API key to a name floe can bind [[Actor]]s to.**
+**A provider connection gives Floe model labour; a profile is the local, non-secret handle used by runtime bindings.**
 
-Floe talks to models through providers (OpenAI, Anthropic, GitHub Copilot, and others). A provider needs credentials before any actor can use it. Those credentials live in an auth profile.
+Floe can route different providers to different runtime adapters. The first normal desktop option is ChatGPT through the official OpenAI Codex app-server. The Pi runtime remains a compatibility option for profiles it supports.
 
-## Creating a profile
+## Connecting ChatGPT in the desktop app
+
+On a clean installation, Floe asks for a provider before asking for a workspace. Choose **Continue with ChatGPT**. The packaged helper speaks to `codex app-server`, which starts or reuses the official ChatGPT login and returns account status and the current model catalogue. Codex owns and refreshes its credentials; Floe does not copy or store the subscription token.
+
+After onboarding, use the gear beside the workspace name and open **Settings → Model providers**. The same surface lets you reconnect or refresh the models available to the account. The workspace section below it selects which provider and model that workspace uses.
+
+Floe writes a non-secret `chatgpt-codex` profile with provider `openai-codex-app-server` and mirrors current model metadata into the local overlay. The bridge routes that profile to the Codex app-server runtime. Provider credentials never pass through the bus.
+
+## Advanced and compatibility profiles
+
+Developer tools → Substrate Settings retains API-key profile management and profile inspection for testing and compatibility. Those controls are intentionally not the normal sign-in experience.
+
+The Floe CLI continues to expose Pi-supported OAuth and API-key profiles:
 
 ```
 floe login --provider <provider>
 ```
 
-`floe login` walks you through choosing a provider, picking or creating a profile id, and authenticating — either OAuth (a browser flow) or an API key read from an environment variable (`--api-key-env`). You can also set a default model for the profile with `--model`.
+`floe login` walks through choosing a provider, picking or creating a profile id, and authenticating through the mechanism that provider supports. API keys can be read from an environment variable with `--api-key-env`; `--model` sets a profile default.
 
 ```
 floe auth list
-```
-
-Lists configured profiles, their provider, default model, and whether credentials are actually present.
-
-```
 floe auth doctor
-```
-
-Validates the whole setup: checks that credential, model registry, and profile files exist and parse, that every profile references a known provider and model, and that every profile actually has usable credentials.
-
-```
 floe logout
 ```
 
-Removes a profile.
+These commands list, validate, and remove Floe-managed profiles.
 
-## Where credentials live
+## Where state lives
 
-Auth profiles, credentials, and the model catalogue live under `~/.floe/auth/`:
+Floe's local auth metadata lives under `~/.floe/auth/`:
 
-- `auth.json` — provider credentials (API keys, OAuth tokens)
-- `models.json` — the local model registry
-- `profiles.yaml` — named auth profiles
+- `auth.json` — credentials for API-key and Pi compatibility profiles; it does not contain Codex subscription credentials
+- `models.json` — optional local model catalogue overlays, including non-secret Codex model metadata
+- `profiles.yaml` — named provider profiles used by runtime bindings
 
-## Auth write is desktop/CLI only
+Codex owns its account and refresh tokens in its own official storage.
 
-Per ADR-0005, the bus exposes **no auth-write endpoints**. Only `floe-cli` and the Tauri desktop shell can create, edit, or remove credentials — both go through native filesystem access, so secrets never cross a network port.
+## Writes are desktop/CLI only
 
-The browser build of floe-app can only **read** auth profiles (`GET /v1/auth/profiles`). When you open Substrate Settings in a plain browser, the Authentication panel shows your configured profiles read-only, with a note to use the CLI (`floe login`) or the desktop app to make changes.
+Per ADR-0005, the bus exposes no auth-write endpoints. Only the Tauri desktop shell and Floe CLI can create or edit local auth state. The normal ChatGPT path delegates credential ownership to Codex and writes only non-secret profile/model metadata through Tauri. Secrets never cross a Floe network port.
 
-## Setup
+The browser build can only read profiles through `GET /v1/auth/profiles`. Account connection and local credential writes require the desktop app or CLI.
+
+## Setup and repair
 
 ```
 floe setup
 ```
 
-Creates `~/.floe/config.yaml` if it doesn't exist, optionally enables autostart, starts services, verifies health, and opens the web UI. Run it once per machine.
+This creates local Floe configuration if needed, optionally enables autostart, starts services, verifies health, and opens the web UI.
 
-## Config is never migrated
-
-Machine config lives at `~/.floe/config.yaml`. Floe is in early development: breaking config changes are expected, and there is deliberately no migration path. If your config is incompatible with the running version of floe, it fails fast with a reset instruction instead of trying to patch itself. The fix is always:
-
-```
-rm -rf ~/.floe
-floe setup
-```
-
-This is intentional, not a bug to work around.
+Floe is in early development and breaking config changes are expected. Use `floe reset` or the documented repair command for the affected state rather than deleting the entire Floe home blindly; preserve valuable API credentials. Codex subscription credentials remain owned by Codex and are outside Floe's auth files.
 
 See [[Glossary]] for term definitions.
 
 ## Implementation
 
-- `floe-cli/src/cli.ts` — `login`, `auth list`, `auth doctor`, `logout`, `setup` commands
-- `floe-cli/src/auth.ts` — profile storage, `authJsonPath`/`modelsJsonPath`/`profilesYamlPath` under `~/.floe/auth/`
-- `floe-cli/src/config.ts` — `ensureConfig`, `parseLocalConfig` (fail-fast reset message on incompatible config)
-- `GET /v1/auth/profiles` — read auth profiles (`floe-bus/src/server.ts:860`)
-- `GET /v1/auth/models` — read models for a provider (`floe-bus/src/server.ts:870`)
-- `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — `BrowserAuthPillar` (read-only) vs `TauriAuthPillar` (read/write)
-- `docs/adr/0005-file-access-patterns.md` — the desktop/CLI vs bus write boundary
+- `floe-app/src/providers/ProviderAccess.tsx` — normal provider connection surface
+- `floe-app/src/features/onboarding/OnboardingFlow.tsx` — first-use provider step
+- `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — developer profile inspection and advanced writes
+- `floe-app/src-auth-sidecar/index.ts` — packaged official Codex app-server helper
+- `floe-app/src-tauri/src/substrate_commands.rs` — non-secret Codex profile/model sync and advanced provider-keyed writes
+- `floe-bridge/src/adapters/provider-runtime-adapter.ts` — profile-provider runtime routing
+- `floe-cli/src/cli.ts` — compatibility profile commands
+- `docs/adr/0005-file-access-patterns.md` — the desktop/CLI versus bus write boundary

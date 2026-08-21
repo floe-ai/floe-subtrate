@@ -9,7 +9,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import type { WorkspaceRef, ScopeRef, EndpointRef } from "./bus-client/types.ts";
+import type { WorkspaceRef, ScopeRef, EndpointRef, AuthProfileRecord } from "./bus-client/types.ts";
 import {
   listWorkspaces,
   listScopes,
@@ -17,7 +17,10 @@ import {
   listEndpoints,
   subscribeEvents,
   registerWorkspace,
+  registerEndpoint,
   deleteWorkspace,
+  getAuthProfiles,
+  upsertRuntimeBinding,
   DirectoryNotFoundError,
 } from "./bus-client/client.ts";
 import { ScopeDetail } from "./scope/ScopeDetail.tsx";
@@ -29,12 +32,16 @@ import { Activity } from "./activity/Activity.tsx";
 
 import { LeftNav } from "./app/layout/LeftNav.tsx";
 import { HomeView } from "./features/home/HomeView.tsx";
+import { FloeHome } from "./features/home/FloeHome.tsx";
+import { OnboardingFlow } from "./features/onboarding/OnboardingFlow.tsx";
 import { ActorView } from "./features/actor/ActorView.tsx";
 import { SubstrateSettingsView } from "./features/substrate/SubstrateSettingsView.tsx";
 import { useNavigation } from "./hooks/useNavigation.ts";
-import { WorkspaceSwitcher, RegisterWorkspaceScreen } from "./workspace/WorkspaceSwitcher.tsx";
+import { WorkspaceSwitcher } from "./workspace/WorkspaceSwitcher.tsx";
 import { ScopeInspectorEmpty, DefaultInspector, useInspectorResize, readRinspWidth } from "./scope/ScopeInspector.tsx";
 import { tk } from "./theme.ts";
+import { getCodexProviderStatus, type CodexProviderStatus } from "./providers/codexProvider.ts";
+import { isTauri } from "./fs/workspaceFs.ts";
 
 // ---------------------------------------------------------------------------
 // Global style injection (scrollbars, html/body reset, focus ring)
@@ -86,18 +93,37 @@ function FullPageCenter({ children }: { children: React.ReactNode }): React.Reac
   );
 }
 
+async function listEndpointsForNewWorkspace(workspaceId: string): Promise<EndpointRef[]> {
+  const endpoints = await listEndpoints(workspaceId).catch(() => [] as EndpointRef[]);
+  if (endpoints.some(endpoint => endpoint.agent_id === "operator" || endpoint.endpoint_id.endsWith(":operator"))) {
+    return endpoints;
+  }
+
+  const operator = await registerEndpoint({
+    endpoint_id: `actor:${workspaceId}:operator`,
+    workspace_id: workspaceId,
+    name: "Operator",
+    agent_id: "operator",
+    bridge_id: null,
+    status: "idle",
+  });
+  return [operator, ...endpoints];
+}
+
 // ---------------------------------------------------------------------------
 // Main App Component
 // ---------------------------------------------------------------------------
 
 export function App(): React.ReactElement {
-  const [appState, setAppState] = useState<"loading" | "no-workspaces" | "error" | "ready">("loading");
+  const [appState, setAppState] = useState<"loading" | "onboarding" | "error" | "ready">("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [workspaces, setWorkspaces] = useState<WorkspaceRef[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceRef | null>(null);
   const [scopes, setScopes] = useState<ScopeRef[]>([]);
   const [actors, setActors] = useState<EndpointRef[]>([]);
+  const [authProfiles, setAuthProfiles] = useState<AuthProfileRecord[]>([]);
+  const [codexStatus, setCodexStatus] = useState<CodexProviderStatus | null>(null);
 
   const nav = useNavigation();
 
@@ -112,18 +138,42 @@ export function App(): React.ReactElement {
   // ---------------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
+    async function waitForSubstrate(): Promise<{ workspaces: WorkspaceRef[]; profiles: AuthProfileRecord[] }> {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          const [wss, auth] = await Promise.all([listWorkspaces(), getAuthProfiles()]);
+          return { workspaces: wss, profiles: auth.profiles };
+        } catch (error) {
+          lastError = error;
+          await new Promise(resolve => setTimeout(resolve, Math.min(150 + attempt * 75, 650)));
+        }
+      }
+      throw lastError ?? new Error("Floe's local services did not become ready");
+    }
+
     async function boot() {
       try {
-        const wss = await listWorkspaces();
+        const codexPromise = isTauri()
+          ? getCodexProviderStatus().catch(() => null)
+          : Promise.resolve(null);
+        const substrate = await waitForSubstrate();
+        const wss = substrate.workspaces;
         if (cancelled) return;
-        if (wss.length === 0) { setAppState("no-workspaces"); return; }
+        setWorkspaces(wss);
+        setAuthProfiles(substrate.profiles);
+        void codexPromise.then(status => { if (!cancelled) setCodexStatus(status); });
+        if (wss.length === 0 || substrate.profiles.length === 0) {
+          if (wss.length > 0) setActiveWorkspace(wss.find(w => w.selected_at !== null) ?? wss[0]!);
+          setAppState("onboarding");
+          return;
+        }
         const active = wss.find(w => w.selected_at !== null) ?? wss[0]!;
         const [scs, eps] = await Promise.all([
           listScopes(active.workspace_id),
           listEndpoints(active.workspace_id).catch(() => [] as EndpointRef[]),
         ]);
         if (cancelled) return;
-        setWorkspaces(wss);
         setActiveWorkspace(active);
         setScopes(scs);
         setActors(eps);
@@ -163,7 +213,7 @@ export function App(): React.ReactElement {
   const switchWorkspace = useCallback(async (wsId: string) => {
     const ws = workspaces.find(w => w.workspace_id === wsId);
     if (!ws || ws.workspace_id === activeWorkspace?.workspace_id) return;
-    nav.navigateToHome();
+    nav.navigateToFloe();
     setScopes([]);
     setActors([]);
     setActiveWorkspace(ws);
@@ -185,12 +235,12 @@ export function App(): React.ReactElement {
       setWorkspaces(refreshed);
       const [scs, eps] = await Promise.all([
         listScopes(ws.workspace_id),
-        listEndpoints(ws.workspace_id).catch(() => [] as EndpointRef[]),
+        listEndpointsForNewWorkspace(ws.workspace_id),
       ]);
       setActiveWorkspace(ws);
       setScopes(scs);
       setActors(eps);
-      nav.navigateToHome();
+      nav.navigateToFloe();
       setAppState("ready");
     } catch (err) {
       if (err instanceof DirectoryNotFoundError && !create_directory) {
@@ -220,14 +270,14 @@ export function App(): React.ReactElement {
       const refreshed = await listWorkspaces();
       setWorkspaces(refreshed);
       if (refreshed.length === 0) {
-        setAppState("no-workspaces");
+        setAppState("onboarding");
         setActiveWorkspace(null);
       } else {
         const next = refreshed[0]!;
         setActiveWorkspace(next);
         setScopes([]);
         setActors([]);
-        nav.navigateToHome();
+        nav.navigateToFloe();
         const [scs, eps] = await Promise.all([
           listScopes(next.workspace_id),
           listEndpoints(next.workspace_id).catch(() => [] as EndpointRef[]),
@@ -344,7 +394,9 @@ export function App(): React.ReactElement {
     return (
       <>
         <GlobalStyles />
-        <FullPageCenter><span>Loading…</span></FullPageCenter>
+        <FullPageCenter>
+          <span style={{ color: tk.ink2 }}>Starting Floe…</span>
+        </FullPageCenter>
       </>
     );
   }
@@ -354,21 +406,47 @@ export function App(): React.ReactElement {
       <>
         <GlobalStyles />
         <FullPageCenter>
-          <span style={{ color: tk.danger }}>Failed to load: {loadError}</span>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, maxWidth: 420, textAlign: "center" }}>
+            <span style={{ color: tk.ink, fontSize: 16 }}>Floe could not start its local services</span>
+            <span style={{ color: tk.ink3 }}>{loadError}</span>
+            <button onClick={() => window.location.reload()} style={{ background: tk.accent, color: "#0c1714", border: "none", borderRadius: tk.r2, padding: "7px 14px" }}>Try again</button>
+          </div>
         </FullPageCenter>
       </>
     );
   }
 
-  if (appState === "no-workspaces") {
+  if (appState === "onboarding") {
+    const existingProfile = authProfiles[0];
     return (
       <>
         <GlobalStyles />
-        <RegisterWorkspaceScreen
-          onRegistered={ws => {
-            setWorkspaces([ws]);
-            setActiveWorkspace(ws);
-            setScopes([]);
+        <OnboardingFlow
+          workspaces={workspaces}
+          hasProvider={authProfiles.length > 0}
+          existingProfileId={existingProfile?.id}
+          existingModel={existingProfile?.model}
+          codexStatus={codexStatus}
+          onReady={async ({ workspace, profileId, model }) => {
+            await upsertRuntimeBinding({
+              scope: "workspace_default",
+              workspace_id: workspace.workspace_id,
+              auth_profile: profileId,
+              model: model || null,
+              thinking_level: model ? "high" : null,
+            });
+            const [refreshed, scs, eps, auth] = await Promise.all([
+              listWorkspaces(),
+              listScopes(workspace.workspace_id),
+              listEndpointsForNewWorkspace(workspace.workspace_id),
+              getAuthProfiles(),
+            ]);
+            setWorkspaces(refreshed);
+            setAuthProfiles(auth.profiles);
+            setActiveWorkspace(refreshed.find(item => item.workspace_id === workspace.workspace_id) ?? workspace);
+            setScopes(scs);
+            setActors(eps);
+            nav.navigateToFloe();
             setAppState("ready");
           }}
         />
@@ -413,7 +491,7 @@ export function App(): React.ReactElement {
         }}>
           {/* Brand */}
           <a href="#" style={{ display: "inline-flex", alignItems: "center", gap: 8, textDecoration: "none", color: tk.ink2 }}
-            onClick={e => { e.preventDefault(); nav.navigateToHome(); }}
+            onClick={e => { e.preventDefault(); nav.navigateToFloe(); }}
           >
             <span style={{
               width: 22, height: 22, borderRadius: 6,
@@ -437,8 +515,8 @@ export function App(): React.ReactElement {
           {/* Settings affordance */}
           <button
             onClick={handleOpenWorkspaceSettings}
-            title="Workspace settings"
-            aria-label="Workspace settings"
+            title="Settings"
+            aria-label="Settings"
             style={{
               display: "inline-flex", alignItems: "center", justifyContent: "center",
               width: 26, height: 26, borderRadius: tk.r2,
@@ -495,6 +573,7 @@ export function App(): React.ReactElement {
             actors={actors}
             selectedActorId={nav.selectedActorId}
             onView={(v) => {
+              if (v === "floe") nav.navigateToFloe();
               if (v === "home") nav.navigateToHome();
               if (v === "activity") nav.navigateToActivity();
             }}
@@ -567,6 +646,11 @@ export function App(): React.ReactElement {
                 onSelectScope={id => handleSelectScope(id || "")}
                 onScopeCreated={handleScopeCreated}
               />
+            ) : nav.view === "floe" ? (
+              <FloeHome
+                workspaceId={activeWorkspace.workspace_id}
+                endpoints={actors}
+              />
             ) : nav.view === "activity" ? (
               <Activity
                 workspaceId={activeWorkspace.workspace_id}
@@ -577,7 +661,7 @@ export function App(): React.ReactElement {
           </main>
 
           {/* Right inspector */}
-          {nav.appMode !== "system" && (!nav.selectedActorId || nav.selectedContextId) && (
+          {nav.appMode !== "system" && nav.view !== "floe" && (!nav.selectedActorId || nav.selectedContextId) && (
             <aside style={{
               flex: `0 0 ${inspWidth}px`,
               width: inspWidth,

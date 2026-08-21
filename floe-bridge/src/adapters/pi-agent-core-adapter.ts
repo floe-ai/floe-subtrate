@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
-import { getGitHubCopilotBaseUrl } from "@earendil-works/pi-ai/oauth";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { AgentRuntimeConfig, BridgeAuthRuntime, ModelThinkingCapability, RuntimeAuthResolved } from "../auth.js";
 import { resolveRuntimeAuth } from "../auth.js";
 import type { DeliveryBundle, EventEnvelope } from "../bus-client.js";
@@ -20,30 +20,15 @@ import { createWorkspaceTools } from "../tools/index.js";
 import type { ToolContext } from "../tools/index.js";
 import { createPulseTools } from "../tools/pulse-tools.js";
 import { createActorTools } from "../tools/actor-tools.js";
+import { TurnFailedError } from "./turn-failed-error.js";
+
+export { TurnFailedError } from "./turn-failed-error.js";
 
 /**
  * Thrown by the adapter when a pi runtime turn fails after the delivery was already
  * injected to the runtime. Carries structured fields so the daemon can emit a
  * runtime_error event to the originating endpoint.
  */
-export class TurnFailedError extends Error {
-  readonly code = "turn_failed" as const;
-  constructor(
-    readonly delivery_id: string,
-    readonly source_endpoint_id: string,
-    readonly workspace_id: string,
-    readonly context_id: string | null,
-    readonly thread_id: string,
-    readonly model_id: string,
-    readonly provider: string,
-    readonly http_status: number | null,
-    message: string
-  ) {
-    super(message);
-    this.name = "TurnFailedError";
-  }
-}
-
 /**
  * Internal sentinel thrown from finalizeTurn when pi completes a turn with
  * stopReason === 'error' (no HTTP throw from the runtime). Carries the pi
@@ -511,24 +496,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       context
     };
 
-    // Patch github-copilot model baseUrl using the live token's proxy-ep field.
-    // The static Pi registry hardcodes api.individual.githubcopilot.com, but enterprise
-    // accounts have a different endpoint embedded in the token via proxy-ep.
-    let model = resolved.model;
-    if (model.provider === "github-copilot") {
-      const apiKey = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
-      if (apiKey) {
-        const patchedBaseUrl = getGitHubCopilotBaseUrl(apiKey);
-        if (patchedBaseUrl !== model.baseUrl) {
-          console.log("[bridge] pi patched github-copilot baseUrl", {
-            from: model.baseUrl,
-            to: patchedBaseUrl,
-            endpoint_id: bundle.endpoint_id
-          });
-          model = { ...model, baseUrl: patchedBaseUrl };
-        }
-      }
-    }
+    const model = resolved.model;
 
     console.log("[bridge] pi agent instructions loaded", {
       endpoint_id: bundle.endpoint_id,
@@ -1096,6 +1064,7 @@ function createDefaultAgent(input: AgentFactoryInput): AgentLike {
       tools: input.tools,
       thinkingLevel: input.thinkingLevel ?? "off"
     },
+    streamFn: streamSimple,
     getApiKey: input.getApiKey,
     onPayload: (payload: any, model: any) => {
       // Log request structure (no content/tokens) for diagnostics

@@ -25,12 +25,14 @@ import type {
   EndpointRef,
   EventEnvelope,
   DeliveryBundle,
+  DeliveryRow,
 } from "../bus-client/types.ts";
 import {
   getContext,
   listContextEvents,
   emit,
   addContextParticipant,
+  listDeliveries,
 } from "../bus-client/client.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
 import { contextLabel } from "./ScopeDetail.tsx";
@@ -90,6 +92,48 @@ function isVisibleMessage(event: EventEnvelope): boolean {
 function messageText(event: EventEnvelope): string {
   const t = event.content?.["text"];
   return typeof t === "string" ? t : JSON.stringify(event.content ?? {});
+}
+
+const ACTIVE_DELIVERY_STATES = new Set(["reserved", "delivered_to_bridge", "injected_to_runtime"]);
+const FAILED_DELIVERY_STATES = new Set(["failed", "dead_lettered", "deferred"]);
+
+export function conversationDeliveryState(deliveries: DeliveryRow[], contextId: string): {
+  working: Map<string, string>;
+  notice: string | null;
+} {
+  const relevant = deliveries
+    .filter(delivery => {
+      try {
+        const events = JSON.parse(delivery.events_json) as Array<{ context_id?: string }>;
+        return events.some(event => event.context_id === contextId);
+      } catch {
+        return false;
+      }
+    })
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+
+  const working = new Map<string, string>();
+  for (const delivery of relevant) {
+    if (ACTIVE_DELIVERY_STATES.has(delivery.state)) {
+      working.set(delivery.endpoint_id, delivery.delivery_id);
+    }
+  }
+  if (working.size > 0) return { working, notice: null };
+
+  const latest = relevant.at(-1);
+  return {
+    working,
+    notice: latest && FAILED_DELIVERY_STATES.has(latest.state)
+      ? friendlyDeliveryFailure(latest.last_error)
+      : null,
+  };
+}
+
+function friendlyDeliveryFailure(error: string | null | undefined): string {
+  if (error?.includes("auth") || error?.includes("profile") || error?.includes("credential")) {
+    return "Floe needs a connected model before it can reply. Open Settings to reconnect it.";
+  }
+  return "Floe couldn’t complete that message. Your message is safe; check Settings and try again.";
 }
 
 // ---------------------------------------------------------------------------
@@ -236,11 +280,15 @@ function ComposerDock({
   speakingAsId,
   onSpeakingAsChange,
   onSend,
+  hideSpeakingAs = false,
+  placeholder = "Write a message… (Enter to send, Shift+Enter for newline)",
 }: {
   endpoints: EndpointRef[];
   speakingAsId: string;
   onSpeakingAsChange: (id: string) => void;
   onSend: (text: string) => Promise<void>;
+  hideSpeakingAs?: boolean;
+  placeholder?: string;
 }): React.ReactElement {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -283,14 +331,15 @@ function ComposerDock({
         </div>
       )}
 
-      {/* Speaking-as row */}
-      <div style={{ marginBottom: 8 }}>
-        <SpeakingAsSelector
-          endpoints={endpoints}
-          speakingAsId={speakingAsId}
-          onSpeakingAsChange={onSpeakingAsChange}
-        />
-      </div>
+      {!hideSpeakingAs && (
+        <div style={{ marginBottom: 8 }}>
+          <SpeakingAsSelector
+            endpoints={endpoints}
+            speakingAsId={speakingAsId}
+            onSpeakingAsChange={onSpeakingAsChange}
+          />
+        </div>
+      )}
 
       {/* Input row */}
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
@@ -299,7 +348,7 @@ function ComposerDock({
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Write a message… (Enter to send, Shift+Enter for newline)"
+          placeholder={placeholder}
           disabled={sending || !speakingAsId}
           rows={2}
           style={{
@@ -425,6 +474,8 @@ export type ContextConversationProps = {
   endpoints: EndpointRef[];
   /** Called once the context's human label is known, for the shell breadcrumb. */
   onLabelResolved?: (label: string) => void;
+  /** Neutral operator front door: fixes the human identity and hides substrate-oriented context controls. */
+  operatorEntry?: { speakingAsEndpointId: string };
 };
 
 export function ContextConversation({
@@ -432,11 +483,13 @@ export function ContextConversation({
   workspaceId,
   endpoints,
   onLabelResolved,
+  operatorEntry,
 }: ContextConversationProps): React.ReactElement {
   const [context, setContext] = useState<ContextRef | null>(null);
   const [events, setEvents] = useState<EventEnvelope[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deliveryNotice, setDeliveryNotice] = useState<string | null>(null);
   const [speakingAsId, setSpeakingAsId] = useState<string>("");
 
   // B1 — working endpoints: map endpoint_id → delivery_id (tracks in-flight turns)
@@ -452,17 +505,21 @@ export function ContextConversation({
     Promise.all([
       getContext(contextId),
       listContextEvents(contextId),
+      listDeliveries({ workspace_id: workspaceId, limit: 500 }),
     ])
-      .then(([ctx, evts]) => {
+      .then(([ctx, evts, deliveries]) => {
+        const deliveryState = conversationDeliveryState(deliveries, contextId);
         setContext(ctx);
         setEvents(evts);
+        setWorkingEndpoints(deliveryState.working);
+        setDeliveryNotice(deliveryState.notice);
         setLoading(false);
       })
       .catch(err => {
         setError(err instanceof Error ? err.message : "Failed to load context");
         setLoading(false);
       });
-  }, [contextId]);
+  }, [contextId, workspaceId]);
 
   useEffect(() => {
     load();
@@ -484,12 +541,23 @@ export function ContextConversation({
         const { delivery } = msg.payload as { delivery: DeliveryBundle };
         const isForThisContext = delivery.events.some(e => e.context_id === contextId);
         if (isForThisContext) {
+          setDeliveryNotice(null);
           setWorkingEndpoints(prev => {
             const next = new Map(prev);
             next.set(delivery.endpoint_id, delivery.delivery_id);
             return next;
           });
         }
+      }
+
+      if (["delivery_deferred", "delivery_failed", "delivery_dead_lettered"].includes(msg.type)) {
+        const { delivery_id, error } = msg.payload as { delivery_id: string; error?: string | null };
+        setWorkingEndpoints(prev => {
+          if (![...prev.values()].includes(delivery_id)) return prev;
+          const next = new Map([...prev].filter(([, id]) => id !== delivery_id));
+          setDeliveryNotice(friendlyDeliveryFailure(error));
+          return next;
+        });
       }
 
       // B1 — turn ended → clear working state for that endpoint
@@ -512,6 +580,10 @@ export function ContextConversation({
       setSpeakingAsId("");
       return;
     }
+    if (operatorEntry) {
+      setSpeakingAsId(operatorEntry.speakingAsEndpointId);
+      return;
+    }
     let saved: string | null = null;
     try {
       saved = localStorage.getItem(SPEAKING_AS_KEY);
@@ -523,7 +595,7 @@ export function ContextConversation({
     setSpeakingAsId(prev =>
       prev && endpoints.some(e => e.endpoint_id === prev) ? prev : endpoints[0]!.endpoint_id
     );
-  }, [endpoints]);
+  }, [endpoints, operatorEntry]);
 
   function handleSpeakingAsChange(id: string) {
     setSpeakingAsId(id);
@@ -573,7 +645,7 @@ export function ContextConversation({
       destination,
       context_id: contextId,
       content: { text },
-      response: { expected: false },
+      response: { expected: !!operatorEntry },
       metadata: {},
     });
     await load();
@@ -628,27 +700,33 @@ export function ContextConversation({
         borderBottom: `1px solid ${tk.border}`,
         background: tk.surface,
       }}>
-        <div style={{
-          fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase",
-          color: tk.ink3, fontWeight: 510, marginBottom: 4,
-        }}>
-          Context
-        </div>
+        {!operatorEntry && (
+          <div style={{
+            fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase",
+            color: tk.ink3, fontWeight: 510, marginBottom: 4,
+          }}>
+            Context
+          </div>
+        )}
         <h2 style={{
           margin: "0 0 10px", fontSize: 19, fontWeight: 510, color: tk.ink,
           letterSpacing: "-0.01em", lineHeight: 1.25,
         }}>
-          {label}
+          {operatorEntry ? "Floe" : label}
         </h2>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {context.participants.length > 0 ? (
-            context.participants.map(p => (
-              <ParticipantPill key={p} name={endpointName(p, endpoints)} />
-            ))
-          ) : (
-            <span style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>No participants</span>
-          )}
-        </div>
+        {operatorEntry ? (
+          <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5 }}>Working with you on this workspace.</p>
+        ) : (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {context.participants.length > 0 ? (
+              context.participants.map(p => (
+                <ParticipantPill key={p} name={endpointName(p, endpoints)} />
+              ))
+            ) : (
+              <span style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>No participants</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Body: message stream */}
@@ -663,7 +741,7 @@ export function ContextConversation({
         >
           {visibleMessages.length === 0 && workingActorNames.length === 0 ? (
             <div style={{ padding: "32px 0", color: tk.ink4, fontSize: 13, fontStyle: "italic" }}>
-              No messages in this context yet.
+              {operatorEntry ? "Describe the outcome you want Floe to work toward." : "No messages in this context yet."}
             </div>
           ) : (
             visibleMessages.map(event => (
@@ -675,6 +753,11 @@ export function ContextConversation({
           {workingActorNames.map(name => (
             <WorkingIndicator key={name} actorName={name} />
           ))}
+          {deliveryNotice && (
+            <div role="alert" style={{ padding: "10px 0", color: tk.danger, fontSize: 12.5 }}>
+              {deliveryNotice}
+            </div>
+          )}
         </div>
 
       </div>
@@ -686,6 +769,8 @@ export function ContextConversation({
           speakingAsId={speakingAsId}
           onSpeakingAsChange={handleSpeakingAsChange}
           onSend={handleSend}
+          hideSpeakingAs={!!operatorEntry}
+          placeholder={operatorEntry ? "Tell Floe what you want to happen…" : undefined}
         />
       ) : (
         <NonParticipantFooter
