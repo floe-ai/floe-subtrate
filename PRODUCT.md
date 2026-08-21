@@ -1,123 +1,125 @@
-# Product
+# Floe Product Contract
 
-## Register
+This document defines the intended human experience of Floe. It does not prescribe internal architecture.
 
-product
+## The product
 
-## Users
+The operator tells Floe what they want to happen.
 
-Floe Web is for local operators and builders who are setting up, shaping, and operating portable Floe workspaces.
+Floe determines what organisation, actors, capabilities, contexts, tools, and continuing work are required. It forms and evolves that system using the substrate.
 
-They are not looking for a chat app, a project tracker, or a runtime debug console. They need a clear interface for creating or opening a Workspace, organising connected substrate work into named Scopes when needed, rendering a Scope, inspecting what is configured, and talking to Floe through the substrate path. They may later compose richer Blocks, extensions, agents, hooks, and surfaces, but V0 should make the first workspace loop understandable before expanding the model.
+The operator should not need to understand how Floe is implemented in order to use it.
 
-The primary user is technical enough to understand folders, providers, runtime profiles, and portable configuration. The interface should still protect them from substrate leakage unless they deliberately inspect advanced state.
+## Operator contract
 
-## Product Purpose
+The operator may say:
 
-Floe Web is the human/operator interface for Floe V0.
+- what they want;
+- what they expected;
+- what confused them;
+- what feels wrong;
+- what they want changed;
+- what they approve or reject;
+- what only they can decide or do.
 
-Its job is to let a user operate a portable Workspace without bypassing the substrate:
+The operator should not be required to:
 
-- create or open a Workspace
-- consent to `.floe/` initialization
-- reach Workspace Home
-- create a Scope
-- open the Scope on a canvas Surface
-- inspect Workspace, Scope, runtime, and actor access state
-- open the global Floe Channel
-- send messages to Floe through `floe-bus` and the default runtime-backed endpoint
+- design actor topology;
+- design workflows or graphs;
+- wire events;
+- choose contexts;
+- create substrate structures as setup work;
+- understand routing or delivery;
+- choose a substrate solution to a product problem.
 
-Floe Web succeeds when the user understands this mental model:
+There is no Default Scope that the operator must understand or manage. Scopes are optional substrate organisation when the work actually needs them.
 
-> I have a portable Workspace. Workspace Home is the top-level index, not a Scope. Actor conversations can exist at Workspace level without a Scope. A Scope is an intentional substrate organising boundary for connected or operational work, and FloeWeb renders a Scope on a canvas. The Scope shows scoped substrate primitives and relationships that already exist in the substrate; it does not own a separate item list or graph. Actors are workspace-scoped participants, not objects I drag into a Scope projection. Floe is the always-available system interface, not a separate item or Block.
+## Floe's responsibility
 
-## Source Of Truth
+Given an outcome, Floe should:
 
-`CONTEXT.md` and accepted ADRs in `docs/adr/` are authoritative for substrate semantics; `docs/floe_thought_log.md` carries the owner's current direction. (`floe-init.md`, the original v58 handoff, is superseded and no longer in the repository.)
+1. understand enough of the desired result to attempt it;
+2. inspect available capabilities and relevant workspace state;
+3. compose what already exists before requesting new machinery;
+4. form the organisation required to pursue the outcome;
+5. start useful work;
+6. continue across time and interruptions;
+7. adapt the organisation when reality requires it;
+8. keep the operator sufficiently informed to trust and redirect the work;
+9. ask for human involvement only when it is valuable.
 
-Floe Web must preserve these decisions (labelled "v58" historically; v58 north-star doc is superseded, but these principles remain current — current authority is `docs/floe_thought_log.md`):
+Floe should not ask the operator to solve implementation questions that Floe or its development system can resolve by inspecting, testing, or experimenting.
 
-- `floe-bus` owns events, endpoints, deliveries, pending responses, broadcasts, pulse, workspaces, and observability.
-- `floe-app` talks to `floe-bus`; browser code does not read or write workspace files directly.
-- `floe-bridge` owns runtime embodiment and `.floe/` template initialization.
-- V0 uses Pi lower layers through the bridge where feasible.
-- `emit` is the required runtime primitive; V0 must not reintroduce held `yield` or runtime keepalive semantics.
-- Floe Web must not create a direct runtime path around `floe-bus` and `floe-bridge`.
-- The Pi coding-agent extension is later operator-shell work, not the V0 foundation.
+## Capability discovery
 
-If product-layer ideas conflict with those documents, keep the canonical document unless the direction is intentionally revised.
+Floe is not expected to preload every implementation detail.
 
-## Brand Personality
+When a real outcome exposes a missing capability, Floe should first discover what is already available. It may inspect tools, workspace state, runtime capabilities, canonical documentation, and accepted extension contracts for a concrete reason.
 
-calm, spatial, durable, precise
+Extensions are one possible way to add capability, not the default answer to every problem.
 
-Floe should feel like a quiet operating surface over a durable substrate. The floe metaphor should show up as spatial composition, light structure, and a sense that pieces can move without losing their identity. It should not become decorative ice imagery or a generic node-canvas spectacle.
+If an outcome requires a capability that Floe cannot currently create, install, enable, or use, that is a product failure to surface clearly. It is not a request for the operator to design the missing substrate mechanism.
 
-## Product Model
+## floe-app
 
-Use these terms consistently:
+`floe-app` is the preferred human operator surface, but the existing application is not automatically the product specification.
 
-- Workspace: the portable configuration container, usually a folder or repository containing `.floe/`.
-- Workspace Home: the top-level product surface after a Workspace is opened. It is not a Scope.
-- Scope: an intentional substrate organising boundary inside a Workspace for connected, event-driven, or operational work. It is not a universal fallback bucket.
-- Workspace-level Context: an actor-anchored Context with no Scope, such as a direct actor conversation, actor side conversation, self-note, or unsorted/general conversation.
-- Scoped Context: a Context with a Scope. Scope is required for actorless Contexts and scoped operational flows, unless the operation targets an already-valid explicit unscoped actor Context.
-- Block: a representational concept - how a client renders or interprets a scoped substrate primitive or derived relationship. Blocks are not a storage category; existing substrate primitives are not "stored as blocks".
-- Surface: how a client renders state. FloeWeb's canvas Surface renders a Scope with Blocks and derived relationships.
-- Inspector: configuration and state for the current selection.
-- Channel: a right-side conversation pane.
-- Floe: the global system interface available from any screen.
-- Actor: a workspace-scoped endpoint/participant. Actors are not projection-owned objects.
-- Agent: a runtime-backed actor configured through substrate-aligned agent files and runtime bindings.
+The default operator path should be simple:
 
-Avoid using "Project" for the Workspace model. Avoid "Floe Assistant." Avoid treating Skills, MCPs, extensions, humans, agents, provider profiles, separate item lists or connection lists as default substrate concepts.
+**open a workspace → talk to Floe about an outcome → see meaningful consequences and references → intervene when useful**
 
-## Design Principles
+The operator interface should show the organisation Floe has created and the state that matters to the operator. It should not default to an inventory of substrate primitives.
 
-Composition is the primitive, but not everything belongs on the canvas. Scopes are rendered directly; actors, runtime profiles, event delivery state, hooks, and provider auth are configured or inspected through appropriate surfaces.
+Existing views that enumerate or configure Scopes, Actors, Contexts, runtime details, activity, or substrate settings may remain useful as a developer/debugging observatory. Their existence does not make them part of the default operator experience.
 
-Start with the smallest real loop. The first useful scoped product slice is Workspace -> named Scope -> Scope Surface -> Floe Channel, while Workspace Home must also expose unscoped actor Contexts without inventing a Default Scope. Do not expose speculative Block types just because the canvas can render nodes.
+Do not extend those observatory surfaces merely because a new substrate capability exists.
 
-Product layer respects substrate layer. UI actions should compile down to bus events, endpoint state, runtime bindings, or product-layer artifacts under `.floe/`, not create parallel runtime semantics.
+Do not create a requirement that every substrate capability must have a human UI.
 
-Portable by default. Workspace-owned Floe product state belongs under `.floe/` in readable artifacts once the service API exists. Secrets, credentials, provider auth, and personal preferences remain local/provider-owned.
+Do not require the operator to browse the substrate to discover whether work is healthy.
 
-Calm surface, inspectable depth. Ordinary composition screens should stay focused and legible. Delivery records, pending responses, telemetry, hook results, and dead-letter state belong in trust/advanced views, not as the default experience.
+## Legibility
 
-No fake agents. Humans and agents are not rendered as default Blocks in a Scope projection. Floe is not placed on the canvas.
+The operator needs situational awareness, not omniscience.
 
-## Design Direction
+Floe should make it possible to understand:
 
-Floe Web is a product UI, not a landing page.
+- what outcome it is pursuing;
+- what organisation it formed;
+- what meaningful work is happening;
+- what changed;
+- what is blocked;
+- what needs human judgement;
+- why an important decision or action occurred.
 
-Use restrained color, stable layout, system typography, clear focus states, and standard controls. The interface should feel closer to a serious local design/build tool than a marketing SaaS dashboard.
+The appropriate representation should be discovered through use. It may be conversation, summaries, references, notifications, generated surfaces, or other forms.
 
-The first viewport after a Workspace opens should communicate the actual product model:
+No universal visualisation architecture is assumed.
 
-- left: Workspace selection and local connection
-- center: Workspace Home or opened Scope Surface
-- bottom or side: contextual Inspector, depending on available space
-- right: Channel, closed by default until Floe is opened
+## Self-describing representation
 
-Scope canvas work should use React Flow / React Flow UI direction. In this repo, React Flow core can be adopted first; the full React Flow UI component stack requires a shadcn/Tailwind decision and should not be smuggled into the app without an explicit design-system migration.
+Prefer a substrate whose objects, relationships, references, state, and available actions are self-describing enough that clients can provide a safe generic representation without bespoke UI code for each concept.
 
-## Anti-References
+A generic representation is a fallback for legibility and inspection, not a mandate to place every substrate concept in front of the operator.
 
-Do not make Floe Web feel like:
+When a human need requires a richer surface, Floe may compose a purpose-specific projection or lens from the same underlying shapes. Bespoke coded UI should be reserved for cases where generic or declarative representation cannot express the required interaction or meaning.
 
-- ChatGPT with a sidebar
-- a project-management board
-- a fixed dashboard of metrics
-- a debug console with a nicer skin
-- an agent canvas where actors are draggable mascots
-- a generic workflow automation builder
-- a file explorer
-- a demo UI that invents unsupported Blocks to look complete
+This is a design pressure, not a roadmap item. Build it only when real operator experience proves where generic interpretation is insufficient.
 
-## Accessibility & Inclusion
+## Progressive disclosure
 
-Target WCAG AA for the product interface.
+Normal autonomous work should be quiet.
 
-The user must be able to navigate Workspace selection, Scope creation, Inspector controls, and Channel messaging by keyboard. Focus states should be visible. Status should not rely on color alone. Motion must respect reduced-motion preferences.
+More detail should become available when the operator asks, follows a reference, investigates a problem, or needs to build trust.
 
-The UI should use clear labels for destructive or substrate-affecting actions, especially `.floe/` initialization, runtime profile changes, and future artifact writes.
+Deep substrate telemetry belongs behind deliberate inspection, not in the normal product path.
+
+## Product development
+
+Product needs are discovered from real use.
+
+A user observation such as "I cannot tell what happened" is evidence of a legibility problem. It is not an instruction to build a universal visualiser.
+
+A user observation such as "I expected this to continue" is evidence of a continuity failure. It is not an instruction to add a particular scheduler.
+
+Diagnose the experience first. Build the smallest general correction. Then return the product to the operator.

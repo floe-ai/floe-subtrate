@@ -1,9 +1,12 @@
 # CLAUDE.md
 
-This project's guidance for AI agents and contributors lives in **[AGENTS.md](AGENTS.md)** — read it first.
+Read **[AGENTS.md](AGENTS.md)** first. It contains the working rules for developing Floe.
 
-Start there for the working rules, the Source of Truth tiers, the pre-release / zero-tech-debt stance, and the "evaluate, don't inherit" rule.
+Then use:
 
-See also:
-- **[MISSION.md](MISSION.md)** — why this substrate exists and the redundancy test every slice must pass.
-- **[CONTEXT.md](CONTEXT.md)** — the domain glossary and invariants (canonical terminology).
+- **[MISSION.md](MISSION.md)** — why Floe exists and the permanent development laws.
+- **[PRODUCT.md](PRODUCT.md)** — what the operator experience must feel like.
+- **[CONTEXT.md](CONTEXT.md)** — current substrate terminology and invariants.
+- **[docs/adr/](docs/adr/)** — accepted decisions that have actually been earned.
+
+Do not treat the historical roadmap, Wayfinder maps, issue trees, or old PRDs as a queue of work to execute.

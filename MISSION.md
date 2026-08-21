@@ -1,58 +1,93 @@
-# Mission
+# Floe Mission
 
-Why this substrate exists. Read this when the work feels redundant — especially the week a new model ships.
+## North Star
 
-## The North Star
+Floe exists so a person can express an outcome and an autonomous organisation can form around it, work toward it continuously, evolve what it needs, and involve the person only where their judgement adds value.
 
-Anyone — any discipline, any task, any goal — can have actors work together toward an outcome, **defining and building the system they need as they go**, improving and measuring along the way.
+The operator does not design the system. The operator experiences it.
 
-The substrate makes no assumption about the work. It provides open primitives for actors to coordinate and to model whatever their goal requires; the user shapes them into the system they need. We provide mechanism, never policy.
+Floe provides the smallest durable set of mechanisms necessary for actors to organise work across models, sessions, tools, and time. It does not prescribe the organisation that must be built from them.
 
-## The near-term path
+**Models are labour. The substrate is the company.**
 
-Prove it by running one real autonomous operation end-to-end — this one (see dogfooding): agents and humans as peer actors, the operator steering by exception. A universal substrate earns the name by first carrying a real company, not by being designed as a platform. (See "What Floe is not".)
+## The proving experience
 
-## The bet
+The only proving loop that matters is:
 
-**Models are labor. The substrate is the company.**
+**operator expresses an outcome → Floe forms what it needs → actors work → Floe remains legible → operator steers by exception**
 
-Every lab release makes the labor smarter and cheaper. No lab release provides the company: identity, memory, communication, accountability, scheduling, and boundaries that persist across models, sessions, and vendors. Floe is that layer — the durable record of work and the coordination fabric that turns interchangeable model capability into a compounding organisation.
+Every product or substrate change must make that loop materially more possible, reliable, legible, or autonomous.
 
-## Why this survives new model releases
+A change that merely makes Floe more theoretically complete is not progress.
 
-1. **A better model is an upgrade event, not an extinction event.** Actors bind to models through runtime bindings; a new release is a configuration change that upgrades every actor in the workspace at once. The substrate rides capability waves; it does not compete with them.
-2. **The substrate stores what no model can regenerate.** What happened, who decided, what was said, why — events, contexts, work logs. A 10x better model cannot remember what it was never present for.
-3. **Harnesses are leases; the substrate is ownership.** Anything assembled inside a vendor harness — its memory, its scheduling, its agent definitions — lives at the vendor's pleasure: pricing, deprecation, product pivots. The organisation's record of work must outlive any vendor relationship.
-4. **Actor-neutrality is the endgame assumption.** Mainstream harnesses are built around one human driving one tool. Floe is built around actors, where human-or-agent is an implementation detail. A substrate that assumes that now fits the world we are building toward; harnesses that assume a driver will need rewriting to get there.
+## How Floe is developed
 
-## The redundancy test
+**Do not build what Floe might need. Attempt what the operator wants, and build only what the attempt proves Floe lacks.**
 
-Before building anything, ask: **would a 10x better model make this unnecessary?**
+Development proceeds through real use:
 
-- If yes — do not build it. It is scaffolding compensating for model weakness, and the next release deletes it.
-- If it becomes *more* valuable as models improve — more work flowing through identity, audit, scheduling, and communication — it belongs in the substrate.
+**Want → Attempt → Observe → Diagnose → Generalise → Change → Attempt again**
 
-## The actor-generality test
+The operator contributes outcomes, reactions, confusion, corrections, preferences, and judgement. The operator is not expected to translate those experiences into architecture.
 
-Substrate features must serve actors generally, not one client. Before building anything framed as "for the UI," ask: **is this useful to an actor that never opens the UI** — an agent, a webhook processor, a headless script?
+When an experience exposes a problem, diagnose the problem before choosing a solution. Prefer the smallest correction at the highest possible layer.
 
-- If yes, build it in the substrate.
-- If it is only meaningful to the human UI, it is UI code, not substrate — it does not belong in floe-bus. Build it in the client, or reconsider whether to build it at all.
+## Mechanism, never policy
 
-The operator is an ordinary actor; the UI is one client among many. (Example: the Endpoint Watermark serves any actor processing "events since I last ran," not just the Briefing.)
+Floe should make many organisations possible without encoding one preferred organisation.
 
-## What Floe is not
+A workflow, pipeline, company structure, review process, graph, project method, or domain process is normally a composition built on Floe, not a Floe primitive.
 
-- **Not a harness.** We do not compete with coding agents on driving a model well; we bind to them through the bridge.
-- **Not a workflow tool.** Workflows encode procedure; Floe encodes organisation. Procedure is exactly what better models replace.
-- **Not a platform play, yet.** It must first run one real company — this one. Dogfooding is not a development technique here; it is the business.
+A substrate primitive is earned only when real operations repeatedly demonstrate that the behaviour cannot be composed safely and generally from what already exists.
 
-## How this gets proven
+One use case demonstrates a need. Two may establish a pattern. Only repeated evidence should create a primitive.
 
-The only loop that validates Floe: **give the workspace a goal → actors decompose, execute, coordinate, and report through the substrate → the operator steers by exception.**
+## Operator leverage
 
-Every slice must shorten that loop. A slice that makes the substrate more complete but the loop no shorter is deferred by default.
+Floe should make a human's attention unusually valuable.
 
----
+Normal work should continue without supervision. Human interruption is justified when judgement, permission, inaccessible real-world action, or meaningful redirection is required.
 
-This document is canonical (tier 1, alongside `CONTEXT.md` and accepted ADRs). If the ROADMAP, a plan, or a slice conflicts with this document's intent, raise it to the operator — never silently follow either side.
+Progress is measured by:
+
+- useful work continuing without operator supervision;
+- fewer low-value interruptions;
+- higher-value human decisions;
+- reliable recovery and continuation;
+- the ability to form new organisations from high-level outcomes;
+- operator understanding without substrate expertise;
+- corrections that improve future behaviour.
+
+## Redundancy test
+
+For every proposed substrate feature ask:
+
+**If models become 10× more capable, does this become unnecessary or more valuable?**
+
+If better models make it unnecessary, prefer leaving it to the model, actor instructions, tools, or an extension.
+
+If better models make it more valuable because it provides durable identity, coordination, history, permissions, continuity, boundaries, or model-independent organisation, it may belong in the substrate.
+
+## Actor-generality test
+
+A substrate mechanism should remain valuable to an actor that never opens a human UI.
+
+Human interfaces are clients of the substrate, not the substrate itself.
+
+## First-principles restraint
+
+Floe is not a workflow product with every workflow prebuilt.
+
+Floe is not an observability product whose purpose is to expose every internal primitive.
+
+Floe is not a graph editor.
+
+Floe is not a collection of architecture patterns waiting to be implemented.
+
+Floe is a small set of durable mechanisms from which actors can construct the organisation an outcome requires.
+
+The goal is not to finish the architecture.
+
+The goal is for the operator to be able to say:
+
+> I gave Floe something important to achieve. It organised itself around the goal, kept working, and only interrupted me when my judgement mattered.
