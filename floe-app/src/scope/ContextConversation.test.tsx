@@ -11,6 +11,8 @@ import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/re
 import { ContextConversation, conversationDeliveryState } from "./ContextConversation.tsx";
 import * as client from "../bus-client/client.ts";
 
+const modelControl = vi.hoisted(() => ({ ready: true }));
+
 vi.mock("../bus-client/client.ts", () => ({
   getContext: vi.fn(),
   listContextEvents: vi.fn(),
@@ -21,6 +23,16 @@ vi.mock("../bus-client/client.ts", () => ({
 vi.mock("../bus-client/stream.ts", () => ({
   subscribeEvents: vi.fn(() => () => {}),
 }));
+
+vi.mock("../workspace/FloeModelControl.tsx", async () => {
+  const ReactModule = await import("react");
+  return {
+    FloeModelControl: ({ onReadyChange }: { onReadyChange: (ready: boolean) => void }) => {
+      ReactModule.useEffect(() => onReadyChange(modelControl.ready), [onReadyChange]);
+      return <div data-testid="model-control">model</div>;
+    },
+  };
+});
 
 // contextLabel from ScopeDetail is a pure helper — mock ScopeDetail minimally
 vi.mock("./ScopeDetail.tsx", () => ({
@@ -49,6 +61,7 @@ const endpoints = [
 
 beforeEach(() => {
   vi.clearAllMocks();
+  modelControl.ready = true;
   vi.mocked(client.getContext).mockResolvedValue(mockContext as any);
   vi.mocked(client.listContextEvents).mockResolvedValue([]);
   vi.mocked(client.listDeliveries).mockResolvedValue([]);
@@ -145,6 +158,23 @@ describe("ContextConversation — participant gate", () => {
     await waitFor(() => expect(client.emit).toHaveBeenCalledWith(expect.objectContaining({
       response: { expected: true },
     })));
+  });
+
+  it("disables an existing operator conversation until the workspace model is ready", async () => {
+    modelControl.ready = false;
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP }}
+      />,
+    );
+
+    const input = await screen.findByLabelText("Compose message") as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+    expect(screen.getByText("Choose a provider and model before talking to Floe.")).toBeTruthy();
+    expect(client.emit).not.toHaveBeenCalled();
   });
 });
 

@@ -8,7 +8,7 @@ Floe can route different providers to different runtime adapters. The first norm
 
 On a clean installation, Floe asks for a provider before asking for a workspace. Choose **Continue with ChatGPT**. The packaged helper speaks to `codex app-server`, which starts or reuses the official ChatGPT login and returns account status and the current model catalogue. Codex owns and refreshes its credentials; Floe does not copy or store the subscription token.
 
-After onboarding, use the gear beside the workspace name and open **Settings → Model providers**. The same surface lets you reconnect or refresh the models available to the account. The workspace section below it selects which provider and model that workspace uses.
+After onboarding, use the gear beside the workspace name and open **Settings → Model providers** to reconnect or refresh the models available to the account. The Floe conversation and Settings both expose the workspace's provider, model, and reasoning-effort choice. They update one shared workspace default; the conversation stays disabled until that choice contains a connected provider and model.
 
 Floe writes a non-secret `chatgpt-codex` profile with provider `openai-codex-app-server` and mirrors current model metadata into the local overlay. The bridge routes that profile to the Codex app-server runtime. Provider credentials never pass through the bus.
 

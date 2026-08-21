@@ -35,6 +35,7 @@ import {
   listDeliveries,
 } from "../bus-client/client.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
+import { FloeModelControl } from "../workspace/FloeModelControl.tsx";
 import { contextLabel } from "./ScopeDetail.tsx";
 
 // ---------------------------------------------------------------------------
@@ -282,6 +283,8 @@ function ComposerDock({
   onSend,
   hideSpeakingAs = false,
   placeholder = "Write a message… (Enter to send, Shift+Enter for newline)",
+  disabled = false,
+  disabledReason,
 }: {
   endpoints: EndpointRef[];
   speakingAsId: string;
@@ -289,6 +292,8 @@ function ComposerDock({
   onSend: (text: string) => Promise<void>;
   hideSpeakingAs?: boolean;
   placeholder?: string;
+  disabled?: boolean;
+  disabledReason?: string;
 }): React.ReactElement {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -296,7 +301,7 @@ function ComposerDock({
 
   async function handleSend() {
     const trimmed = text.trim();
-    if (!trimmed || sending || !speakingAsId) return;
+    if (!trimmed || sending || !speakingAsId || disabled) return;
     setSending(true);
     setError(null);
     try {
@@ -331,6 +336,12 @@ function ComposerDock({
         </div>
       )}
 
+      {disabled && disabledReason && (
+        <div role="status" style={{ marginBottom: 8, fontSize: 12.5, color: tk.ink3 }}>
+          {disabledReason}
+        </div>
+      )}
+
       {!hideSpeakingAs && (
         <div style={{ marginBottom: 8 }}>
           <SpeakingAsSelector
@@ -349,7 +360,7 @@ function ComposerDock({
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          disabled={sending || !speakingAsId}
+          disabled={disabled || sending || !speakingAsId}
           rows={2}
           style={{
             flex: 1, resize: "vertical",
@@ -361,14 +372,14 @@ function ComposerDock({
         />
         <button
           onClick={() => void handleSend()}
-          disabled={sending || !text.trim() || !speakingAsId}
+          disabled={disabled || sending || !text.trim() || !speakingAsId}
           aria-label="Send message"
           style={{
             background: tk.accent, color: "#0c1714", border: "none",
             borderRadius: tk.r2, padding: "8px 18px", fontSize: 13,
             fontWeight: 510, fontFamily: tk.fontUi,
-            cursor: sending || !text.trim() || !speakingAsId ? "not-allowed" : "pointer",
-            opacity: sending || !text.trim() || !speakingAsId ? 0.5 : 1,
+            cursor: disabled || sending || !text.trim() || !speakingAsId ? "not-allowed" : "pointer",
+            opacity: disabled || sending || !text.trim() || !speakingAsId ? 0.5 : 1,
             flexShrink: 0,
           }}
         >
@@ -475,7 +486,7 @@ export type ContextConversationProps = {
   /** Called once the context's human label is known, for the shell breadcrumb. */
   onLabelResolved?: (label: string) => void;
   /** Neutral operator front door: fixes the human identity and hides substrate-oriented context controls. */
-  operatorEntry?: { speakingAsEndpointId: string };
+  operatorEntry?: { speakingAsEndpointId: string; onOpenSettings?: () => void };
 };
 
 export function ContextConversation({
@@ -491,6 +502,7 @@ export function ContextConversation({
   const [error, setError] = useState<string | null>(null);
   const [deliveryNotice, setDeliveryNotice] = useState<string | null>(null);
   const [speakingAsId, setSpeakingAsId] = useState<string>("");
+  const [operatorModelReady, setOperatorModelReady] = useState(false);
 
   // B1 — working endpoints: map endpoint_id → delivery_id (tracks in-flight turns)
   const [workingEndpoints, setWorkingEndpoints] = useState<Map<string, string>>(new Map());
@@ -715,7 +727,16 @@ export function ContextConversation({
           {operatorEntry ? "Floe" : label}
         </h2>
         {operatorEntry ? (
-          <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5 }}>Working with you on this workspace.</p>
+          <>
+            <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5 }}>Working with you on this workspace.</p>
+            <div style={{ marginTop: 12 }}>
+              <FloeModelControl
+                workspaceId={workspaceId}
+                onReadyChange={setOperatorModelReady}
+                onOpenSettings={operatorEntry.onOpenSettings}
+              />
+            </div>
+          </>
         ) : (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {context.participants.length > 0 ? (
@@ -770,7 +791,11 @@ export function ContextConversation({
           onSpeakingAsChange={handleSpeakingAsChange}
           onSend={handleSend}
           hideSpeakingAs={!!operatorEntry}
-          placeholder={operatorEntry ? "Tell Floe what you want to happen…" : undefined}
+          placeholder={operatorEntry
+            ? operatorModelReady ? "Tell Floe what you want to happen…" : "Choose a provider and model above"
+            : undefined}
+          disabled={!!operatorEntry && !operatorModelReady}
+          disabledReason={operatorEntry && !operatorModelReady ? "Choose a provider and model before talking to Floe." : undefined}
         />
       ) : (
         <NonParticipantFooter

@@ -19,7 +19,9 @@ After onboarding, the gear beside the workspace name opens normal **Settings**. 
 
 ## Floe
 
-Opening or selecting a workspace opens its most recent conversation between the ordinary `operator` and `floe` endpoints, whether or not Floe has since attached that Context to a Scope. If none exists, the app asks what outcome the operator wants. Submitting the first outcome creates a direct [[Context]], emits the message to Floe, and opens the conversation. Merely opening the workspace does not create a Context.
+Opening or selecting a workspace opens its most recent conversation between the ordinary `operator` and `floe` endpoints, whether or not Floe has since attached that Context to a Scope. A compact provider → model → effort control sits at this conversation boundary. Until the workspace has a connected provider and saved model, the composer is disabled and no message can be queued for later delivery.
+
+If no conversation exists, the app asks what outcome the operator wants. Submitting the first outcome creates a direct [[Context]], emits the message to Floe, and opens the conversation. Merely opening the workspace does not create a Context.
 
 The operator view fixes the speaking identity to the operator and omits context labels, participant controls, substrate inventory, and the inspector. Those details remain available through Developer tools.
 
@@ -59,6 +61,7 @@ See [[Glossary]].
 - `floe-app/src/app/layout/LeftNav.tsx` — the left nav
 - `floe-app/src/hooks/useNavigation.ts` — navigation state machine
 - `floe-app/src/features/home/FloeHome.tsx` — default operator/Floe entry
+- `floe-app/src/workspace/FloeModelControl.tsx` — inline workspace model selection and readiness gate
 - `floe-app/src/features/home/HomeView.tsx` — scope grid
 - `floe-app/src/scope/ScopeDetail.tsx` — Contexts/Ops/extension tabs
 - `floe-app/src/features/actor/ActorView.tsx` — Conversations/Configure tabs

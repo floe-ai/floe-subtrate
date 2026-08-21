@@ -650,6 +650,7 @@ export function App(): React.ReactElement {
               <FloeHome
                 workspaceId={activeWorkspace.workspace_id}
                 endpoints={actors}
+                onOpenSettings={handleOpenWorkspaceSettings}
               />
             ) : nav.view === "activity" ? (
               <Activity

@@ -14,6 +14,8 @@ The body is a scrollable, chronological stream. Only events of `type === "messag
 
 There is no human identity in floe — the substrate has no human/agent distinction, and peers cannot tell what backs an [[Actor]]. So the composer does not ask who *you* are; it asks which [[Actor]] you want to post as, via a "Speaking as" selector. Sending a message posts it into the context as that actor's [[Endpoint]].
 
+The default operator/Floe entry is intentionally narrower: it fixes the speaking endpoint to the workspace operator and shows the workspace provider, model, and reasoning effort above the composer. Its composer remains disabled until a connected provider and model are saved, so an operator cannot create a message that Floe is not configured to handle. Developer-opened conversations keep the general "Speaking as" behaviour.
+
 ## Joining a context
 
 The "Speaking as" selector stays visible even if the actor you have selected is not a [[Context|Participant]] of this context yet. A "Join context" button lets you add that actor as a participant before you send. Participation is membership, not a subscription to being woken — joining does not by itself make the actor respond to anything; it only makes it able to emit and be seen as present.

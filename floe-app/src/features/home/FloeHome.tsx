@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ContextRef, EndpointRef } from "../../bus-client/types.ts";
 import { createDirectContext, emit, listContexts } from "../../bus-client/client.ts";
 import { ContextConversation } from "../../scope/ContextConversation.tsx";
+import { FloeModelControl } from "../../workspace/FloeModelControl.tsx";
 import { tk } from "../../theme.ts";
 
 export type FloePair = {
@@ -32,14 +33,16 @@ export function latestFloeContext(contexts: ContextRef[], pair: FloePair): Conte
 export type FloeHomeProps = {
   workspaceId: string;
   endpoints: EndpointRef[];
+  onOpenSettings?: () => void;
 };
 
-export function FloeHome({ workspaceId, endpoints }: FloeHomeProps): React.ReactElement {
+export function FloeHome({ workspaceId, endpoints, onOpenSettings }: FloeHomeProps): React.ReactElement {
   const pair = useMemo(() => findFloePair(endpoints), [endpoints]);
   const [contextId, setContextId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [outcome, setOutcome] = useState("");
   const [sending, setSending] = useState(false);
+  const [modelReady, setModelReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const draftContextId = useRef<string | null>(null);
 
@@ -71,7 +74,7 @@ export function FloeHome({ workspaceId, endpoints }: FloeHomeProps): React.React
 
   async function startOutcome() {
     const text = outcome.trim();
-    if (!text || !pair || sending) return;
+    if (!text || !pair || sending || !modelReady) return;
 
     setSending(true);
     setError(null);
@@ -124,7 +127,7 @@ export function FloeHome({ workspaceId, endpoints }: FloeHomeProps): React.React
         contextId={contextId}
         workspaceId={workspaceId}
         endpoints={endpoints}
-        operatorEntry={{ speakingAsEndpointId: pair.operator.endpoint_id }}
+        operatorEntry={{ speakingAsEndpointId: pair.operator.endpoint_id, onOpenSettings }}
       />
     );
   }
@@ -145,6 +148,18 @@ export function FloeHome({ workspaceId, endpoints }: FloeHomeProps): React.React
         <p style={{ margin: "0 0 22px", color: tk.ink3, fontSize: 14, lineHeight: 1.55 }}>
           Describe the outcome. Floe will work out what it needs and involve you when your judgement matters.
         </p>
+        <div style={{ marginBottom: 16 }}>
+          <FloeModelControl
+            workspaceId={workspaceId}
+            onReadyChange={setModelReady}
+            onOpenSettings={onOpenSettings}
+          />
+        </div>
+        {!modelReady && (
+          <div role="status" style={{ marginBottom: 10, color: tk.ink3, fontSize: 12.5 }}>
+            Choose a provider and model before talking to Floe.
+          </div>
+        )}
         {error && <div role="alert" style={{ marginBottom: 10, color: tk.danger, fontSize: 12 }}>{error}</div>}
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
           <textarea
@@ -158,8 +173,8 @@ export function FloeHome({ workspaceId, endpoints }: FloeHomeProps): React.React
                 void startOutcome();
               }
             }}
-            placeholder="Describe an outcome…"
-            disabled={sending}
+            placeholder={modelReady ? "Describe an outcome…" : "Choose a provider and model above"}
+            disabled={sending || !modelReady}
             rows={4}
             style={{
               flex: 1, resize: "vertical", minHeight: 104,
@@ -172,11 +187,11 @@ export function FloeHome({ workspaceId, endpoints }: FloeHomeProps): React.React
           <button
             type="button"
             onClick={() => void startOutcome()}
-            disabled={sending || !outcome.trim()}
+            disabled={sending || !modelReady || !outcome.trim()}
             style={{
               background: tk.accent, color: "#0c1714", border: "none",
               borderRadius: tk.r2, padding: "10px 18px", fontSize: 13,
-              fontWeight: 590, opacity: sending || !outcome.trim() ? 0.5 : 1,
+              fontWeight: 590, opacity: sending || !modelReady || !outcome.trim() ? 0.5 : 1,
             }}
           >
             {sending ? "Starting…" : "Start"}

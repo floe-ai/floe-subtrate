@@ -29,6 +29,8 @@ The desktop app opens its shell immediately while it waits for local Floe servic
 
 The first provider offered is **ChatGPT through the official OpenAI Codex app-server**. Provider credentials remain owned by Codex. Floe records only the non-secret provider profile and current model catalogue needed for workspace selection.
 
+The normal Floe conversation repeats the workspace's provider, model, and reasoning-effort choice at the point of use. Its composer is disabled until a provider and model are saved, preventing an unserviceable message from being accepted and deferred.
+
 ## One server, one UI
 
 There is one bus (port `5377`) and one UI surface (port `5379`). That UI surface is a plain web app — open it in any browser and it works. The Tauri desktop shell does not run a second copy: it opens a native window attached to the same running `5379` frontend. `floe start` runs the services with no window; `floe desktop` starts the services if needed and then opens the desktop window on top.
@@ -49,6 +51,7 @@ See [[Glossary]].
 - `floe-app/src/App.tsx` — the shell, workspace bootstrap, WebSocket subscription
 - `floe-app/src/features/onboarding/OnboardingFlow.tsx` — provider → workspace → chat first-use flow
 - `floe-app/src/providers/ProviderAccess.tsx` — normal ChatGPT/Codex provider surface
+- `floe-app/src/workspace/FloeModelControl.tsx` — conversation-level provider/model/effort selection and readiness gate
 - `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — secondary developer observatory and advanced API-key profiles
 - `floe-app/src/fs/workspaceFs.ts` — `isTauri()`, native file read/write
 - `floe-cli/src/desktop.ts` — `floe desktop` command, cargo preflight

@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { FloeHome, findFloePair, latestFloeContext } from "./FloeHome.tsx";
 import * as client from "../../bus-client/client.ts";
 
+const modelControl = vi.hoisted(() => ({ ready: true }));
+
 vi.mock("../../bus-client/client.ts", () => ({
   createDirectContext: vi.fn(),
   emit: vi.fn(),
@@ -16,6 +18,16 @@ vi.mock("../../scope/ContextConversation.tsx", () => ({
     operatorEntry?: { speakingAsEndpointId: string };
   }) => <div data-testid="conversation">{contextId}:{operatorEntry?.speakingAsEndpointId}</div>,
 }));
+
+vi.mock("../../workspace/FloeModelControl.tsx", async () => {
+  const ReactModule = await import("react");
+  return {
+    FloeModelControl: ({ onReadyChange }: { onReadyChange: (ready: boolean) => void }) => {
+      ReactModule.useEffect(() => onReadyChange(modelControl.ready), [onReadyChange]);
+      return <div data-testid="model-control">model</div>;
+    },
+  };
+});
 
 const operator = {
   endpoint_id: "actor:ws-1:operator", workspace_id: "ws-1", name: "Operator", agent_id: "operator",
@@ -34,6 +46,7 @@ const context = (id: string, lastEvent: string | null) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  modelControl.ready = true;
   vi.mocked(client.listContexts).mockResolvedValue([]);
   vi.mocked(client.emit).mockResolvedValue({} as never);
 });
@@ -83,5 +96,17 @@ describe("Floe operator entry", () => {
       created_by_endpoint_id: operator.endpoint_id,
     });
     expect(await screen.findByTestId("conversation")).toBeTruthy();
+  });
+
+  it("does not accept or emit an outcome until the workspace model is ready", async () => {
+    modelControl.ready = false;
+    render(<FloeHome workspaceId="ws-1" endpoints={[operator, floe]} />);
+
+    const input = await screen.findByLabelText("Outcome") as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Start" })).toHaveProperty("disabled", true);
+    expect(screen.getByText("Choose a provider and model before talking to Floe.")).toBeTruthy();
+    expect(client.createDirectContext).not.toHaveBeenCalled();
+    expect(client.emit).not.toHaveBeenCalled();
   });
 });

@@ -11,9 +11,11 @@ The interface avoids asking a user to understand "substrate settings":
 
 They appear together because users commonly need to connect an account and then choose it. Their storage and scope remain separate: provider credentials are local or provider-owned, while the workspace choice is an ordinary runtime binding.
 
-## Workspace settings
+## Workspace model
 
-Reached via the gear next to the workspace switcher. It contains the ChatGPT connection managed by official OpenAI Codex and the workspace's provider → model → effort default. It uses provider names and model names rather than asking a normal user to create profile identifiers or paste tokens.
+The Floe conversation shows the workspace's provider → model → effort choice directly above the composer. Floe does not accept an outcome or message until a connected provider and model have been saved for that workspace. Changing the inline choice updates the same workspace-default runtime binding used everywhere else.
+
+The gear next to the workspace switcher opens the fuller Settings surface. It contains the ChatGPT connection managed by official OpenAI Codex and the same workspace model choice. Both surfaces use provider names and model names rather than asking a normal user to create profile identifiers or paste tokens.
 
 ## The actor Configure tab
 
@@ -41,6 +43,7 @@ See [[Glossary]].
 ## Implementation
 
 - `floe-app/src/workspace/WorkspaceSettings.tsx` — workspace-level default binding
+- `floe-app/src/workspace/FloeModelControl.tsx` — compact provider/model/effort control at the conversation boundary
 - `floe-app/src/providers/ProviderAccess.tsx` — device-level ChatGPT/Codex connection
 - `floe-app/src/actors/ActorInspector.tsx` — actor Configure tab, binding form, resolved-binding display
 - `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — Substrate Settings shell and the six tabs (Authentication/Runtime real; Models/MCP/Workspaces/Diagnostics are stubs)
