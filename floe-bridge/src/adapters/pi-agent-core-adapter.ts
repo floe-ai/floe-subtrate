@@ -16,10 +16,7 @@ import { InjectionBaseline } from "../injection-baseline.js";
 import { buildSystemPrompt, renderDestinationContext, appendWorkLog, toNeutralRef, fromNeutralRef, toNeutralEndpoint } from "../runtime-core/index.js";
 import type { NeutralEndpoint } from "../runtime-core/index.js";
 import type { WorkLogEntry } from "../runtime-core/index.js";
-import { createWorkspaceTools } from "../tools/index.js";
-import type { ToolContext } from "../tools/index.js";
-import { createPulseTools } from "../tools/pulse-tools.js";
-import { createActorTools } from "../tools/actor-tools.js";
+import { createRuntimeTools, runtimeToolsFingerprint } from "../tools/runtime-tools.js";
 import { TurnFailedError } from "./turn-failed-error.js";
 
 export { TurnFailedError } from "./turn-failed-error.js";
@@ -100,6 +97,7 @@ type SessionState = {
   modelId: string;
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   instructionsHash: string;
+  runtimeToolsFingerprint: string;
   /** SESSION-LOCAL ephemeral cursor — tracks last-injected thread position for C-2/C-3.
    *  null = cold start (inject full thread). NOT persisted. NOT endpoint_watermarks.
    *  endpoint_watermarks stays the human-facing "read up to here" cursor. */
@@ -457,6 +455,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     const thinkingLevel = runtimeConfig?.thinking_level ?? "off";
 
     const instructionsHash = instructionHash(systemPrompt);
+    const toolsFingerprint = runtimeToolsFingerprint({
+      workspaceLocator: context.workspace_locator,
+      extensions: context.extensions,
+    });
 
     const existing = this.sessions.get(key);
     if (
@@ -464,7 +466,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       existing.provider === resolved.provider &&
       existing.modelId === resolved.model.id &&
       existing.thinkingLevel === thinkingLevel &&
-      existing.instructionsHash === instructionsHash
+      existing.instructionsHash === instructionsHash &&
+      existing.runtimeToolsFingerprint === toolsFingerprint
     ) {
       existing.context = context;
       return existing;
@@ -491,6 +494,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       modelId: resolved.model.id,
       thinkingLevel,
       instructionsHash,
+      runtimeToolsFingerprint: toolsFingerprint,
       threadCursor: null,  // cold start — will backfill full thread on first turn
       // Capture the side thread_id that triggered this session's creation, if any.
       context
@@ -509,25 +513,17 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     const listEndpointsTool = this.createListEndpointsTool(state);
     const resolveDestinationTool = this.createResolveDestinationTool(state);
 
-    // Create workspace tools when workspace locator is available
-    const workspaceTools = context.workspace_locator
-      ? createWorkspaceTools({
-          workspaceRoot: context.workspace_locator,
-          getActiveTurn: () => state.activeTurn,
-        } satisfies ToolContext)
-      : [];
-
-    const pulseTools = createPulseTools(context.bus, bundle.workspace_id, context.workspace_locator, {
-      getActiveTurn: () => state.activeTurn,
+    const runtimeTools = createRuntimeTools({
+      bus: context.bus,
+      workspaceId: bundle.workspace_id,
+      workspaceLocator: context.workspace_locator,
+      extensions: context.extensions,
+      toolContext: { getActiveTurn: () => state.activeTurn },
     });
-    const actorTools = createActorTools(context.bus, bundle.workspace_id, context.workspace_locator);
-
-    // Collect extension tools
-    const extensionTools = (context.extensions ?? []).flatMap(ext => ext.tools);
 
     state.agent = this.agentFactory({
       model,
-      tools: [emitTool, listEndpointsTool, resolveDestinationTool, ...pulseTools, ...actorTools, ...extensionTools, ...workspaceTools],
+      tools: [emitTool, listEndpointsTool, resolveDestinationTool, ...runtimeTools],
       systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);

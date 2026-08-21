@@ -10,11 +10,23 @@ type JsonRpcMessage = {
 };
 
 export type CodexDynamicToolResult = {
-  contentItems: Array<{ type: "inputText"; text: string }>;
+  contentItems: Array<
+    | { type: "inputText"; text: string }
+    | { type: "inputImage"; imageUrl: string }
+  >;
   success: boolean;
 };
 
-export type CodexDynamicToolHandler = (tool: string, args: any) => Promise<CodexDynamicToolResult>;
+export type CodexDynamicToolCall = {
+  callId: string;
+  namespace?: string;
+};
+
+export type CodexDynamicToolHandler = (
+  tool: string,
+  args: any,
+  call?: CodexDynamicToolCall,
+) => Promise<CodexDynamicToolResult>;
 
 export type CodexThreadInput = {
   model?: string;
@@ -143,7 +155,14 @@ export class CodexAppServerClient implements CodexRuntimeClient {
         return;
       }
       try {
-        this.respond(message.id, await handler(String(message.params?.tool), message.params?.arguments ?? {}));
+        this.respond(message.id, await handler(
+          String(message.params?.tool),
+          message.params?.arguments ?? {},
+          {
+            callId: String(message.params?.callId ?? `codex-tool-${message.id}`),
+            namespace: typeof message.params?.namespace === "string" ? message.params.namespace : undefined,
+          },
+        ));
       } catch (error) {
         this.respond(message.id, { contentItems: [{ type: "inputText", text: error instanceof Error ? error.message : String(error) }], success: false });
       }

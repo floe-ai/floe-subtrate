@@ -115,11 +115,11 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
 
     const content = readFileSync(join(workspace, ".floe", "agents", "floe.md"), "utf8");
 
-    expect(content).toContain("You are Floe, the default agent that ships with this workspace.");
-    expect(content).toContain("You are here to help whoever is using");
-    expect(content).toContain("Route before broad exploration");
-    expect(content).toContain("Work from first principles.");
-    expect(content).toContain("Be highly token-conscious.");
+    expect(content).toContain("You are Floe, the operator's persistent interface");
+    expect(content).toContain("Treat the operator's words as outcomes and experience");
+    expect(content).toContain("compose existing mechanisms before assuming something new must be built");
+    expect(content).toContain("A generated script plus a command for the operator to run is not an automated Floe outcome");
+    expect(content).toContain("verify that every downstream capability needed to complete the outcome is actually available");
     expect(content).not.toContain("runtime-backed endpoint");
     expect(content).not.toContain("source endpoint");
   });

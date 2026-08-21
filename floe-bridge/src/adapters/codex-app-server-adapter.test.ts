@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { CodexAppServerAdapter } from "./codex-app-server-adapter.js";
-import type { CodexDynamicToolHandler, CodexRuntimeClient, CodexThreadInput } from "./codex-app-server-client.js";
+import type { CodexDynamicToolCall, CodexDynamicToolHandler, CodexRuntimeClient, CodexThreadInput } from "./codex-app-server-client.js";
 import type { DeliveryBundle } from "../bus-client.js";
 
 class FakeCodexClient implements CodexRuntimeClient {
   threadInput: CodexThreadInput | null = null;
   handler: CodexDynamicToolHandler | null = null;
   turns: Array<{ threadId: string; text: string; effort?: string }> = [];
+  onTurn?: (handler: CodexDynamicToolHandler) => Promise<void>;
 
   async startThread(input: CodexThreadInput) {
     this.threadInput = input;
@@ -16,7 +17,8 @@ class FakeCodexClient implements CodexRuntimeClient {
 
   async startTurn(threadId: string, text: string, effort?: string) {
     this.turns.push({ threadId, text, effort });
-    await this.handler!("emit", { text: "I can help with that." });
+    if (this.onTurn) await this.onTurn(this.handler!);
+    else await this.handler!("emit", { text: "I can help with that." });
     return { output: "Private runtime acknowledgement", turnId: "turn-1" };
   }
 
@@ -87,5 +89,60 @@ describe("CodexAppServerAdapter", () => {
       content: expect.objectContaining({ text: "I can help with that." }),
     }));
     expect(telemetry).toHaveBeenCalledWith(expect.objectContaining({ kind: "visible_output" }));
+  });
+
+  it("exposes the shared Floe runtime catalogue under a provider-neutral namespace", async () => {
+    const client = new FakeCodexClient();
+    const extensionExecute = vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: "extension worked" }],
+      details: { ok: true },
+    });
+    let extensionResult: any;
+    client.onTurn = async (handler) => {
+      extensionResult = await handler(
+        "inspect_media",
+        { path: "concept.png" },
+        { namespace: "floe", callId: "call-extension" } satisfies CodexDynamicToolCall,
+      );
+    };
+    const bus = {
+      getContext: vi.fn().mockResolvedValue({ participants: [] }),
+      listEndpoints: vi.fn().mockResolvedValue([]),
+      listContextEvents: vi.fn().mockResolvedValue({ events: [], next_cursor: null }),
+      appendRuntimeTelemetry: vi.fn().mockResolvedValue(undefined),
+    };
+    const adapter = new CodexAppServerAdapter(() => client);
+
+    await adapter.handleBundle({
+      bridge_id: "bridge-1",
+      bus: bus as any,
+      extensions: [{
+        name: "media",
+        tools: [{
+          name: "inspect_media",
+          label: "Inspect Media",
+          description: "Inspect an image using the installed media capability.",
+          parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          execute: extensionExecute,
+        }],
+        pulses: [],
+        views: [],
+        bundledAgents: [],
+        httpHandlers: [],
+        errors: [],
+      } as any],
+    }, bundle, {
+      provider: "openai-codex-app-server",
+      model: "gpt-5.6-sol",
+      instructions: "Form persistent work for operator outcomes.",
+    });
+
+    const namespace = (client.threadInput!.dynamicTools as any[]).find(tool => tool.type === "namespace" && tool.name === "floe");
+    const toolNames = namespace.tools.map((tool: any) => tool.name);
+    expect(toolNames).toContain("create_actor");
+    expect(toolNames).toContain("create_pulse");
+    expect(toolNames).toContain("inspect_media");
+    expect(extensionExecute).toHaveBeenCalledWith("call-extension", { path: "concept.png" });
+    expect(extensionResult).toEqual({ contentItems: [{ type: "inputText", text: "extension worked" }], success: true });
   });
 });

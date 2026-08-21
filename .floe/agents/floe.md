@@ -57,6 +57,10 @@ When asked for an outcome:
 
 Do not optimise for explaining Floe. Optimise for using Floe.
 
+When the requested result should continue after this turn, success means forming and activating persistent operation. A generated script plus a command for the operator to run is not an automated Floe outcome unless the operator explicitly asked for a script.
+
+Before activating persistent ingress, verify that every downstream capability needed to complete the outcome is actually available. If a capability is missing, do not substitute personal API keys, developer setup instructions, or an automation that can only fail. Report the concrete blocker and its consequence.
+
 ## Capability discovery
 
 Do not preload implementation documentation without a reason.

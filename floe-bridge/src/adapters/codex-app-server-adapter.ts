@@ -1,10 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { DeliveryBundle, EventEnvelope } from "../bus-client.js";
 import { appendWorkLog, buildSystemPrompt, renderDestinationContext, toNeutralEndpoint, toNeutralRef } from "../runtime-core/index.js";
 import type { NeutralEndpoint, WorkLogEmitEntry, WorkLogToolEntry } from "../runtime-core/index.js";
+import { createRuntimeTools, runtimeToolsFingerprint } from "../tools/runtime-tools.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
-import { CodexAppServerClient, type CodexDynamicToolResult, type CodexRuntimeClient } from "./codex-app-server-client.js";
+import {
+  CodexAppServerClient,
+  type CodexDynamicToolCall,
+  type CodexDynamicToolResult,
+  type CodexRuntimeClient,
+} from "./codex-app-server-client.js";
 import { TurnFailedError } from "./turn-failed-error.js";
 
 export const CODEX_APP_SERVER_PROVIDER = "openai-codex-app-server";
@@ -31,6 +38,8 @@ type Session = {
   instructionsHash: string;
   cursor: string | null;
   runtime: RuntimeContext;
+  runtimeTools: Map<string, AgentTool>;
+  runtimeToolsFingerprint: string;
   active?: ActiveTurn;
 };
 
@@ -50,6 +59,10 @@ export class CodexAppServerAdapter implements RuntimeAdapter {
     const key = `${bundle.endpoint_id}:${contextId ?? "no-context"}`;
     const systemPrompt = buildSystemPrompt(runtimeConfig?.instructions?.trim() ?? "");
     const instructionsHash = createHash("sha256").update(systemPrompt).digest("hex");
+    const toolsFingerprint = runtimeToolsFingerprint({
+      workspaceLocator: context.workspace_locator,
+      extensions: context.extensions,
+    });
 
     let participants: string[] = [];
     if (contextId) {
@@ -57,20 +70,39 @@ export class CodexAppServerAdapter implements RuntimeAdapter {
     }
 
     let session = this.sessions.get(key);
-    if (!session || session.model !== model || session.instructionsHash !== instructionsHash) {
+    if (
+      !session ||
+      session.model !== model ||
+      session.instructionsHash !== instructionsHash ||
+      session.runtimeToolsFingerprint !== toolsFingerprint
+    ) {
       const provisional: Session = {
         threadId: "",
         model,
         instructionsHash,
         cursor: null,
         runtime: context,
+        runtimeTools: new Map(),
+        runtimeToolsFingerprint: toolsFingerprint,
       };
+      const runtimeTools = uniqueTools(createRuntimeTools({
+        bus: context.bus,
+        workspaceId: bundle.workspace_id,
+        workspaceLocator: context.workspace_locator,
+        extensions: context.extensions,
+        toolContext: {
+          getActiveTurn: () => provisional.active
+            ? { tool_activity: provisional.active.toolActivity, context_id: provisional.active.contextId }
+            : undefined,
+        },
+      }));
+      provisional.runtimeTools = new Map(runtimeTools.map(tool => [tool.name, tool]));
       const started = await this.getClient().startThread({
         model: model || undefined,
         cwd: context.workspace_locator,
         baseInstructions: systemPrompt,
-        dynamicTools: codexTools(),
-        toolHandler: (tool, args) => this.handleTool(provisional, tool, args),
+        dynamicTools: codexTools(runtimeTools),
+        toolHandler: (tool, args, call) => this.handleTool(provisional, tool, args, call),
       });
       provisional.threadId = started.threadId;
       provisional.model = model || started.model;
@@ -176,9 +208,18 @@ export class CodexAppServerAdapter implements RuntimeAdapter {
     return this.client;
   }
 
-  private async handleTool(session: Session, tool: string, args: any): Promise<CodexDynamicToolResult> {
+  private async handleTool(
+    session: Session,
+    tool: string,
+    args: any,
+    call?: CodexDynamicToolCall,
+  ): Promise<CodexDynamicToolResult> {
     const turn = session.active;
     if (!turn) return toolResult("There is no active Floe turn", false);
+
+    if (call?.namespace === "floe") {
+      return this.handleRuntimeTool(session, turn, tool, args, call.callId);
+    }
 
     if (tool === "list_endpoints") {
       const endpoints = await session.runtime.bus.listEndpoints(turn.bundle.workspace_id);
@@ -238,6 +279,38 @@ export class CodexAppServerAdapter implements RuntimeAdapter {
     return toolResult("emit accepted");
   }
 
+  private async handleRuntimeTool(
+    session: Session,
+    turn: ActiveTurn,
+    name: string,
+    args: any,
+    callId: string,
+  ): Promise<CodexDynamicToolResult> {
+    const tool = session.runtimeTools.get(name);
+    if (!tool) {
+      turn.toolActivity.push({ name, call_id: callId, summary: "unknown Floe runtime tool", is_error: true });
+      return toolResult(`Unknown Floe runtime tool: ${name}`, false);
+    }
+
+    const entry: WorkLogToolEntry = { name, call_id: callId };
+    turn.toolActivity.push(entry);
+    const startedAt = Date.now();
+    try {
+      const prepared = tool.prepareArguments ? tool.prepareArguments(args) : args;
+      const result = await tool.execute(callId, prepared);
+      const success = !isFailedToolResult(result);
+      entry.summary ??= summarizeToolResult(result);
+      entry.is_error ??= !success;
+      entry.duration_ms ??= Date.now() - startedAt;
+      return toCodexToolResult(result, success);
+    } catch (error) {
+      entry.summary = error instanceof Error ? error.message : String(error);
+      entry.is_error = true;
+      entry.duration_ms = Date.now() - startedAt;
+      return toolResult(entry.summary, false);
+    }
+  }
+
   private writeWorkLog(context: RuntimeContext, bundle: DeliveryBundle, turn: ActiveTurn, outcome: string): void {
     if (!context.workspace_locator || !context.agent_id) return;
     try {
@@ -271,8 +344,8 @@ function toolResult(text: string, success = true): CodexDynamicToolResult {
   return { contentItems: [{ type: "inputText", text }], success };
 }
 
-function codexTools(): unknown[] {
-  return [
+function codexTools(runtimeTools: AgentTool[]): unknown[] {
+  const tools: unknown[] = [
     {
       type: "function",
       name: "emit",
@@ -309,6 +382,59 @@ function codexTools(): unknown[] {
       },
     },
   ];
+  if (runtimeTools.length > 0) {
+    tools.push({
+      type: "namespace",
+      name: "floe",
+      description:
+        "Floe substrate, workspace, and installed-extension capabilities. Use these to form and operate persistent work; provider-native coding tools do not replace substrate composition.",
+      tools: runtimeTools.map(tool => ({
+        type: "function",
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.parameters,
+      })),
+    });
+  }
+  return tools;
+}
+
+function uniqueTools(tools: AgentTool[]): AgentTool[] {
+  const seen = new Set<string>();
+  return tools.filter(tool => {
+    if (seen.has(tool.name)) {
+      console.error("[bridge] duplicate Floe runtime tool ignored", { tool: tool.name });
+      return false;
+    }
+    seen.add(tool.name);
+    return true;
+  });
+}
+
+function isFailedToolResult(result: AgentToolResult<any>): boolean {
+  const details = result.details;
+  return Boolean(details && typeof details === "object" && "ok" in details && (details as any).ok === false);
+}
+
+function summarizeToolResult(result: AgentToolResult<any>): string {
+  const text = result.content.find(item => item.type === "text") as { type: "text"; text: string } | undefined;
+  return (text?.text ?? "completed").split(/\r?\n/, 1)[0]!.slice(0, 200);
+}
+
+function toCodexToolResult(result: AgentToolResult<any>, success: boolean): CodexDynamicToolResult {
+  const contentItems: CodexDynamicToolResult["contentItems"] = [];
+  for (const item of result.content) {
+    if (item.type === "text") {
+      contentItems.push({ type: "inputText", text: item.text });
+      continue;
+    }
+    if (item.type === "image") {
+      const image = item as { type: "image"; data: string; mimeType: string };
+      contentItems.push({ type: "inputImage", imageUrl: `data:${image.mimeType};base64,${image.data}` });
+    }
+  }
+  if (contentItems.length === 0) contentItems.push({ type: "inputText", text: JSON.stringify(result.details ?? {}) });
+  return { contentItems, success };
 }
 
 function deliveryPrompt(bundle: DeliveryBundle, visible: NeutralEndpoint[], participants: string[]): string {
