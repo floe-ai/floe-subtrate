@@ -42,8 +42,9 @@ fn start_packaged_substrate(app: &tauri::App) -> Result<(), Box<dyn std::error::
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
+  let app = tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
+    .manage(substrate_commands::ProviderLoginProcess::default())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -67,6 +68,12 @@ pub fn run() {
       substrate_commands::get_runtime_adapter,
       substrate_commands::set_runtime_adapter,
     ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application");
+
+  app.run(|handle, event| {
+    if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+      handle.state::<substrate_commands::ProviderLoginProcess>().stop();
+    }
+  });
 }

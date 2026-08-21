@@ -205,7 +205,7 @@ async function login(authDir: string, providerId: string): Promise<ProviderStatu
 }
 
 async function answerDesktopPrompt(prompt: AuthPrompt): Promise<string> {
-  if (prompt.type === "select") return preferredDesktopAuthOption(prompt.options);
+  if (prompt.type === "select") return prompt.options[0]?.id ?? "";
   if (prompt.type === "text") return "";
   if (prompt.type === "secret") throw new Error("This desktop flow supports subscriptions; API keys remain in advanced settings");
   return new Promise<string>((_resolve, reject) => {
@@ -214,13 +214,6 @@ async function answerDesktopPrompt(prompt: AuthPrompt): Promise<string> {
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
   });
-}
-
-export function preferredDesktopAuthOption(options: readonly { id: string }[]): string {
-  // A local callback is convenient in a terminal, but desktop retries can leave
-  // its fixed port owned by an older helper. Device auth keeps each attempt
-  // independent and is already represented by the Floe provider screen.
-  return options.find(option => option.id === "device_code")?.id ?? options[0]?.id ?? "";
 }
 
 function openExternal(value: string): void {

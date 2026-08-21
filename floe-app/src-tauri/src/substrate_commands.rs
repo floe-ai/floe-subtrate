@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use tauri::ipc::Channel;
 use tauri::{path::BaseDirectory, Manager};
 use tauri_plugin_shell::{
@@ -30,12 +33,38 @@ impl Drop for ProviderLoginGuard {
     }
 }
 
-struct ProviderLoginChild(Option<CommandChild>);
+#[derive(Default)]
+pub(crate) struct ProviderLoginProcess(Mutex<Option<CommandChild>>);
 
-impl Drop for ProviderLoginChild {
+impl ProviderLoginProcess {
+    fn start(&self, child: CommandChild) -> Result<(), String> {
+        let mut active = self
+            .0
+            .lock()
+            .map_err(|_| "Could not manage the provider sign-in process".to_string())?;
+        if let Some(previous) = active.replace(child) {
+            let _ = previous.kill();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stop(&self) {
+        if let Ok(mut active) = self.0.lock() {
+            if let Some(child) = active.take() {
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
+struct ProviderLoginChild<'a>(&'a ProviderLoginProcess);
+
+impl Drop for ProviderLoginChild<'_> {
     fn drop(&mut self) {
-        if let Some(child) = self.0.take() {
-            let _ = child.kill();
+        if let Ok(mut active) = self.0.0.lock() {
+            if let Some(child) = active.take() {
+                let _ = child.kill();
+            }
         }
     }
 }
@@ -372,6 +401,7 @@ pub async fn connect_model_provider(
     app: tauri::AppHandle,
     provider: String,
     on_event: Channel<serde_json::Value>,
+    login_process: tauri::State<'_, ProviderLoginProcess>,
 ) -> Result<ModelProviderStatus, String> {
     let _login_guard = ProviderLoginGuard::acquire()?;
     let auth_dir = get_floe_auth_dir()?;
@@ -393,7 +423,8 @@ pub async fn connect_model_provider(
         ])
         .spawn()
         .map_err(|e| format!("Failed to start provider sign-in: {}", e))?;
-    let _child_guard = ProviderLoginChild(Some(child));
+    login_process.start(child)?;
+    let _child_guard = ProviderLoginChild(&login_process);
 
     let mut stderr = String::new();
     let mut result: Option<ModelProviderStatus> = None;
