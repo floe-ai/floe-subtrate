@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,3 +26,8 @@ execFileSync(
   ["build", resolve(appRoot, "src-desktop-sidecar", "index.ts"), "--target=node", "--outfile", scriptOutput],
   { cwd: appRoot, stdio: "inherit" },
 );
+
+const desktopBundle = readFileSync(scriptOutput, "utf8");
+for (const providerLogin of ["loginOpenAICodex", "loginGitHubCopilot"]) {
+  if (!desktopBundle.includes(providerLogin)) throw new Error(`Desktop bundle omitted Pi OAuth flow: ${providerLogin}`);
+}
