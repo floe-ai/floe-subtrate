@@ -126,12 +126,14 @@ describe("ContextConversation — participant gate", () => {
   });
 
   it("presents the fixed operator conversation without substrate-oriented identity controls", async () => {
+    const onNewConversation = vi.fn();
+    const onDeleteConversation = vi.fn();
     render(
       <ContextConversation
         contextId="ctx-1"
         workspaceId="ws-1"
         endpoints={endpoints}
-        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP }}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP, onNewConversation, onDeleteConversation }}
       />,
     );
 
@@ -139,6 +141,10 @@ describe("ContextConversation — participant gate", () => {
     expect(screen.getByLabelText("Compose message")).toBeTruthy();
     expect(screen.queryByLabelText("Speaking as")).toBeNull();
     expect(screen.queryByText("Context")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(onNewConversation).toHaveBeenCalledOnce();
+    expect(onDeleteConversation).toHaveBeenCalledOnce();
   });
 
   it("marks an operator message as expecting a reply", async () => {

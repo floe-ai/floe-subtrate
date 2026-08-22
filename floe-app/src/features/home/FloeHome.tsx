@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ContextRef, EndpointRef } from "../../bus-client/types.ts";
-import { createDirectContext, emit, listContexts } from "../../bus-client/client.ts";
+import { createDirectContext, deleteContext, emit, listContexts } from "../../bus-client/client.ts";
 import { ContextConversation } from "../../scope/ContextConversation.tsx";
 import { FloeModelControl } from "../../workspace/FloeModelControl.tsx";
 import { tk } from "../../theme.ts";
@@ -43,6 +43,7 @@ export function FloeHome({ workspaceId, endpoints, onOpenSettings }: FloeHomePro
   const [outcome, setOutcome] = useState("");
   const [sending, setSending] = useState(false);
   const [modelReady, setModelReady] = useState(false);
+  const [conversationActionPending, setConversationActionPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const draftContextId = useRef<string | null>(null);
 
@@ -108,6 +109,34 @@ export function FloeHome({ workspaceId, endpoints, onOpenSettings }: FloeHomePro
     }
   }
 
+  function startNewConversation() {
+    draftContextId.current = null;
+    setContextId(null);
+    setOutcome("");
+    setError(null);
+  }
+
+  async function deleteCurrentConversation() {
+    if (!contextId || conversationActionPending) return;
+    const confirmed = window.confirm(
+      "Delete this conversation and its messages? Files and other work Floe created in the workspace will remain."
+    );
+    if (!confirmed) return;
+
+    setConversationActionPending(true);
+    setError(null);
+    try {
+      await deleteContext(contextId);
+      draftContextId.current = null;
+      setContextId(null);
+      setOutcome("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete conversation");
+    } finally {
+      setConversationActionPending(false);
+    }
+  }
+
   if (loading) {
     return <CenteredMessage>Opening Floe…</CenteredMessage>;
   }
@@ -127,7 +156,14 @@ export function FloeHome({ workspaceId, endpoints, onOpenSettings }: FloeHomePro
         contextId={contextId}
         workspaceId={workspaceId}
         endpoints={endpoints}
-        operatorEntry={{ speakingAsEndpointId: pair.operator.endpoint_id, onOpenSettings }}
+        operatorEntry={{
+          speakingAsEndpointId: pair.operator.endpoint_id,
+          onOpenSettings,
+          onNewConversation: startNewConversation,
+          onDeleteConversation: deleteCurrentConversation,
+          conversationActionsDisabled: conversationActionPending,
+          conversationActionError: error,
+        }}
       />
     );
   }

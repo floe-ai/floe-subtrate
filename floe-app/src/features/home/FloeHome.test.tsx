@@ -8,6 +8,7 @@ const modelControl = vi.hoisted(() => ({ ready: true }));
 
 vi.mock("../../bus-client/client.ts", () => ({
   createDirectContext: vi.fn(),
+  deleteContext: vi.fn(),
   emit: vi.fn(),
   listContexts: vi.fn(),
 }));
@@ -15,8 +16,18 @@ vi.mock("../../bus-client/client.ts", () => ({
 vi.mock("../../scope/ContextConversation.tsx", () => ({
   ContextConversation: ({ contextId, operatorEntry }: {
     contextId: string;
-    operatorEntry?: { speakingAsEndpointId: string };
-  }) => <div data-testid="conversation">{contextId}:{operatorEntry?.speakingAsEndpointId}</div>,
+    operatorEntry?: {
+      speakingAsEndpointId: string;
+      onNewConversation?: () => void;
+      onDeleteConversation?: () => void;
+    };
+  }) => (
+    <div data-testid="conversation">
+      {contextId}:{operatorEntry?.speakingAsEndpointId}
+      <button type="button" onClick={operatorEntry?.onNewConversation}>New conversation</button>
+      <button type="button" onClick={operatorEntry?.onDeleteConversation}>Delete</button>
+    </div>
+  ),
 }));
 
 vi.mock("../../workspace/FloeModelControl.tsx", async () => {
@@ -48,10 +59,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   modelControl.ready = true;
   vi.mocked(client.listContexts).mockResolvedValue([]);
+  vi.mocked(client.deleteContext).mockResolvedValue({} as never);
   vi.mocked(client.emit).mockResolvedValue({} as never);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  vi.restoreAllMocks();
+  cleanup();
+});
 
 describe("Floe operator entry", () => {
   it("finds the ordinary operator and Floe endpoints and selects their latest direct context", () => {
@@ -68,7 +83,7 @@ describe("Floe operator entry", () => {
 
     render(<FloeHome workspaceId="ws-1" endpoints={[operator, floe]} />);
 
-    expect((await screen.findByTestId("conversation")).textContent).toBe("ctx-existing:actor:ws-1:operator");
+    expect((await screen.findByTestId("conversation")).textContent).toContain("ctx-existing:actor:ws-1:operator");
     expect(client.listContexts).toHaveBeenCalledWith("ws-1", { scope: "all" });
     expect(client.createDirectContext).not.toHaveBeenCalled();
   });
@@ -96,6 +111,42 @@ describe("Floe operator entry", () => {
       created_by_endpoint_id: operator.endpoint_id,
     });
     expect(await screen.findByTestId("conversation")).toBeTruthy();
+  });
+
+  it("starts a fresh conversation without creating substrate state until an outcome is sent", async () => {
+    vi.mocked(client.listContexts).mockResolvedValue([context("ctx-existing", "2026-01-03T00:00:00Z")]);
+
+    render(<FloeHome workspaceId="ws-1" endpoints={[operator, floe]} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "New conversation" }));
+
+    expect(await screen.findByLabelText("Outcome")).toBeTruthy();
+    expect(client.createDirectContext).not.toHaveBeenCalled();
+    expect(client.deleteContext).not.toHaveBeenCalled();
+  });
+
+  it("deletes the current conversation after confirmation and returns to a fresh outcome", async () => {
+    vi.mocked(client.listContexts).mockResolvedValue([context("ctx-existing", "2026-01-03T00:00:00Z")]);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<FloeHome workspaceId="ws-1" endpoints={[operator, floe]} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(client.deleteContext).toHaveBeenCalledWith("ctx-existing"));
+    expect(await screen.findByLabelText("Outcome")).toBeTruthy();
+  });
+
+  it("keeps the conversation when deletion is not confirmed", async () => {
+    vi.mocked(client.listContexts).mockResolvedValue([context("ctx-existing", "2026-01-03T00:00:00Z")]);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(<FloeHome workspaceId="ws-1" endpoints={[operator, floe]} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+    expect(client.deleteContext).not.toHaveBeenCalled();
+    expect(screen.getByTestId("conversation")).toBeTruthy();
   });
 
   it("does not accept or emit an outcome until the workspace model is ready", async () => {

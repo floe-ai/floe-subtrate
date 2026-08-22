@@ -486,7 +486,14 @@ export type ContextConversationProps = {
   /** Called once the context's human label is known, for the shell breadcrumb. */
   onLabelResolved?: (label: string) => void;
   /** Neutral operator front door: fixes the human identity and hides substrate-oriented context controls. */
-  operatorEntry?: { speakingAsEndpointId: string; onOpenSettings?: () => void };
+  operatorEntry?: {
+    speakingAsEndpointId: string;
+    onOpenSettings?: () => void;
+    onNewConversation?: () => void;
+    onDeleteConversation?: () => void;
+    conversationActionsDisabled?: boolean;
+    conversationActionError?: string | null;
+  };
 };
 
 export function ContextConversation({
@@ -720,15 +727,58 @@ export function ContextConversation({
             Context
           </div>
         )}
-        <h2 style={{
-          margin: "0 0 10px", fontSize: 19, fontWeight: 510, color: tk.ink,
-          letterSpacing: "-0.01em", lineHeight: 1.25,
-        }}>
-          {operatorEntry ? "Floe" : label}
-        </h2>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+          <h2 style={{
+            margin: "0 0 10px", fontSize: 19, fontWeight: 510, color: tk.ink,
+            letterSpacing: "-0.01em", lineHeight: 1.25,
+          }}>
+            {operatorEntry ? "Floe" : label}
+          </h2>
+          {operatorEntry && (operatorEntry.onNewConversation || operatorEntry.onDeleteConversation) && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {operatorEntry.onNewConversation && (
+                <button
+                  type="button"
+                  onClick={operatorEntry.onNewConversation}
+                  disabled={operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0}
+                  title={workingEndpoints.size > 0 ? "Wait for Floe to finish before starting another conversation" : undefined}
+                  style={{
+                    background: "transparent", color: tk.ink2, border: `1px solid ${tk.border}`,
+                    borderRadius: tk.r2, padding: "6px 10px", fontSize: 12,
+                    cursor: operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0 ? "default" : "pointer",
+                    opacity: operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0 ? 0.5 : 1,
+                  }}
+                >
+                  New conversation
+                </button>
+              )}
+              {operatorEntry.onDeleteConversation && (
+                <button
+                  type="button"
+                  onClick={operatorEntry.onDeleteConversation}
+                  disabled={operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0}
+                  title={workingEndpoints.size > 0 ? "Wait for Floe to finish before deleting this conversation" : undefined}
+                  style={{
+                    background: "transparent", color: tk.ink3, border: "none",
+                    padding: "6px 4px", fontSize: 12,
+                    cursor: operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0 ? "default" : "pointer",
+                    opacity: operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0 ? 0.5 : 1,
+                  }}
+                >
+                  Delete
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         {operatorEntry ? (
           <>
             <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5 }}>Working with you on this workspace.</p>
+            {operatorEntry.conversationActionError && (
+              <div role="alert" style={{ marginTop: 8, color: tk.danger, fontSize: 12 }}>
+                {operatorEntry.conversationActionError}
+              </div>
+            )}
             <div style={{ marginTop: 12 }}>
               <FloeModelControl
                 workspaceId={workspaceId}
