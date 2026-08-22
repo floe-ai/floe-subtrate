@@ -11,7 +11,7 @@
 
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import YAML from "yaml";
 import { vi, describe, it, expect, afterEach } from "vitest";
 import { defaultConfig } from "./config.js";
@@ -22,6 +22,11 @@ import { BridgeDaemon } from "./daemon.js";
 // ---------------------------------------------------------------------------
 
 const createdServers: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+const createdWatchers: Array<{
+  path: string;
+  onArrival: (arrival: Record<string, unknown>) => void;
+  stop: ReturnType<typeof vi.fn>;
+}> = [];
 
 vi.mock("./extension-relay.js", () => ({
   startExtensionRelayServer: vi.fn(async () => {
@@ -53,6 +58,14 @@ vi.mock("./extension-loader.js", () => ({
   ])
 }));
 
+vi.mock("./folder-watcher.js", () => ({
+  watchFolder: vi.fn((path: string, onArrival: (arrival: Record<string, unknown>) => void) => {
+    const stop = vi.fn();
+    createdWatchers.push({ path, onArrival, stop });
+    return stop;
+  }),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -77,13 +90,17 @@ function makeEnv(): { workspacePath: string; configPath: string; config: ReturnT
   return { workspacePath, configPath, config };
 }
 
-function makeBusMock() {
+function makeBusMock(graphs: unknown[] = []) {
+  const fired: unknown[][] = [];
   return {
+    fired,
     async importConfigSnapshot() {},
     async registerEndpoint() {},
     async createPulse() {},
     async reportExtensions() {},
     async reportAttachment() {},
+    async listScopeGraphsForWorkspace() { return { graphs }; },
+    async fireScopeGraphTriggerNode(...args: unknown[]) { fired.push(args); return { events: [] }; },
     async resolveRuntimeBinding() {
       return {
         endpoint_auth_profile: null,
@@ -108,6 +125,7 @@ afterEach(() => {
   }
   tmpDirs.length = 0;
   createdServers.length = 0;
+  createdWatchers.length = 0;
   vi.clearAllMocks();
 });
 
@@ -196,6 +214,47 @@ describe("BridgeDaemon relay lifecycle (Fix 2)", () => {
     const relays: Map<string, unknown> = (daemon as any).workspaceRelays;
     expect(relays.size).toBe(1);
     expect(relays.has("workspace:map-test")).toBe(true);
+
+    await daemon.stop();
+  });
+
+  it("restores a folder Event source from its stored graph", async () => {
+    const { workspacePath, configPath, config } = makeEnv();
+    mkdirSync(join(workspacePath, "concepts"));
+    const daemon = new BridgeDaemon(configPath, config);
+    const bus = makeBusMock([{
+      graph_id: "graph-images",
+      context_id: "context-images",
+      nodes: [{
+        node_id: "folder-arrival",
+        kind: "trigger",
+        event_type: "concept.image.arrived",
+        source: { kind: "folder", path: "concepts" },
+      }],
+    }]);
+    (daemon as any).bus = bus;
+
+    await (daemon as any).attachWorkspace({
+      workspace_id: "workspace:image-test",
+      locator: workspacePath,
+      name: "Image Test",
+      init_authorized: true,
+      active_config_hash: "",
+    });
+
+    expect(createdWatchers).toHaveLength(1);
+    expect(createdWatchers[0].path).toBe(resolve(workspacePath, "concepts"));
+    createdWatchers[0].onArrival({
+      file_name: "scene.png",
+      file_path: join(workspacePath, "concepts", "scene.png"),
+      observed_at: "2026-01-01T00:00:00Z",
+    });
+    await Promise.resolve();
+    expect(bus.fired[0]?.slice(0, 3)).toEqual([
+      "workspace:image-test",
+      "graph-images",
+      "folder-arrival",
+    ]);
 
     await daemon.stop();
   });

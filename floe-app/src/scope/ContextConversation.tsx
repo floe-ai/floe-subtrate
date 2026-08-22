@@ -11,8 +11,9 @@
  * on failure an inline error is shown.
  *
  * Features:
- *   B1 — Working/thinking indicator: shows "<actor> is working…" driven by
- *        WS delivery_bundle_available / turn_end_observed signals. Zero polling.
+ *   B1 — Working indicator: shows safe, concise runtime actions from existing
+ *        telemetry while a delivery is active. Scratch reasoning and raw tool
+ *        arguments remain private. Driven entirely by the live stream.
  *   B2 — Auto-scroll to bottom: sticks to bottom as new messages arrive;
  *        respects user scroll-up (no yank).
  *   B3 — Speaking-as selector always accessible: even when selected actor is
@@ -26,6 +27,7 @@ import type {
   EventEnvelope,
   DeliveryBundle,
   DeliveryRow,
+  TelemetryRow,
 } from "../bus-client/types.ts";
 import {
   getContext,
@@ -33,6 +35,7 @@ import {
   emit,
   addContextParticipant,
   listDeliveries,
+  listRuntimeTelemetry,
 } from "../bus-client/client.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
 import { FloeModelControl } from "../workspace/FloeModelControl.tsx";
@@ -137,6 +140,116 @@ function friendlyDeliveryFailure(error: string | null | undefined): string {
   return "Floe couldn’t complete that message. Your message is safe; check Settings and try again.";
 }
 
+export type OperatorProgress = {
+  telemetryId: string;
+  deliveryId: string;
+  endpointId: string;
+  toolCallId: string;
+  text: string;
+  status: "running" | "completed" | "failed";
+  createdAt: string;
+};
+
+type TelemetryWithPayload = TelemetryRow & { payload?: Record<string, unknown> };
+
+function telemetryPayload(telemetry: TelemetryWithPayload): Record<string, unknown> {
+  if (telemetry.payload) return telemetry.payload;
+  try {
+    return JSON.parse(telemetry.payload_json) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function safePath(payload: Record<string, unknown>): string | null {
+  const files = payload["files_touched"];
+  if (Array.isArray(files) && typeof files[0] === "string") return files[0];
+  const args = payload["args"];
+  if (args && typeof args === "object") {
+    const path = (args as Record<string, unknown>)["path"];
+    if (typeof path === "string" && path.trim()) return path;
+  }
+  return null;
+}
+
+function capabilityLabel(toolName: string): string {
+  return toolName
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, character => character.toUpperCase());
+}
+
+/**
+ * Convert internal tool telemetry into operator-safe progress. This deliberately
+ * excludes model scratch reasoning, tool arguments and command text.
+ */
+export function operatorProgressFromTelemetry(
+  telemetry: TelemetryWithPayload,
+): OperatorProgress | null {
+  if (!telemetry.delivery_id || !["BeforeToolUse", "AfterToolUse", "ToolUseFailed"].includes(telemetry.kind)) {
+    return null;
+  }
+  const payload = telemetryPayload(telemetry);
+  const toolName = typeof payload["toolName"] === "string" ? payload["toolName"] : "capability";
+  const toolCallId = typeof payload["toolCallId"] === "string"
+    ? payload["toolCallId"]
+    : telemetry.telemetry_id;
+  const path = safePath(payload);
+  const failed = telemetry.kind === "ToolUseFailed" || payload["isError"] === true;
+  const completed = telemetry.kind === "AfterToolUse" || telemetry.kind === "ToolUseFailed";
+  const summary = typeof payload["summary"] === "string" ? payload["summary"] : "";
+
+  let action: string;
+  switch (toolName) {
+    case "read": action = path ? `Reading ${path}` : "Reading workspace files"; break;
+    case "read_image": action = path ? `Inspecting ${path}` : "Inspecting a workspace image"; break;
+    case "ls":
+    case "find":
+    case "grep": action = "Inspecting the workspace"; break;
+    case "write": action = path ? `Writing ${path}` : "Writing a workspace file"; break;
+    case "edit": action = path ? `Updating ${path}` : "Updating a workspace file"; break;
+    case "bash": action = "Running and verifying workspace automation"; break;
+    case "list_actors":
+    case "list_endpoints":
+    case "resolve_destination": action = "Checking available collaborators"; break;
+    case "emit": action = "Preparing a response"; break;
+    default: action = `Using ${capabilityLabel(toolName)}`; break;
+  }
+
+  let text = action;
+  if (failed || /\((?:exit [1-9]\d*|timeout)[,)]/i.test(summary)) {
+    text = "A step did not succeed; Floe is adapting";
+  } else if (completed) {
+    if (toolName === "write" || toolName === "edit") text = path ? `Updated ${path}` : "Updated the workspace";
+    else if (toolName === "bash") text = "Verified a workspace step";
+    else if (toolName === "emit") text = "Response ready";
+  }
+
+  return {
+    telemetryId: telemetry.telemetry_id,
+    deliveryId: telemetry.delivery_id,
+    endpointId: telemetry.endpoint_id,
+    toolCallId,
+    text,
+    status: failed ? "failed" : completed ? "completed" : "running",
+    createdAt: telemetry.created_at,
+  };
+}
+
+export function mergeOperatorProgress(
+  current: OperatorProgress[],
+  rows: TelemetryWithPayload[],
+): OperatorProgress[] {
+  const byCall = new Map(current.map(progress => [`${progress.deliveryId}:${progress.toolCallId}`, progress]));
+  for (const row of rows) {
+    const progress = operatorProgressFromTelemetry(row);
+    if (!progress) continue;
+    byCall.set(`${progress.deliveryId}:${progress.toolCallId}`, progress);
+  }
+  return [...byCall.values()]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .slice(-5);
+}
+
 // ---------------------------------------------------------------------------
 // Participant pills
 // ---------------------------------------------------------------------------
@@ -188,29 +301,51 @@ function MessageRow({
 // B1 — Working / thinking indicator
 // ---------------------------------------------------------------------------
 
-function WorkingIndicator({ actorName: name }: { actorName: string }): React.ReactElement {
+function WorkingIndicator({
+  actorName: name,
+  progress,
+}: {
+  actorName: string;
+  progress: OperatorProgress[];
+}): React.ReactElement {
   return (
     <div style={{
-      display: "flex", alignItems: "center", gap: 8,
-      padding: "8px 0",
-      color: tk.ink3, fontSize: 12.5, fontStyle: "italic",
+      padding: "10px 0",
+      color: tk.ink3, fontSize: 12.5,
     }}>
-      <span style={{
-        display: "inline-flex", gap: 3, alignItems: "center",
-      }}>
-        {[0, 1, 2].map(i => (
-          <span
-            key={i}
-            style={{
-              width: 5, height: 5, borderRadius: "50%",
-              background: tk.ink4,
-              animation: "floe-typing-dot 1.1s infinite ease-in-out",
-              animationDelay: `${i * 0.22}s`,
-            }}
-          />
-        ))}
-      </span>
-      <span>{name} is working…</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontStyle: "italic" }}>
+        <span style={{ display: "inline-flex", gap: 3, alignItems: "center" }}>
+          {[0, 1, 2].map(i => (
+            <span
+              key={i}
+              style={{
+                width: 5, height: 5, borderRadius: "50%",
+                background: tk.ink4,
+                animation: "floe-typing-dot 1.1s infinite ease-in-out",
+                animationDelay: `${i * 0.22}s`,
+              }}
+            />
+          ))}
+        </span>
+        <span>{name} is working</span>
+      </div>
+      {progress.length > 0 && (
+        <div aria-label={`${name} work progress`} style={{ marginTop: 8, display: "grid", gap: 5 }}>
+          {progress.map(item => (
+            <div key={`${item.deliveryId}:${item.toolCallId}`} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+              <span aria-hidden="true" style={{
+                color: item.status === "failed" ? tk.warn : item.status === "completed" ? tk.accent : tk.ink3,
+                fontSize: 11,
+              }}>
+                {item.status === "failed" ? "!" : item.status === "completed" ? "✓" : "•"}
+              </span>
+              <span style={{ color: item.status === "running" ? tk.ink2 : tk.ink3 }}>
+                {item.text}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -510,6 +645,7 @@ export function ContextConversation({
   const [deliveryNotice, setDeliveryNotice] = useState<string | null>(null);
   const [speakingAsId, setSpeakingAsId] = useState<string>("");
   const [operatorModelReady, setOperatorModelReady] = useState(false);
+  const [workProgress, setWorkProgress] = useState<OperatorProgress[]>([]);
 
   // B1 — working endpoints: map endpoint_id → delivery_id (tracks in-flight turns)
   const [workingEndpoints, setWorkingEndpoints] = useState<Map<string, string>>(new Map());
@@ -528,11 +664,20 @@ export function ContextConversation({
     ])
       .then(([ctx, evts, deliveries]) => {
         const deliveryState = conversationDeliveryState(deliveries, contextId);
+        const activeDeliveryIds = new Set(deliveryState.working.values());
         setContext(ctx);
         setEvents(evts);
         setWorkingEndpoints(deliveryState.working);
+        setWorkProgress(previous => previous.filter(progress => activeDeliveryIds.has(progress.deliveryId)));
         setDeliveryNotice(deliveryState.notice);
         setLoading(false);
+        void Promise.all([...activeDeliveryIds].map(deliveryId =>
+          listRuntimeTelemetry({ delivery_id: deliveryId, limit: 100 })
+        )).then(records => {
+          setWorkProgress(previous => mergeOperatorProgress(previous, records.flat()));
+        }).catch(() => {
+          // Progress is supplementary; a telemetry failure must not hide the conversation.
+        });
       })
       .catch(err => {
         setError(err instanceof Error ? err.message : "Failed to load context");
@@ -569,6 +714,16 @@ export function ContextConversation({
         }
       }
 
+      if (msg.type === "runtime_telemetry") {
+        const telemetry = (msg.payload as { telemetry?: TelemetryWithPayload }).telemetry;
+        if (telemetry) {
+          const payload = telemetryPayload(telemetry);
+          if (payload["context_id"] === contextId) {
+            setWorkProgress(previous => mergeOperatorProgress(previous, [telemetry]));
+          }
+        }
+      }
+
       if (["delivery_deferred", "delivery_failed", "delivery_dead_lettered"].includes(msg.type)) {
         const { delivery_id, error } = msg.payload as { delivery_id: string; error?: string | null };
         setWorkingEndpoints(prev => {
@@ -588,6 +743,7 @@ export function ContextConversation({
           next.delete(endpoint_id);
           return next;
         });
+        setWorkProgress(previous => previous.filter(progress => progress.endpointId !== endpoint_id));
       }
     });
     return unsub;
@@ -640,7 +796,7 @@ export function ContextConversation({
     if (isAtBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [totalVisibleCount, workingCount]);
+  }, [totalVisibleCount, workingCount, workProgress.length]);
 
   // B2 — initial scroll to bottom after first load
   useEffect(() => {
@@ -821,8 +977,12 @@ export function ContextConversation({
           )}
 
           {/* B1 — Typing / working indicators at bottom of stream */}
-          {workingActorNames.map(name => (
-            <WorkingIndicator key={name} actorName={name} />
+          {Array.from(workingEndpoints.keys()).map(endpointId => (
+            <WorkingIndicator
+              key={endpointId}
+              actorName={endpointName(endpointId, endpoints)}
+              progress={workProgress.filter(progress => progress.endpointId === endpointId)}
+            />
           ))}
           {deliveryNotice && (
             <div role="alert" style={{ padding: "10px 0", color: tk.danger, fontSize: 12.5 }}>

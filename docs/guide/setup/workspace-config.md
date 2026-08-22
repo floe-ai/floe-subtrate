@@ -24,7 +24,7 @@ state:
 
 - `agents` — the list of agent definition files this workspace declares
 - `pulses` — workspace-level pulse declarations (schedule sources for [[Event]]s)
-- `watchers` — folder-watch configs, each pointing at an existing node
+- `watchers` — legacy folder-watch configs; new folder sources are stored on the Event node that owns them
 - `state` — where ephemeral, non-config runtime state is written
 
 ## `.floe/agents/<id>.md`
@@ -54,9 +54,15 @@ You are Floe, ...
 
 Fields: `schema`, `agent_id`, `label`, `runtime.engine`, `extensions` (list of [[Extension]] names bound to this actor), `skills`, `mcp`, `pulse.inherit`, `scope`.
 
-## `.floe/floe.yaml` is read-only at runtime
+## `.floe/floe.yaml` and runtime composition
 
 This is a hard invariant: `.floe/floe.yaml` is human-authored, committed project config. The bridge treats it as **read-only** once the workspace is running.
+
+Actors may form runtime organisation through the bus without hand-editing this file. In particular,
+`connect_folder_to_actor` authors a scoped Context with a folder-backed Event node and a participating
+actor. That folder source is visible on the stored graph and is restored when the workspace attaches.
+The older top-level `watchers` entries remain readable for existing workspaces but are not the normal
+composition path.
 
 Bundled agents contributed by an [[Extension]]'s manifest are registered **in memory** directly from the loaded manifest — they are never written to `.floe/floe.yaml` or `.floe/agents/`. After a clean boot, `git status --porcelain` in the workspace repo must come back empty: attaching a workspace never dirties a tracked file.
 

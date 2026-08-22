@@ -37,6 +37,6 @@ An event lands in a context. That is the only thing an event does.
 - `floe-bus/src/server.ts` — `POST /v1/events/emit`, `GET /v1/events`, `POST /v1/webhooks/:workspace_id/:route_id` (webhook source), `POST /v1/pulses` (schedule source)
 - `floe-bus/src/scope-graphs.ts` — event/trigger node kind, still named `"trigger"` in storage; the model above is the current name
 - `docs/adr/0008-event-is-the-primitive.md` — the decision retiring trigger/pulse/watcher/webhook as separate primitives
-- The folder-watcher source has no read endpoint — it cannot be listed.
+- A folder source is self-describing on its stored Event node and is visible through scope-graph reads.
 
 See [[Glossary]].

@@ -228,6 +228,45 @@ export class BusClient {
     return this.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs`) as Promise<{ graphs: any[] }>;
   }
 
+  async createScope(input: {
+    workspace_id: string;
+    scope_id: string;
+    title: string;
+    description?: string | null;
+  }): Promise<{ scope_id: string }> {
+    const result = await this.post(
+      `/v1/workspaces/${encodeURIComponent(input.workspace_id)}/scopes`,
+      {
+        scope_id: input.scope_id,
+        title: input.title,
+        description: input.description ?? null,
+      },
+    ) as { scope: { scope_id: string } };
+    return result.scope;
+  }
+
+  async deleteScope(workspaceId: string, scopeId: string): Promise<void> {
+    await this._delete(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/${encodeURIComponent(scopeId)}`,
+    );
+  }
+
+  async createScopeGraph(input: {
+    workspace_id: string;
+    scope_id: string;
+    created_by_endpoint_id?: string | null;
+    nodes: unknown[];
+  }): Promise<{ graph_id: string; context_id: string; nodes: unknown[] }> {
+    const result = await this.post(
+      `/v1/workspaces/${encodeURIComponent(input.workspace_id)}/scopes/${encodeURIComponent(input.scope_id)}/graphs`,
+      {
+        nodes: input.nodes,
+        created_by_endpoint_id: input.created_by_endpoint_id ?? null,
+      },
+    ) as { graph: { graph_id: string; context_id: string; nodes: unknown[] } };
+    return result.graph;
+  }
+
   /**
    * Fires an existing Scope Graph trigger node — no new wake mechanism, just
    * the same `fireScopeGraphTrigger` emit path a manual trigger fire would

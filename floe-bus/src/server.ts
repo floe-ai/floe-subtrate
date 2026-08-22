@@ -258,7 +258,11 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       node_id: z.string().min(1),
       kind: z.literal("trigger"),
       label: z.string().optional(),
-      event_type: z.string().min(1)
+      event_type: z.string().min(1),
+      source: z.object({
+        kind: z.literal("folder"),
+        path: z.string().min(1)
+      }).optional()
     }),
     z.object({
       node_id: z.string().min(1),

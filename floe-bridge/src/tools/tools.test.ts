@@ -7,6 +7,7 @@ import { resolveWorkspacePath, validateWorkspaceContainment, safeWorkspacePath }
 import { truncateOutput } from "./truncation.js";
 import { sanitiseEnvironment, listStrippedVarNames } from "./env-sanitise.js";
 import { createReadTool } from "./read.js";
+import { createReadImageTool } from "./read-image.js";
 import { createLsTool } from "./ls.js";
 import { createGrepTool } from "./grep.js";
 import { createFindTool } from "./find.js";
@@ -699,6 +700,50 @@ describe("edit tool", () => {
   });
 });
 
+// --- Read image tool tests ---
+
+describe("read_image tool", () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "floe-test-image-"));
+    // 1x1 transparent PNG.
+    writeFileSync(
+      join(workspace, "pixel.png"),
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
+    );
+  });
+
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("loads a workspace image directly into model context", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createReadImageTool(ctx);
+    ctx.toolActivity.push({ name: "read_image", call_id: "image-1" });
+
+    const result = await tool.execute("image-1", { path: "pixel.png" });
+
+    expect(result.details?.ok).toBe(true);
+    expect(result.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "image", mimeType: "image/png" }),
+    ]));
+    expect(ctx.toolActivity[0]?.summary).toContain("read_image pixel.png");
+  });
+
+  it("rejects image paths outside the workspace", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createReadImageTool(ctx);
+    ctx.toolActivity.push({ name: "read_image", call_id: "image-2" });
+
+    const result = await tool.execute("image-2", { path: "../outside.png" });
+
+    expect(result.details?.ok).toBe(false);
+    expect(ctx.toolActivity[0]?.is_error).toBe(true);
+  });
+});
+
 // --- Bash tool tests ---
 
 describe("bash tool", () => {
@@ -814,6 +859,21 @@ describe("bash tool", () => {
     const result = await tool.execute("b9", { command: "echo fast" });
     expect(typeof (result.details as any).duration_ms).toBe("number");
     expect((result.details as any).duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("does not block the bridge event loop while a command runs", async () => {
+    const ctx = createTestContext(workspace);
+    const tool = createBashTool(ctx);
+    ctx.toolActivity.push({ name: "bash", call_id: "b10" });
+    const cmd = isWindows ? "ping -n 2 127.0.0.1 >nul" : "sleep 1";
+
+    const startedAt = Date.now();
+    const pending = tool.execute("b10", { command: cmd });
+    const returnedAfterMs = Date.now() - startedAt;
+
+    expect(returnedAfterMs).toBeLessThan(250);
+    const result = await pending;
+    expect(result.details?.ok).toBe(true);
   });
 });
 

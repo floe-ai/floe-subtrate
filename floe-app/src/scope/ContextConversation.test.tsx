@@ -8,7 +8,12 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { ContextConversation, conversationDeliveryState } from "./ContextConversation.tsx";
+import {
+  ContextConversation,
+  conversationDeliveryState,
+  mergeOperatorProgress,
+  operatorProgressFromTelemetry,
+} from "./ContextConversation.tsx";
 import * as client from "../bus-client/client.ts";
 
 const modelControl = vi.hoisted(() => ({ ready: true }));
@@ -17,6 +22,7 @@ vi.mock("../bus-client/client.ts", () => ({
   getContext: vi.fn(),
   listContextEvents: vi.fn(),
   listDeliveries: vi.fn(),
+  listRuntimeTelemetry: vi.fn(),
   emit: vi.fn(),
 }));
 
@@ -65,6 +71,7 @@ beforeEach(() => {
   vi.mocked(client.getContext).mockResolvedValue(mockContext as any);
   vi.mocked(client.listContextEvents).mockResolvedValue([]);
   vi.mocked(client.listDeliveries).mockResolvedValue([]);
+  vi.mocked(client.listRuntimeTelemetry).mockResolvedValue([]);
   vi.mocked(client.emit).mockResolvedValue({} as never);
 
   // Clear localStorage between tests so speakingAs defaults are fresh
@@ -210,5 +217,54 @@ describe("conversation delivery state", () => {
       row("deferred", "provider_auth_missing: no credential"),
     ], "ctx-1");
     expect(result.notice).toMatch(/connected model/i);
+  });
+});
+
+describe("operator work progress", () => {
+  const telemetry = (kind: string, payload: Record<string, unknown>, createdAt = "2026-01-01T00:00:00Z") => ({
+    telemetry_id: `telemetry-${kind}-${createdAt}`,
+    workspace_id: "ws-1",
+    endpoint_id: "ep-floe",
+    delivery_id: "delivery-1",
+    kind,
+    payload_json: JSON.stringify(payload),
+    created_at: createdAt,
+  });
+
+  it("turns tool telemetry into concise progress without exposing command arguments", () => {
+    const result = operatorProgressFromTelemetry(telemetry("BeforeToolUse", {
+      toolCallId: "call-1",
+      toolName: "bash",
+      args: { command: "secret command text" },
+    }));
+
+    expect(result?.text).toBe("Running and verifying workspace automation");
+    expect(JSON.stringify(result)).not.toContain("secret command text");
+  });
+
+  it("replaces a running action with its completion and keeps recent actions bounded", () => {
+    const rows = [
+      telemetry("BeforeToolUse", { toolCallId: "call-1", toolName: "write", args: { path: "pipeline.ts" } }),
+      telemetry("AfterToolUse", { toolCallId: "call-1", toolName: "write", files_touched: ["pipeline.ts"] }, "2026-01-01T00:00:01Z"),
+      ...Array.from({ length: 6 }, (_, index) => telemetry(
+        "BeforeToolUse",
+        { toolCallId: `call-${index + 2}`, toolName: "read" },
+        `2026-01-01T00:00:0${index + 2}Z`,
+      )),
+    ];
+
+    const result = mergeOperatorProgress([], rows);
+    expect(result).toHaveLength(5);
+    expect(result.some(progress => progress.toolCallId === "call-1")).toBe(false);
+  });
+
+  it("describes a failed command as adaptation rather than exposing raw output", () => {
+    const result = operatorProgressFromTelemetry(telemetry("AfterToolUse", {
+      toolCallId: "call-1",
+      toolName: "bash",
+      summary: "bash: private details (timeout, 30000ms)",
+    }));
+
+    expect(result?.text).toBe("A step did not succeed; Floe is adapting");
   });
 });

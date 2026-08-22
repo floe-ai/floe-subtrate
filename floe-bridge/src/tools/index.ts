@@ -8,6 +8,7 @@
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { createReadTool } from "./read.js";
+import { createReadImageTool } from "./read-image.js";
 import { createLsTool } from "./ls.js";
 import { createGrepTool } from "./grep.js";
 import { createFindTool } from "./find.js";
@@ -30,6 +31,7 @@ export { sanitiseEnvironment, listStrippedVarNames } from "./env-sanitise.js";
 export function createWorkspaceTools(ctx: ToolContext): AgentTool[] {
   return [
     createReadTool(ctx),
+    createReadImageTool(ctx),
     createLsTool(ctx),
     createGrepTool(ctx),
     createFindTool(ctx),

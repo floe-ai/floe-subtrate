@@ -4,7 +4,7 @@
  * but only the bridge decides the live adapter and the effective runtime passed into sessions.
  */
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Server } from "node:http";
 import type { AgentRuntimeConfig } from "./auth.js";
 import { RuntimeAuthError } from "./auth.js";
@@ -419,9 +419,11 @@ export class BridgeDaemon {
       // node is an ordinary participant/endpoint. The only new behaviour is
       // bridge-local (handleDelivery below runs the command instead of the
       // adapter for these endpoints); see command-runner.ts.
+      let scopeGraphs: Array<{ graph_id: string; context_id: string; nodes: any[] }> = [];
       try {
         const { graphs } = await this.bus.listScopeGraphsForWorkspace(workspace.workspace_id);
-        for (const graph of graphs as Array<{ graph_id: string; context_id: string; nodes: any[] }>) {
+        scopeGraphs = graphs as Array<{ graph_id: string; context_id: string; nodes: any[] }>;
+        for (const graph of scopeGraphs) {
           for (const node of graph.nodes) {
             if (node.kind === "actor" && Array.isArray(node.bindings) && node.bindings.length > 0) {
               const text = node.bindings
@@ -457,18 +459,27 @@ export class BridgeDaemon {
         console.error("[bridge] command node discovery failed", { workspace_id: workspace.workspace_id, error });
       }
 
-      // Start watched folders defined in floe.yaml. Each is a deterministic
-      // monitor node — no new wake mechanism, just a config for the existing
-      // fireScopeGraphTrigger emit path (see folder-watcher.ts).
+      // Start folder Event sources. Legacy floe.yaml watchers remain readable,
+      // while new sources are stored with the Event node that owns them.
       for (const stop of this.workspaceWatchers.get(workspace.workspace_id) ?? []) stop();
       const watcherStops: Array<() => void> = [];
-      for (const watcherDef of project.watchers) {
+      const startedWatchers = new Set<string>();
+      const startWatcher = (watcherDef: { id: string; graph_id: string; node_id: string; path: string }): void => {
         const watchPath = resolve(locator, watcherDef.path);
-        if (!existsSync(watchPath)) {
-          console.error("[bridge] watcher path does not exist — skipping", { watcher_id: watcherDef.id, path: watchPath });
-          continue;
+        const workspaceRelative = relative(locator, watchPath);
+        const watcherKey = `${watcherDef.graph_id}:${watcherDef.node_id}:${watchPath}`;
+        if (workspaceRelative.startsWith("..") || isAbsolute(workspaceRelative)) {
+          console.error("[bridge] watcher path escapes workspace — skipping", { watcher_id: watcherDef.id, path: watchPath });
+          return;
         }
-        const stop = watchFolder(watchPath, (arrival) => {
+        if (!existsSync(watchPath) || startedWatchers.has(watcherKey)) {
+          if (!existsSync(watchPath)) {
+            console.error("[bridge] watcher path does not exist — skipping", { watcher_id: watcherDef.id, path: watchPath });
+          }
+          return;
+        }
+        startedWatchers.add(watcherKey);
+        const stop = watchFolder(watchPath, arrival => {
           this.bus.fireScopeGraphTriggerNode(workspace.workspace_id, watcherDef.graph_id, watcherDef.node_id, {
             content: {
               file_name: arrival.file_name,
@@ -476,13 +487,28 @@ export class BridgeDaemon {
               channel: "watched_folder",
               locator: arrival.file_path,
               observed_at: arrival.observed_at,
-              raw_reference: arrival.file_path
-            }
-          }).catch((error) => {
+              raw_reference: arrival.file_path,
+            },
+          }).catch(error => {
             console.error("[bridge] watcher trigger fire failed", { watcher_id: watcherDef.id, error });
           });
         });
         watcherStops.push(stop);
+      };
+
+      for (const watcherDef of project.watchers) startWatcher(watcherDef);
+      for (const graph of scopeGraphs) {
+        for (const node of graph.nodes) {
+          if (node.kind !== "trigger" || node.source?.kind !== "folder" || typeof node.source.path !== "string") {
+            continue;
+          }
+          startWatcher({
+            id: `${graph.graph_id}:${node.node_id}`,
+            graph_id: graph.graph_id,
+            node_id: node.node_id,
+            path: node.source.path,
+          });
+        }
       }
       this.workspaceWatchers.set(workspace.workspace_id, watcherStops);
 

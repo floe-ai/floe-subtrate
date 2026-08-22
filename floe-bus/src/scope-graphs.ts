@@ -45,6 +45,8 @@ export type ScopeGraphTriggerNode = {
   label?: string;
   /** Event type stamped on the emission this node causes when fired. */
   event_type: string;
+  /** Optional world ingress owned by this event node. */
+  source?: { kind: "folder"; path: string };
 };
 
 export type ScopeGraphActorNode = {

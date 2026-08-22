@@ -219,7 +219,10 @@ Webhook routes are **write-only** — there is no `GET` to list configured webho
 
 ## Folder watchers
 
-No HTTP surface exists for folder watchers at all: no create, list, or read route. They are configured outside the bus and have no read endpoint.
+Folder ingress is represented as `source: { kind: "folder", path: "..." }` on an Event node in a
+stored scope graph. It is created through the actor-facing `connect_folder_to_actor` composition tool
+and is visible through the existing graph read routes. Legacy top-level workspace watcher config remains
+readable but has no standalone HTTP resource.
 
 ## Runtime bindings
 

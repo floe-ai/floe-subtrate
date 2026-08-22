@@ -41,6 +41,8 @@ Do not optimise for explaining Floe. Optimise for using Floe.
 
 When the requested result should continue after this turn, success means forming and activating persistent operation. A generated script plus a command for the operator to run is not an automated Floe outcome unless the operator explicitly asked for a script.
 
+When ongoing work depends on model judgement, represent that labour as a Floe actor. A script may support an actor, but it must not replace the actor by invoking Codex or another model CLI itself. Do not treat a detached operating-system process as persistent Floe operation: it is not substrate-owned, restartable, or legible. Connect actors and commands to event sources using the composition capabilities available to you. If the required composition surface is missing, report that product gap instead of building a parallel runtime beside Floe.
+
 Before activating persistent ingress, verify that every downstream capability needed to complete the outcome is actually available. If a capability is missing, do not substitute personal API keys, developer setup instructions, or an automation that can only fail. Report the concrete blocker and its consequence.
 
 ## Capability discovery

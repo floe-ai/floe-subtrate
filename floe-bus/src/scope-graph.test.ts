@@ -79,7 +79,13 @@ describe("Scope Graph API", () => {
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/docs/graphs`,
       payload: {
         nodes: [
-          { node_id: "watcher", kind: "trigger", event_type: "note.landed", label: "note landed" },
+          {
+            node_id: "watcher",
+            kind: "trigger",
+            event_type: "note.landed",
+            label: "note landed",
+            source: { kind: "folder", path: "notes" },
+          },
           { node_id: "writer_node", kind: "actor", endpoint_id: writer, label: "writer" }
         ]
       }
@@ -88,6 +94,7 @@ describe("Scope Graph API", () => {
     const graph = created.json().graph;
     expect(graph.graph_id).toMatch(/^graph_/);
     expect(graph.nodes).toHaveLength(2);
+    expect(graph.nodes[0].source).toEqual({ kind: "folder", path: "notes" });
     expect(graph.context_id).toMatch(/^ctx_/);
 
     // Authoring the actor node already wired it into the graph's Context via

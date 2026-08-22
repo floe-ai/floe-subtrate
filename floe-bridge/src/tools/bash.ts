@@ -16,7 +16,7 @@
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
-import { spawnSync } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { platform } from "node:os";
 import { sanitiseEnvironment } from "./env-sanitise.js";
 import { truncateOutput } from "./truncation.js";
@@ -24,6 +24,95 @@ import type { ToolContext } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
 const MAX_TIMEOUT_MS = 600_000; // 10 minutes
+const MAX_CAPTURE_BYTES = 10 * 1024 * 1024;
+
+type ShellResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  timedOut: boolean;
+  outputLimited: boolean;
+};
+
+function terminateProcessTree(child: ChildProcess, isWindows: boolean): void {
+  if (isWindows && child.pid) {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    killer.unref();
+    return;
+  }
+  child.kill("SIGTERM");
+}
+
+/** Run without blocking the bridge/bus event loop, so live progress can still flow. */
+function runShellCommand(input: {
+  shell: string;
+  shellArgs: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  isWindows: boolean;
+}): Promise<ShellResult> {
+  return new Promise(resolve => {
+    const child = spawn(input.shell, input.shellArgs, {
+      cwd: input.cwd,
+      env: input.env,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let capturedBytes = 0;
+    let timedOut = false;
+    let outputLimited = false;
+    let settled = false;
+
+    const capture = (target: Buffer[], chunk: Buffer): void => {
+      const remaining = MAX_CAPTURE_BYTES - capturedBytes;
+      if (remaining <= 0) {
+        if (!outputLimited) {
+          outputLimited = true;
+          terminateProcessTree(child, input.isWindows);
+        }
+        return;
+      }
+      const kept = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+      target.push(kept);
+      capturedBytes += kept.byteLength;
+      if (kept.byteLength < chunk.byteLength && !outputLimited) {
+        outputLimited = true;
+        terminateProcessTree(child, input.isWindows);
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => capture(stdout, chunk));
+    child.stderr.on("data", (chunk: Buffer) => capture(stderr, chunk));
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminateProcessTree(child, input.isWindows);
+    }, input.timeoutMs);
+
+    const finish = (exitCode: number, spawnError?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (spawnError) stderr.push(Buffer.from(spawnError.message));
+      resolve({
+        stdout: Buffer.concat(stdout).toString("utf-8"),
+        stderr: Buffer.concat(stderr).toString("utf-8"),
+        exitCode,
+        timedOut,
+        outputLimited,
+      });
+    };
+
+    child.once("error", error => finish(1, error));
+    child.once("close", code => finish(code ?? 1));
+  });
+}
 
 export function createBashTool(ctx: ToolContext): AgentTool {
   return {
@@ -61,31 +150,35 @@ export function createBashTool(ctx: ToolContext): AgentTool {
       const shell = isWindows ? "cmd.exe" : "/bin/bash";
       const shellArgs = isWindows ? ["/c", command] : ["-c", command];
 
-      const proc = spawnSync(shell, shellArgs, {
+      const proc = await runShellCommand({
+        shell,
+        shellArgs,
         cwd: ctx.workspaceRoot,
         env,
-        timeout: timeoutMs,
-        maxBuffer: 10 * 1024 * 1024,
-        encoding: "utf-8",
-        windowsHide: true,
+        timeoutMs,
+        isWindows,
       });
 
-      const stdout = typeof proc.stdout === "string" ? proc.stdout : "";
-      const stderr = typeof proc.stderr === "string" ? proc.stderr : "";
-      const output = (stdout + (stderr ? "\n" + stderr : "")).trimEnd();
-      const exitCode = proc.status ?? 1;
-      const timedOut = proc.signal === "SIGTERM";
+      const output = (proc.stdout + (proc.stderr ? "\n" + proc.stderr : "")).trimEnd();
+      const exitCode = proc.exitCode;
+      const timedOut = proc.timedOut;
 
       const truncated = truncateOutput(output);
       const durationMs = Date.now() - startTime;
 
       const commandPreview = command.length > 60 ? command.slice(0, 57) + "..." : command;
-      const statusLabel = timedOut ? "timeout" : exitCode === 0 ? "ok" : `exit ${exitCode}`;
+      const statusLabel = timedOut
+        ? "timeout"
+        : proc.outputLimited
+          ? "output limit"
+          : exitCode === 0 ? "ok" : `exit ${exitCode}`;
       const summary = `bash: ${commandPreview} (${statusLabel}, ${durationMs}ms)`;
-      enrichToolActivity(ctx, toolCallId, summary, exitCode !== 0, [], startTime);
+      enrichToolActivity(ctx, toolCallId, summary, exitCode !== 0 || timedOut || proc.outputLimited, [], startTime);
 
       const header = timedOut
         ? `Command timed out after ${Math.round(timeoutMs / 1000)}s (exit code ${exitCode})`
+        : proc.outputLimited
+          ? `Command exceeded the ${Math.round(MAX_CAPTURE_BYTES / 1024 / 1024)}MB output limit (exit code ${exitCode})`
         : `Exit code: ${exitCode}`;
       const responseText = truncated.truncated
         ? `${header}\n[output truncated: ${truncated.original_lines} lines → ${truncated.text.split("\n").length} lines]\n\n${truncated.text}`
@@ -94,9 +187,10 @@ export function createBashTool(ctx: ToolContext): AgentTool {
       return {
         content: [{ type: "text", text: responseText }],
         details: {
-          ok: exitCode === 0,
+          ok: exitCode === 0 && !timedOut && !proc.outputLimited,
           exit_code: exitCode,
           timed_out: timedOut,
+          output_limited: proc.outputLimited,
           duration_ms: durationMs,
           truncated: truncated.truncated,
         },

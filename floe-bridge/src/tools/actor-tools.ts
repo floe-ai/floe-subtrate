@@ -6,12 +6,13 @@
  * ones, and update their configuration — enabling self-organizing workspaces.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import YAML from "yaml";
 import type { BusClient } from "../bus-client.js";
+import { safeWorkspacePath } from "./path-scoping.js";
 
 const AGENT_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -251,5 +252,119 @@ export function createActorTools(
     },
   };
 
-  return [createActorTool, listActorsTool, updateActorTool];
+  const connectFolderToActorTool: AgentTool = {
+    name: "connect_folder_to_actor",
+    label: "Connect Folder to Actor",
+    description:
+      "Create persistent Floe operation by connecting arrivals in a workspace folder to a model actor. " +
+      "Each new file becomes an Event in a scoped Context and wakes the actor. Use this instead of " +
+      "starting a detached watcher process.",
+    parameters: Type.Object({
+      path: Type.String({ description: "Existing folder path relative to the workspace root" }),
+      actor_id: Type.String({ description: "Agent id of the actor that should process each arrival" }),
+      scope_id: Type.String({ description: "Lowercase id for the operational scope" }),
+      scope_title: Type.String({ description: "Human-readable purpose of the operation" }),
+      event_type: Type.String({ description: "Event type emitted for each file, e.g. concept.image.arrived" }),
+      instructions: Type.Optional(Type.String({
+        description: "Instructions applied to this actor only when processing arrivals from this folder",
+      })),
+    }),
+    execute: async (_toolCallId, params: any) => {
+      if (!workspaceLocator) {
+        return {
+          content: [{ type: "text", text: "Cannot connect folder: workspace locator is not available." }],
+          details: { ok: false, error: "no_workspace_locator" },
+        };
+      }
+      const actorId = String(params.actor_id ?? "").toLowerCase();
+      const scopeId = String(params.scope_id ?? "").toLowerCase();
+      const folderPath = String(params.path ?? "");
+      if (!AGENT_ID_RE.test(actorId) || !AGENT_ID_RE.test(scopeId)) {
+        return {
+          content: [{ type: "text", text: "actor_id and scope_id must be lowercase alphanumeric ids with optional hyphens." }],
+          details: { ok: false, error: "invalid_id" },
+        };
+      }
+      if (!existsSync(join(workspaceLocator, ".floe", "agents", `${actorId}.md`))) {
+        return {
+          content: [{ type: "text", text: `Actor '${actorId}' does not exist. Create it first.` }],
+          details: { ok: false, error: "actor_not_found" },
+        };
+      }
+      const resolved = safeWorkspacePath(workspaceLocator, folderPath);
+      if (!resolved.ok || !existsSync(resolved.path) || !statSync(resolved.path).isDirectory()) {
+        return {
+          content: [{ type: "text", text: resolved.ok ? `Folder not found: '${folderPath}'` : resolved.error }],
+          details: { ok: false, error: "folder_not_found" },
+        };
+      }
+
+      let scopeCreated = false;
+      try {
+        await bus.createScope({
+          workspace_id: workspaceId,
+          scope_id: scopeId,
+          title: String(params.scope_title),
+          description: `Files arriving in ${folderPath} are processed by ${actorId}.`,
+        });
+        scopeCreated = true;
+        const endpointId = `actor:${workspaceId}:${actorId}`;
+        const instructions = String(params.instructions ?? "").trim();
+        const graph = await bus.createScopeGraph({
+          workspace_id: workspaceId,
+          scope_id: scopeId,
+          created_by_endpoint_id: null,
+          nodes: [
+            {
+              node_id: "folder-arrival",
+              kind: "trigger",
+              label: `${folderPath} arrival`,
+              event_type: String(params.event_type),
+              source: { kind: "folder", path: folderPath },
+            },
+            {
+              node_id: `${actorId}-processor`,
+              kind: "actor",
+              label: actorId,
+              endpoint_id: endpointId,
+              event_types: [String(params.event_type)],
+              ...(instructions ? { bindings: [{ kind: "instructions", text: instructions }] } : {}),
+            },
+          ],
+        });
+        try {
+          await bus.requestConfigSnapshot(workspaceId);
+        } catch (error) {
+          console.error("[bridge] folder composition: config snapshot request failed", { scope_id: scopeId, error });
+        }
+        return {
+          content: [{ type: "text", text: `Connected '${folderPath}' to actor '${actorId}'. New files will wake the actor.` }],
+          details: {
+            ok: true,
+            actor_id: actorId,
+            scope_id: scopeId,
+            graph_id: graph.graph_id,
+            context_id: graph.context_id,
+          },
+        };
+      } catch (error: any) {
+        if (scopeCreated) {
+          try {
+            await bus.deleteScope(workspaceId, scopeId);
+          } catch (rollbackError) {
+            console.error("[bridge] folder composition: incomplete scope rollback failed", {
+              scope_id: scopeId,
+              error: rollbackError,
+            });
+          }
+        }
+        return {
+          content: [{ type: "text", text: `Could not connect folder to actor: ${error?.message ?? String(error)}` }],
+          details: { ok: false, error: "composition_failed" },
+        };
+      }
+    },
+  };
+
+  return [createActorTool, listActorsTool, updateActorTool, connectFolderToActorTool];
 }

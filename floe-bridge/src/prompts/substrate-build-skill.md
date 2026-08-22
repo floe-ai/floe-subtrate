@@ -27,6 +27,9 @@ Most needs are met with existing primitives:
 - **Pulses** — bus-owned scheduled events (cron or one-off) delivered to subscribers; the way to
   schedule recurring or future work without polling (see `docs/adr/0001-pulse-scheduled-event-delivery.md`).
 - **Workspace files** — durable truth; read and write them with file tools.
+- **Folder-driven model work** — create the model actor, then use `connect_folder_to_actor` to make
+  each arriving file an Event in a scoped Context. The actor receives the file path and can use
+  `read_image` when the file is an image. Do not start a detached watcher or invoke another model CLI.
 
 Explain the composition to the user so they learn the substrate instead of depending on bespoke code.
 

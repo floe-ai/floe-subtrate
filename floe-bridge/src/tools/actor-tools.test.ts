@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,17 @@ function createMockBus(): BusClient & {
     requestConfigSnapshot: async (...args: unknown[]) => {
       calls.push({ method: "requestConfigSnapshot", args });
       return { ok: true };
+    },
+    createScope: async (...args: unknown[]) => {
+      calls.push({ method: "createScope", args });
+      return { scope_id: "concept-processing" };
+    },
+    createScopeGraph: async (...args: unknown[]) => {
+      calls.push({ method: "createScopeGraph", args });
+      return { graph_id: "graph-1", context_id: "context-1", nodes: [] };
+    },
+    deleteScope: async (...args: unknown[]) => {
+      calls.push({ method: "deleteScope", args });
     },
   } as unknown as BusClient & { calls: Array<{ method: string; args: unknown[] }> };
 }
@@ -47,10 +58,66 @@ describe("actor-tools", () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
-  it("returns 3 tools", () => {
+  it("returns actor management and folder composition tools", () => {
     const tools = createActorTools(bus, "ws_test", workspace);
-    expect(tools).toHaveLength(3);
-    expect(tools.map((t) => t.name)).toEqual(["create_actor", "list_actors", "update_actor"]);
+    expect(tools).toHaveLength(4);
+    expect(tools.map((t) => t.name)).toEqual([
+      "create_actor",
+      "list_actors",
+      "update_actor",
+      "connect_folder_to_actor",
+    ]);
+  });
+
+  it("connects a workspace folder to a model actor through an Event source", async () => {
+    mkdirSync(join(workspace, "concepts"));
+    writeFileSync(
+      join(workspace, ".floe", "agents", "image-worker.md"),
+      "---\nagent_id: image-worker\n---\nProcess images.\n",
+      "utf8",
+    );
+    const tool = createActorTools(bus, "ws_test", workspace)
+      .find(candidate => candidate.name === "connect_folder_to_actor")!;
+
+    const result = await tool.execute("call-folder", {
+      path: "concepts",
+      actor_id: "image-worker",
+      scope_id: "concept-processing",
+      scope_title: "Concept processing",
+      event_type: "concept.image.arrived",
+      instructions: "Inspect the arrived image and isolate its objects.",
+    });
+
+    expect(result.details?.ok).toBe(true);
+    const graphCall = bus.calls.find(call => call.method === "createScopeGraph");
+    expect(graphCall?.args[0]).toMatchObject({
+      workspace_id: "ws_test",
+      scope_id: "concept-processing",
+      nodes: [
+        expect.objectContaining({ source: { kind: "folder", path: "concepts" } }),
+        expect.objectContaining({ endpoint_id: "actor:ws_test:image-worker" }),
+      ],
+    });
+    expect(bus.calls.at(-1)?.method).toBe("requestConfigSnapshot");
+  });
+
+  it("removes an empty scope when folder composition cannot be completed", async () => {
+    mkdirSync(join(workspace, "concepts"));
+    writeFileSync(join(workspace, ".floe", "agents", "image-worker.md"), "---\nagent_id: image-worker\n---\n", "utf8");
+    bus.createScopeGraph = vi.fn(async () => { throw new Error("graph rejected"); });
+    const tool = createActorTools(bus, "ws_test", workspace)
+      .find(candidate => candidate.name === "connect_folder_to_actor")!;
+
+    const result = await tool.execute("call-folder", {
+      path: "concepts",
+      actor_id: "image-worker",
+      scope_id: "concept-processing",
+      scope_title: "Concept processing",
+      event_type: "concept.image.arrived",
+    });
+
+    expect(result.details?.ok).toBe(false);
+    expect(bus.calls.at(-1)).toEqual({ method: "deleteScope", args: ["ws_test", "concept-processing"] });
   });
 
   describe("create_actor", () => {

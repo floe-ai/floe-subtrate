@@ -68,7 +68,8 @@ curl -X POST http://localhost:5377/v1/workspaces/$WORKSPACE_ID/scopes/docs-repro
   -H "content-type: application/json" \
   -d '{
     "nodes": [
-      { "node_id": "note_arrived", "kind": "trigger", "event_type": "docs.note.landed" },
+      { "node_id": "note_arrived", "kind": "trigger", "event_type": "docs.note.landed",
+        "source": { "kind": "folder", "path": ".floe/inbox/docs-notes" } },
       { "node_id": "writer_node", "kind": "actor", "endpoint_id": "'"$WRITER_ID"'",
         "event_types": ["docs.note.landed"],
         "bindings": [{ "kind": "instructions", "text": "Draft the requested doc, then emit it to the reviewer." }] },
@@ -94,19 +95,14 @@ curl -X POST http://localhost:5377/v1/workspaces/$WORKSPACE_ID/scopes/docs-repro
 
 The reviewer is deliberately **not** subscribed to `docs.note.landed` (`event_types: []`) — it's only woken by the writer's direct `emit`, never by the folder event's fan-out. This matters: on some platforms a single file arrival can fire the watcher twice, and a reviewer subscribed to the fan-out would start two parallel conversations.
 
-## 6. Wire the folder watcher
+## 6. The bridge connects the folder source
 
-There is **no API to register a folder watcher.** The reproduction script hand-edits `.floe/floe.yaml` directly:
+The bridge attaches the folder source declared on `note_arrived` whenever the workspace attaches. New
+files then enter the graph through ordinary Event delivery; no detached watcher process or direct edit
+to `.floe/floe.yaml` is required.
 
-```yaml
-watchers:
-  - id: docs_repro_watcher
-    graph_id: <graph_id from step 5>
-    node_id: note_arrived
-    path: .floe/inbox/docs-notes
-```
-
-Then re-post the runtime binding from step 3 to make the bridge re-attach and pick up the new watcher (`floe-bridge/src/daemon.ts`, `attachWorkspace`). This is the one step in the pipeline with no clean interface — flagging it rather than papering over it.
+For the common single-actor case, Floe can use `connect_folder_to_actor` instead of these manual bus
+calls. That capability creates a scope and graph with the same folder-backed Event node and chosen actor.
 
 ## 7. Drop the note and watch it run
 
@@ -155,7 +151,8 @@ See [[Glossary]].
 - `docs/plans/documentation-pipeline-e2e-reproduction.md` — prerequisites, the Windows double-fire quirk, and the context-id bug found and fixed while first proving this
 - `floe-bus/src/scope-graphs.ts` — node kinds (`trigger`, `actor`, `command`) and the graph/scope storage
 - `floe-bridge/src/folder-watcher.ts` — the folder watcher implementation
-- `floe-bridge/src/daemon.ts` — `attachWorkspace`, watcher registration from `.floe/floe.yaml`, `handleCommandDelivery`
+- `floe-bridge/src/daemon.ts` — `attachWorkspace`, graph-source watcher registration, `handleCommandDelivery`
 - `floe-bridge/src/command-runner.ts` — command input resolution and execution
 - `POST /v1/workspaces/register`, `POST /v1/workspaces/:id/select`, `POST /v1/runtime/bindings`, `GET /v1/workspaces/:id/endpoints`, `POST /v1/workspaces/:id/scopes`, `POST /v1/workspaces/:id/scopes/:scope_id/graphs`, `GET /v1/contexts/:id/events` — `floe-bus/src/server.ts`
-- No API for registering a folder watcher — hand-edit `.floe/floe.yaml` and re-attach. Not built yet.
+- Legacy top-level `watchers` entries remain readable, but new folder-driven work should be composed
+  through the Event node source using `connect_folder_to_actor`.
