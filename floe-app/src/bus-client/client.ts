@@ -36,8 +36,8 @@ import { subscribeEvents as _subscribeEvents } from "./stream.ts";
 
 const BUS_BASE = "http://127.0.0.1:5377";
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BUS_BASE}${path}`);
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${BUS_BASE}${path}`, { signal });
   if (!res.ok) throw new Error(`Bus GET ${path} → ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -84,8 +84,8 @@ async function del<T>(path: string): Promise<T> {
 // Workspaces
 // ---------------------------------------------------------------------------
 
-export async function listWorkspaces(): Promise<WorkspaceRef[]> {
-  const data = await get<{ workspaces: WorkspaceRef[] }>("/v1/workspaces");
+export async function listWorkspaces(signal?: AbortSignal): Promise<WorkspaceRef[]> {
+  const data = await get<{ workspaces: WorkspaceRef[] }>("/v1/workspaces", signal);
   return data.workspaces;
 }
 
@@ -692,11 +692,11 @@ export async function clearRuntimeBindings(input: {
 // ---------------------------------------------------------------------------
 
 /** GET /v1/auth/profiles */
-export async function getAuthProfiles(): Promise<{
+export async function getAuthProfiles(signal?: AbortSignal): Promise<{
   profiles: AuthProfileRecord[];
   default_auth_profile: string | null;
 }> {
-  return get("/v1/auth/profiles");
+  return get("/v1/auth/profiles", signal);
 }
 
 /** GET /v1/auth/models?provider=... */

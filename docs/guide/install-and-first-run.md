@@ -52,7 +52,7 @@ floe desktop
 
 Starts services if they aren't already running, waits for the 5379 frontend to answer a health check, then opens a native Tauri window attached to that same running frontend — it never starts a second frontend. First launch compiles Rust and takes about 2–5 minutes; the build output streams to your terminal. Later launches are fast.
 
-Once the native shell opens, it renders a lightweight **Starting Floe…** state immediately and retries the local substrate while it becomes ready. The current development command still starts the services before opening the Tauri development window; making a packaged EXE own the bus/bridge service lifecycle requires packaged service binaries and is not implied by this UI behaviour.
+Once the native shell opens, it renders a lightweight **Starting Floe…** state immediately and checks the local substrate while it becomes ready. The packaged app verifies the substrate's HTTP health rather than only checking that its port is occupied. On Windows it replaces an unresponsive packaged sidecar left by an earlier Floe run. If startup still fails, the wait is bounded and the app shows a recovery message instead of remaining on the starting screen.
 
 ## First-use onboarding
 
@@ -78,7 +78,7 @@ A freshly attached workspace lands in the conversation with Floe and asks what o
 
 ## Implementation
 
-The desktop installer includes the Node runtime used by Floe and one bundled desktop companion script. Together they run the real Floe bus and bridge as the background substrate and perform provider-neutral Pi authentication when requested by the Tauri shell. The window appears immediately while the frontend waits briefly for the local substrate to become ready. If a substrate is already listening, the app attaches to it instead of starting another one.
+The desktop installer includes the Node runtime used by Floe and one bundled desktop companion script. Together they run the real Floe bus and bridge as the background substrate and perform provider-neutral Pi authentication when requested by the Tauri shell. The window appears immediately while the frontend waits briefly for the local substrate to become ready. If a healthy substrate is already listening, the app attaches to it instead of starting another one.
 
 - `floe-cli/src/cli.ts` — `setup`, `start`, `desktop`, `open` commands; `registerCurrentWorkspace`, `findAncestorWithFloe`
 - `floe-cli/src/desktop.ts` — `checkCargoAvailable`, `missingCargoMessage`

@@ -53,6 +53,19 @@ describe("bus-client — reads", () => {
     expect(result).toEqual(workspaces);
   });
 
+  it("listWorkspaces forwards a bootstrap cancellation signal", async () => {
+    const fetchMock = mockFetch({ workspaces: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await listWorkspaces(controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/v1/workspaces"),
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
   it("listScopes unwraps { scopes } and encodes workspace_id", async () => {
     const scopes = [{ scope_id: "s1", workspace_id: "ws:abc", title: "Scope 1", description: null, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" }];
     const fetchMock = mockFetch({ scopes });

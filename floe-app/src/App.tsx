@@ -140,16 +140,28 @@ export function App(): React.ReactElement {
     let cancelled = false;
     async function waitForSubstrate(): Promise<{ workspaces: WorkspaceRef[]; profiles: AuthProfileRecord[] }> {
       let lastError: unknown;
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 800);
         try {
-          const [wss, auth] = await Promise.all([listWorkspaces(), getAuthProfiles()]);
+          const [wss, auth] = await Promise.all([
+            listWorkspaces(controller.signal),
+            getAuthProfiles(controller.signal),
+          ]);
           return { workspaces: wss, profiles: auth.profiles };
         } catch (error) {
           lastError = error;
-          await new Promise(resolve => setTimeout(resolve, Math.min(150 + attempt * 75, 650)));
+        } finally {
+          window.clearTimeout(timeout);
         }
+        await new Promise(resolve => setTimeout(resolve, Math.min(150 + attempt * 50, 500)));
       }
-      throw lastError ?? new Error("Floe's local services did not become ready");
+      const detail = lastError instanceof Error && lastError.name !== "AbortError"
+        ? ` (${lastError.message})`
+        : "";
+      throw new Error(
+        `Floe's local services did not respond. A previous local service may be stuck; close Floe and try again${detail}`,
+      );
     }
 
     async function boot() {
@@ -401,7 +413,10 @@ export function App(): React.ReactElement {
       <>
         <GlobalStyles />
         <FullPageCenter>
-          <span style={{ color: tk.ink2 }}>Starting Floe…</span>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
+            <span style={{ color: tk.ink2 }}>Starting Floe…</span>
+            <span style={{ color: tk.ink3, fontSize: 12 }}>Starting the local substrate and checking its health.</span>
+          </div>
         </FullPageCenter>
       </>
     );
@@ -415,7 +430,7 @@ export function App(): React.ReactElement {
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, maxWidth: 420, textAlign: "center" }}>
             <span style={{ color: tk.ink, fontSize: 16 }}>Floe could not start its local services</span>
             <span style={{ color: tk.ink3 }}>{loadError}</span>
-            <button onClick={() => window.location.reload()} style={{ background: tk.accent, color: "#0c1714", border: "none", borderRadius: tk.r2, padding: "7px 14px" }}>Try again</button>
+            <button onClick={() => window.location.reload()} style={{ background: tk.accent, color: "#0c1714", border: "none", borderRadius: tk.r2, padding: "7px 14px" }}>Try starting again</button>
           </div>
         </FullPageCenter>
       </>

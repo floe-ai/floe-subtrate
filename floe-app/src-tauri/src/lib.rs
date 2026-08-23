@@ -1,18 +1,87 @@
 mod fs_commands;
 mod substrate_commands;
 
-use std::{net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream}, time::Duration};
+use std::{
+  io::{Read, Write},
+  net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
+  thread,
+  time::Duration,
+};
+#[cfg(target_os = "windows")]
+use std::process::Command;
 use tauri::{path::BaseDirectory, Manager};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
-fn substrate_is_running() -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubstrateStatus {
+  Healthy,
+  NotRunning,
+  Unresponsive,
+}
+
+fn is_healthy_http_response(response: &[u8]) -> bool {
+  response.starts_with(b"HTTP/1.1 200") || response.starts_with(b"HTTP/1.0 200")
+}
+
+fn substrate_status() -> SubstrateStatus {
   let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5377);
-  TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok()
+  let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(150)) else {
+    return SubstrateStatus::NotRunning;
+  };
+  let timeout = Some(Duration::from_millis(500));
+  if stream.set_read_timeout(timeout).is_err() || stream.set_write_timeout(timeout).is_err() {
+    return SubstrateStatus::Unresponsive;
+  }
+  if stream
+    .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1:5377\r\nConnection: close\r\n\r\n")
+    .is_err()
+  {
+    return SubstrateStatus::Unresponsive;
+  }
+  let mut response = [0_u8; 256];
+  match stream.read(&mut response) {
+    Ok(read) if read > 0 && is_healthy_http_response(&response[..read]) => SubstrateStatus::Healthy,
+    _ => SubstrateStatus::Unresponsive,
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn stop_stale_packaged_substrate() -> bool {
+  use std::os::windows::process::CommandExt;
+  const CREATE_NO_WINDOW: u32 = 0x08000000;
+  Command::new("taskkill")
+    .args(["/IM", "floe-node.exe", "/T", "/F"])
+    .creation_flags(CREATE_NO_WINDOW)
+    .status()
+    .map(|status| status.success())
+    .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn stop_stale_packaged_substrate() -> bool {
+  false
+}
+
+fn wait_for_substrate_to_stop() -> bool {
+  for _ in 0..20 {
+    if substrate_status() == SubstrateStatus::NotRunning {
+      return true;
+    }
+    thread::sleep(Duration::from_millis(50));
+  }
+  false
 }
 
 fn start_packaged_substrate(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-  if substrate_is_running() {
-    return Ok(());
+  match substrate_status() {
+    SubstrateStatus::Healthy => return Ok(()),
+    SubstrateStatus::NotRunning => {}
+    SubstrateStatus::Unresponsive => {
+      log::warn!("unresponsive packaged substrate detected; attempting recovery");
+      if !stop_stale_packaged_substrate() || !wait_for_substrate_to_stop() {
+        return Err("port 5377 is occupied by an unresponsive service that Floe could not restart".into());
+      }
+    }
   }
 
   let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)?;
@@ -44,16 +113,18 @@ fn start_packaged_substrate(app: &tauri::App) -> Result<(), Box<dyn std::error::
 pub fn run() {
   let app = tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
+    .plugin(
+      tauri_plugin_log::Builder::default()
+        .level(log::LevelFilter::Info)
+        .build(),
+    )
     .manage(substrate_commands::ProviderLoginProcess::default())
     .setup(|app| {
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
+      if let Err(error) = start_packaged_substrate(app) {
+        // Keep the window alive: the frontend has a bounded startup wait and
+        // can explain the failure rather than disappearing without feedback.
+        log::error!("could not start packaged substrate: {error}");
       }
-      start_packaged_substrate(app)?;
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -76,4 +147,16 @@ pub fn run() {
       handle.state::<substrate_commands::ProviderLoginProcess>().stop();
     }
   });
+}
+
+#[cfg(test)]
+mod tests {
+  use super::is_healthy_http_response;
+
+  #[test]
+  fn accepts_only_successful_http_health_responses() {
+    assert!(is_healthy_http_response(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{}"));
+    assert!(!is_healthy_http_response(b"HTTP/1.1 503 Service Unavailable\r\n\r\n"));
+    assert!(!is_healthy_http_response(b""));
+  }
 }
