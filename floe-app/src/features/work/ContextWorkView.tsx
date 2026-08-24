@@ -181,7 +181,7 @@ export function ContextWorkView({
     const sequence = ++loadSequence.current;
     try {
       const [nextContexts, nextDeliveries] = await Promise.all([
-        listContexts(workspaceId, { scope: "all", limit: 500 }),
+        listContexts(workspaceId, { scope: "all", limit: 200 }),
         listDeliveries({ workspace_id: workspaceId, limit: 500 }),
       ]);
       if (sequence !== loadSequence.current) return;

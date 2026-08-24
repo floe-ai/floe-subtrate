@@ -150,6 +150,7 @@ describe("ContextWorkView", () => {
     );
 
     expect(await screen.findByText("2 connected contexts")).toBeTruthy();
+    expect(client.listContexts).toHaveBeenCalledWith("workspace", { scope: "all", limit: 200 });
     await waitFor(() => expect(screen.getByTestId("context-inspector").textContent).toBe("context-child:true:true"));
     fireEvent.click(screen.getByRole("button", { name: "Inspect Build Snowball" }));
     expect(screen.getByTestId("context-inspector").textContent).toBe("context-root:true:true");
