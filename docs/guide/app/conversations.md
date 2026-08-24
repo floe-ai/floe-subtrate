@@ -4,7 +4,7 @@
 
 ## Opening a conversation
 
-You reach a conversation from a scope's Contexts tab, an actor's Conversations tab, or Activity (see [[Navigating floe-app]]). It opens with a header showing the context's human label and pills for each current participant, by name.
+The normal **Conversations** entry lists Contexts in which the workspace operator participates. Opening one names the other participant, fixes the speaking identity to the operator, and omits substrate-oriented controls. Developer tools can also open a conversation from a scope's Contexts tab, an actor's Conversations tab, or Activity; that form shows the context label and participant pills (see [[Navigating floe-app]]).
 
 ## The message list
 
@@ -14,7 +14,7 @@ The body is a scrollable, chronological stream. Only events of `type === "messag
 
 There is no human identity in floe — the substrate has no human/agent distinction, and peers cannot tell what backs an [[Actor]]. So the composer does not ask who *you* are; it asks which [[Actor]] you want to post as, via a "Speaking as" selector. Sending a message posts it into the context as that actor's [[Endpoint]].
 
-The default operator/Floe entry is intentionally narrower: it fixes the speaking endpoint to the workspace operator and shows the workspace provider, model, and reasoning effort above the composer. Its composer remains disabled until a connected provider and model are saved, so an operator cannot create a message that Floe is not configured to handle. Developer-opened conversations keep the general "Speaking as" behaviour.
+Normal operator conversations fix the speaking endpoint to the workspace operator and show the workspace provider, model, and reasoning effort above the composer. The composer remains disabled until a connected provider and model are saved, so an operator cannot create a message that a model-backed collaborator is not configured to handle. Developer-opened conversations keep the general "Speaking as" behaviour.
 
 ## Joining a context
 
@@ -26,13 +26,14 @@ A "`<actor> is working…`" indicator appears while an actor has a live [[Delive
 
 ## Creating a new context
 
-New contexts are created from a scope (the "New scope" / context-creation affordances in scope detail) or from an actor's view when starting a fresh conversation with it. A created context can optionally belong to a [[Scope]]; one with no scope still exists and is reachable directly, it just is not listed anywhere as a group (see [[Navigating floe-app]] for that gap).
+New contexts are created from a scope (the "New scope" / context-creation affordances in scope detail) or from an actor's view when starting a fresh conversation with it. A created context can optionally belong to a [[Scope]]; one with no scope still exists. If the operator is a participant, it is reachable from the normal Conversations entry; otherwise it remains available through Developer tools.
 
 See [[Glossary]].
 
 ## Implementation
 
 - `floe-app/src/scope/ContextConversation.tsx` — conversation view, message stream, Speaking-as selector, Join context, working indicator
+- `floe-app/src/features/conversations/OperatorConversations.tsx` — operator conversation discovery and Needs you/Recent grouping
 - `POST /v1/contexts/:id/participants` — join a context (`addContextParticipant`)
 - `GET /v1/contexts/:id/events` — message stream (`listContextEvents`)
 - `POST /v1/workspaces/:ws/contexts` — create a context (`createContext` / `createDirectContext`)

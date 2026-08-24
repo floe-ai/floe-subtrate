@@ -623,6 +623,8 @@ export type ContextConversationProps = {
   /** Neutral operator front door: fixes the human identity and hides substrate-oriented context controls. */
   operatorEntry?: {
     speakingAsEndpointId: string;
+    /** Show the other participant as the conversation identity instead of always presenting Floe. */
+    showContextIdentity?: boolean;
     onOpenSettings?: () => void;
     onNewConversation?: () => void;
     onDeleteConversation?: () => void;
@@ -862,6 +864,14 @@ export function ContextConversation({
     .map(id => endpointName(id, endpoints));
 
   const visibleMessages = events.filter(isVisibleMessage);
+  const operatorCollaborators = operatorEntry
+    ? context.participants
+        .filter(participant => participant !== operatorEntry.speakingAsEndpointId)
+        .map(participant => endpointName(participant, endpoints))
+    : [];
+  const operatorConversationName = operatorEntry?.showContextIdentity
+    ? operatorCollaborators.join(", ") || context.title || "Conversation"
+    : "Floe";
 
   return (
     <div style={{
@@ -888,7 +898,7 @@ export function ContextConversation({
             margin: "0 0 10px", fontSize: 19, fontWeight: 510, color: tk.ink,
             letterSpacing: "-0.01em", lineHeight: 1.25,
           }}>
-            {operatorEntry ? "Floe" : label}
+            {operatorEntry ? operatorConversationName : label}
           </h2>
           {operatorEntry && (operatorEntry.onNewConversation || operatorEntry.onDeleteConversation) && (
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -929,7 +939,11 @@ export function ContextConversation({
         </div>
         {operatorEntry ? (
           <>
-            <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5 }}>Working with you on this workspace.</p>
+            <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5 }}>
+              {operatorEntry.showContextIdentity
+                ? context.title || "A direct conversation in this workspace."
+                : "Working with you on this workspace."}
+            </p>
             {operatorEntry.conversationActionError && (
               <div role="alert" style={{ marginTop: 8, color: tk.danger, fontSize: 12 }}>
                 {operatorEntry.conversationActionError}
@@ -968,7 +982,11 @@ export function ContextConversation({
         >
           {visibleMessages.length === 0 && workingActorNames.length === 0 ? (
             <div style={{ padding: "32px 0", color: tk.ink4, fontSize: 13, fontStyle: "italic" }}>
-              {operatorEntry ? "Describe the outcome you want Floe to work toward." : "No messages in this context yet."}
+              {operatorEntry
+                ? operatorEntry.showContextIdentity
+                  ? `Start a conversation with ${operatorConversationName}.`
+                  : "Describe the outcome you want Floe to work toward."
+                : "No messages in this context yet."}
             </div>
           ) : (
             visibleMessages.map(event => (
@@ -1002,7 +1020,11 @@ export function ContextConversation({
           onSend={handleSend}
           hideSpeakingAs={!!operatorEntry}
           placeholder={operatorEntry
-            ? operatorModelReady ? "Tell Floe what you want to happen…" : "Choose a provider and model above"
+            ? operatorModelReady
+              ? operatorEntry.showContextIdentity
+                ? `Message ${operatorConversationName}…`
+                : "Tell Floe what you want to happen…"
+              : "Choose a provider and model above"
             : undefined}
           disabled={!!operatorEntry && !operatorModelReady}
           disabledReason={operatorEntry && !operatorModelReady ? "Choose a provider and model before talking to Floe." : undefined}

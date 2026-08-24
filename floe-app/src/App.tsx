@@ -33,6 +33,10 @@ import { Activity } from "./activity/Activity.tsx";
 import { LeftNav } from "./app/layout/LeftNav.tsx";
 import { HomeView } from "./features/home/HomeView.tsx";
 import { FloeHome } from "./features/home/FloeHome.tsx";
+import {
+  findOperatorEndpoint,
+  OperatorConversations,
+} from "./features/conversations/OperatorConversations.tsx";
 import { OnboardingFlow } from "./features/onboarding/OnboardingFlow.tsx";
 import { ActorView } from "./features/actor/ActorView.tsx";
 import { SubstrateSettingsView } from "./features/substrate/SubstrateSettingsView.tsx";
@@ -126,6 +130,7 @@ export function App(): React.ReactElement {
   const [modelProviders, setModelProviders] = useState<ModelProviderStatus[] | null>(null);
 
   const nav = useNavigation();
+  const operatorEndpoint = findOperatorEndpoint(actors);
 
   const [inspWidth, setInspWidth] = useState<number>(readRinspWidth);
   const [addWsErr, setAddWsErr] = useState<string | null>(null);
@@ -595,6 +600,7 @@ export function App(): React.ReactElement {
             selectedActorId={nav.selectedActorId}
             onView={(v) => {
               if (v === "floe") nav.navigateToFloe();
+              if (v === "conversations") nav.navigateToConversations();
               if (v === "home") nav.navigateToHome();
               if (v === "activity") nav.navigateToActivity();
             }}
@@ -640,6 +646,11 @@ export function App(): React.ReactElement {
                 workspaceId={activeWorkspace.workspace_id}
                 endpoints={actors}
                 onLabelResolved={nav.setContextLabel}
+                operatorEntry={nav.view === "conversations" && operatorEndpoint ? {
+                  speakingAsEndpointId: operatorEndpoint.endpoint_id,
+                  showContextIdentity: true,
+                  onOpenSettings: handleOpenWorkspaceSettings,
+                } : undefined}
               />
             ) : nav.selectedActorId ? (
               <ActorView
@@ -673,6 +684,12 @@ export function App(): React.ReactElement {
                 endpoints={actors}
                 onOpenSettings={handleOpenWorkspaceSettings}
               />
+            ) : nav.view === "conversations" ? (
+              <OperatorConversations
+                workspaceId={activeWorkspace.workspace_id}
+                endpoints={actors}
+                onOpenContext={nav.navigateToOperatorContext}
+              />
             ) : nav.view === "activity" ? (
               <Activity
                 workspaceId={activeWorkspace.workspace_id}
@@ -683,7 +700,7 @@ export function App(): React.ReactElement {
           </main>
 
           {/* Right inspector */}
-          {nav.appMode !== "system" && nav.view !== "floe" && (!nav.selectedActorId || nav.selectedContextId) && (
+          {nav.appMode !== "system" && nav.view !== "floe" && nav.view !== "conversations" && (!nav.selectedActorId || nav.selectedContextId) && (
             <aside style={{
               flex: `0 0 ${inspWidth}px`,
               width: inspWidth,

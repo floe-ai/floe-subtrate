@@ -7,6 +7,7 @@ afterEach(cleanup);
 
 describe("LeftNav", () => {
   it("keeps substrate inventory behind deliberate developer access", () => {
+    const onView = vi.fn();
     render(
       <LeftNav
         view="floe"
@@ -14,7 +15,7 @@ describe("LeftNav", () => {
         selectedScopeId={null}
         actors={[]}
         selectedActorId={null}
-        onView={vi.fn()}
+        onView={onView}
         onSelectScope={vi.fn()}
         onSelectActor={vi.fn()}
         onNewScope={vi.fn()}
@@ -26,8 +27,12 @@ describe("LeftNav", () => {
     );
 
     expect(screen.getByRole("button", { name: /Floe$/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Conversations$/ })).toBeTruthy();
     expect(screen.queryByText("Scopes")).toBeNull();
     expect(screen.queryByText("Substrate Settings")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Conversations$/ }));
+    expect(onView).toHaveBeenCalledWith("conversations");
 
     fireEvent.click(screen.getByRole("button", { name: /Developer tools/ }));
 

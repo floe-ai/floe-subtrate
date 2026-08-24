@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 
-export type NavView = "floe" | "home" | "activity";
+export type NavView = "floe" | "conversations" | "home" | "activity";
 
 export type NavigationState = {
   appMode: "workspace" | "system";
@@ -45,6 +45,32 @@ export function useNavigation() {
       selectedScopeId: null,
       selectedActorId: null,
       selectedContextId: null,
+      selectedContextLabel: null,
+      showWorkspaceSettings: false,
+      showNewActor: false,
+    });
+  }, []);
+
+  const navigateToConversations = useCallback(() => {
+    setState({
+      appMode: "workspace",
+      view: "conversations",
+      selectedScopeId: null,
+      selectedActorId: null,
+      selectedContextId: null,
+      selectedContextLabel: null,
+      showWorkspaceSettings: false,
+      showNewActor: false,
+    });
+  }, []);
+
+  const navigateToOperatorContext = useCallback((contextId: string) => {
+    setState({
+      appMode: "workspace",
+      view: "conversations",
+      selectedScopeId: null,
+      selectedActorId: null,
+      selectedContextId: contextId,
       selectedContextLabel: null,
       showWorkspaceSettings: false,
       showNewActor: false,
@@ -165,6 +191,8 @@ export function useNavigation() {
   return {
     ...state,
     navigateToFloe,
+    navigateToConversations,
+    navigateToOperatorContext,
     navigateToHome,
     navigateToActivity,
     navigateToScope,

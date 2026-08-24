@@ -4,9 +4,10 @@
 
 ## The shell
 
-The left nav ([[Workspace]]-scoped) has two entries:
+The left nav ([[Workspace]]-scoped) has three normal entries:
 
 - **Floe** — the default operator view.
+- **Conversations** — conversations in which the workspace operator participates, grouped by attention and recent activity.
 - **Developer tools** — a collapsed disclosure containing the existing workspace overview, Activity, Scopes, Actors, creation controls, and Substrate Settings.
 
 Selecting a developer tool drives the main column. Opening a [[Node]], [[Actor]] or [[Context]] can also open detail in the right-hand inspector aside. The inspector is not shown on the normal Floe entry.
@@ -24,6 +25,14 @@ Opening or selecting a workspace opens its most recent conversation between the 
 If no conversation exists, the app asks what outcome the operator wants. Submitting the first outcome creates a direct [[Context]], emits the message to Floe, and opens the conversation. Merely opening the workspace does not create a Context.
 
 The operator view fixes the speaking identity to the operator and omits context labels, participant controls, substrate inventory, and the inspector. Those details remain available through Developer tools.
+
+## Conversations
+
+Conversations is the operator's way back into work with Floe or another actor. It lists only Contexts where the ordinary workspace operator is already a participant; actor-to-actor operational traffic is not promoted into this view.
+
+An incoming message addressed to the operator with a response expected appears under **Needs you**. Once the operator replies, the conversation returns to **Recent**. This is an interpretation of existing Event response metadata, not separate task or notification state.
+
+Opening an item keeps the speaking identity fixed to the operator and names the other participant in the conversation header. The general participant and identity controls remain available when the same Context is opened through Developer tools.
 
 ## Workspace overview
 
@@ -51,7 +60,7 @@ Clicking a context — from a scope's Contexts tab, an actor's Conversations tab
 
 ## Other direct contexts
 
-The default Floe entry reaches the most recent operator/Floe conversation. Other unscoped contexts remain reachable individually from Activity or an actor's context list. The source still contains a `DirectContexts` list component, but it is not wired as a separate nav destination.
+The default Floe entry reaches the most recent operator/Floe conversation. Conversations provides the normal route to other scoped or unscoped Contexts in which the operator participates. Contexts that do not include the operator remain available through Activity or an actor's context list under Developer tools.
 
 See [[Glossary]].
 
@@ -61,8 +70,9 @@ See [[Glossary]].
 - `floe-app/src/app/layout/LeftNav.tsx` — the left nav
 - `floe-app/src/hooks/useNavigation.ts` — navigation state machine
 - `floe-app/src/features/home/FloeHome.tsx` — default operator/Floe entry
+- `floe-app/src/features/conversations/OperatorConversations.tsx` — operator-participating conversation list and attention projection
 - `floe-app/src/workspace/FloeModelControl.tsx` — inline workspace model selection and readiness gate
 - `floe-app/src/features/home/HomeView.tsx` — scope grid
 - `floe-app/src/scope/ScopeDetail.tsx` — Contexts/Ops/extension tabs
 - `floe-app/src/features/actor/ActorView.tsx` — Conversations/Configure tabs
-- `floe-app/src/scope/DirectContexts.tsx` — general direct-context list, not wired into a route
+- `floe-app/src/scope/DirectContexts.tsx` — general developer-oriented direct-context list, not wired into a route

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import type { ScopeRef, EndpointRef } from "../../bus-client/types.ts";
 import { tk } from "../../theme.ts";
 
-export type NavView = "floe" | "home" | "activity";
+export type NavView = "floe" | "conversations" | "home" | "activity";
 
 export type NavProps = {
   view: NavView;
@@ -45,6 +45,12 @@ export function LeftNav({
         glyph="◇"
         isOn={!isSystemActive && view === "floe"}
         onClick={() => { onView("floe"); onSelectScope(""); }}
+      />
+      <NavRow
+        label="Conversations"
+        glyph="◌"
+        isOn={!isSystemActive && view === "conversations"}
+        onClick={() => { onView("conversations"); onSelectScope(""); }}
       />
 
       {/* Existing observatory, deliberately secondary. */}
