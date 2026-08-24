@@ -1,18 +1,55 @@
-import React from "react";
+import React, { useCallback, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ContextRef, EndpointRef, EventEnvelope } from "../../bus-client/types.ts";
 import {
+  latestConversationWith,
   OperatorConversations,
   summarizeOperatorConversation,
 } from "./OperatorConversations.tsx";
 import * as client from "../../bus-client/client.ts";
 
+const modelControl = vi.hoisted(() => ({ ready: true }));
+
 vi.mock("../../bus-client/client.ts", () => ({
+  createDirectContext: vi.fn(),
+  deleteContext: vi.fn(),
+  emit: vi.fn(),
   listContextsByParticipant: vi.fn(),
   listContextEvents: vi.fn(),
   subscribeEvents: vi.fn(() => () => {}),
 }));
+
+vi.mock("../../scope/ContextConversation.tsx", () => ({
+  ContextConversation: ({ contextId, operatorEntry }: {
+    contextId: string;
+    operatorEntry?: {
+      showContextIdentity?: boolean;
+      onBackToConversations?: () => void;
+      onNewConversation?: () => void;
+      onDeleteConversation?: () => void;
+    };
+  }) => (
+    <div data-testid="conversation">
+      <span>{contextId}:{String(operatorEntry?.showContextIdentity)}</span>
+      <button type="button" onClick={operatorEntry?.onBackToConversations}>Conversations</button>
+      {operatorEntry?.onNewConversation && (
+        <button type="button" onClick={operatorEntry.onNewConversation}>New conversation</button>
+      )}
+      <button type="button" onClick={operatorEntry?.onDeleteConversation}>Delete</button>
+    </div>
+  ),
+}));
+
+vi.mock("../../workspace/FloeModelControl.tsx", async () => {
+  const ReactModule = await import("react");
+  return {
+    FloeModelControl: ({ onReadyChange }: { onReadyChange: (ready: boolean) => void }) => {
+      ReactModule.useEffect(() => onReadyChange(modelControl.ready), [onReadyChange]);
+      return <div data-testid="model-control">model</div>;
+    },
+  };
+});
 
 const OPERATOR = "workspace:operator";
 const FLOE = "workspace:floe";
@@ -83,13 +120,36 @@ function message(
   };
 }
 
+function Harness(): React.ReactElement {
+  const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
+  const open = useCallback((contextId: string) => setSelectedContextId(contextId), []);
+  const close = useCallback(() => setSelectedContextId(null), []);
+  return (
+    <OperatorConversations
+      workspaceId="workspace"
+      endpoints={endpoints}
+      selectedContextId={selectedContextId}
+      onOpenContext={open}
+      onCloseContext={close}
+    />
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  modelControl.ready = true;
+  vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
+  vi.mocked(client.listContextEvents).mockResolvedValue([]);
+  vi.mocked(client.deleteContext).mockResolvedValue({} as never);
+  vi.mocked(client.emit).mockResolvedValue({} as never);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  vi.restoreAllMocks();
+  cleanup();
+});
 
-describe("summarizeOperatorConversation", () => {
+describe("operator conversation projection", () => {
   const architectContext = context(
     "context-architect",
     ARCHITECT,
@@ -124,39 +184,127 @@ describe("summarizeOperatorConversation", () => {
     expect(result.needsOperator).toBe(false);
     expect(result.preview).toBe("Start with environment artists.");
   });
+
+  it("finds the latest sorted conversation involving a collaborator", () => {
+    const floeContext = context("context-floe", FLOE, "Build it", "2026-08-24T01:00:00Z");
+    const architectSummary = summarizeOperatorConversation(architectContext, [], OPERATOR, endpoints);
+    const floeSummary = summarizeOperatorConversation(floeContext, [], OPERATOR, endpoints);
+    expect(latestConversationWith([architectSummary, floeSummary], FLOE)?.context.context_id).toBe("context-floe");
+  });
 });
 
-describe("OperatorConversations", () => {
-  it("shows operator conversations by attention and opens the selected existing context", async () => {
-    const onOpenContext = vi.fn();
-    const architectContext = context("context-architect", ARCHITECT, "Define Snowball", "2026-08-24T02:00:00Z");
-    const floeContext = context("context-floe", FLOE, "Build the pipeline", "2026-08-24T01:00:00Z");
-    vi.mocked(client.listContextsByParticipant).mockResolvedValue([floeContext, architectContext]);
+describe("unified operator conversations", () => {
+  const architectContext = context("context-architect", ARCHITECT, "Define Snowball", "2026-08-24T02:00:00Z");
+  const floeContext = context("context-floe", FLOE, "Build the pipeline", "2026-08-24T01:00:00Z");
+
+  beforeEach(() => {
+    vi.mocked(client.listContextsByParticipant).mockResolvedValue([architectContext, floeContext]);
     vi.mocked(client.listContextEvents).mockImplementation(async contextId => (
       contextId === architectContext.context_id
         ? [message("event-1", ARCHITECT, OPERATOR, "I need your decision.", true, "2026-08-24T02:00:00Z")]
         : [message("event-2", FLOE, OPERATOR, "The pipeline is ready.", false, "2026-08-24T01:00:00Z")]
     ));
+  });
 
+  it("opens the latest Floe conversation on workspace entry, even when another conversation is newer", async () => {
+    const onOpenContext = vi.fn();
     render(
       <OperatorConversations
         workspaceId="workspace"
         endpoints={endpoints}
+        selectedContextId={null}
         onOpenContext={onOpenContext}
+        onCloseContext={vi.fn()}
       />,
     );
+
+    await waitFor(() => expect(onOpenContext).toHaveBeenCalledWith("context-floe"));
+    expect(client.listContextsByParticipant).toHaveBeenCalledWith({
+      participant: OPERATOR,
+      workspace_id: "workspace",
+    });
+  });
+
+  it("returns from the selected Floe conversation to the one shared conversation list", async () => {
+    render(<Harness />);
+
+    expect((await screen.findByTestId("conversation")).textContent).toContain("context-floe:true");
+    fireEvent.click(screen.getByRole("button", { name: "Conversations" }));
 
     expect(await screen.findByRole("list", { name: "Needs you" })).toBeTruthy();
     expect(screen.getByRole("list", { name: "Recent" })).toBeTruthy();
     expect(screen.getByText("I need your decision.")).toBeTruthy();
     expect(screen.getByText("The pipeline is ready.")).toBeTruthy();
-    expect(client.listContextsByParticipant).toHaveBeenCalledWith({
-      participant: OPERATOR,
-      workspace_id: "workspace",
-    });
+  });
 
+  it("starts a new conversation with the currently selected collaborator", async () => {
+    vi.mocked(client.createDirectContext).mockResolvedValue(
+      context("context-new", ARCHITECT, "", "2026-08-24T03:00:00Z"),
+    );
+    render(<Harness />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Conversations" }));
     fireEvent.click(screen.getByRole("button", { name: "Open conversation with Product Architect" }));
-    expect(onOpenContext).toHaveBeenCalledWith("context-architect");
-    await waitFor(() => expect(client.listContextEvents).toHaveBeenCalledTimes(2));
+    fireEvent.click(await screen.findByRole("button", { name: "New conversation" }));
+
+    expect(await screen.findByText("New conversation with Product Architect")).toBeTruthy();
+    expect(client.createDirectContext).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Outcome"), { target: { value: "Refine the audience" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(client.emit).toHaveBeenCalledWith(expect.objectContaining({
+      source_endpoint_id: OPERATOR,
+      destination: { kind: "endpoint", endpoint_id: ARCHITECT },
+      context_id: "context-new",
+      content: { text: "Refine the audience" },
+      response: { expected: true },
+    })));
+    expect(client.createDirectContext).toHaveBeenCalledWith("workspace", {
+      participants: [OPERATOR, ARCHITECT],
+      created_by_endpoint_id: OPERATOR,
+    });
+  });
+
+  it("deletes any selected operator conversation through the same controls", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<Harness />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Conversations" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open conversation with Product Architect" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(client.deleteContext).toHaveBeenCalledWith("context-architect"));
+    expect(await screen.findByRole("heading", { name: "Conversations" })).toBeTruthy();
+  });
+
+  it("starts with a new Floe outcome when the workspace has no conversations", async () => {
+    vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
+    vi.mocked(client.createDirectContext).mockResolvedValue(
+      context("context-new", FLOE, "", "2026-08-24T03:00:00Z"),
+    );
+    render(<Harness />);
+
+    expect(await screen.findByText("New conversation with Floe")).toBeTruthy();
+    expect(client.createDirectContext).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Outcome"), { target: { value: "Ship the customer report" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(client.emit).toHaveBeenCalledWith(expect.objectContaining({
+      destination: { kind: "endpoint", endpoint_id: FLOE },
+      content: { text: "Ship the customer report" },
+    })));
+  });
+
+  it("does not accept an outcome until the workspace model is ready", async () => {
+    modelControl.ready = false;
+    vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
+    render(<Harness />);
+
+    const input = await screen.findByLabelText("Outcome") as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Start" })).toHaveProperty("disabled", true);
+    expect(screen.getByText("Choose a provider and model before starting a conversation.")).toBeTruthy();
+    expect(client.createDirectContext).not.toHaveBeenCalled();
+    expect(client.emit).not.toHaveBeenCalled();
   });
 });

@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ContextRef, EndpointRef, EventEnvelope } from "../../bus-client/types.ts";
 import {
+  createDirectContext,
+  deleteContext,
+  emit,
   listContextEvents,
   listContextsByParticipant,
   subscribeEvents,
 } from "../../bus-client/client.ts";
+import { ContextConversation } from "../../scope/ContextConversation.tsx";
+import { FloeModelControl } from "../../workspace/FloeModelControl.tsx";
 import { tk } from "../../theme.ts";
 
 const RECENT_LIMIT = 6;
@@ -20,6 +25,12 @@ export type OperatorConversation = {
 export function findOperatorEndpoint(endpoints: EndpointRef[]): EndpointRef | null {
   return endpoints.find(endpoint => endpoint.agent_id === "operator")
     ?? endpoints.find(endpoint => endpoint.endpoint_id.endsWith(":operator"))
+    ?? null;
+}
+
+export function findFloeEndpoint(endpoints: EndpointRef[]): EndpointRef | null {
+  return endpoints.find(endpoint => endpoint.agent_id === "floe")
+    ?? endpoints.find(endpoint => endpoint.endpoint_id.endsWith(":floe"))
     ?? null;
 }
 
@@ -62,23 +73,44 @@ export function summarizeOperatorConversation(
   };
 }
 
+export function latestConversationWith(
+  conversations: OperatorConversation[],
+  endpointId: string,
+): OperatorConversation | null {
+  return conversations.find(conversation => conversation.context.participants.includes(endpointId)) ?? null;
+}
+
 export type OperatorConversationsProps = {
   workspaceId: string;
   endpoints: EndpointRef[];
+  selectedContextId: string | null;
   onOpenContext: (contextId: string) => void;
+  onCloseContext: () => void;
+  onOpenSettings?: () => void;
 };
 
 export function OperatorConversations({
   workspaceId,
   endpoints,
+  selectedContextId,
   onOpenContext,
+  onCloseContext,
+  onOpenSettings,
 }: OperatorConversationsProps): React.ReactElement {
   const operator = useMemo(() => findOperatorEndpoint(endpoints), [endpoints]);
+  const floe = useMemo(() => findFloeEndpoint(endpoints), [endpoints]);
   const [conversations, setConversations] = useState<OperatorConversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [draftTargetId, setDraftTargetId] = useState<string | null>(null);
+  const [modelReady, setModelReady] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [conversationActionPending, setConversationActionPending] = useState(false);
   const loadSequence = useRef(0);
+  const initialWorkspace = useRef<string | null>(null);
+  const initialConversationChosen = useRef(false);
+  const draftContextId = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     if (!operator) {
@@ -98,20 +130,38 @@ export function OperatorConversations({
         return summarizeOperatorConversation(context, events, operator.endpoint_id, endpoints);
       }));
       if (sequence !== loadSequence.current) return;
-      setConversations(summaries.sort((left, right) => right.activityAt.localeCompare(left.activityAt)));
+      const sorted = summaries.sort((left, right) => right.activityAt.localeCompare(left.activityAt));
+      setConversations(sorted);
+
+      if (!initialConversationChosen.current) {
+        initialConversationChosen.current = true;
+        const latestFloe = floe ? latestConversationWith(sorted, floe.endpoint_id) : null;
+        if (latestFloe) {
+          onOpenContext(latestFloe.context.context_id);
+        } else if (floe) {
+          draftContextId.current = null;
+          setDraftTargetId(floe.endpoint_id);
+        }
+      }
     } catch (loadError) {
       if (sequence !== loadSequence.current) return;
       setError(loadError instanceof Error ? loadError.message : "Failed to load conversations");
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [endpoints, operator, workspaceId]);
+  }, [endpoints, floe, onOpenContext, operator, workspaceId]);
 
   useEffect(() => {
+    if (initialWorkspace.current !== workspaceId) {
+      initialWorkspace.current = workspaceId;
+      initialConversationChosen.current = false;
+      draftContextId.current = null;
+      setDraftTargetId(null);
+      setShowAll(false);
+    }
     setLoading(true);
-    setShowAll(false);
     void load();
-  }, [load]);
+  }, [load, workspaceId]);
 
   useEffect(() => {
     const unsubscribe = subscribeEvents(message => {
@@ -129,6 +179,122 @@ export function OperatorConversations({
     return unsubscribe;
   }, [load, workspaceId]);
 
+  function openConversation(contextId: string) {
+    draftContextId.current = null;
+    setDraftTargetId(null);
+    setError(null);
+    onOpenContext(contextId);
+  }
+
+  function startNewWith(targetEndpointId: string) {
+    draftContextId.current = null;
+    setDraftTargetId(targetEndpointId);
+    setError(null);
+    onCloseContext();
+  }
+
+  async function startOutcome(text: string) {
+    if (!operator || !draftTargetId || sending || !modelReady) return;
+    setSending(true);
+    setError(null);
+    try {
+      let contextId = draftContextId.current;
+      if (!contextId) {
+        const context = await createDirectContext(workspaceId, {
+          participants: [operator.endpoint_id, draftTargetId],
+          created_by_endpoint_id: operator.endpoint_id,
+        });
+        contextId = context.context_id;
+        draftContextId.current = contextId;
+      }
+      await emit({
+        type: "message",
+        workspace_id: workspaceId,
+        source_endpoint_id: operator.endpoint_id,
+        destination: { kind: "endpoint", endpoint_id: draftTargetId },
+        context_id: contextId,
+        content: { text },
+        response: { expected: true },
+        metadata: {},
+      });
+      setDraftTargetId(null);
+      await load();
+      onOpenContext(contextId);
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "Failed to start conversation");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function deleteCurrentConversation() {
+    if (!selectedContextId || conversationActionPending) return;
+    const confirmed = window.confirm(
+      "Delete this conversation and its messages? Files and other work created in the workspace will remain.",
+    );
+    if (!confirmed) return;
+
+    setConversationActionPending(true);
+    setError(null);
+    try {
+      await deleteContext(selectedContextId);
+      onCloseContext();
+      await load();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete conversation");
+    } finally {
+      setConversationActionPending(false);
+    }
+  }
+
+  const selectedConversation = conversations.find(
+    conversation => conversation.context.context_id === selectedContextId,
+  ) ?? null;
+  const selectedTargetId = selectedConversation?.context.participants.find(
+    participant => participant !== operator?.endpoint_id,
+  ) ?? null;
+
+  if (draftTargetId && operator) {
+    return (
+      <NewConversation
+        workspaceId={workspaceId}
+        collaboratorName={endpointName(draftTargetId, endpoints)}
+        onOpenSettings={onOpenSettings}
+        onReadyChange={setModelReady}
+        onCancel={() => {
+          draftContextId.current = null;
+          setDraftTargetId(null);
+          setError(null);
+        }}
+        onStart={startOutcome}
+        sending={sending}
+        modelReady={modelReady}
+        error={error}
+      />
+    );
+  }
+
+  if (selectedContextId && operator) {
+    return (
+      <ContextConversation
+        key={selectedContextId}
+        contextId={selectedContextId}
+        workspaceId={workspaceId}
+        endpoints={endpoints}
+        operatorEntry={{
+          speakingAsEndpointId: operator.endpoint_id,
+          showContextIdentity: true,
+          onOpenSettings,
+          onBackToConversations: onCloseContext,
+          onNewConversation: selectedTargetId ? () => startNewWith(selectedTargetId) : undefined,
+          onDeleteConversation: deleteCurrentConversation,
+          conversationActionsDisabled: conversationActionPending,
+          conversationActionError: error,
+        }}
+      />
+    );
+  }
+
   const needsYou = conversations.filter(conversation => conversation.needsOperator);
   const recent = conversations.filter(conversation => !conversation.needsOperator);
   const visibleRecent = showAll ? recent : recent.slice(0, RECENT_LIMIT);
@@ -136,16 +302,33 @@ export function OperatorConversations({
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "34px 32px 48px", fontFamily: tk.fontUi }}>
       <section style={{ width: "min(780px, 100%)", margin: "0 auto" }}>
-        <div style={{ color: tk.accent, fontSize: 12, fontWeight: 590, marginBottom: 8 }}>Workspace</div>
-        <h1 style={{
-          margin: "0 0 8px", color: tk.ink, fontSize: 28, fontWeight: 510,
-          letterSpacing: "-0.025em", lineHeight: 1.15,
-        }}>
-          Conversations
-        </h1>
-        <p style={{ margin: "0 0 28px", color: tk.ink3, fontSize: 14, lineHeight: 1.5 }}>
-          Conversations where your input or judgement belongs. Operational actor work stays out of this list.
-        </p>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 28 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: tk.accent, fontSize: 12, fontWeight: 590, marginBottom: 8 }}>Workspace</div>
+            <h1 style={{
+              margin: "0 0 8px", color: tk.ink, fontSize: 28, fontWeight: 510,
+              letterSpacing: "-0.025em", lineHeight: 1.15,
+            }}>
+              Conversations
+            </h1>
+            <p style={{ margin: 0, color: tk.ink3, fontSize: 14, lineHeight: 1.5 }}>
+              Resume work with Floe and the collaborators who need your input or judgement.
+            </p>
+          </div>
+          {floe && (
+            <button
+              type="button"
+              onClick={() => startNewWith(floe.endpoint_id)}
+              style={{
+                marginTop: 20, background: tk.accent, color: "#0c1714", border: "none",
+                borderRadius: tk.r2, padding: "9px 13px", fontSize: 12.5,
+                fontWeight: 590, cursor: "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              New with Floe
+            </button>
+          )}
+        </div>
 
         {loading && <StatusText>Loading conversations…</StatusText>}
         {error && <div role="alert" style={{ color: tk.danger, fontSize: 13 }}>{error}</div>}
@@ -161,7 +344,7 @@ export function OperatorConversations({
           <ConversationSection
             label="Needs you"
             conversations={needsYou}
-            onOpenContext={onOpenContext}
+            onOpenContext={openConversation}
             attention
           />
         )}
@@ -170,7 +353,7 @@ export function OperatorConversations({
           <ConversationSection
             label="Recent"
             conversations={visibleRecent}
-            onOpenContext={onOpenContext}
+            onOpenContext={openConversation}
           />
         )}
 
@@ -186,6 +369,112 @@ export function OperatorConversations({
             {showAll ? "Show fewer" : `Show ${recent.length - RECENT_LIMIT} more`}
           </button>
         )}
+      </section>
+    </div>
+  );
+}
+
+function NewConversation({
+  workspaceId,
+  collaboratorName,
+  onOpenSettings,
+  onReadyChange,
+  onCancel,
+  onStart,
+  sending,
+  modelReady,
+  error,
+}: {
+  workspaceId: string;
+  collaboratorName: string;
+  onOpenSettings?: () => void;
+  onReadyChange: (ready: boolean) => void;
+  onCancel: () => void;
+  onStart: (text: string) => Promise<void>;
+  sending: boolean;
+  modelReady: boolean;
+  error: string | null;
+}): React.ReactElement {
+  const [outcome, setOutcome] = useState("");
+  const text = outcome.trim();
+
+  return (
+    <div style={{
+      flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
+      padding: 32, background: tk.canvas,
+    }}>
+      <section style={{ width: "min(720px, 100%)" }}>
+        <button
+          type="button"
+          onClick={onCancel}
+          style={{
+            margin: "0 0 24px", padding: 0, border: "none", background: "transparent",
+            color: tk.ink3, fontSize: 12.5, cursor: "pointer",
+          }}
+        >
+          ← Conversations
+        </button>
+        <div style={{ color: tk.accent, fontSize: 12, fontWeight: 590, marginBottom: 10 }}>
+          New conversation with {collaboratorName}
+        </div>
+        <h1 style={{
+          margin: "0 0 10px", color: tk.ink, fontSize: 34, fontWeight: 510,
+          letterSpacing: "-0.025em", lineHeight: 1.15,
+        }}>
+          What do you want to make happen?
+        </h1>
+        <p style={{ margin: "0 0 22px", color: tk.ink3, fontSize: 14, lineHeight: 1.55 }}>
+          Describe the outcome. {collaboratorName} will work out what is needed and involve you when your judgement matters.
+        </p>
+        <div style={{ marginBottom: 16 }}>
+          <FloeModelControl
+            workspaceId={workspaceId}
+            onReadyChange={onReadyChange}
+            onOpenSettings={onOpenSettings}
+          />
+        </div>
+        {!modelReady && (
+          <div role="status" style={{ marginBottom: 10, color: tk.ink3, fontSize: 12.5 }}>
+            Choose a provider and model before starting a conversation.
+          </div>
+        )}
+        {error && <div role="alert" style={{ marginBottom: 10, color: tk.danger, fontSize: 12 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+          <textarea
+            autoFocus
+            aria-label="Outcome"
+            value={outcome}
+            onChange={event => setOutcome(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (text && modelReady && !sending) void onStart(text);
+              }
+            }}
+            placeholder={modelReady ? "Describe an outcome…" : "Choose a provider and model above"}
+            disabled={sending || !modelReady}
+            rows={4}
+            style={{
+              flex: 1, resize: "vertical", minHeight: 104,
+              background: tk.surface, color: tk.ink,
+              border: `1px solid ${tk.border}`, borderRadius: tk.r3,
+              padding: "13px 14px", fontSize: 14, fontFamily: tk.fontUi,
+              lineHeight: 1.5, outline: "none",
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => void onStart(text)}
+            disabled={sending || !modelReady || !text}
+            style={{
+              background: tk.accent, color: "#0c1714", border: "none",
+              borderRadius: tk.r2, padding: "10px 18px", fontSize: 13,
+              fontWeight: 590, opacity: sending || !modelReady || !text ? 0.5 : 1,
+            }}
+          >
+            {sending ? "Starting…" : "Start"}
+          </button>
+        </div>
       </section>
     </div>
   );

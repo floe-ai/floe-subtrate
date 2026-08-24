@@ -155,6 +155,7 @@ describe("ContextConversation — participant gate", () => {
   });
 
   it("presents another collaborator by name when opened from operator conversations", async () => {
+    const onBackToConversations = vi.fn();
     vi.mocked(client.getContext).mockResolvedValue({
       ...mockContext,
       participants: [PARTICIPANT_EP, NON_PARTICIPANT_EP],
@@ -166,7 +167,11 @@ describe("ContextConversation — participant gate", () => {
         contextId="ctx-1"
         workspaceId="ws-1"
         endpoints={endpoints}
-        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP, showContextIdentity: true }}
+        operatorEntry={{
+          speakingAsEndpointId: PARTICIPANT_EP,
+          showContextIdentity: true,
+          onBackToConversations,
+        }}
       />,
     );
 
@@ -174,6 +179,8 @@ describe("ContextConversation — participant gate", () => {
     expect(screen.getByText("Decide the product audience")).toBeTruthy();
     expect(screen.getByPlaceholderText("Message Bob…")).toBeTruthy();
     expect(screen.queryByLabelText("Speaking as")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Conversations/ }));
+    expect(onBackToConversations).toHaveBeenCalledOnce();
   });
 
   it("marks an operator message as expecting a reply", async () => {

@@ -10,7 +10,7 @@ describe("LeftNav", () => {
     const onView = vi.fn();
     render(
       <LeftNav
-        view="floe"
+        view="conversations"
         scopes={[{ scope_id: "scope-1", workspace_id: "ws-1", title: "Research", description: null, created_at: "", updated_at: "" }]}
         selectedScopeId={null}
         actors={[]}
@@ -26,8 +26,8 @@ describe("LeftNav", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /Floe$/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Conversations$/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Floe$/ })).toBeNull();
     expect(screen.queryByText("Scopes")).toBeNull();
     expect(screen.queryByText("Substrate Settings")).toBeNull();
 

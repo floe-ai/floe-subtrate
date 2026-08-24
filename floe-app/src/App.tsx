@@ -32,11 +32,7 @@ import { Activity } from "./activity/Activity.tsx";
 
 import { LeftNav } from "./app/layout/LeftNav.tsx";
 import { HomeView } from "./features/home/HomeView.tsx";
-import { FloeHome } from "./features/home/FloeHome.tsx";
-import {
-  findOperatorEndpoint,
-  OperatorConversations,
-} from "./features/conversations/OperatorConversations.tsx";
+import { OperatorConversations } from "./features/conversations/OperatorConversations.tsx";
 import { OnboardingFlow } from "./features/onboarding/OnboardingFlow.tsx";
 import { ActorView } from "./features/actor/ActorView.tsx";
 import { SubstrateSettingsView } from "./features/substrate/SubstrateSettingsView.tsx";
@@ -130,8 +126,6 @@ export function App(): React.ReactElement {
   const [modelProviders, setModelProviders] = useState<ModelProviderStatus[] | null>(null);
 
   const nav = useNavigation();
-  const operatorEndpoint = findOperatorEndpoint(actors);
-
   const [inspWidth, setInspWidth] = useState<number>(readRinspWidth);
   const [addWsErr, setAddWsErr] = useState<string | null>(null);
 
@@ -231,7 +225,7 @@ export function App(): React.ReactElement {
   const switchWorkspace = useCallback(async (wsId: string) => {
     const ws = workspaces.find(w => w.workspace_id === wsId);
     if (!ws || ws.workspace_id === activeWorkspace?.workspace_id) return;
-    nav.navigateToFloe();
+    nav.navigateToConversations();
     setScopes([]);
     setActors([]);
     setActiveWorkspace(ws);
@@ -258,7 +252,7 @@ export function App(): React.ReactElement {
       setActiveWorkspace(ws);
       setScopes(scs);
       setActors(eps);
-      nav.navigateToFloe();
+      nav.navigateToConversations();
       setAppState("ready");
     } catch (err) {
       if (err instanceof DirectoryNotFoundError && !create_directory) {
@@ -295,7 +289,7 @@ export function App(): React.ReactElement {
         setActiveWorkspace(next);
         setScopes([]);
         setActors([]);
-        nav.navigateToFloe();
+        nav.navigateToConversations();
         const [scs, eps] = await Promise.all([
           listScopes(next.workspace_id),
           listEndpoints(next.workspace_id).catch(() => [] as EndpointRef[]),
@@ -472,7 +466,7 @@ export function App(): React.ReactElement {
             setActiveWorkspace(refreshed.find(item => item.workspace_id === workspace.workspace_id) ?? workspace);
             setScopes(scs);
             setActors(eps);
-            nav.navigateToFloe();
+            nav.navigateToConversations();
             setAppState("ready");
           }}
         />
@@ -517,7 +511,7 @@ export function App(): React.ReactElement {
         }}>
           {/* Brand */}
           <a href="#" style={{ display: "inline-flex", alignItems: "center", gap: 8, textDecoration: "none", color: tk.ink2 }}
-            onClick={e => { e.preventDefault(); nav.navigateToFloe(); }}
+            onClick={e => { e.preventDefault(); nav.navigateToConversations(); }}
           >
             <span style={{
               width: 22, height: 22, borderRadius: 6,
@@ -599,7 +593,6 @@ export function App(): React.ReactElement {
             actors={actors}
             selectedActorId={nav.selectedActorId}
             onView={(v) => {
-              if (v === "floe") nav.navigateToFloe();
               if (v === "conversations") nav.navigateToConversations();
               if (v === "home") nav.navigateToHome();
               if (v === "activity") nav.navigateToActivity();
@@ -636,21 +629,24 @@ export function App(): React.ReactElement {
                 existingAgentIds={actors.map(a => a.agent_id).filter((id): id is string => !!id)}
                 onCreated={handleActorCreated}
               />
+            ) : nav.view === "conversations" ? (
+              <OperatorConversations
+                workspaceId={activeWorkspace.workspace_id}
+                endpoints={actors}
+                selectedContextId={nav.selectedContextId}
+                onOpenContext={nav.navigateToOperatorContext}
+                onCloseContext={nav.navigateToConversations}
+                onOpenSettings={handleOpenWorkspaceSettings}
+              />
             ) : nav.selectedContextId ? (
-              // Conversation is scope-independent: it can be reached from a scope's
-              // context list, an actor's "Contexts" list (Gap A — may be in a
-              // different scope or no scope at all), or the Direct list (Gap B).
+              // Developer tools can open any Context independently of Scope.
+              // Normal operator conversations are owned by the branch above.
               <ContextConversation
                 key={nav.selectedContextId}
                 contextId={nav.selectedContextId}
                 workspaceId={activeWorkspace.workspace_id}
                 endpoints={actors}
                 onLabelResolved={nav.setContextLabel}
-                operatorEntry={nav.view === "conversations" && operatorEndpoint ? {
-                  speakingAsEndpointId: operatorEndpoint.endpoint_id,
-                  showContextIdentity: true,
-                  onOpenSettings: handleOpenWorkspaceSettings,
-                } : undefined}
               />
             ) : nav.selectedActorId ? (
               <ActorView
@@ -678,18 +674,6 @@ export function App(): React.ReactElement {
                 onSelectScope={id => handleSelectScope(id || "")}
                 onScopeCreated={handleScopeCreated}
               />
-            ) : nav.view === "floe" ? (
-              <FloeHome
-                workspaceId={activeWorkspace.workspace_id}
-                endpoints={actors}
-                onOpenSettings={handleOpenWorkspaceSettings}
-              />
-            ) : nav.view === "conversations" ? (
-              <OperatorConversations
-                workspaceId={activeWorkspace.workspace_id}
-                endpoints={actors}
-                onOpenContext={nav.navigateToOperatorContext}
-              />
             ) : nav.view === "activity" ? (
               <Activity
                 workspaceId={activeWorkspace.workspace_id}
@@ -700,7 +684,7 @@ export function App(): React.ReactElement {
           </main>
 
           {/* Right inspector */}
-          {nav.appMode !== "system" && nav.view !== "floe" && nav.view !== "conversations" && (!nav.selectedActorId || nav.selectedContextId) && (
+          {nav.appMode !== "system" && nav.view !== "conversations" && (!nav.selectedActorId || nav.selectedContextId) && (
             <aside style={{
               flex: `0 0 ${inspWidth}px`,
               width: inspWidth,

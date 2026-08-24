@@ -1,38 +1,35 @@
 # Navigating floe-app
 
-**The app opens on a workspace conversation with Floe. Developer inspection remains available without being the default product path.**
+**The app opens Conversations with the latest Floe conversation selected. Developer inspection remains available without being the default product path.**
 
 ## The shell
 
-The left nav ([[Workspace]]-scoped) has three normal entries:
+The left nav ([[Workspace]]-scoped) has one normal operator entry and one secondary disclosure:
 
-- **Floe** — the default operator view.
-- **Conversations** — conversations in which the workspace operator participates, grouped by attention and recent activity.
+- **Conversations** — the default operator view, containing conversations in which the workspace operator participates.
 - **Developer tools** — a collapsed disclosure containing the existing workspace overview, Activity, Scopes, Actors, creation controls, and Substrate Settings.
 
-Selecting a developer tool drives the main column. Opening a [[Node]], [[Actor]] or [[Context]] can also open detail in the right-hand inspector aside. The inspector is not shown on the normal Floe entry.
+Selecting a developer tool drives the main column. Opening a [[Node]], [[Actor]] or [[Context]] can also open detail in the right-hand inspector aside. The inspector is not shown in normal Conversations.
 
 ## First use
 
-When no supported provider is configured, the desktop app first asks the user to choose and connect a subscription through the packaged Pi authentication flow. When no workspace exists, it then asks for a folder. Floe applies the selected model as that workspace's default and lands in the Floe conversation. An existing workspace is reused; connecting a provider does not force the user to create another one.
+When no supported provider is configured, the desktop app first asks the user to choose and connect a subscription through the packaged Pi authentication flow. When no workspace exists, it then asks for a folder. Floe applies the selected model as that workspace's default and lands in Conversations with Floe. An existing workspace is reused; connecting a provider does not force the user to create another one.
 
 After onboarding, the gear beside the workspace name opens normal **Settings**. Provider connections apply to this device; the workspace model applies only to the selected workspace. Substrate Settings remains under Developer tools for diagnostics and advanced configuration.
 
-## Floe
-
-Opening or selecting a workspace opens its most recent conversation between the ordinary `operator` and `floe` endpoints, whether or not Floe has since attached that Context to a Scope. A compact provider → model → effort control sits at this conversation boundary. Until the workspace has a connected provider and saved model, the composer is disabled and no message can be queued for later delivery.
-
-If no conversation exists, the app asks what outcome the operator wants. Submitting the first outcome creates a direct [[Context]], emits the message to Floe, and opens the conversation. Merely opening the workspace does not create a Context.
-
-The operator view fixes the speaking identity to the operator and omits context labels, participant controls, substrate inventory, and the inspector. Those details remain available through Developer tools.
-
 ## Conversations
 
-Conversations is the operator's way back into work with Floe or another actor. It lists only Contexts where the ordinary workspace operator is already a participant; actor-to-actor operational traffic is not promoted into this view.
+Conversations is the operator's single way into work with Floe or another actor. Opening or selecting a workspace selects its most recent conversation between the ordinary `operator` and `floe` endpoints, whether or not Floe has since attached that Context to a Scope. Deliberately clicking Conversations returns to the list.
+
+If no Floe conversation exists, the app asks what outcome the operator wants. Submitting the first outcome creates a direct [[Context]], emits the message to Floe, and opens the conversation. Merely opening the workspace does not create a Context.
+
+The list contains only Contexts where the ordinary workspace operator is already a participant; actor-to-actor operational traffic is not promoted into this view. Floe is the default collaborator and new-outcome target, not a separate navigation hierarchy.
 
 An incoming message addressed to the operator with a response expected appears under **Needs you**. Once the operator replies, the conversation returns to **Recent**. This is an interpretation of existing Event response metadata, not separate task or notification state.
 
-Opening an item keeps the speaking identity fixed to the operator and names the other participant in the conversation header. The general participant and identity controls remain available when the same Context is opened through Developer tools.
+Opening an item keeps the speaking identity fixed to the operator and names the other participant in the conversation header. Every selected operator conversation has the same back, new-conversation, and delete controls. New conversation starts a fresh Context with the current collaborator; from the list, **New with Floe** starts a fresh outcome with Floe. A compact provider → model → effort control sits at the conversation boundary, and the composer remains disabled until the workspace has a connected provider and saved model.
+
+The operator view omits participant controls, substrate inventory, and the inspector. The general participant and identity controls remain available when the same Context is opened through Developer tools.
 
 ## Workspace overview
 
@@ -60,7 +57,7 @@ Clicking a context — from a scope's Contexts tab, an actor's Conversations tab
 
 ## Other direct contexts
 
-The default Floe entry reaches the most recent operator/Floe conversation. Conversations provides the normal route to other scoped or unscoped Contexts in which the operator participates. Contexts that do not include the operator remain available through Activity or an actor's context list under Developer tools.
+Conversations provides the normal route to scoped or unscoped Contexts in which the operator participates. Contexts that do not include the operator remain available through Activity or an actor's context list under Developer tools.
 
 See [[Glossary]].
 
@@ -69,8 +66,7 @@ See [[Glossary]].
 - `floe-app/src/App.tsx` — routing/state, main column switch
 - `floe-app/src/app/layout/LeftNav.tsx` — the left nav
 - `floe-app/src/hooks/useNavigation.ts` — navigation state machine
-- `floe-app/src/features/home/FloeHome.tsx` — default operator/Floe entry
-- `floe-app/src/features/conversations/OperatorConversations.tsx` — operator-participating conversation list and attention projection
+- `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator entry, conversation lifecycle, list, and attention projection
 - `floe-app/src/workspace/FloeModelControl.tsx` — inline workspace model selection and readiness gate
 - `floe-app/src/features/home/HomeView.tsx` — scope grid
 - `floe-app/src/scope/ScopeDetail.tsx` — Contexts/Ops/extension tabs

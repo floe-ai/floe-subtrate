@@ -4,7 +4,7 @@
 
 ## Opening a conversation
 
-The normal **Conversations** entry lists Contexts in which the workspace operator participates. Opening one names the other participant, fixes the speaking identity to the operator, and omits substrate-oriented controls. Developer tools can also open a conversation from a scope's Contexts tab, an actor's Conversations tab, or Activity; that form shows the context label and participant pills (see [[Navigating floe-app]]).
+The normal **Conversations** entry lists Contexts in which the workspace operator participates. Workspace entry selects the latest Floe conversation inside this same surface; Floe is not a separate route. Opening any item names the other participant, fixes the speaking identity to the operator, and provides the same back, new, and delete actions. Developer tools can also open a conversation from a scope's Contexts tab, an actor's Conversations tab, or Activity; that form shows the context label and participant pills (see [[Navigating floe-app]]).
 
 ## The message list
 
@@ -26,14 +26,14 @@ A "`<actor> is working…`" indicator appears while an actor has a live [[Delive
 
 ## Creating a new context
 
-New contexts are created from a scope (the "New scope" / context-creation affordances in scope detail) or from an actor's view when starting a fresh conversation with it. A created context can optionally belong to a [[Scope]]; one with no scope still exists. If the operator is a participant, it is reachable from the normal Conversations entry; otherwise it remains available through Developer tools.
+In normal Conversations, **New conversation** starts another Context with the currently selected collaborator; **New with Floe** starts one from the list. No Context is created until the operator submits the first outcome. Developer tools can also create contexts from a scope or actor view. A created context can optionally belong to a [[Scope]]; one with no scope still exists. If the operator is a participant, it is reachable from normal Conversations; otherwise it remains available through Developer tools.
 
 See [[Glossary]].
 
 ## Implementation
 
 - `floe-app/src/scope/ContextConversation.tsx` — conversation view, message stream, Speaking-as selector, Join context, working indicator
-- `floe-app/src/features/conversations/OperatorConversations.tsx` — operator conversation discovery and Needs you/Recent grouping
+- `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator conversation lifecycle, discovery, and Needs you/Recent grouping
 - `POST /v1/contexts/:id/participants` — join a context (`addContextParticipant`)
 - `GET /v1/contexts/:id/events` — message stream (`listContextEvents`)
 - `POST /v1/workspaces/:ws/contexts` — create a context (`createContext` / `createDirectContext`)

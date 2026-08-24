@@ -626,6 +626,7 @@ export type ContextConversationProps = {
     /** Show the other participant as the conversation identity instead of always presenting Floe. */
     showContextIdentity?: boolean;
     onOpenSettings?: () => void;
+    onBackToConversations?: () => void;
     onNewConversation?: () => void;
     onDeleteConversation?: () => void;
     conversationActionsDisabled?: boolean;
@@ -893,6 +894,18 @@ export function ContextConversation({
             Context
           </div>
         )}
+        {operatorEntry?.onBackToConversations && (
+          <button
+            type="button"
+            onClick={operatorEntry.onBackToConversations}
+            style={{
+              margin: "0 0 12px", padding: 0, border: "none", background: "transparent",
+              color: tk.ink3, fontSize: 12.5, cursor: "pointer",
+            }}
+          >
+            ← Conversations
+          </button>
+        )}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
           <h2 style={{
             margin: "0 0 10px", fontSize: 19, fontWeight: 510, color: tk.ink,
@@ -907,7 +920,7 @@ export function ContextConversation({
                   type="button"
                   onClick={operatorEntry.onNewConversation}
                   disabled={operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0}
-                  title={workingEndpoints.size > 0 ? "Wait for Floe to finish before starting another conversation" : undefined}
+                  title={workingEndpoints.size > 0 ? `Wait for ${operatorConversationName} to finish before starting another conversation` : undefined}
                   style={{
                     background: "transparent", color: tk.ink2, border: `1px solid ${tk.border}`,
                     borderRadius: tk.r2, padding: "6px 10px", fontSize: 12,
@@ -923,7 +936,7 @@ export function ContextConversation({
                   type="button"
                   onClick={operatorEntry.onDeleteConversation}
                   disabled={operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0}
-                  title={workingEndpoints.size > 0 ? "Wait for Floe to finish before deleting this conversation" : undefined}
+                  title={workingEndpoints.size > 0 ? `Wait for ${operatorConversationName} to finish before deleting this conversation` : undefined}
                   style={{
                     background: "transparent", color: tk.ink3, border: "none",
                     padding: "6px 4px", fontSize: 12,
@@ -1027,7 +1040,9 @@ export function ContextConversation({
               : "Choose a provider and model above"
             : undefined}
           disabled={!!operatorEntry && !operatorModelReady}
-          disabledReason={operatorEntry && !operatorModelReady ? "Choose a provider and model before talking to Floe." : undefined}
+          disabledReason={operatorEntry && !operatorModelReady
+            ? `Choose a provider and model before talking to ${operatorConversationName}.`
+            : undefined}
         />
       ) : (
         <NonParticipantFooter

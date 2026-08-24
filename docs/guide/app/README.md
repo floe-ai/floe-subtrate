@@ -25,11 +25,11 @@ The desktop app opens its shell immediately while it waits for local Floe servic
 
 1. connect a model provider;
 2. choose or create a workspace;
-3. enter the Floe conversation.
+3. enter Conversations with Floe selected.
 
 The provider step offers the subscription providers supported by the packaged Pi runtime. The browser sign-in, device-code feedback, provider profile, model choice, and workspace binding are completed inside floe-app; no terminal command is part of first use.
 
-The normal Floe conversation repeats the workspace's provider, model, and reasoning-effort choice at the point of use. Its composer is disabled until a provider and model are saved, preventing an unserviceable message from being accepted and deferred.
+Normal Conversations repeats the workspace's provider, model, and reasoning-effort choice at the point of use. Its composer is disabled until a provider and model are saved, preventing an unserviceable message from being accepted and deferred.
 
 ## One server, one UI
 
@@ -51,6 +51,7 @@ See [[Glossary]].
 - `floe-app/src/App.tsx` — the shell, workspace bootstrap, WebSocket subscription
 - `floe-app/src/features/onboarding/OnboardingFlow.tsx` — provider → workspace → chat first-use flow
 - `floe-app/src/providers/ProviderAccess.tsx` — normal subscription-provider surface
+- `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator conversation entry and lifecycle
 - `floe-app/src/workspace/FloeModelControl.tsx` — conversation-level provider/model/effort selection and readiness gate
 - `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — secondary developer observatory and advanced API-key profiles
 - `floe-app/src/fs/workspaceFs.ts` — `isTauri()`, native file read/write

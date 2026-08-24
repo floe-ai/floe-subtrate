@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 
-export type NavView = "floe" | "conversations" | "home" | "activity";
+export type NavView = "conversations" | "home" | "activity";
 
 export type NavigationState = {
   appMode: "workspace" | "system";
@@ -16,7 +16,7 @@ export type NavigationState = {
 export function useNavigation() {
   const [state, setState] = useState<NavigationState>({
     appMode: "workspace",
-    view: "floe",
+    view: "conversations",
     selectedScopeId: null,
     selectedActorId: null,
     selectedContextId: null,
@@ -24,19 +24,6 @@ export function useNavigation() {
     showWorkspaceSettings: false,
     showNewActor: false,
   });
-
-  const navigateToFloe = useCallback(() => {
-    setState({
-      appMode: "workspace",
-      view: "floe",
-      selectedScopeId: null,
-      selectedActorId: null,
-      selectedContextId: null,
-      selectedContextLabel: null,
-      showWorkspaceSettings: false,
-      showNewActor: false,
-    });
-  }, []);
 
   const navigateToHome = useCallback(() => {
     setState({
@@ -190,7 +177,6 @@ export function useNavigation() {
 
   return {
     ...state,
-    navigateToFloe,
     navigateToConversations,
     navigateToOperatorContext,
     navigateToHome,
