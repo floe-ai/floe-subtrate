@@ -155,12 +155,13 @@ export class BusClient {
     deliveryId: string,
     state: "injected_to_runtime" | "acknowledged" | "failed" | "dead_lettered" | "deferred",
     error?: string
-  ): Promise<void> {
-    await this.post(`/v1/delivery/${encodeURIComponent(deliveryId)}/status`, {
+  ): Promise<{ state: string; attempt_count?: number }> {
+    const result = await this.post(`/v1/delivery/${encodeURIComponent(deliveryId)}/status`, {
       bridge_id: bridgeId,
       state,
       error: error ?? null
-    });
+    }) as { delivery: { state: string; attempt_count?: number } };
+    return result.delivery;
   }
 
   async emit(event: EventCommand): Promise<void> {
@@ -179,6 +180,23 @@ export class BusClient {
     payload: Record<string, unknown>;
   }): Promise<void> {
     await this.post("/v1/runtime/telemetry", input);
+  }
+
+  async recordRuntimeTurnResult(input: {
+    delivery_id: string;
+    outcome: "completed" | "failed";
+    text: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    result_event: EventEnvelope;
+    return_event: EventEnvelope | null;
+    request_resolved: boolean;
+  }> {
+    return this.post("/v1/runtime/turn-result", input) as Promise<{
+      result_event: EventEnvelope;
+      return_event: EventEnvelope | null;
+      request_resolved: boolean;
+    }>;
   }
 
   async resolveRuntimeBinding(workspaceId: string, endpointId: string): Promise<RuntimeBindingResolution> {
@@ -441,8 +459,8 @@ export class BusClient {
 
   /**
    * List events for a context, optionally since a cursor position.
-   * Returns the events and a next_cursor for advancing the session's ephemeral injection cursor.
-   * `since` = null → cold start (full backfill from the beginning of the thread).
+   * Returns a bounded chronological page and an opaque cursor. Runtime actors use
+   * this deliberately through the Context-history tool; it is not prompt injection.
    */
   async listContextEvents(
     contextId: string,

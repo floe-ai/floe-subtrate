@@ -153,7 +153,7 @@ describe("operator conversation projection", () => {
   const architectContext = context(
     "context-architect",
     ARCHITECT,
-    "Define Snowball",
+    "Define Acme",
     "2026-08-24T02:00:00Z",
   );
 
@@ -194,7 +194,7 @@ describe("operator conversation projection", () => {
 });
 
 describe("unified operator conversations", () => {
-  const architectContext = context("context-architect", ARCHITECT, "Define Snowball", "2026-08-24T02:00:00Z");
+  const architectContext = context("context-architect", ARCHITECT, "Define Acme", "2026-08-24T02:00:00Z");
   const floeContext = context("context-floe", FLOE, "Build the pipeline", "2026-08-24T01:00:00Z");
 
   beforeEach(() => {

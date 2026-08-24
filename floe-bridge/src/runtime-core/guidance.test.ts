@@ -2,143 +2,64 @@ import { describe, expect, it } from "vitest";
 import { SUBSTRATE_GUIDANCE, buildSystemPrompt, renderDestinationContext } from "./guidance.js";
 
 describe("SUBSTRATE_GUIDANCE", () => {
-  it("contains conditional emit rule with response_expected", () => {
-    expect(SUBSTRATE_GUIDANCE).toContain("response_expected");
-    expect(SUBSTRATE_GUIDANCE).toContain("response_expected: true");
-    expect(SUBSTRATE_GUIDANCE).toContain("response_expected: false");
-    expect(SUBSTRATE_GUIDANCE).toContain("When to emit");
+  it("makes natural completion local and separates emit from request", () => {
+    expect(SUBSTRATE_GUIDANCE).toContain("records that final output as your local contribution");
+    expect(SUBSTRATE_GUIDANCE).toContain("Use `emit` only when");
+    expect(SUBSTRATE_GUIDANCE).toContain("Use `request(actor, work)`");
+    expect(SUBSTRATE_GUIDANCE).toContain("durable wait and return path");
+    expect(SUBSTRATE_GUIDANCE).not.toContain("correlation");
   });
 
-  it("does not contain old unconditional MUST emit rule", () => {
-    expect(SUBSTRATE_GUIDANCE).not.toContain(
-      "MUST emit at least one message event before ending any turn"
-    );
+  it("keeps history addressable instead of mandatory", () => {
+    expect(SUBSTRATE_GUIDANCE).toContain("not automatically inserted");
+    expect(SUBSTRATE_GUIDANCE).toContain("Use `context_history`");
+    expect(SUBSTRATE_GUIDANCE).not.toContain("response_expected");
+    expect(SUBSTRATE_GUIDANCE).not.toContain("current_context_participants");
   });
 
-  it("contains context model rules", () => {
-    expect(SUBSTRATE_GUIDANCE).toContain("groups related events");
-    expect(SUBSTRATE_GUIDANCE).toContain("non-participant");
-    expect(SUBSTRATE_GUIDANCE).toContain("channels or broadcasts");
-  });
-
-  it("does not confuse provider-native coding with persistent Floe operation", () => {
-    expect(SUBSTRATE_GUIDANCE).toContain("they are not themselves substrate composition");
+  it("does not confuse a generated command with persistent Floe operation", () => {
     expect(SUBSTRATE_GUIDANCE).toContain("Creating a script or command does not activate persistent Floe operation");
     expect(SUBSTRATE_GUIDANCE).toContain("report that concrete gap");
   });
 });
 
 describe("buildSystemPrompt", () => {
-  it("appends substrate guidance to agent instructions", () => {
+  it("appends substrate guidance after actor instructions", () => {
     const result = buildSystemPrompt("You are a helpful agent.");
-    expect(result).toContain("You are a helpful agent.");
     expect(result).toContain(SUBSTRATE_GUIDANCE);
-    // Instructions come first
-    expect(result.indexOf("You are a helpful agent.")).toBeLessThan(
-      result.indexOf("## Floe Substrate Context")
-    );
+    expect(result.indexOf("You are a helpful agent.")).toBeLessThan(result.indexOf("## Floe runtime"));
   });
 
-  it("returns substrate guidance when instructions empty", () => {
+  it("returns substrate guidance when instructions are empty", () => {
     expect(buildSystemPrompt("")).toBe(SUBSTRATE_GUIDANCE);
     expect(buildSystemPrompt("   ")).toBe(SUBSTRATE_GUIDANCE);
   });
 });
 
 describe("renderDestinationContext", () => {
-  it("includes response_expected true", () => {
+  it("renders only compact causal orientation and history access", () => {
     const result = renderDestinationContext({
       source_endpoint_id: "actor:ws:alice",
-      reply_destination_endpoint_id: "actor:ws:alice",
-      thread_id: "thread:ws:t1",
-      correlation_id: null,
-      response_expected: true,
+      current_context_id: "ctx_abc",
+      cause_event_id: "evt_123",
+      cause_type: "request.result",
+      cause_reference: "request evt_100"
     });
-    expect(result).toContain("response_expected: true");
+    expect(result).toContain("[Context Envelope]");
+    expect(result).toContain("context: ctx_abc");
+    expect(result).toContain("cause_actor: alice");
+    expect(result).toContain("cause_type: request.result");
+    expect(result).toContain("cause_event: evt_123");
+    expect(result).toContain("reference: request evt_100");
+    expect(result).toContain("history: available on demand with context_history");
   });
 
-  it("includes response_expected false", () => {
-    const result = renderDestinationContext({
-      source_endpoint_id: "actor:ws:scheduler",
-      reply_destination_endpoint_id: "actor:ws:scheduler",
-      thread_id: "thread:ws:t2",
-      correlation_id: null,
-      response_expected: false,
-    });
-    expect(result).toContain("response_expected: false");
-  });
-
-  it("includes correlation_id when present", () => {
-    const result = renderDestinationContext({
-      source_endpoint_id: "actor:ws:alice",
-      reply_destination_endpoint_id: "actor:ws:alice",
-      thread_id: "thread:ws:t1",
-      correlation_id: "corr-123",
-      response_expected: true,
-    });
-    expect(result).toContain("correlation_id: corr-123");
-  });
-
-  it("omits correlation_id when null", () => {
-    const result = renderDestinationContext({
-      source_endpoint_id: "actor:ws:alice",
-      reply_destination_endpoint_id: "actor:ws:alice",
-      thread_id: "thread:ws:t1",
-      correlation_id: null,
-      response_expected: true,
-    });
+  it("does not expose routing protocol or participant inventory", () => {
+    const result = renderDestinationContext({ source_endpoint_id: "actor:ws:alice" });
+    expect(result).not.toContain("response_expected");
     expect(result).not.toContain("correlation_id");
-  });
-
-  it("includes current_context_id and current_context_participants when provided", () => {
-    const result = renderDestinationContext({
-      source_endpoint_id: "actor:ws:alice",
-      reply_destination_endpoint_id: "actor:ws:alice",
-      thread_id: "thread:ws:t1",
-      correlation_id: null,
-      response_expected: true,
-      current_context_id: "ctx_abc",
-      current_context_participants: [
-        "actor:ws:alice",
-        "actor:ws:floe",
-      ],
-    });
-    expect(result).toContain("current_context");
-    expect(result).toContain("ctx_abc");
-    // Strict: each participant is rendered as a neutral ref list item under participants:
-    expect(result).toMatch(/participants:\s*\n\s*-\s+alice/);
-    expect(result).toMatch(/participants:\s*\n[\s\S]*-\s+floe/);
-    // Negative: not rendered as the literal placeholder "[]"
-    expect(result).not.toMatch(/participants:\s*\[\]/);
-    // Negative: no legacy id leakage in the rendered context
+    expect(result).not.toContain("participants");
+    expect(result).not.toContain("reply_actor");
     expect(result).not.toContain("actor:ws:alice");
-    expect(result).not.toContain("actor:ws:floe");
-  });
-
-  it("does NOT include a global contexts list (no 'available_contexts', no 'all_contexts')", () => {
-    const result = renderDestinationContext({
-      source_endpoint_id: "actor:ws:alice",
-      reply_destination_endpoint_id: "actor:ws:alice",
-      thread_id: "thread:ws:t1",
-      correlation_id: null,
-      response_expected: true,
-      current_context_id: "ctx_abc",
-      current_context_participants: ["actor:ws:alice", "actor:ws:floe"],
-    });
-    expect(result).not.toContain("available_contexts");
-    expect(result).not.toContain("all_contexts");
-    expect(result).not.toContain("source_contexts");
-  });
-
-  it("omits current_context block when no context_id provided (back-compat)", () => {
-    const result = renderDestinationContext({
-      source_endpoint_id: "actor:ws:alice",
-      reply_destination_endpoint_id: "actor:ws:alice",
-      thread_id: "thread:ws:t1",
-      correlation_id: null,
-      response_expected: true,
-    });
-    expect(result).not.toContain("current_context");
   });
 });
-

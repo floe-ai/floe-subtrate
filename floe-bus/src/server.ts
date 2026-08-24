@@ -1439,6 +1439,22 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return reply.code(202).send({ ok: true, telemetry });
   });
 
+  app.post("/v1/runtime/turn-result", async (request, reply) => {
+    const body = z.object({
+      delivery_id: z.string().min(1),
+      outcome: z.enum(["completed", "failed"]),
+      text: z.string().min(1),
+      metadata: z.record(z.unknown()).optional()
+    }).parse(request.body);
+    const result = store.recordRuntimeTurnResult({
+      delivery_id: body.delivery_id,
+      outcome: body.outcome,
+      text: body.text,
+      metadata: body.metadata
+    }, broadcast);
+    return reply.code(202).send({ ok: true, ...result });
+  });
+
   app.get("/v1/runtime/telemetry", async (request) => {
     const query = z.object({
       workspace_id: z.string().optional(),

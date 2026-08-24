@@ -13,7 +13,6 @@ export type {
   EmittedEvent,
   TelemetryEntry,
   ProcessingError,
-  VisibleOutputPolicy,
   EmitContract,
   FloeRuntimeContract,
   DeliveryRenderingPolicy,

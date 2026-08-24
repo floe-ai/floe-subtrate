@@ -3,6 +3,12 @@ import { PiAgentCoreAdapter } from "./pi-agent-core-adapter.js";
 import { SUBSTRATE_GUIDANCE } from "../runtime-core/guidance.js";
 import type { DeliveryBundle } from "../bus-client.js";
 
+const recordRuntimeTurnResult = async (input: any) => ({
+  result_event: { event_id: `result:${input.delivery_id}` },
+  return_event: null,
+  request_resolved: false
+});
+
 const CATEGORY_PREFIX_RE = /^(user|human|agent|webhook|runtime|system|cli|web|slack|api):/;
 
 function makeAdapter(fakeAgent: any) {
@@ -94,7 +100,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     );
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
         async emit() {},
         async listEndpoints() {
@@ -169,7 +175,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     );
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
         async emit() {},
         async listEndpoints() {
@@ -228,7 +234,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
       } as any,
       { agentFactory: (input) => { fakeAgent.registeredTools = input.tools ?? []; return fakeAgent; }, turnFinalizeTimeoutMs: 1_000 },
     );
-    const context = { bridge_id: "bridge:test", bus: { async appendRuntimeTelemetry() {}, async emit() {}, async listEndpoints() { return []; } } } as any;
+    const context = { bridge_id: "bridge:test", bus: { recordRuntimeTurnResult, async appendRuntimeTelemetry() {}, async emit() {}, async listEndpoints() { return []; } } } as any;
     await adapter.handleBundle(context, makeDelivery("del-d", "thread-d", "x"), { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" });
 
     expect(listTool.description).not.toContain("actor_type");
@@ -269,7 +275,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     );
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
@@ -331,7 +337,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     );
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() { return []; },
@@ -380,7 +386,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     );
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
         async emit() {},
         async listEndpoints() { return []; },
@@ -414,7 +420,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     const adapter = makeAdapter(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
         async emit() {},
         async listEndpoints() {
@@ -442,8 +448,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     (delivery.events[0] as any).context_id = "ctx_neutral";
     await adapter.handleBundle(context, delivery, { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" });
 
-    // Extract the [Delivery Context] block (everything before the next blank line block).
-    expect(capturedPrompt).toContain("[Delivery Context]");
+    expect(capturedPrompt).toContain("[Context Envelope]");
     // No legacy id prefixes anywhere in the prompt
     expect(capturedPrompt).not.toContain("actor:workspace:test:operator");
     expect(capturedPrompt).not.toContain("actor:workspace:test:floe");
@@ -451,17 +456,13 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     expect(capturedPrompt).not.toMatch(/\b(user|agent|human|webhook|runtime):/);
     // Visible Endpoints block, if rendered, has no actor_type column
     expect(capturedPrompt).not.toContain("actor_type");
-    // Source/reply lines should mention neutral refs and use neutral field names
-    expect(capturedPrompt).toMatch(/source_actor:\s*operator/);
-    expect(capturedPrompt).toMatch(/reply_actor:\s*operator/);
+    expect(capturedPrompt).toMatch(/cause_actor:\s*operator/);
     // Strict: no `endpoint:` substring anywhere in the rendered prompt,
     // and no legacy `source_endpoint`/`reply_destination` field labels.
     expect(capturedPrompt).not.toMatch(/endpoint:/);
     expect(capturedPrompt).not.toMatch(/reply_destination/);
     expect(capturedPrompt).not.toMatch(/source_endpoint(?!_id)/);
-    // Participants list rendered with neutral refs
-    expect(capturedPrompt).toMatch(/participants:[\s\S]*-\s+floe/);
-    expect(capturedPrompt).toMatch(/participants:[\s\S]*-\s+operator/);
+    expect(capturedPrompt).not.toContain("participants");
   });
 });
 
@@ -473,7 +474,7 @@ describe("SUBSTRATE_GUIDANCE — actor-neutral wording", () => {
 
   it("contains a neutrality statement about actor categories", () => {
     expect(SUBSTRATE_GUIDANCE.toLowerCase()).toContain(
-      "the substrate does not expose whether another actor is a person",
+      "the substrate does not distinguish people from models or integrations",
     );
   });
 
@@ -507,7 +508,7 @@ describe("Integration: agent cannot cite substrate metadata to identify actor ca
     const orig = (adapter as any);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
         async emit() {},
         async listEndpoints() {

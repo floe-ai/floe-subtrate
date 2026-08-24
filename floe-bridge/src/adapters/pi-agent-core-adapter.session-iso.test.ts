@@ -4,15 +4,21 @@
  * Verifies:
  *  1. Two contexts for one agent produce two independent sessions (C-1)
  *  2. A session built for context A contains nothing from context B (C-1)
- *  3. Cold start (cursor=null) injects the full thread (C-2)
- *  4. Warm continue injects only the delta since last cursor (C-2/C-3)
+ *  3. Cold and warm turns do not prepay Context history
+ *  4. Provider-private message history is reset before every delivery
  *  5. Reply still lands in the origin context (D-B invariant survives rekey)
  *
  * No live LLM calls — all tests use fixtures and doubles.
  */
 import { describe, expect, it } from "vitest";
-import { PiAgentCoreAdapter, renderThreadSlice } from "./pi-agent-core-adapter.js";
+import { PiAgentCoreAdapter } from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle, EventEnvelope } from "../bus-client.js";
+
+const recordRuntimeTurnResult = async (input: any) => ({
+  result_event: { event_id: `result:${input.delivery_id}` },
+  return_event: null,
+  request_resolved: false
+});
 
 // ---------------------------------------------------------------------------
 // Shared test helpers
@@ -86,10 +92,15 @@ function makeDeliveryWithContext(
 /** A fake agent that records every prompt text it receives. */
 class RecordingAgent {
   readonly promptsReceived: string[] = [];
+  resetCount = 0;
   private listeners: Array<(event: any) => void | Promise<void>> = [];
 
   subscribe(listener: (event: any) => void | Promise<void>): void {
     this.listeners.push(listener);
+  }
+
+  reset(): void {
+    this.resetCount += 1;
   }
 
   async prompt(message: any): Promise<void> {
@@ -113,6 +124,7 @@ class RecordingAgent {
 /** Minimal bus context that tracks listContextEvents calls. */
 function makeBusWith(contextEventMap: Map<string, { events: EventEnvelope[]; next_cursor: string | null }>) {
   return {
+    recordRuntimeTurnResult,
     async appendRuntimeTelemetry(_input: any) {},
     async emit(_event: any) {},
     async getContext(contextId: string) {
@@ -211,6 +223,9 @@ describe("C-1: Session key per (agent, context)", () => {
 
     // Only one agent instance (session reused for same context)
     expect(agentInstances).toHaveLength(1);
+    // Provider-private messages are cleared before both turns; continuity is
+    // durable Context state retrieved on demand, not hidden session history.
+    expect(agentInstances[0].resetCount).toBe(2);
   });
 
   it("a session for context A sees no prompts from deliveries to context B", async () => {
@@ -298,8 +313,8 @@ describe("C-1: Session key per (agent, context)", () => {
 // C-2/C-3: Thread-slice injection and cursor advance
 // ---------------------------------------------------------------------------
 
-describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
-  it("cold start (cursor=null) injects full thread — all context events are rendered", async () => {
+describe("Context economy: history is available but not injected", () => {
+  it("cold start includes only the causal envelope and current input", async () => {
     const capturedPrompts: string[] = [];
     const fakeAgent = {
       listeners: [] as Array<(event: any) => void | Promise<void>>,
@@ -343,25 +358,23 @@ describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
     ]));
     const context = makeMockContext(bus);
 
-    // This is a COLD START — no session exists, threadCursor=null
+    // This is a cold start: no session object exists yet.
     const triggerDelivery = makeDeliveryWithContext(
       "del-C1", "thread-ctx-C", "ctx_card_C", "new trigger message"
     );
 
     await adapter.handleBundle(context, triggerDelivery, MOCK_RUNTIME_CONFIG);
 
-    // The prompt should contain the thread history
+    // Historical Context content is not prepaid into the model input.
     expect(capturedPrompts).toHaveLength(1);
     const prompt = capturedPrompts[0];
-    expect(prompt).toContain("[Thread — recent context history]");
-    expect(prompt).toContain("history message from operator");
-    // Trigger event itself is rendered separately by deliveryToPrompt (not in thread slice)
-    // The thread slice lists [operator] history; the trigger "new trigger message" is the
-    // delivery section. Both end up in the final prompt.
+    expect(prompt).toContain("[Context Envelope]");
+    expect(prompt).toContain("history: available on demand with context_history");
+    expect(prompt).not.toContain("history message from operator");
     expect(prompt).toContain("new trigger message");
   });
 
-  it("warm continue injects only the delta since last cursor, not the full thread", async () => {
+  it("warm continuation still does not fetch or inject Context history", async () => {
     const capturedPrompts: string[] = [];
     let listContextEventsCallCount = 0;
     let lastSince: string | null | undefined = undefined;
@@ -421,7 +434,7 @@ describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
 
     // Custom bus that tracks calls and returns different results per turn
     let turnCount = 0;
-    const bus = {
+    const bus = { recordRuntimeTurnResult,
       async appendRuntimeTelemetry(_input: any) {},
       async emit(_event: any) {},
       async getContext(contextId: string) {
@@ -463,19 +476,15 @@ describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
     // Two prompts sent to the agent
     expect(capturedPrompts).toHaveLength(2);
 
-    // Turn 1: cursor was null (cold start) — the since param was null/undefined
-    // Turn 2: cursor should be "cursor_after_first" (warm continue)
-    expect(listContextEventsCallCount).toBe(2);
-    // Last call used the cursor from turn 1's response
-    expect(lastSince).toBe("cursor_after_first");
-
-    // Turn 1 prompt includes old history
-    expect(capturedPrompts[0]).toContain("old history message");
-    // Turn 2 prompt includes delta-only message
-    expect(capturedPrompts[1]).toContain("delta-only message");
+    expect(listContextEventsCallCount).toBe(0);
+    expect(lastSince).toBeUndefined();
+    expect(capturedPrompts[0]).not.toContain("old history message");
+    expect(capturedPrompts[1]).not.toContain("delta-only message");
+    expect(capturedPrompts[0]).toContain("first trigger");
+    expect(capturedPrompts[1]).toContain("second trigger");
   });
 
-  it("cursor is NOT advanced when turn fails (so next attempt re-fetches from same position)", async () => {
+  it("a failed turn also performs no automatic history fetch", async () => {
     const listContextEventsCursors: Array<string | null | undefined> = [];
 
     let turnAttempt = 0;
@@ -515,7 +524,7 @@ describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
       turnFinalizeTimeoutMs: 1_000,
     });
 
-    const bus = {
+    const bus = { recordRuntimeTurnResult,
       async appendRuntimeTelemetry(_input: any) {},
       async emit(_event: any) {},
       async getContext(contextId: string) {
@@ -554,12 +563,10 @@ describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
       // may or may not fail depending on the 400 handling
     }
 
-    // Both calls used null cursor (fresh session = cold start each time after invalidation)
-    expect(listContextEventsCursors.length).toBeGreaterThanOrEqual(1);
-    expect(listContextEventsCursors[0]).toBeNull();
+    expect(listContextEventsCursors).toHaveLength(0);
   });
 
-  it("thread slice excludes the trigger event (already rendered by deliveryToPrompt)", async () => {
+  it("includes the current trigger once while excluding older events", async () => {
     const capturedPrompts: string[] = [];
 
     const fakeAgent = {
@@ -588,7 +595,7 @@ describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
     const triggerEventId = triggerDelivery.events[0].event_id;
 
     // Bus returns the trigger event ALSO in the context events (as would happen in reality)
-    const bus = {
+    const bus = { recordRuntimeTurnResult,
       async appendRuntimeTelemetry(_input: any) {},
       async emit(_event: any) {},
       async getContext(contextId: string) {
@@ -631,10 +638,7 @@ describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
     expect(capturedPrompts).toHaveLength(1);
     const prompt = capturedPrompts[0];
 
-    // Historical message appears in thread slice
-    expect(prompt).toContain("historical message");
-    // The trigger text "the trigger text" should appear ONCE (from deliveryToPrompt),
-    // not twice (it's excluded from the thread slice)
+    expect(prompt).not.toContain("historical message");
     const occurrences = (prompt.match(/the trigger text/g) || []).length;
     expect(occurrences).toBe(1);
   });
@@ -644,8 +648,8 @@ describe("C-2/C-3: Thread-slice injection and cursor advance", () => {
 // D-B invariant: reply still lands in origin context
 // ---------------------------------------------------------------------------
 
-describe("D-B invariant: reply lands in origin context after session rekey", () => {
-  it("emit tool defaults context_id to the delivery origin context", async () => {
+describe("Explicit emit routing", () => {
+  it("lets the bus resolve an actor destination from the current delivery Context", async () => {
     let emitToolFn: ((callId: string, params: any) => Promise<any>) | null = null;
     const emittedEvents: any[] = [];
     const fakeAgent = {
@@ -657,6 +661,7 @@ describe("D-B invariant: reply lands in origin context after session rekey", () 
         if (emitToolFn) {
           await emitToolFn("tc_emit", {
             type: "message",
+            destination: "operator",
             text: "reply without explicit context_id",
           });
         }
@@ -679,7 +684,7 @@ describe("D-B invariant: reply lands in origin context after session rekey", () 
       turnFinalizeTimeoutMs: 1_000,
     });
 
-    const bus = {
+    const bus = { recordRuntimeTurnResult,
       async appendRuntimeTelemetry(_input: any) {},
       async emit(event: any) { emittedEvents.push(event); },
       async getContext(contextId: string) {
@@ -705,97 +710,8 @@ describe("D-B invariant: reply lands in origin context after session rekey", () 
       MOCK_RUNTIME_CONFIG
     );
 
-    // The emitted event's context_id should default to the delivery origin context
     expect(emittedEvents).toHaveLength(1);
-    expect(emittedEvents[0].context_id).toBe("ctx_origin_G");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// renderThreadSlice unit tests
-// ---------------------------------------------------------------------------
-
-describe("renderThreadSlice", () => {
-  it("returns empty string for empty events array", () => {
-    expect(renderThreadSlice([])).toBe("");
-  });
-
-  it("returns empty string when no events have text", () => {
-    const events: EventEnvelope[] = [
-      {
-        event_id: "e1", type: "context.compacted",
-        workspace_id: "ws", source_endpoint_id: null,
-        thread_id: "t", context_id: "c", correlation_id: null,
-        destination_json: { kind: "broadcast" },
-        content: {},  // no text
-        response: { expected: false }, metadata: {}, created_at: "2024-01-01T00:00:00.000Z",
-      } as any,
-    ];
-    expect(renderThreadSlice(events)).toBe("");
-  });
-
-  it("renders message events with [ActorRef] text format", () => {
-    const events: EventEnvelope[] = [
-      {
-        event_id: "e1", type: "message",
-        workspace_id: "workspace:test",
-        source_endpoint_id: "actor:workspace:test:operator",
-        thread_id: "t", context_id: "c", correlation_id: null,
-        destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
-        content: { text: "hello from operator" },
-        response: { expected: false }, metadata: {}, created_at: "2024-01-01T00:00:00.000Z",
-      } as EventEnvelope,
-      {
-        event_id: "e2", type: "message",
-        workspace_id: "workspace:test",
-        source_endpoint_id: "actor:workspace:test:floe",
-        thread_id: "t", context_id: "c", correlation_id: null,
-        destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:operator" },
-        content: { text: "response from floe" },
-        response: { expected: false }, metadata: {}, created_at: "2024-01-01T00:01:00.000Z",
-      } as EventEnvelope,
-    ];
-    const result = renderThreadSlice(events);
-    expect(result).toContain("[Thread — recent context history]");
-    expect(result).toContain("[operator] hello from operator");
-    expect(result).toContain("[floe] response from floe");
-    expect(result).toContain("[End Thread]");
-  });
-
-  it("uses 'system' for events without source_endpoint_id", () => {
-    const events: EventEnvelope[] = [
-      {
-        event_id: "e1", type: "pulse.fired",
-        workspace_id: "ws", source_endpoint_id: null,
-        thread_id: "t", context_id: "c", correlation_id: null,
-        destination_json: { kind: "broadcast" },
-        content: { text: "pulse triggered" },
-        response: { expected: false }, metadata: {}, created_at: "2024-01-01T00:00:00.000Z",
-      } as any,
-    ];
-    const result = renderThreadSlice(events);
-    expect(result).toContain("[system] pulse triggered");
-  });
-
-  it("caps at MAX_THREAD_SLICE_EVENTS most recent events", () => {
-    // Create 55 events (more than the 50-event cap)
-    const events: EventEnvelope[] = Array.from({ length: 55 }, (_, i) => ({
-      event_id: `e${i}`,
-      type: "message",
-      workspace_id: "ws",
-      source_endpoint_id: "actor:ws-a:operator",
-      thread_id: "t", context_id: "c", correlation_id: null,
-      destination_json: { kind: "broadcast" },
-      content: { text: `message-${String(i).padStart(3, "0")}` },
-      response: { expected: false }, metadata: {},
-      created_at: `2024-01-01T00:${String(i).padStart(2, "0")}:00.000Z`,
-    } as EventEnvelope));
-
-    const result = renderThreadSlice(events);
-    // Should contain the last 50 events (messages 005-054), not the first 5 (000-004)
-    expect(result).not.toContain("message-000");
-    expect(result).not.toContain("message-004");
-    expect(result).toContain("message-005");
-    expect(result).toContain("message-054");
+    expect(emittedEvents[0].context_id).toBeNull();
+    expect(emittedEvents[0].current_delivery_context_id).toBe("ctx_origin_G");
   });
 });

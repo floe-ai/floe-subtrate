@@ -84,7 +84,7 @@ export type DeliveredEvent = {
 /** Lifecycle outcome of a processing cycle */
 export type LifecycleOutcome =
   | "completed"       // Endpoint finished processing; no pending work
-  | "waiting"         // Endpoint emitted response-expected events
+  | "waiting"         // Endpoint established a durable dependency
   | "error"           // Processing failed
   | "timeout";        // Processing exceeded time budget
 
@@ -94,8 +94,8 @@ export type LifecycleOutcome =
 export type EndpointProcessingOutput = {
   /** Events explicitly emitted during processing */
   emitted_events: EmittedEvent[];
-  /** Visible output captured from runtime (adapter compatibility) */
-  visible_output: string | null;
+  /** Non-empty natural completion to record locally in the originating Context */
+  turn_result: string | null;
   /** How the processing cycle ended */
   lifecycle_outcome: LifecycleOutcome;
   /** Telemetry collected during processing */
@@ -124,24 +124,6 @@ export type ProcessingError = {
   message: string;
   recoverable: boolean;
 };
-
-// ---------------------------------------------------------------------------
-// Visible Output Policy
-// ---------------------------------------------------------------------------
-
-/**
- * Controls how adapter-captured visible output is handled.
- *
- * "emit_as_message" — bridge converts visible output into a canonical message
- * event addressed to the reply destination. This is the V0 adapter compatibility
- * behaviour.
- *
- * "telemetry_only" — visible output is recorded as telemetry but not emitted
- * as an event. Future adapters or explicit-emit-only endpoints may use this.
- *
- * "suppress" — visible output is discarded entirely.
- */
-export type VisibleOutputPolicy = "emit_as_message" | "telemetry_only" | "suppress";
 
 // ---------------------------------------------------------------------------
 // Emit Contract
@@ -187,7 +169,7 @@ export interface FloeRuntimeContract {
    * The adapter is responsible for:
    * 1. Translating EndpointProcessingInput into engine-native form
    * 2. Executing the processing cycle
-   * 3. Capturing emitted events, visible output, and telemetry
+   * 3. Capturing a local turn result, emitted events, and telemetry
    * 4. Returning EndpointProcessingOutput
    *
    * The adapter must NOT:

@@ -30,40 +30,24 @@ export function buildSystemPrompt(agentInstructions: string): string {
 }
 
 /**
- * Render the destination context block for inclusion in the delivery prompt.
- * This gives the agent enough context to reply without hard-coded endpoint IDs.
+ * Render the compact causal envelope for one turn. Durable history and actor
+ * discovery are deliberately represented as available tools, not prepaid data.
  */
 export function renderDestinationContext(context: {
   source_endpoint_id: string;
-  reply_destination_endpoint_id: string;
-  thread_id: string;
-  correlation_id: string | null;
-  response_expected: boolean;
   current_context_id?: string | null;
-  current_context_participants?: string[];
+  cause_event_id?: string | null;
+  cause_type?: string | null;
+  cause_reference?: string | null;
 }): string {
   const lines = [
-    `[Delivery Context]`,
-    `source_actor: ${toNeutralRef(context.source_endpoint_id)}`,
-    `reply_actor: ${toNeutralRef(context.reply_destination_endpoint_id)}`,
-    `thread: ${context.thread_id}`,
-    `response_expected: ${context.response_expected}`,
+    `[Context Envelope]`,
+    `context: ${context.current_context_id ?? "unavailable"}`,
+    `cause_actor: ${toNeutralRef(context.source_endpoint_id)}`,
   ];
-  if (context.correlation_id) {
-    lines.push(`correlation_id: ${context.correlation_id}`);
-  }
-  if (context.current_context_id) {
-    lines.push(`current_context:`);
-    lines.push(`  id: ${context.current_context_id}`);
-    const participants = context.current_context_participants ?? [];
-    if (participants.length > 0) {
-      lines.push(`  participants:`);
-      for (const p of participants) {
-        lines.push(`    - ${toNeutralRef(p)}`);
-      }
-    } else {
-      lines.push(`  participants: []`);
-    }
-  }
+  if (context.cause_type) lines.push(`cause_type: ${context.cause_type}`);
+  if (context.cause_event_id) lines.push(`cause_event: ${context.cause_event_id}`);
+  if (context.cause_reference) lines.push(`reference: ${context.cause_reference}`);
+  lines.push("history: available on demand with context_history");
   return lines.join("\n");
 }

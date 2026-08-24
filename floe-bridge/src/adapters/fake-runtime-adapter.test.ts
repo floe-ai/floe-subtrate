@@ -36,15 +36,29 @@ function makeDelivery(contextId: string | null = "ctx_delivery"): DeliveryBundle
   };
 }
 
-function makeContext(): { context: RuntimeContext; emittedEvents: Array<Parameters<BusClient["emit"]>[0]> } {
+function makeContext(): {
+  context: RuntimeContext;
+  emittedEvents: Array<Parameters<BusClient["emit"]>[0]>;
+  turnResults: Array<Parameters<BusClient["recordRuntimeTurnResult"]>[0]>;
+} {
   const emittedEvents: Array<Parameters<BusClient["emit"]>[0]> = [];
+  const turnResults: Array<Parameters<BusClient["recordRuntimeTurnResult"]>[0]> = [];
   const bus = new BusClient("http://127.0.0.1");
   bus.appendRuntimeTelemetry = async () => {};
+  bus.recordRuntimeTurnResult = async (input) => {
+    turnResults.push(input);
+    return {
+      result_event: { event_id: `result:${input.delivery_id}` } as any,
+      return_event: null,
+      request_resolved: false
+    };
+  };
   bus.emit = async (event) => {
     emittedEvents.push(event);
   };
   return {
     emittedEvents,
+    turnResults,
     context: {
       bridge_id: "bridge:test",
       bus
@@ -53,17 +67,17 @@ function makeContext(): { context: RuntimeContext; emittedEvents: Array<Paramete
 }
 
 describe("FakeRuntimeAdapter", () => {
-  it("continues the active delivery context for progress and message replies", async () => {
-    const { context, emittedEvents } = makeContext();
+  it("records its natural completion without emitting a routed reply", async () => {
+    const { context, emittedEvents, turnResults } = makeContext();
     const adapter = new FakeRuntimeAdapter();
 
     await adapter.handleBundle(context, makeDelivery("ctx_delivery"), undefined);
 
-    expect(emittedEvents).toHaveLength(2);
-    for (const emitted of emittedEvents) {
-      expect(emitted.context_id).toBeUndefined();
-      expect(emitted.current_delivery_context_id).toBe("ctx_delivery");
-      expect(emitted.destination.endpoint_id).toBe("actor:workspace:test:operator");
-    }
+    expect(emittedEvents).toHaveLength(0);
+    expect(turnResults).toEqual([expect.objectContaining({
+      delivery_id: "del_test",
+      outcome: "completed",
+      text: expect.stringContaining('Fake Floe received: "hello"')
+    })]);
   });
 });

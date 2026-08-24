@@ -22,11 +22,6 @@ import { TurnFailedError } from "./turn-failed-error.js";
 export { TurnFailedError } from "./turn-failed-error.js";
 
 /**
- * Thrown by the adapter when a pi runtime turn fails after the delivery was already
- * injected to the runtime. Carries structured fields so the daemon can emit a
- * runtime_error event to the originating endpoint.
- */
-/**
  * Internal sentinel thrown from finalizeTurn when pi completes a turn with
  * stopReason === 'error' (no HTTP throw from the runtime). Carries the pi
  * errorMessage so the handleBundle catch path can build a TurnFailedError
@@ -47,6 +42,7 @@ type AgentLike = {
   prompt(input: unknown): Promise<void>;
   subscribe(listener: (event: any) => void | Promise<void>): void;
   followUp?(input: unknown): void;
+  reset?(): void;
 };
 
 type AgentFactoryInput = {
@@ -74,16 +70,13 @@ type RuntimeTurnContext = {
   scope_id: string | null;
   thread_id: string;
   source_endpoint_id: string;
-  correlation_id: string | null;
   started_at: string;
   trigger_event_id: string;
-  reply_destination_endpoint_id: string;
+  invocation_request_event_id: string | null;
   context_id: string | null;
-  current_context_participants: string[];
-  response_expected: boolean;
-  communication_reprompted: boolean;
   visible_output: string;
   last_visible_telemetry_text: string;
+  dependency_requested: boolean;
   finalized: boolean;
   completion: Deferred<void>;
   tool_activity: Array<{ name: string; call_id?: string; summary?: string; is_error?: boolean; files_touched?: string[]; duration_ms?: number }>;
@@ -100,11 +93,8 @@ type SessionState = {
   modelId: string;
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   instructionsHash: string;
+  systemInstructionChars: number;
   runtimeToolsFingerprint: string;
-  /** SESSION-LOCAL ephemeral cursor — tracks last-injected thread position for C-2/C-3.
-   *  null = cold start (inject full thread). NOT persisted. NOT endpoint_watermarks.
-   *  endpoint_watermarks stays the human-facing "read up to here" cursor. */
-  threadCursor: string | null;
   context?: RuntimeContext;
   activeTurn?: RuntimeTurnContext;
 };
@@ -194,48 +184,23 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       });
     }
 
-    // Fetch visible endpoints for inclusion in prompt context
-    let visibleEndpoints: NeutralEndpoint[] = [];
-    try {
-      const eps = await context.bus.listEndpoints(bundle.workspace_id);
-      console.log("[bridge] visible endpoints fetched", { count: eps.length, workspace_id: bundle.workspace_id, self: bundle.endpoint_id });
-      visibleEndpoints = eps
-        .filter((ep: any) => ep.endpoint_id !== bundle.endpoint_id)
-        .map((ep: any) => toNeutralEndpoint({ endpoint_id: ep.endpoint_id, name: ep.name, status: ep.status }));
-      console.log("[bridge] visible endpoints after filter", { count: visibleEndpoints.length });
-    } catch (epErr) {
-      console.error("[bridge] failed to fetch visible endpoints", epErr);
-    }
-
-    // Fetch current context participants if the trigger event belongs to a context.
-    // Failure modes (network error, 404, malformed shape) are intentionally non-fatal:
-    // the agent can still process the turn and the bus's resolver remains the
-    // authority for participant-aware continue-vs-branch decisions. We log a warning
-    // so the operator can see when the prompt was rendered with degraded context info.
-    let currentContextParticipants: string[] = [];
+    // Context identity is enough for orientation. Scope is retained as structural
+    // metadata, but actor participants and history are deliberately not injected.
     if (turn.context_id) {
       try {
         const ctx = await context.bus.getContext(turn.context_id);
-        if (ctx && Array.isArray(ctx.participants)) {
-          currentContextParticipants = ctx.participants.filter((p): p is string => typeof p === "string");
-          if (typeof ctx.scope_id === "string" && ctx.scope_id.trim()) {
-            turn.scope_id = ctx.scope_id;
-          }
-        } else if (ctx) {
-          console.warn("[bridge] getContext returned unexpected shape; rendering empty participants", {
-            context_id: turn.context_id
-          });
+        if (ctx && typeof ctx.scope_id === "string" && ctx.scope_id.trim()) {
+          turn.scope_id = ctx.scope_id;
         }
       } catch (ctxErr) {
-        console.warn("[bridge] getContext failed; rendering empty participants", {
+        console.warn("[bridge] getContext failed; continuing with delivery identity", {
           context_id: turn.context_id,
           error: ctxErr instanceof Error ? ctxErr.message : String(ctxErr)
         });
       }
     }
-    turn.current_context_participants = currentContextParticipants;
 
-    const prompt = deliveryToPrompt(bundle, visibleEndpoints, currentContextParticipants);
+    const prompt = deliveryToPrompt(bundle);
     console.log("[bridge] pi prompt injected", {
       delivery_id: bundle.delivery_id,
       runtime_turn_id: turn.runtime_turn_id,
@@ -299,46 +264,25 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         }
       }
 
-      // C-2: Fetch thread slice since this session's last-injected cursor.
-      // Cold start (threadCursor=null) → fetches full thread (cursor 0 backfill).
-      // Warm continue → fetches only the delta since last turn.
-      // This is a SESSION-LOCAL ephemeral cursor — not endpoint_watermarks (human cursor).
-      // Eviction: sessions are released on bridge restart (no context-close signal yet;
-      // when a substrate context-closed event is available, evict on that signal instead).
-      let threadSlice = "";
-      let nextThreadCursor: string | null = session.threadCursor;
-      if (turn.context_id) {
-        try {
-          const triggerEventIds = new Set(bundle.events.map(e => e.event_id));
-          const { events: ctxEvents, next_cursor } = await context.bus.listContextEvents(
-            turn.context_id,
-            session.threadCursor
-          );
-          // Exclude the trigger events from the slice — they are rendered by deliveryToPrompt
-          const sliceEvents = ctxEvents.filter(e => !triggerEventIds.has(e.event_id));
-          if (sliceEvents.length > 0) {
-            threadSlice = renderThreadSlice(sliceEvents);
-          }
-          // Record next cursor for advance after successful turn (C-3)
-          if (next_cursor !== null) {
-            nextThreadCursor = next_cursor;
-          }
-        } catch (sliceErr) {
-          // Non-fatal: agent proceeds without thread history injection.
-          // Cursor stays at session.threadCursor; next turn will retry.
-          console.warn("[bridge] thread slice fetch failed; proceeding without thread context", {
-            context_id: turn.context_id,
-            error: sliceErr instanceof Error ? sliceErr.message : String(sliceErr)
-          });
-        }
-      }
-
-      // Build final prompt: [extension overlay] + [thread slice] + [trigger]
+      // Build a turn-scoped prompt: optional extension overlay plus the compact
+      // causal envelope. Durable Context history remains available through a tool.
       const parts: string[] = [];
       if (injectedContext) parts.push(injectedContext);
-      if (threadSlice) parts.push(threadSlice);
       parts.push(prompt);
       const finalPrompt = parts.join("\n\n");
+
+      // Pi retains provider message history by default. Clear it before every
+      // delivery so prior Context content is loaded only when the actor asks.
+      session.agent.reset?.();
+      await this.appendTelemetry(context, turn, "prompt_context", {
+        system_instruction_chars: session.systemInstructionChars,
+        turn_prompt_chars: finalPrompt.length,
+        hook_injection_chars: injectedContext.length,
+        automatic_history_events: 0,
+        automatic_history_chars: 0,
+        automatic_actor_directory_entries: 0,
+        automatic_participant_entries: 0
+      });
 
       await session.agent.prompt({
         role: "user",
@@ -346,10 +290,6 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         content: [{ type: "text", text: finalPrompt }]
       } as any);
       await this.awaitTurnCompletion(context, session, turn);
-
-      // C-3: Advance session-local thread cursor — ephemeral, in-memory only.
-      // Done AFTER successful turn completion so a failed turn doesn't advance the cursor.
-      session.threadCursor = nextThreadCursor;
       // Fire TurnEnd hook
       if (context.hooks?.hasHandlers("TurnEnd")) {
         await context.hooks.fire("TurnEnd", {
@@ -422,8 +362,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         console.log("[bridge] pi session invalidated due to error", { endpoint_id: bundle.endpoint_id, context_id: errContextId });
         this.sessions.delete(errKey);
       }
-      // Re-throw as TurnFailedError so the daemon can emit a runtime_error event
-      // to the originating endpoint and mark the delivery as failed.
+      // Re-throw as TurnFailedError so the daemon can apply bounded retry and,
+      // on terminal failure, record/return the failure through the turn cause.
       throw new TurnFailedError(
         bundle.delivery_id,
         turn.source_endpoint_id,
@@ -447,9 +387,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
   }
 
   private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved, runtimeConfig?: AgentRuntimeConfig): Promise<SessionState> {
-    // C-1: Session key per (endpoint, context) — each card/context gets an isolated
-    // pi Agent instance with independent message history. Cross-context bleed is
-    // structurally impossible: a session for context A can never see context B's data.
+    // Session key per (endpoint, context): runtime objects and tools may be reused
+    // within that pair, while provider-private messages are reset before each turn.
+    // A session for context A is never reused for context B.
     const contextId = bundle.events[0]?.context_id ?? "no-context";
     const key = `${bundle.endpoint_id}:${contextId}`;
     const rawInstructions = runtimeConfig?.instructions?.trim() ?? "";
@@ -497,9 +437,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       modelId: resolved.model.id,
       thinkingLevel,
       instructionsHash,
+      systemInstructionChars: systemPrompt.length,
       runtimeToolsFingerprint: toolsFingerprint,
-      threadCursor: null,  // cold start — will backfill full thread on first turn
-      // Capture the side thread_id that triggered this session's creation, if any.
       context
     };
 
@@ -513,6 +452,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     });
 
     const emitTool = this.createEmitTool(state);
+    const requestTool = this.createRequestTool(state);
+    const contextHistoryTool = this.createContextHistoryTool(state);
     const listEndpointsTool = this.createListEndpointsTool(state);
     const resolveDestinationTool = this.createResolveDestinationTool(state);
 
@@ -526,7 +467,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
 
     state.agent = this.agentFactory({
       model,
-      tools: [emitTool, listEndpointsTool, resolveDestinationTool, ...runtimeTools],
+      tools: [emitTool, requestTool, contextHistoryTool, listEndpointsTool, resolveDestinationTool, ...runtimeTools],
       systemPrompt,
       getApiKey: async () => {
         const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
@@ -581,66 +522,55 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "emit",
       label: "Emit Floe Event",
-      description: "Publish a canonical event to the Floe event bus. This is the ONLY way to communicate with other actors. Nothing you produce (text, tool results, reasoning) is visible to anyone unless you use this tool. Always call emit with type 'message' to reply to a delivered message. Use neutral actor refs from list_endpoints (e.g. 'operator', 'floe') as destination, or omit destination to reply to the source.",
+      description: "Deliberately publish an event that should cause or communicate something beyond your local turn result. Your normal final answer is already recorded in the current Context. Use 'current_context' as the destination only when you intentionally want Context subscription/effect semantics.",
       parameters: Type.Object({
         type: Type.String(),
-        destination: Type.Optional(Type.String({ description: "Target actor's neutral ref (as returned by list_endpoints, e.g. 'operator' or 'floe'). Omit to reply to the delivery source." })),
-        text: Type.String(),
-        response_expected: Type.Optional(Type.Boolean()),
-        correlation_id: Type.Optional(Type.String()),
-        context_id: Type.Optional(Type.String({ description: "Optional context_id to emit into. If the destination is already a participant of the current delivery context, omit this to continue that context. Pass an explicit context_id only to intentionally land in a specific existing context. Omitting context_id when emitting to a non-participant opens a side thread inside the current context." }))
+        destination: Type.String({ description: "A neutral actor ref from list_endpoints, or 'current_context'." }),
+        text: Type.String()
       }),
       execute: async (_toolCallId, params: any) => {
         const turn = session.activeTurn;
         const context = session.context;
         if (!turn || !context) throw new Error("No active runtime turn context is available for emit.");
 
-        let targetEndpoint = params?.destination ?? turn.reply_destination_endpoint_id;
-        // Translate a neutral ref to a full actor id before forwarding to the bus.
-        // If already a full actor: id, pass through directly.
-        if (targetEndpoint && !String(targetEndpoint).startsWith("actor:")) {
-          const ref = String(targetEndpoint);
-          const endpoints = await context.bus.listEndpoints(turn.workspace_id);
-          const resolved = fromNeutralRef(ref, endpoints);
-          if (!resolved) {
+        const destinationRef = String(params?.destination ?? "");
+        let destination: EventEnvelope["destination_json"];
+        let destinationLabel = destinationRef;
+        if (destinationRef === "current_context") {
+          if (!turn.context_id) {
             return {
-              content: [{ type: "text", text: `emit: destination '${ref}' did not resolve to a known actor in this workspace. Use list_endpoints to discover valid refs.` }],
-              details: { ok: false, error: "unknown_destination", ref }
+              content: [{ type: "text", text: "emit: this turn has no current Context." }],
+              details: { ok: false, error: "context_unavailable" }
             };
           }
-          targetEndpoint = resolved;
+          destination = { kind: "context", context_id: turn.context_id };
+        } else {
+          let targetEndpoint = destinationRef;
+          if (!targetEndpoint.startsWith("actor:")) {
+            const ref = targetEndpoint;
+            const endpoints = await context.bus.listEndpoints(turn.workspace_id);
+            const resolved = fromNeutralRef(ref, endpoints);
+            if (!resolved) {
+              return {
+                content: [{ type: "text", text: `emit: destination '${ref}' did not resolve to a known actor. Use list_endpoints when actor discovery is needed.` }],
+                details: { ok: false, error: "unknown_destination", ref }
+              };
+            }
+            targetEndpoint = resolved;
+          }
+          destination = { kind: "endpoint", endpoint_id: targetEndpoint };
+          destinationLabel = targetEndpoint;
         }
+
         await context.bus.emit({
           type: String(params?.type ?? "message"),
           workspace_id: turn.workspace_id,
           source_endpoint_id: turn.endpoint_id,
-          destination: {
-            kind: "endpoint",
-            endpoint_id: String(targetEndpoint)
-          },
+          destination,
           thread_id: turn.thread_id,
-          // D-B: default the emit context to the delivery's origin context so replies
-          // always land in the same thread they came from. Explicit context_id overrides.
-          // Guard 1: only apply D-B default when this actor IS a participant of the origin
-          // context. If it is NOT a participant, Rule 1 (bus resolver) would reject with
-          // 409 because participant membership is enforced there. Non-participants must
-          // leave context_id null so Rule 2 handles routing instead.
-          // Guard 2: only apply D-B default when the DESTINATION is also a participant of
-          // the origin context (i.e. a genuine reply). When the destination is NOT a
-          // participant, leave context_id null so the resolver's current_delivery_context_id
-          // path triggers Rule 3, opening a side thread for the cross-actor exchange.
-          context_id: params?.context_id ?? (
-            turn.context_id !== null &&
-            (turn.current_context_participants ?? []).includes(turn.endpoint_id) &&
-            (
-              !targetEndpoint ||
-              (turn.current_context_participants ?? []).includes(String(targetEndpoint))
-            )
-              ? turn.context_id
-              : null
-          ),
+          context_id: destination.kind === "context" ? turn.context_id : null,
           current_delivery_context_id: turn.context_id,
-          correlation_id: params?.correlation_id ?? turn.correlation_id,
+          correlation_id: null,
           content: {
             text: String(params?.text ?? ""),
             data: {
@@ -650,9 +580,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
               delivery_attempt_id: turn.delivery_attempt_id
             }
           },
-          response: {
-            expected: !!params?.response_expected
-          },
+          response: { expected: false },
           metadata: {
             runtime: "pi-agent-core",
             origin: "pi_emit_tool",
@@ -661,16 +589,143 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             delivery_attempt_id: turn.delivery_attempt_id
           }
         });
-        // Track emitted event for work log
         turn.emitted_events.push({
           type: String(params?.type ?? "message"),
-          destination: String(targetEndpoint),
+          destination: destinationLabel,
           text_preview: String(params?.text ?? "").slice(0, 120),
-          response_expected: !!params?.response_expected
+          response_expected: false
         });
         return {
           content: [{ type: "text", text: "emit accepted" }],
           details: { ok: true }
+        };
+      }
+    };
+  }
+
+  private createRequestTool(session: SessionState): AgentTool {
+    return {
+      name: "request",
+      label: "Request Actor Work",
+      description: "Ask one actor for work whose result you need before continuing. Floe stores the dependency, ends this processing cycle normally, and resumes you when that actor completes or fails. The return path is automatic.",
+      parameters: Type.Object({
+        actor: Type.String({ description: "A neutral actor ref from list_endpoints." }),
+        work: Type.String({ description: "The bounded work or question for that actor." })
+      }),
+      execute: async (_toolCallId, params: any) => {
+        const turn = session.activeTurn;
+        const context = session.context;
+        if (!turn || !context) throw new Error("No active runtime turn context is available for request.");
+        if (turn.dependency_requested) {
+          return {
+            content: [{ type: "text", text: "request: this processing cycle already has a pending actor dependency" }],
+            details: { ok: false, error: "dependency_already_requested" }
+          };
+        }
+        const actorRef = String(params?.actor ?? "");
+        let targetEndpoint = actorRef;
+        if (!targetEndpoint.startsWith("actor:")) {
+          const endpoints = await context.bus.listEndpoints(turn.workspace_id);
+          const resolved = fromNeutralRef(actorRef, endpoints);
+          if (!resolved) {
+            return {
+              content: [{ type: "text", text: `request: actor '${actorRef}' did not resolve. Use list_endpoints when actor discovery is needed.` }],
+              details: { ok: false, error: "unknown_actor", actor: actorRef }
+            };
+          }
+          targetEndpoint = resolved;
+        }
+        const requestId = `req_${randomUUID()}`;
+        await context.bus.emit({
+          type: "request",
+          workspace_id: turn.workspace_id,
+          source_endpoint_id: turn.endpoint_id,
+          destination: { kind: "endpoint", endpoint_id: targetEndpoint },
+          thread_id: turn.thread_id,
+          context_id: null,
+          current_delivery_context_id: turn.context_id,
+          correlation_id: requestId,
+          content: {
+            text: String(params?.work ?? ""),
+            data: {
+              origin: "pi_request_tool",
+              runtime_turn_id: turn.runtime_turn_id,
+              delivery_id: turn.delivery_id,
+              delivery_attempt_id: turn.delivery_attempt_id
+            }
+          },
+          response: {
+            expected: true,
+            mode: "correlated",
+            correlation_id: requestId
+          },
+          metadata: {
+            runtime: "pi-agent-core",
+            origin: "pi_request_tool",
+            request_return_context_id: turn.context_id,
+            request_parent_delivery_id: turn.delivery_id,
+            request_continuation_event_id: turn.invocation_request_event_id,
+            runtime_turn_id: turn.runtime_turn_id,
+            delivery_id: turn.delivery_id,
+            delivery_attempt_id: turn.delivery_attempt_id
+          }
+        });
+        turn.dependency_requested = true;
+        turn.emitted_events.push({
+          type: "request",
+          destination: String(targetEndpoint),
+          text_preview: String(params?.work ?? "").slice(0, 120),
+          response_expected: true
+        });
+        return {
+          content: [{ type: "text", text: "request accepted; Floe will resume you with this actor's result" }],
+          details: { ok: true, actor: actorRef }
+        };
+      }
+    };
+  }
+
+  private createContextHistoryTool(session: SessionState): AgentTool {
+    return {
+      name: "context_history",
+      label: "Read Context History",
+      description: "Retrieve a bounded chronological page from the current durable Context when the present work gives you a reason to inspect earlier contributions. History is not otherwise loaded into your prompt.",
+      parameters: Type.Object({
+        cursor: Type.Optional(Type.String({ description: "Opaque next_cursor from a previous page." })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 25, description: "Events to retrieve (default 10, maximum 25)." }))
+      }),
+      execute: async (_toolCallId, params: any) => {
+        const turn = session.activeTurn;
+        const context = session.context;
+        if (!turn || !context || !turn.context_id) throw new Error("No current Context is available for history retrieval.");
+        const limit = Math.min(Math.max(Number(params?.limit ?? 10), 1), 25);
+        const page = await context.bus.listContextEvents(turn.context_id, params?.cursor ?? null, limit);
+        const events = page.events.map((event) => ({
+          event_id: event.event_id,
+          type: event.type,
+          actor: event.source_endpoint_id
+            ? toNeutralRef(event.source_endpoint_id)
+            : typeof event.metadata?.responding_endpoint_id === "string"
+              ? toNeutralRef(event.metadata.responding_endpoint_id)
+              : "system",
+          created_at: event.created_at,
+          text: typeof event.content?.text === "string" ? event.content.text.slice(0, 4_000) : undefined,
+          data: event.content?.data ?? undefined
+        }));
+        let rendered = JSON.stringify({ events, next_cursor: page.next_cursor }, null, 2);
+        if (rendered.length > 16_000) {
+          rendered = rendered.slice(0, 16_000) + "\n... (page truncated; request fewer events)";
+        }
+        await this.appendTelemetry(context, turn, "context_history_retrieval", {
+          requested_limit: limit,
+          returned_events: events.length,
+          returned_chars: rendered.length,
+          used_cursor: !!params?.cursor,
+          next_cursor_available: !!page.next_cursor
+        });
+        return {
+          content: [{ type: "text", text: rendered }],
+          details: { ok: true, count: events.length, next_cursor: page.next_cursor }
         };
       }
     };
@@ -682,7 +737,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "list_endpoints",
       label: "List Visible Actors",
-      description: "List actors visible/addressable in the current workspace. Returns a list of { ref, name, status }. Use the 'ref' value as the destination on emit. Results are only visible to you — you MUST use emit to share this information with other actors.",
+      description: "Discover actors visible/addressable in the current workspace when the work requires another actor. Returns { ref, name, status } entries for emit or request.",
       parameters: Type.Object({}),
       execute: async () => {
         const turn = session.activeTurn;
@@ -700,10 +755,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           }));
 
         return {
-          content: [
-            { type: "text", text: JSON.stringify(visible, null, 2) },
-            { type: "text", text: "Remember: call emit with type 'message' to send this information to the requesting actor." }
-          ],
+          content: [{ type: "text", text: JSON.stringify(visible, null, 2) }],
           details: { ok: true, count: visible.length }
         };
       }
@@ -828,34 +880,6 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           }
         }
 
-        if (event.type === "turn_end") {
-          const messageContent = Array.isArray(event.message?.content) ? event.message.content : [];
-          const hasToolCalls = messageContent.some((item: any) => item?.type === "toolCall");
-          if (
-            turn.response_expected &&
-            turn.emitted_events.length === 0 &&
-            !turn.communication_reprompted &&
-            !hasToolCalls &&
-            typeof session.agent.followUp === "function"
-          ) {
-            turn.communication_reprompted = true;
-            session.agent.followUp({
-              role: "user",
-              timestamp: Date.now(),
-              content: [{
-                type: "text",
-                text:
-                  "This delivered event expects a response, but you have not emitted one. " +
-                  "Do not repeat the work. Before ending this run, use the emit tool to send " +
-                  "the source actor a concise outcome, progress update, or concrete blocker."
-              }]
-            });
-            await this.appendTelemetry(context, turn, "communication_retry", {
-              reason: "response_expected_without_emitted_event"
-            });
-          }
-        }
-
         // agent_end is the correct finalization signal — it fires ONCE after all
         // tool-call loops complete. turn_end fires after each inner iteration, so
         // finalizing on turn_end would cut the agent short when it uses multiple tools.
@@ -893,16 +917,18 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       thread_id: threadId,
       scope_id: typeof trigger?.scope_id === "string" && trigger.scope_id.trim() ? trigger.scope_id : null,
       source_endpoint_id: sourceEndpoint,
-      correlation_id: trigger?.correlation_id ?? null,
       started_at: new Date().toISOString(),
       trigger_event_id: trigger?.event_id ?? `evt:${bundle.delivery_id}`,
-      reply_destination_endpoint_id: sourceEndpoint,
+      invocation_request_event_id:
+        trigger?.type === "request"
+          ? trigger.event_id
+          : trigger?.type === "request.result" && typeof trigger.metadata?.request_continuation_event_id === "string"
+            ? trigger.metadata.request_continuation_event_id
+            : null,
       context_id: trigger?.context_id ?? null,
-      current_context_participants: [],
-      response_expected: deliveryExpectsResponse(bundle),
-      communication_reprompted: false,
       visible_output: "",
       last_visible_telemetry_text: "",
+      dependency_requested: false,
       finalized: false,
       completion: createDeferred<void>(),
       tool_activity: [],
@@ -939,17 +965,29 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     try {
       const output = turn.visible_output.trim() || extractText(assistantMessage)?.trim() || "";
       if (output.length > 0) {
-        // Visible output is work-log/trace only — NOT auto-emitted as a message.
-        // Communication happens only through explicit emit calls by the agent.
-        // See docs/substrate-semantics.md §6.
-        console.log("[bridge] visible_output recorded as work log (not emitted)", {
+        // A model's natural public completion is the local result of this turn.
+        // The bus records it without destination routing or subscriber fanout.
+        const recorded = await context.bus.recordRuntimeTurnResult({
+          delivery_id: turn.delivery_id,
+          outcome: "completed",
+          text: output,
+          metadata: {
+            runtime: "pi-agent-core",
+            runtime_turn_id: turn.runtime_turn_id,
+            delivery_attempt_id: turn.delivery_attempt_id
+          }
+        });
+        console.log("[bridge] natural turn result recorded", {
           runtime_turn_id: turn.runtime_turn_id,
           delivery_id: turn.delivery_id,
-          output_length: output.length
+          output_length: output.length,
+          request_resolved: recorded.request_resolved
         });
-        await this.appendTelemetry(context, turn, "visible_output_worklog", {
+        await this.appendTelemetry(context, turn, "turn_result", {
           text: output,
-          note: "Runtime visible output recorded as work log. Not emitted as message."
+          result_event_id: recorded.result_event.event_id,
+          request_resolved: recorded.request_resolved,
+          return_event_id: recorded.return_event?.event_id ?? null
         });
       } else {
         const stopReason = assistantMessage?.stopReason ?? assistantMessage?.stop_reason ?? null;
@@ -980,8 +1018,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
               error_message: piErrorMessage
             });
           }
-          // Reject the completion so handleBundle's catch path emits the
-          // runtime_error bus event and marks the delivery as failed.
+          // Reject the completion so handleBundle's catch path marks the
+          // delivery as failed. A terminal requested-actor failure is returned
+          // by the daemon through the same causal path as a successful result.
           turn.completion.reject(new PiErrorStopReasonSignal(piErrorMessage, piHttpStatus));
           return;
         }
@@ -1166,95 +1205,34 @@ export function renderHookInjections(results: Array<{ inject?: Record<string, un
   return lines.join("\n");
 }
 
-/**
- * Render a slice of context thread events into a readable block for injection.
- *
- * Includes events with meaningful text content (message + domain events).
- * Never includes tool calls (those live only in the private pi session).
- * Format per event: "[ActorName] text", ordered chronologically.
- *
- * Bounded to MAX_THREAD_SLICE_EVENTS most-recent events and MAX_THREAD_SLICE_CHARS total.
- * This keeps cold-start backfill from overwhelming the context window.
- */
-const MAX_THREAD_SLICE_EVENTS = 50;
-const MAX_THREAD_SLICE_CHARS = 8_000;
-
-export function renderThreadSlice(events: EventEnvelope[]): string {
-  if (events.length === 0) return "";
-
-  const lines: string[] = ["[Thread — recent context history]"];
-  let totalChars = 0;
-  // Keep the most-recent N events when over the cap
-  const limited = events.length > MAX_THREAD_SLICE_EVENTS
-    ? events.slice(-MAX_THREAD_SLICE_EVENTS)
-    : events;
-
-  for (const event of limited) {
-    // Only inject events with meaningful text; skip structural noise without text
-    const text = typeof event.content?.text === "string" ? event.content.text : null;
-    if (!text) continue;
-
-    const actorRef = event.source_endpoint_id
-      ? (() => { try { return toNeutralRef(event.source_endpoint_id!); } catch { return event.source_endpoint_id!; } })()
-      : "system";
-    const line = `[${actorRef}] ${text}`;
-    if (totalChars + line.length > MAX_THREAD_SLICE_CHARS) break;
-    lines.push(line);
-    totalChars += line.length;
-  }
-
-  if (lines.length === 1) return ""; // header only — no events had renderable text
-  lines.push("[End Thread]");
-  return lines.join("\n");
-}
-
-function deliveryToPrompt(
-  bundle: DeliveryBundle,
-  visibleEndpoints: NeutralEndpoint[] = [],
-  currentContextParticipants: string[] = []
-): string {
-  // Render destination context so the agent knows source/reply/thread without hard-coded IDs
+function deliveryToPrompt(bundle: DeliveryBundle): string {
   const trigger = bundle.events[0];
-  const sourceEndpoint = trigger?.source_endpoint_id || `actor:${bundle.workspace_id}:operator`;
-  const threadId = trigger?.thread_id || `thread:${bundle.workspace_id}:default`;
-  const correlationId = trigger?.correlation_id ?? null;
+  const returnedBy = typeof trigger?.metadata?.responding_endpoint_id === "string"
+    ? trigger.metadata.responding_endpoint_id
+    : null;
+  const sourceEndpoint = trigger?.source_endpoint_id || returnedBy || `actor:${bundle.workspace_id}:system`;
   const currentContextId = trigger?.context_id ?? null;
-
-  const responseExpected = deliveryExpectsResponse(bundle);
+  const requestReference = typeof trigger?.metadata?.request_event_id === "string"
+    ? trigger.metadata.request_event_id
+    : null;
 
   const contextBlock = renderDestinationContext({
     source_endpoint_id: sourceEndpoint,
-    reply_destination_endpoint_id: sourceEndpoint,
-    thread_id: threadId,
-    correlation_id: correlationId,
-    response_expected: responseExpected,
     current_context_id: currentContextId,
-    current_context_participants: currentContextParticipants,
+    cause_event_id: trigger?.event_id ?? null,
+    cause_type: trigger?.type ?? null,
+    cause_reference: requestReference ? `request ${requestReference}` : null
   });
 
-  // Include visible endpoints in delivery context — neutral refs only
-  let endpointsBlock = "";
-  if (visibleEndpoints.length > 0) {
-    const epLines = visibleEndpoints.map(ep => `  - ${ep.ref} (${ep.name}, ${ep.status})`);
-    endpointsBlock = `\n[Visible Endpoints]\n${epLines.join("\n")}`;
-  }
-
-  // Render delivered events
+  // Only the current causes are included. Older Context events and the actor
+  // directory are available through tools when the work demonstrates a need.
   const eventLines = bundle.events.map((event) => {
     const text = typeof event.content?.text === "string" ? event.content.text : JSON.stringify(event.content ?? {});
-    if (event.type === "message") return text;
-    return `[${event.type}] ${text}`;
+    return `[Input ${event.event_id} / ${event.type}]\n${text}`;
   }).filter((t) => t.length > 0);
 
   const eventsBlock = eventLines.join("\n\n");
-  return `${contextBlock}${endpointsBlock}\n\n${eventsBlock}`;
-}
-
-function deliveryExpectsResponse(bundle: DeliveryBundle): boolean {
-  return bundle.events.some((event) =>
-    event.response?.expected === true ||
-    (event.type === "message" && !!event.source_endpoint_id && toNeutralRef(event.source_endpoint_id) === "operator")
-  );
+  return `${contextBlock}\n\n${eventsBlock}`;
 }
 
 function extractText(message: any): string {

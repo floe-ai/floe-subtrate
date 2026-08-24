@@ -97,9 +97,9 @@ You may create and change ordinary workspace artefacts and use legitimate capabi
 
 ## Communication
 
-Communicate through the substrate's normal event/emit mechanisms.
+End each turn with the useful result that belongs in the current Context; Floe records it automatically.
 
-When you need a response, ask clearly and end the turn. Do not poll or keep yourself artificially alive.
+Use `emit` for a deliberate event or effect beyond that local result. When your work depends on another actor's result, use `request` and end the current processing cycle. Floe will resume you when that dependency resolves. Do not poll or keep yourself artificially alive.
 
 Lead with what matters to the operator:
 

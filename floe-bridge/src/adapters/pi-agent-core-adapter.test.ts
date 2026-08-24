@@ -3,6 +3,12 @@ import { PiAgentCoreAdapter, TurnFailedError, summarizePiRequestPayload, applyTh
 import type { DeliveryBundle } from "../bus-client.js";
 import { HookRegistry, type HookName, type HookPayload } from "../hooks.js";
 
+const recordRuntimeTurnResult = async (input: any) => ({
+  result_event: { event_id: `result:${input.delivery_id}` },
+  return_event: null,
+  request_resolved: false
+});
+
 type FakeEvent = {
   type: string;
   message?: any;
@@ -78,7 +84,7 @@ describe("PiAgentCoreAdapter", () => {
     });
   });
 
-  it("records visible output as work-log telemetry without auto-emitting messages", async () => {
+  it("records visible output as a natural turn result without auto-emitting an effect", async () => {
     const fakeAgent = new FakeAgent();
     const telemetryCalls: any[] = [];
     const emittedEvents: any[] = [];
@@ -132,7 +138,7 @@ describe("PiAgentCoreAdapter", () => {
 
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(input: any) {
           telemetryCalls.push(input);
         },
@@ -154,8 +160,8 @@ describe("PiAgentCoreAdapter", () => {
     );
 
     // Visible output goes to telemetry as work-log, NOT emitted as messages
-    const worklogDel1 = telemetryCalls.filter((item) => item.delivery_id === "del-1" && item.kind === "visible_output_worklog");
-    const worklogDel2 = telemetryCalls.filter((item) => item.delivery_id === "del-2" && item.kind === "visible_output_worklog");
+    const worklogDel1 = telemetryCalls.filter((item) => item.delivery_id === "del-1" && item.kind === "turn_result");
+    const worklogDel2 = telemetryCalls.filter((item) => item.delivery_id === "del-2" && item.kind === "turn_result");
     expect(worklogDel1).toHaveLength(1);
     expect(worklogDel1[0].payload?.text).toContain("First deterministic reply.");
     expect(worklogDel1[0].payload?.scope_id).toBeNull();
@@ -211,7 +217,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
     return {
       context: {
         bridge_id: "bridge:test",
-        bus: {
+        bus: { recordRuntimeTurnResult,
           async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
           async emit(event: any) { emittedEvents.push(event); }
         }
@@ -265,7 +271,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
     expect(runtimeOutput).toHaveLength(0);
 
     // Visible output captured in telemetry as work log
-    const worklog = telemetryCalls.filter((t) => t.kind === "visible_output_worklog");
+    const worklog = telemetryCalls.filter((t) => t.kind === "turn_result");
     expect(worklog).toHaveLength(1);
     expect(worklog[0].payload.text).toBe(assistantReply);
     expect(worklog[0].payload.text).not.toContain("Floe delivery bundle");
@@ -362,7 +368,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
 
     const makeCtx = () => ({
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {}
       }
@@ -438,7 +444,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
     const context = {
       bridge_id: "bridge:test",
       hooks,
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async listEndpoints() { return []; }
@@ -526,7 +532,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
     const context = {
       bridge_id: "bridge:test",
       hooks,
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async listEndpoints() { return []; }
@@ -598,7 +604,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
     const context = {
       bridge_id: "bridge:test",
       hooks,
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async listEndpoints() { return []; }
@@ -700,7 +706,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
         {
           bridge_id: "bridge:test",
           hooks,
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry(_input: any) {},
             async emit(_event: any) {},
             async listEndpoints() { return []; }
@@ -772,7 +778,7 @@ describe("Substrate guidance", () => {
 
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {}
       }
@@ -789,12 +795,11 @@ describe("Substrate guidance", () => {
     const guidance = capturedSystemPrompts[0];
     // Shared guidance must NOT contain "You are Floe"
     expect(guidance).not.toContain("You are Floe");
-    expect(guidance).toContain("actor in Floe");
+    expect(guidance).toContain("actor working inside a durable Floe Context");
     expect(guidance).not.toContain("runtime-backed endpoint");
-    // Must teach explicit emit as the only communication path
-    expect(guidance).toContain("only");
-    expect(guidance).toContain("emit");
-    expect(guidance).toContain("NOT automatically a message");
+    expect(guidance).toContain("records that final output as your local contribution");
+    expect(guidance).toContain("Use `emit` only when");
+    expect(guidance).toContain("Use `request(actor, work)`");
   });
 });
 
@@ -836,7 +841,7 @@ describe("PiAgentCoreAdapter – thinking level", () => {
   function makeThinkingContext() {
     return {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
         async emit() {}
       }
@@ -912,7 +917,7 @@ function makeDelivery(deliveryId: string, threadId: string, text: string): Deliv
   };
 }
 
-describe("Substrate model — explicit emit only", () => {
+describe("Substrate model — local completion and explicit effects", () => {
   function makeTestAdapterWithEmit(fakeAgent: any) {
     return new PiAgentCoreAdapter(
       {
@@ -981,7 +986,7 @@ describe("Substrate model — explicit emit only", () => {
 
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
         async emit(event: any) {
           emittedEvents.push(event);
@@ -996,17 +1001,16 @@ describe("Substrate model — explicit emit only", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
-    // Visible output ("I emitted my response.") should be in work-log telemetry only
-    const worklog = telemetryCalls.filter((t) => t.kind === "visible_output_worklog");
-    expect(worklog).toHaveLength(1);
-    expect(worklog[0].payload.text).toContain("I emitted my response.");
+    const turnResults = telemetryCalls.filter((t) => t.kind === "turn_result");
+    expect(turnResults).toHaveLength(1);
+    expect(turnResults[0].payload.text).toContain("I emitted my response.");
 
     // No auto-emitted runtime_turn_output
     const autoEmits = emittedEvents.filter((e) => e.metadata?.origin === "runtime_turn_output");
     expect(autoEmits).toHaveLength(0);
   });
 
-  it("delivery context includes source, destination, thread, and reply info", async () => {
+  it("delivery prompt includes a compact causal envelope", async () => {
     let capturedPrompt = "";
     const fakeAgent = {
       listeners: [] as Array<(event: any) => void | Promise<void>>,
@@ -1023,7 +1027,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {}
       }
@@ -1035,15 +1039,15 @@ describe("Substrate model — explicit emit only", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
-    // Delivery context should be rendered in the prompt with neutral refs
-    expect(capturedPrompt).toContain("[Delivery Context]");
-    expect(capturedPrompt).toContain("source_actor: operator");
-    expect(capturedPrompt).toContain("reply_actor: operator");
-    expect(capturedPrompt).toContain("thread-ctx-1"); // thread
-    expect(capturedPrompt).toContain("reply_actor");
+    expect(capturedPrompt).toContain("[Context Envelope]");
+    expect(capturedPrompt).toContain("cause_actor: operator");
+    expect(capturedPrompt).toContain("cause_event: evt:del-ctx-1");
+    expect(capturedPrompt).toContain("history: available on demand with context_history");
+    expect(capturedPrompt).not.toContain("reply_actor");
+    expect(capturedPrompt).not.toContain("response_expected");
   });
 
-  it("delivery prompt requires replies for operator messages but not unsolicited agent-to-agent messages", async () => {
+  it("does not inject response protocol for either operator or actor causes", async () => {
     const capturedPrompts: string[] = [];
     const fakeAgent = {
       listeners: [] as Array<(event: any) => void | Promise<void>>,
@@ -1060,7 +1064,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {}
       }
@@ -1090,12 +1094,16 @@ describe("Substrate model — explicit emit only", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
-    expect(capturedPrompts[0]).toContain("response_expected: true");
-    expect(capturedPrompts[1]).toContain("response_expected: false");
-    expect(capturedPrompts[2]).toContain("response_expected: true");
+    expect(capturedPrompts).toHaveLength(3);
+    for (const prompt of capturedPrompts) {
+      expect(prompt).not.toContain("response_expected");
+      expect(prompt).not.toContain("correlation_id");
+    }
+    expect(capturedPrompts[0]).toContain("cause_actor: operator");
+    expect(capturedPrompts[1]).toContain("cause_actor: reviewer");
   });
 
-  it("queues one communication follow-up when a response-required turn would end silently", async () => {
+  it("does not reprompt an empty completion to perform reply ceremony", async () => {
     const followUps: any[] = [];
     const telemetryCalls: any[] = [];
     const fakeAgent = {
@@ -1125,7 +1133,7 @@ describe("Substrate model — explicit emit only", () => {
     await adapter.handleBundle(
       {
         bridge_id: "bridge:test",
-        bus: {
+        bus: { recordRuntimeTurnResult,
           async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
           async emit() {}
         }
@@ -1134,9 +1142,9 @@ describe("Substrate model — explicit emit only", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
-    expect(followUps).toHaveLength(1);
-    expect(followUps[0].content[0].text).toContain("use the emit tool");
-    expect(telemetryCalls.filter((call) => call.kind === "communication_retry")).toHaveLength(1);
+    expect(followUps).toHaveLength(0);
+    expect(telemetryCalls.filter((call) => call.kind === "communication_retry")).toHaveLength(0);
+    expect(telemetryCalls.filter((call) => call.kind === "turn_result")).toHaveLength(0);
   });
 
   it("runtime telemetry payloads include the active delivery context id", async () => {
@@ -1145,7 +1153,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
         async emit(_event: any) {},
         async getContext(_contextId: string) {
@@ -1172,12 +1180,12 @@ describe("Substrate model — explicit emit only", () => {
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
-    const worklog = telemetryCalls.find((item) => item.kind === "visible_output_worklog");
+    const worklog = telemetryCalls.find((item) => item.kind === "turn_result");
     expect(worklog?.payload?.context_id).toBe("ctx_telemetry");
     expect(worklog?.payload?.scope_id).toBe("research");
   });
 
-  it("delivery prompt includes current_context_id and fetched current_context_participants when trigger has context_id", async () => {
+  it("delivery prompt includes Context identity but not participant inventory", async () => {
     let capturedPrompt = "";
     const getContextCalls: string[] = [];
     const fakeAgent = {
@@ -1195,7 +1203,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async getContext(contextId: string) {
@@ -1225,13 +1233,8 @@ describe("Substrate model — explicit emit only", () => {
     );
 
     expect(getContextCalls).toContain("ctx_test_abc");
-    expect(capturedPrompt).toContain("current_context");
-    expect(capturedPrompt).toContain("ctx_test_abc");
-    // Strict: actual participants rendered as neutral refs under participants:
-    expect(capturedPrompt).toMatch(/participants:\s*\n\s*-\s+floe/);
-    expect(capturedPrompt).toMatch(/participants:[\s\S]*-\s+operator/);
-    // Not rendered as empty placeholder
-    expect(capturedPrompt).not.toMatch(/participants:\s*\[\]/);
+    expect(capturedPrompt).toContain("context: ctx_test_abc");
+    expect(capturedPrompt).not.toContain("participants");
     // No legacy id leakage
     expect(capturedPrompt).not.toContain("actor:ws:floe");
     expect(capturedPrompt).not.toContain("actor:ws:operator");
@@ -1259,7 +1262,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async getContext(_id: string) {
@@ -1300,7 +1303,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async getContext(_id: string) {
@@ -1322,9 +1325,8 @@ describe("Substrate model — explicit emit only", () => {
         )
       ).resolves.toBeUndefined();
 
-      // Block still rendered with id, but participants empty
       expect(capturedPrompt).toContain("ctx_unreachable");
-      expect(capturedPrompt).toMatch(/participants:\s*\[\]/);
+      expect(capturedPrompt).not.toContain("participants");
 
       // Warning logged
       const warned = warnSpy.mock.calls.flat().some((arg: any) =>
@@ -1353,7 +1355,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async getContext(_id: string) {
@@ -1372,7 +1374,7 @@ describe("Substrate model — explicit emit only", () => {
     );
 
     expect(capturedPrompt).toContain("ctx_missing");
-    expect(capturedPrompt).toMatch(/participants:\s*\[\]/);
+    expect(capturedPrompt).not.toContain("participants");
   });
 
   it("trigger event with source_endpoint_id: null does not crash the turn", async () => {
@@ -1392,7 +1394,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
       }
@@ -1411,13 +1413,13 @@ describe("Substrate model — explicit emit only", () => {
       )
     ).resolves.toBeUndefined();
 
-    // Prompt rendered with a sane fallback for source/reply
-    expect(capturedPrompt).toContain("[Delivery Context]");
+    expect(capturedPrompt).toContain("[Context Envelope]");
+    expect(capturedPrompt).toContain("cause_actor: system");
     // No literal "null" rendered as source_endpoint
     expect(capturedPrompt).not.toMatch(/source_endpoint:\s*null/);
   });
 
-  it("emit tool accepts optional context_id and forwards it to the bus, plus current_delivery_context_id", async () => {
+  it("emit hides caller-supplied Context protocol and preserves the delivery anchor", async () => {
     const emittedEvents: any[] = [];
     let capturedTools: any[] = [];
 
@@ -1477,7 +1479,7 @@ describe("Substrate model — explicit emit only", () => {
 
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(event: any) { emittedEvents.push(event); }
       }
@@ -1494,9 +1496,7 @@ describe("Substrate model — explicit emit only", () => {
 
     expect(emittedEvents).toHaveLength(1);
     const emitted = emittedEvents[0];
-    // Caller-supplied context_id forwarded
-    expect(emitted.context_id).toBe("ctx_caller_supplied");
-    // current_delivery_context_id always set from active delivery
+    expect(emitted.context_id).toBeNull();
     expect(emitted.current_delivery_context_id).toBe("ctx_delivery");
   });
 
@@ -1558,7 +1558,7 @@ describe("Substrate model — explicit emit only", () => {
 
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(event: any) { emittedEvents.push(event); },
         // D-B guard: actor must be in participants for the default to apply
@@ -1586,9 +1586,7 @@ describe("Substrate model — explicit emit only", () => {
 
     expect(emittedEvents).toHaveLength(1);
     const emitted = emittedEvents[0];
-    // D-B guard: actor is a participant → default applies → context_id = origin context
-    expect(emitted.context_id).toBe("ctx_delivery_2");
-    // current_delivery_context_id MUST also be set (unchanged)
+    expect(emitted.context_id).toBeNull();
     expect(emitted.current_delivery_context_id).toBe("ctx_delivery_2");
   });
 
@@ -1610,7 +1608,7 @@ describe("Substrate model — explicit emit only", () => {
     const adapter = makeTestAdapterWithEmit(fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
         async emit(event: any) { emittedEvents.push(event); }
       }
@@ -1676,7 +1674,7 @@ describe("Substrate model — explicit emit only", () => {
 
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         // list_endpoints returns workspace-scoped results only
@@ -1768,7 +1766,7 @@ describe("Substrate model — explicit emit only", () => {
 
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async listEndpoints(workspaceId: string) {
@@ -1878,7 +1876,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     const context = {
       bridge_id: "bridge:test",
       hooks,
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async listEndpoints() { return []; }
@@ -1912,7 +1910,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     const context = {
       bridge_id: "bridge:test",
       hooks,
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(_event: any) {},
         async listEndpoints() { return []; }
@@ -1960,7 +1958,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     const adapter = makeIsoAdapter(capturedTools, fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
@@ -1992,8 +1990,8 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     );
 
     expect(emittedEvents).toHaveLength(1);
-    // D-B guard: actor is a participant → default applies → context_id = origin context
-    expect(emittedEvents[0].context_id).toBe("ctx_card_a");
+    expect(emittedEvents[0].context_id).toBeNull();
+    expect(emittedEvents[0].current_delivery_context_id).toBe("ctx_card_a");
   });
 
   it("D-B guard: non-participant actor leaves context_id null (Rule 2 handles routing, no 409)", async () => {
@@ -2063,7 +2061,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
 
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
@@ -2157,7 +2155,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     const adapter = makeIsoAdapter(capturedTools, fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
@@ -2178,8 +2176,9 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     );
 
     expect(emittedEvents).toHaveLength(1);
-    // Explicit context_id wins over the default origin context
-    expect(emittedEvents[0].context_id).toBe("ctx_acme_side");
+    // Low-level Context selection is not exposed through the model-facing tool.
+    expect(emittedEvents[0].context_id).toBeNull();
+    expect(emittedEvents[0].current_delivery_context_id).toBe("ctx_card_a");
   });
 
   it("D-B Guard 2: participant emitting to NON-participant destination leaves context_id null (Rule 3 side-thread path)", async () => {
@@ -2218,7 +2217,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     // Override the endpoint to Floe (a participant)
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
@@ -2291,7 +2290,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     const adapter = makeIsoAdapter(capturedTools, fakeAgent);
     const context = {
       bridge_id: "bridge:test",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(_input: any) {},
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints() {
@@ -2324,8 +2323,7 @@ describe("Context isolation — BeforeTurn origin plumbing (D-A/D-B)", () => {
     );
 
     expect(emittedEvents).toHaveLength(1);
-    // D-B default applies: destination IS a participant → stay in delivery context.
-    expect(emittedEvents[0].context_id).toBe(DELIVERY_CTX);
+    expect(emittedEvents[0].context_id).toBeNull();
     expect(emittedEvents[0].current_delivery_context_id).toBe(DELIVERY_CTX);
   });
 });
@@ -2444,6 +2442,7 @@ describe("Full actor work loop acceptance", () => {
         // Step 5: emit response
         await callTool("emit", "tc_emit", {
           type: "message",
+          destination: "operator",
           text: "Work loop complete.",
           response_expected: false
         });
@@ -2470,7 +2469,7 @@ describe("Full actor work loop acceptance", () => {
       bridge_id: "bridge:test",
       workspace_locator: workspaceDir,
       agent_id: "floe",
-      bus: {
+      bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
         async emit(event: any) { emittedEvents.push(event); },
         async listEndpoints(_workspaceId: string) {
@@ -2515,8 +2514,8 @@ describe("Full actor work loop acceptance", () => {
     const toolTelemetry = telemetryCalls.filter((t) => t.kind === "BeforeToolUse" || t.kind === "AfterToolUse");
     expect(toolTelemetry.length).toBeGreaterThanOrEqual(8); // at least 4 tools × 2 (before + after)
 
-    // 5. Visible output is work-log only (not auto-emitted)
-    const worklog = telemetryCalls.filter((t) => t.kind === "visible_output_worklog");
+    // 5. Natural visible output is recorded as the local turn result.
+    const worklog = telemetryCalls.filter((t) => t.kind === "turn_result");
     expect(worklog).toHaveLength(1);
     expect(worklog[0].payload.text).toContain("Done.");
     const autoEmits = emittedEvents.filter((e) => e.metadata?.origin === "runtime_turn_output");
@@ -2598,7 +2597,7 @@ describe("TurnFailedError propagation (FIX 1)", () => {
       await adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry() {},
             async emit() {}
           }
@@ -2629,7 +2628,7 @@ describe("TurnFailedError propagation (FIX 1)", () => {
       await adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry() {},
             async emit() {}
           }
@@ -2653,7 +2652,7 @@ describe("TurnFailedError propagation (FIX 1)", () => {
       await adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
             async emit() {}
           }
@@ -2739,7 +2738,7 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
       await adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry() {},
             async emit() {}
           }
@@ -2771,7 +2770,7 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
       await adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry() {},
             async emit() {}
           }
@@ -2795,7 +2794,7 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
       await adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry() {},
             async emit() {}
           }
@@ -2819,7 +2818,7 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
       await adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry() {},
             async emit() {}
           }
@@ -2843,7 +2842,7 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
       await adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry(input: any) { telemetryCalls.push(input); },
             async emit() {}
           }
@@ -2884,7 +2883,7 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
         {
           bridge_id: "bridge:test",
           hooks,
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry() {},
             async emit() {},
             async listEndpoints() { return []; }
@@ -2959,7 +2958,7 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
       adapter.handleBundle(
         {
           bridge_id: "bridge:test",
-          bus: {
+          bus: { recordRuntimeTurnResult,
             async appendRuntimeTelemetry() {},
             async emit() {}
           }
@@ -3070,7 +3069,7 @@ describe("Thinking capability integration (FIX 2)", () => {
     await adapter.handleBundle(
       {
         bridge_id: "bridge:test",
-        bus: { async appendRuntimeTelemetry() {}, async emit() {} }
+        bus: { recordRuntimeTurnResult, async appendRuntimeTelemetry() {}, async emit() {} }
       } as any,
       makeDelivery("del-alwayson", "thread-1", "hello"),
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "high" }
@@ -3087,7 +3086,7 @@ describe("Thinking capability integration (FIX 2)", () => {
     await adapter.handleBundle(
       {
         bridge_id: "bridge:test",
-        bus: { async appendRuntimeTelemetry() {}, async emit() {} }
+        bus: { recordRuntimeTurnResult, async appendRuntimeTelemetry() {}, async emit() {} }
       } as any,
       makeDelivery("del-none", "thread-1", "hello"),
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "low" }
@@ -3103,7 +3102,7 @@ describe("Thinking capability integration (FIX 2)", () => {
     await adapter.handleBundle(
       {
         bridge_id: "bridge:test",
-        bus: { async appendRuntimeTelemetry() {}, async emit() {} }
+        bus: { recordRuntimeTurnResult, async appendRuntimeTelemetry() {}, async emit() {} }
       } as any,
       makeDelivery("del-budget", "thread-1", "hello"),
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "low" }
@@ -3119,7 +3118,7 @@ describe("Thinking capability integration (FIX 2)", () => {
     await adapter.handleBundle(
       {
         bridge_id: "bridge:test",
-        bus: { async appendRuntimeTelemetry() {}, async emit() {} }
+        bus: { recordRuntimeTurnResult, async appendRuntimeTelemetry() {}, async emit() {} }
       } as any,
       makeDelivery("del-nodecl", "thread-1", "hello"),
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile", thinking_level: "medium" }

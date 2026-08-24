@@ -36,22 +36,27 @@ scope its view to that one context and nothing else.
 ## Session
 
 Each turn runs inside a **session** — a private, ephemeral construct keyed by
-`(endpoint_id, context_id)`. It holds the agent's own tool-call and reasoning memory,
-which nothing else can see. Sessions are not persisted: a bridge restart is a cold
-start, an empty session, re-derived from the world (files) and the context's history.
+`(endpoint_id, context_id)`. The bridge may reuse the runtime object and loaded
+tools for that pair, but provider-private message history is reset before every
+delivery. Sessions are not persisted.
 
-**Thread-slice injection.** Before each turn, the bridge fetches context events since
-the session's last cursor and renders them into the prompt ahead of the trigger event.
-A cold session (cursor unset) gets the full backfill; a warm session only gets the
-delta since its last successful turn. The cursor only advances after a turn completes
-successfully — a failed turn re-fetches the same slice next time rather than skipping
-ahead.
+**Context orientation and retrieval.** A turn receives one compact causal envelope
+containing the originating Context identity, cause, current input, and an indication
+that history is available. The bridge does not automatically inject earlier Context
+events, participants, or a workspace actor directory. The actor may use the bounded
+`context_history` tool or `list_endpoints` when the current work creates a reason to
+retrieve or discover more.
+
+One non-empty natural model completion is recorded as the actor's local result in
+the originating Context. This record does not route or wake anything. Explicit
+`emit` causes an event/effect; `request` establishes a durable actor dependency and
+Floe resumes the requester when that exact invocation completes or fails.
 
 ## Implementation
 
 - `floe-bridge/src/daemon.ts` — `openEventStream`, WS reconnect back-off, `bridge_hello`, `delivery_bundle_available` handling
 - `floe-bus/src/store.ts` — `scheduleNextLeaseExpiryCheck`, `requeueExpiredDeliveryLeases`, `setBroadcast`
 - `floe-bus/src/server.ts` — `GET /v1/events/stream` (WebSocket), `GET /v1/delivery/claim`, `POST /v1/delivery/:delivery_id/status`, `POST /v1/bridges/:bridge_id/liveness`
-- `floe-bridge/src/adapters/pi-agent-core-adapter.ts` — session map keyed `${endpoint_id}:${context_id}`, `threadCursor`, `renderThreadSlice`
+- `floe-bridge/src/adapters/pi-agent-core-adapter.ts` — session map keyed `${endpoint_id}:${context_id}`, compact turn rendering, on-demand history/request tools, natural turn-result recording
 
 See [[Glossary]].

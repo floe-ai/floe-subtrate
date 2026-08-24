@@ -50,16 +50,24 @@ development-only and must not define product semantics.
 - Turn end is a lifecycle signal, not a message. The bridge observes native
   runtime turn completion and reports endpoint state to the bus.
 
-## Visible Output Policy
+## Turn Results, Emits, and Requests
 
-Runtime visible output (model-generated text) is NOT automatically converted
-into a message event. It is recorded as work log / runtime trace only.
+One non-empty natural model completion is recorded as an actor-attributed
+message in the delivery's originating Context. This is a record-only operation:
+it does not resolve destinations, fan out, wake subscribers, or create another
+response expectation. Tool calls, scratch reasoning, and telemetry remain work
+trace rather than Context conversation.
 
-Communication happens exclusively through explicit `emit` calls. See
-`docs/substrate-semantics.md` §6 for the full rule.
+`emit` remains the intentional event/effect operation. The model-facing
+`request(actor, work)` affordance establishes one durable dependency using the
+existing Event, delivery, pending-response, and correlation machinery. The
+requested actor completes normally; the bus owns the exact return path and
+resumes the requester with the result or terminal failure.
 
-The previous `runtime_turn_output` adapter compatibility behaviour has been
-removed. Agents must emit message events explicitly to communicate.
+Runtime prompts contain a compact causal Context orientation and the current
+input. Context history, participant inventory, and the workspace actor directory
+are not injected automatically; actors retrieve bounded history or discover
+actors when the current work requires it.
 
 ## Validation Baseline
 

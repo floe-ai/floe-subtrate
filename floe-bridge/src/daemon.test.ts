@@ -378,7 +378,7 @@ describe("BridgeDaemon hook event stream", () => {
 // ---------------------------------------------------------------------------
 
 describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
-  it("emits runtime_error event to originating endpoint and marks delivery failed", async () => {
+  it("records terminal failure through the causal turn-result path", async () => {
     withoutAdapterEnv();
     const made = makeConfig("fake");
 
@@ -386,6 +386,7 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
       const daemon = new BridgeDaemon(made.configPath, made.config);
 
       const emittedEvents: any[] = [];
+      const turnResults: any[] = [];
       const deliveryStatusUpdates: Array<{ id: string; state: string; error?: string | null }> = [];
       const endpointStatusUpdates: Array<{ id: string; status: string }> = [];
 
@@ -435,7 +436,9 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
         async emit(event: any) { emittedEvents.push(event); },
         async reportDeliveryStatus(...[, id, state, error]: [string, string, string, string?]) {
           deliveryStatusUpdates.push({ id, state, error: error ?? null });
+          return { state: state === "failed" ? "dead_lettered" : state, attempt_count: 3 };
         },
+        async recordRuntimeTurnResult(input: any) { turnResults.push(input); },
         async reportTurnEnd() {},
         async updateEndpointStatus(id: string, status: string) {
           endpointStatusUpdates.push({ id, status });
@@ -465,25 +468,12 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
 
       await (daemon as any).handleDelivery(delivery);
 
-      // runtime_error event must be emitted to the originating operator endpoint
-      expect(emittedEvents).toHaveLength(1);
-      expect(emittedEvents[0]).toMatchObject({
-        type: "runtime_error",
-        workspace_id: "workspace:test",
-        source_endpoint_id: "actor:workspace:test:floe",
-        destination: { kind: "endpoint", endpoint_id: "actor:workspace:test:operator" },
-        thread_id: "thread:test:1",
-        context_id: "ctx:test:1",
-        content: expect.objectContaining({
-          data: expect.objectContaining({
-            origin: "runtime_turn_failed",
-            delivery_id: "del-turn-fail-1",
-            model: "claude-haiku-4-5",
-            provider: "anthropic",
-            http_status: 400
-          })
-        })
-      });
+      expect(emittedEvents).toHaveLength(0);
+      expect(turnResults).toEqual([expect.objectContaining({
+        delivery_id: "del-turn-fail-1",
+        outcome: "failed",
+        text: expect.stringContaining("HTTP 400")
+      })]);
 
       // Delivery must be marked failed (not acknowledged)
       const failedUpdate = deliveryStatusUpdates.find((u) => u.state === "failed");

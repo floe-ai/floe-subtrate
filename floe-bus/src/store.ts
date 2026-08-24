@@ -210,6 +210,12 @@ export type DeliveryBundle = {
   delivered_at: string;
 };
 
+export type RuntimeTurnResult = {
+  result_event: EventEnvelope;
+  return_event: EventEnvelope | null;
+  request_resolved: boolean;
+};
+
 export type RuntimeBindingScope = "agent" | "workspace_default" | "global_default";
 
 export type RuntimeBindingRecord = {
@@ -1487,6 +1493,207 @@ export class BusStore {
     return this.broadcastEventSubmission(event, broadcast).event;
   }
 
+  /**
+   * Record one runtime delivery's public conclusion without routing it. When
+   * the delivery was caused by an exact correlated request to this endpoint,
+   * also enqueue a compact return event in the requester's original Context.
+   */
+  recordRuntimeTurnResult(input: {
+    delivery_id: string;
+    outcome: "completed" | "failed";
+    text: string;
+    metadata?: Record<string, unknown>;
+  }, broadcast: Broadcast): RuntimeTurnResult {
+    const recorded = this.transaction(() => {
+      const delivery = this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?")
+        .get(input.delivery_id) as any;
+      if (!delivery) throw new Error(`Unknown delivery_id: ${input.delivery_id}`);
+      // A delivery lease retry gets a new delivery_id for the same causal
+      // invocation. Key the public result to that stable invocation so an
+      // acknowledgement loss cannot duplicate an actor's conclusion.
+      const invocationKey = `${delivery.endpoint_id}:${delivery.trigger_event_id}`;
+      const resultIdempotencyKey = `runtime-turn-result:${invocationKey}`;
+      const returnIdempotencyKey = `runtime-request-return:${invocationKey}`;
+      const existing = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?")
+        .get(resultIdempotencyKey) as any;
+      if (existing) {
+        const returnExisting = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?")
+          .get(returnIdempotencyKey) as any;
+        return {
+          result_event: this.rowToEvent(existing),
+          return_event: returnExisting ? this.rowToEvent(returnExisting) : null,
+          request_resolved: !!returnExisting,
+          created: false
+        };
+      }
+
+      const triggerRow = this.db.prepare("SELECT * FROM events WHERE event_id = ?")
+        .get(delivery.trigger_event_id) as any;
+      if (!triggerRow) throw new Error(`Unknown trigger_event_id: ${delivery.trigger_event_id}`);
+      const trigger = this.rowToEvent(triggerRow);
+      if (trigger.workspace_id !== delivery.workspace_id) {
+        throw new Error(`Delivery workspace does not match trigger workspace: ${input.delivery_id}`);
+      }
+      const context = this.contextStore.getContext(trigger.context_id);
+      if (!context || context.workspace_id !== trigger.workspace_id) {
+        throw new Error(`Context not found for runtime result: ${trigger.context_id}`);
+      }
+
+      const resultEvent = this.insertEvent(
+        {
+          type: "message",
+          workspace_id: trigger.workspace_id,
+          source_endpoint_id: delivery.endpoint_id,
+          destination: { kind: "context", context_id: trigger.context_id },
+          thread_id: trigger.context_id,
+          correlation_id: trigger.correlation_id,
+          content: {
+            text: input.text,
+            data: {
+              origin: "runtime_turn_result",
+              outcome: input.outcome,
+              delivery_id: input.delivery_id,
+              cause_event_id: trigger.event_id
+            }
+          },
+          metadata: {
+            ...(input.metadata ?? {}),
+            origin: "runtime_turn_result",
+            outcome: input.outcome,
+            delivery_id: input.delivery_id,
+            cause_event_id: trigger.event_id
+          },
+          idempotency_key: resultIdempotencyKey
+        },
+        this.normalizeResponse({ expected: false }),
+        trigger.context_id
+      );
+
+      const continuationRequestEventId =
+        trigger.type === "request"
+          ? trigger.event_id
+          : trigger.type === "request.result" && typeof trigger.metadata?.request_continuation_event_id === "string"
+            ? trigger.metadata.request_continuation_event_id
+            : null;
+      const pending = continuationRequestEventId ? this.db.prepare(`
+        SELECT * FROM pending_responses
+        WHERE source_event_id = ? AND status = 'pending'
+        LIMIT 1
+      `).get(continuationRequestEventId) as any : null;
+      const requestRow = continuationRequestEventId
+        ? this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(continuationRequestEventId) as any
+        : null;
+      const requestEvent = requestRow ? this.rowToEvent(requestRow) : null;
+      const requestedDestination = requestEvent?.destination_json.kind === "endpoint"
+        ? requestEvent.destination_json.endpoint_id
+        : null;
+
+      // If this exact processing cycle established a child request, its public
+      // completion is interim. Keep any inbound request suspended until the child
+      // result resumes this actor and it completes again.
+      const childRequestRows = this.db.prepare(`
+        SELECT pr.*, e.metadata_json
+        FROM pending_responses pr
+        JOIN events e ON e.event_id = pr.source_event_id
+        WHERE pr.waiting_endpoint_id = ?
+      `).all(delivery.endpoint_id) as any[];
+      const madeChildRequest = childRequestRows.some((row) => {
+        const metadata = parseJson<Record<string, unknown>>(row.metadata_json);
+        return metadata.request_parent_delivery_id === input.delivery_id;
+      });
+      const isExactRequest =
+        !!pending &&
+        !!requestEvent &&
+        !madeChildRequest &&
+        requestEvent.type === "request" &&
+        requestEvent.response.expected === true &&
+        requestEvent.response.mode === "correlated" &&
+        !!pending.correlation_id &&
+        pending.correlation_id === requestEvent.correlation_id &&
+        requestedDestination === delivery.endpoint_id;
+
+      let returnEvent: EventEnvelope | null = null;
+      if (isExactRequest) {
+        const configuredReturnContext = typeof requestEvent!.metadata?.request_return_context_id === "string"
+          ? requestEvent!.metadata.request_return_context_id
+          : null;
+        const returnContextId = configuredReturnContext &&
+          this.contextStore.getContext(configuredReturnContext)?.workspace_id === trigger.workspace_id &&
+          this.contextStore.isParticipant(configuredReturnContext, pending.waiting_endpoint_id)
+          ? configuredReturnContext
+          : trigger.context_id;
+
+        returnEvent = this.insertEvent(
+          {
+            type: "request.result",
+            workspace_id: trigger.workspace_id,
+            source_endpoint_id: null,
+            destination: { kind: "endpoint", endpoint_id: pending.waiting_endpoint_id },
+            thread_id: returnContextId,
+            correlation_id: pending.correlation_id,
+            content: {
+              text: input.text,
+              data: {
+                outcome: input.outcome,
+                request_event_id: requestEvent!.event_id,
+                result_event_id: resultEvent.event_id,
+                responding_endpoint_id: delivery.endpoint_id,
+                result_context_id: trigger.context_id
+              }
+            },
+            metadata: {
+              origin: "runtime_request_return",
+              outcome: input.outcome,
+              request_event_id: requestEvent!.event_id,
+              result_event_id: resultEvent.event_id,
+              responding_endpoint_id: delivery.endpoint_id,
+              result_context_id: trigger.context_id,
+              request_continuation_event_id:
+                typeof requestEvent!.metadata?.request_continuation_event_id === "string"
+                  ? requestEvent!.metadata.request_continuation_event_id
+                  : null
+            },
+            idempotency_key: returnIdempotencyKey
+          },
+          this.normalizeResponse({ expected: false }),
+          returnContextId
+        );
+        this.queueEvent(returnEvent.event_id, returnEvent.workspace_id, pending.waiting_endpoint_id);
+        this.db.prepare("UPDATE pending_responses SET status = 'resolved', resolved_at = ? WHERE pending_id = ?")
+          .run(now(), pending.pending_id);
+      } else {
+        const directPending = this.db.prepare(`
+          SELECT * FROM pending_responses
+          WHERE source_event_id = ? AND status = 'pending'
+          LIMIT 1
+        `).get(trigger.event_id) as any;
+        if (directPending && trigger.type !== "request") {
+          // Human/client sends may ask for a response. A local result satisfies
+          // that wait without routing a reply or waking another actor.
+          this.db.prepare("UPDATE pending_responses SET status = 'resolved', resolved_at = ? WHERE pending_id = ?")
+            .run(now(), directPending.pending_id);
+        }
+      }
+
+      return {
+        result_event: resultEvent,
+        return_event: returnEvent,
+        request_resolved: isExactRequest,
+        created: true
+      };
+    });
+
+    if (recorded.created) {
+      this.broadcastEventSubmission(recorded.result_event, broadcast);
+      if (recorded.return_event) this.broadcastEventSubmission(recorded.return_event, broadcast);
+    }
+    return {
+      result_event: recorded.result_event,
+      return_event: recorded.return_event,
+      request_resolved: recorded.request_resolved
+    };
+  }
+
   private broadcastEventSubmission(event: EventEnvelope, broadcast: Broadcast): { event: EventEnvelope; deliveries_created: number } {
     const resolved = this.db.prepare(`
       SELECT destination_endpoint_id
@@ -2348,15 +2555,22 @@ export class BusStore {
 
   private resolvePendingResponsesForIncoming(incoming: EventEnvelope): void {
     const rows = this.db.prepare(`
-      SELECT * FROM pending_responses
-      WHERE waiting_endpoint_id = ? AND status = 'pending'
-      ORDER BY created_at ASC
+      SELECT pr.*, e.destination_json AS request_destination_json
+      FROM pending_responses pr
+      JOIN events e ON e.event_id = pr.source_event_id
+      WHERE pr.waiting_endpoint_id = ? AND pr.status = 'pending'
+      ORDER BY pr.created_at ASC
     `).all(incoming.destination_json.kind === "endpoint" ? incoming.destination_json.endpoint_id : "") as any[];
     for (const pending of rows) {
       if (pending.mode === "thread_affine" && pending.thread_id !== incoming.thread_id) continue;
       if (pending.mode === "correlated") {
         const incomingCorrelation = incoming.correlation_id ?? null;
         if (!pending.correlation_id || incomingCorrelation !== pending.correlation_id) continue;
+        const requestedDestination = parseJson<DestinationSelector>(pending.request_destination_json);
+        if (
+          requestedDestination.kind !== "endpoint" ||
+          incoming.source_endpoint_id !== requestedDestination.endpoint_id
+        ) continue;
       }
       this.db.prepare("UPDATE pending_responses SET status = 'resolved', resolved_at = ? WHERE pending_id = ?")
         .run(now(), pending.pending_id);
@@ -2375,13 +2589,14 @@ export class BusStore {
       WHERE q.destination_endpoint_id = ?
         AND q.state = 'queued'
       ORDER BY q.created_at ASC
-      LIMIT 25
+      LIMIT 1
     `).all(endpointId) as any[];
     if (queuedRows.length === 0) return null;
 
     const deliveredAt = now();
     const deliveryId = `del_${randomUUID()}`;
     const leaseExpiresAt = this.deliveryLeaseExpiresAt();
+    const deliveryAttempt = Math.max(...queuedRows.map((row) => Number(row.attempt_count ?? 0) + 1));
     for (const row of queuedRows) {
       this.db.prepare(`
         UPDATE event_queue
@@ -2405,9 +2620,9 @@ export class BusStore {
     this.db.prepare(`
       INSERT INTO delivery_bundles (
         delivery_id, wait_id, endpoint_id, workspace_id, resume_reason, trigger_event_id,
-        events_json, state, lease_expires_at, created_at
+        events_json, state, lease_expires_at, attempt_count, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)
     `).run(
       bundle.delivery_id,
       null,
@@ -2417,6 +2632,7 @@ export class BusStore {
       bundle.trigger_event_id,
       json(bundle.events),
       leaseExpiresAt,
+      deliveryAttempt,
       bundle.delivered_at
     );
     this.db.prepare("UPDATE endpoints SET status = 'active', updated_at = ? WHERE endpoint_id = ?")

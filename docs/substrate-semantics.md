@@ -36,7 +36,7 @@ The bus does not route prompts or replies. It routes **canonical events**.
 - A webhook payload is an event.
 - A scheduler/pulse output is an event.
 - A todo extension update is an event (or extension state mutation surfaced through events).
-- A runtime visible output converted by the bridge is also a canonical event.
+- A non-empty runtime turn result recorded in its originating Context is also a canonical event.
 
 All communication and coordination passes through events. There is no separate
 "message" channel.
@@ -88,7 +88,7 @@ user prompt → assistant response
 The substrate model is:
 
 ```
-events → deliveries → endpoint processing cycles → emitted events
+events → deliveries → endpoint processing cycles → local turn results and/or emitted events
 ```
 
 Thread views in the UI render events grouped by thread_id. They do not imply
@@ -96,24 +96,38 @@ a request/response pair at the substrate level.
 
 ---
 
-## 6. Runtime visible output is work log — not communication
+## 6. Turn result is local contribution; `emit` is intentional effect
 
-Runtime visible output (model-generated text, tool results, telemetry) is **not**
-automatically converted into a message event.
+A non-empty natural model completion is durably recorded as the actor's local
+result in the Context that caused the turn. The actor does not call `emit` merely
+to make that conclusion visible.
 
-Only explicit `emit` calls create communication events on the bus.
+Recording a turn result does not resolve destinations, fan out, wake another
+actor, start downstream work, create a Context, or request another response.
+Tool calls, scratch reasoning, intermediate provider output, and runtime
+telemetry remain work trace.
 
-Visible output produced during a processing cycle is recorded as **work log /
-runtime trace** for observability. It is not rendered in the main message view.
+`emit` remains the explicit publish operation for an intentional event or effect.
+It may notify an actor, start work elsewhere, publish into a Context, or activate
+subscription behaviour. Ordinary local completion and deliberate event
+publication are separate semantics.
 
-The long-term model:
+When one actor needs another actor's result before it can continue, the runtime's
+`request(actor, work)` affordance compiles onto existing Event, delivery,
+pending-response, and correlation machinery. Floe owns the exact return path.
+The requested actor completes naturally, and its result or terminal failure
+resumes the requester; neither model handles the identifiers.
 
-- Communication = explicit `emit(event)`
-- Visible output = work log
-- Turn end = lifecycle
+Context history is addressable state, not mandatory prompt material. Each turn
+starts from a compact causal orientation and current inputs. Bounded history and
+actor discovery are available on demand.
 
-The previous V0 adapter compatibility behaviour (`runtime_turn_output` auto-emit)
-has been removed. Agents must explicitly emit message events to communicate.
+The durable distinctions are:
+
+- Turn result = actor's local contribution to the originating Context
+- `emit(event)` = intentional event/effect
+- `request(actor, work)` = durable dependency with a Floe-owned return path
+- Turn end = endpoint lifecycle
 
 ---
 
@@ -260,7 +274,7 @@ It uses the same technical path as any other runtime-backed agent:
 agent file → frontmatter parsed → instruction body loaded
 → runtime profile resolved → substrate guidance injected
 → destination context rendered → runtime adapter invoked
-→ emitted events / work log / telemetry / lifecycle returned to bus
+→ local turn result / emitted events / work log / telemetry / lifecycle returned to bus
 ```
 
 It does not bypass emit/event semantics, endpoint visibility, delivery records,
@@ -275,7 +289,9 @@ When writing code in floe-bus, floe-bridge, or floe-app:
 
 - ✅ Use "event", "delivery", "endpoint", "emit", "turn", "processing cycle"
 - ❌ Do not use "prompt", "reply", "assistant response", "user message" as substrate concepts
-- ✅ Communication = explicit emit only
-- ❌ Do not auto-convert visible output into messages
+- ✅ Record non-empty natural completion locally in the originating Context
+- ✅ Use explicit emit for intentional events/effects
+- ✅ Keep request return bookkeeping out of model cognition
+- ❌ Do not auto-inject Context history, participant inventory, or actor directories
 - ✅ Enforce visibility through subscriptions/permissions
 - ❌ Do not expose global endpoint directories

@@ -81,7 +81,7 @@ Legacy or conversational wording for Context. New domain language should use Con
 The communication primitive. All coordination passes through canonical Events routed by the bus. A Pulse firing produces an Event like any other.
 
 ### Emit
-The universal substrate publish operation. All Endpoints use emit to create canonical Events on the bus.
+The universal substrate publish operation. Endpoints use emit when they deliberately want an Event to cause or communicate an effect. A normal runtime turn result does not require emit.
 
 ### Delivery
 An Event made available to a specific Endpoint for processing. Context subscribers do not create deliveries.
@@ -98,10 +98,14 @@ _Avoid_: read receipt, seen, unread badge, last_seen_at.
 An event source that ingests external input and produces canonical substrate Events. Actorless webhook streams must create or use a scoped Context; they must not fall back to a hidden Default Scope.
 
 ### Work Log
-A committed Markdown activity record for human audit. Runtime output and tool activity - NOT communication. Work logs derive Scope from their delivery/Context when scoped, and carry `scope_id: null` for direct unscoped actor Contexts.
+A committed Markdown activity record for human audit. Tool activity, telemetry, and a copy of runtime output may appear here, but the Work Log is not the mechanism that makes a turn result visible in its Context. Work logs derive Scope from their delivery/Context when scoped, and carry `scope_id: null` for direct unscoped actor Contexts.
 
 ### Turn
-An Endpoint's processing cycle for delivered Events. Turn end means "this endpoint has finished processing." It is NOT a message.
+An Endpoint's processing cycle for one delivered Event from one originating Context. A non-empty natural model completion is durably recorded as that actor's local result in the originating Context. Recording the result does not route or fan out an Event, wake another actor, create a Context, or request another response. Turn end remains the separate lifecycle fact that the endpoint has finished processing.
+
+When an actor explicitly requests another actor's work, Floe stores the dependency over the existing Event, delivery, pending-response, and correlation mechanisms. The requested actor completes naturally; Floe returns that exact result or terminal failure and resumes the requester. The model does not manage return-path identifiers.
+
+Context history is addressable durable state, not mandatory prompt material. A runtime turn starts with a compact causal orientation and may retrieve bounded history when the work requires it.
 
 ### Extension
 A substrate addition that provides tools, Pulse declarations, and/or programmatic Extension Hooks to agents. Lives in the workspace with an extension manifest and TypeScript entry point. Discovered and loaded by the bridge at workspace attach time.
