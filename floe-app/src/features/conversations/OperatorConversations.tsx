@@ -11,6 +11,7 @@ import {
 import { ContextConversation } from "../../scope/ContextConversation.tsx";
 import { FloeModelControl } from "../../workspace/FloeModelControl.tsx";
 import { tk } from "../../theme.ts";
+import { ContextWorkView } from "../work/ContextWorkView.tsx";
 
 const RECENT_LIMIT = 6;
 
@@ -107,6 +108,7 @@ export function OperatorConversations({
   const [modelReady, setModelReady] = useState(false);
   const [sending, setSending] = useState(false);
   const [conversationActionPending, setConversationActionPending] = useState(false);
+  const [selectedSurface, setSelectedSurface] = useState<"conversation" | "work">("conversation");
   const loadSequence = useRef(0);
   const initialWorkspace = useRef<string | null>(null);
   const initialConversationChosen = useRef(false);
@@ -158,6 +160,7 @@ export function OperatorConversations({
       draftContextId.current = null;
       setDraftTargetId(null);
       setShowAll(false);
+      setSelectedSurface("conversation");
     }
     setLoading(true);
     void load();
@@ -183,6 +186,7 @@ export function OperatorConversations({
     draftContextId.current = null;
     setDraftTargetId(null);
     setError(null);
+    setSelectedSurface("conversation");
     onOpenContext(contextId);
   }
 
@@ -190,6 +194,7 @@ export function OperatorConversations({
     draftContextId.current = null;
     setDraftTargetId(targetEndpointId);
     setError(null);
+    setSelectedSurface("conversation");
     onCloseContext();
   }
 
@@ -275,6 +280,17 @@ export function OperatorConversations({
   }
 
   if (selectedContextId && operator) {
+    if (selectedSurface === "work") {
+      return (
+        <ContextWorkView
+          workspaceId={workspaceId}
+          rootContextId={selectedContextId}
+          endpoints={endpoints}
+          operatorEndpointId={operator.endpoint_id}
+          onBackToConversation={() => setSelectedSurface("conversation")}
+        />
+      );
+    }
     return (
       <ContextConversation
         key={selectedContextId}
@@ -286,6 +302,7 @@ export function OperatorConversations({
           showContextIdentity: true,
           onOpenSettings,
           onBackToConversations: onCloseContext,
+          onOpenWork: () => setSelectedSurface("work"),
           onNewConversation: selectedTargetId ? () => startNewWith(selectedTargetId) : undefined,
           onDeleteConversation: deleteCurrentConversation,
           conversationActionsDisabled: conversationActionPending,

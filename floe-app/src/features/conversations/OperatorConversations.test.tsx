@@ -28,15 +28,29 @@ vi.mock("../../scope/ContextConversation.tsx", () => ({
       onBackToConversations?: () => void;
       onNewConversation?: () => void;
       onDeleteConversation?: () => void;
+      onOpenWork?: () => void;
     };
   }) => (
     <div data-testid="conversation">
       <span>{contextId}:{String(operatorEntry?.showContextIdentity)}</span>
       <button type="button" onClick={operatorEntry?.onBackToConversations}>Conversations</button>
+      {operatorEntry?.onOpenWork && <button type="button" onClick={operatorEntry.onOpenWork}>Work</button>}
       {operatorEntry?.onNewConversation && (
         <button type="button" onClick={operatorEntry.onNewConversation}>New conversation</button>
       )}
       <button type="button" onClick={operatorEntry?.onDeleteConversation}>Delete</button>
+    </div>
+  ),
+}));
+
+vi.mock("../work/ContextWorkView.tsx", () => ({
+  ContextWorkView: ({ rootContextId, onBackToConversation }: {
+    rootContextId: string;
+    onBackToConversation: () => void;
+  }) => (
+    <div data-testid="work-view">
+      <span>Work for {rootContextId}</span>
+      <button type="button" onClick={onBackToConversation}>Conversation</button>
     </div>
   ),
 }));
@@ -235,6 +249,17 @@ describe("unified operator conversations", () => {
     expect(screen.getByRole("list", { name: "Recent" })).toBeTruthy();
     expect(screen.getByText("I need your decision.")).toBeTruthy();
     expect(screen.getByText("The pipeline is ready.")).toBeTruthy();
+  });
+
+  it("opens work as a view of the current conversation and returns to the same chat", async () => {
+    render(<Harness />);
+
+    expect(await screen.findByTestId("conversation")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    expect(screen.getByTestId("work-view").textContent).toContain("context-floe");
+
+    fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
+    expect(await screen.findByTestId("conversation")).toBeTruthy();
   });
 
   it("starts a new conversation with the currently selected collaborator", async () => {

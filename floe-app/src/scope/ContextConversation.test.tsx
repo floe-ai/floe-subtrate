@@ -65,6 +65,29 @@ const endpoints = [
   { endpoint_id: NON_PARTICIPANT_EP, workspace_id: "ws-1", name: "Bob", agent_id: null, bridge_id: null, status: "active", metadata_json: "{}", created_at: "", updated_at: "" },
 ];
 
+function conversationEvent(
+  eventId: string,
+  sourceEndpointId: string,
+  type: string,
+  content: Record<string, unknown>,
+) {
+  return {
+    event_id: eventId,
+    type,
+    workspace_id: "ws-1",
+    source_endpoint_id: sourceEndpointId,
+    thread_id: "thread-1",
+    context_id: "ctx-1",
+    scope_id: null,
+    correlation_id: null,
+    destination_json: { kind: "context", context_id: "ctx-1" },
+    content,
+    response: { expected: false },
+    metadata: {},
+    created_at: "2026-01-01T00:00:00Z",
+  } as const;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   modelControl.ready = true;
@@ -217,6 +240,57 @@ describe("ContextConversation — participant gate", () => {
     expect(input.disabled).toBe(true);
     expect(screen.getByText("Choose a provider and model before talking to Floe.")).toBeTruthy();
     expect(client.emit).not.toHaveBeenCalled();
+  });
+
+  it("renders Markdown and places the operator on the right and collaborators on the left", async () => {
+    vi.mocked(client.getContext).mockResolvedValue({
+      ...mockContext,
+      participants: [PARTICIPANT_EP, NON_PARTICIPANT_EP],
+    } as any);
+    vi.mocked(client.listContextEvents).mockResolvedValue([
+      conversationEvent("event-operator", PARTICIPANT_EP, "message", { text: "**Outcome** accepted" }),
+      conversationEvent("event-collaborator", NON_PARTICIPANT_EP, "message", { text: "- First step\n- Second step" }),
+    ] as any);
+
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP }}
+      />,
+    );
+
+    const operatorMessage = await screen.findByLabelText("Message from Alice");
+    const collaboratorMessage = screen.getByLabelText("Message from Bob");
+    expect(operatorMessage.getAttribute("data-message-side")).toBe("right");
+    expect(collaboratorMessage.getAttribute("data-message-side")).toBe("left");
+    expect(screen.getByText("Outcome").tagName).toBe("STRONG");
+    expect(screen.getByText("First step").tagName).toBe("LI");
+  });
+
+  it("shows public work events in a read-only inspector without exposing a composer", async () => {
+    vi.mocked(client.listContextEvents).mockResolvedValue([
+      conversationEvent("event-work", NON_PARTICIPANT_EP, "application.slice.dispatched", {
+        summary: "Implement the first vertical slice",
+      }),
+    ] as any);
+
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        alignRightEndpointId={PARTICIPANT_EP}
+        showWorkEvents
+        readOnly
+      />,
+    );
+
+    expect(await screen.findByText("Implement the first vertical slice")).toBeTruthy();
+    expect(screen.getByText("application.slice.dispatched")).toBeTruthy();
+    expect(screen.queryByLabelText("Compose message")).toBeNull();
+    expect(screen.queryByLabelText("Not a participant")).toBeNull();
   });
 });
 

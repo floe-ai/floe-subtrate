@@ -1,6 +1,6 @@
 /**
- * MiniMarkdown — small, self-contained markdown renderer for actor body
- * text (instructions). No external runtime dependency (react-markdown/marked
+ * MiniMarkdown — small, self-contained markdown renderer for Floe-authored
+ * text. No external runtime dependency (react-markdown/marked
  * are not installed and adding them risks a slow/blocked `npm install`).
  *
  * Supported subset, deliberately small but enough for actor instructions:
@@ -12,8 +12,8 @@
  *  - paragraphs (blank-line separated)
  *
  * This is intentionally not a full CommonMark implementation. It exists so
- * the create/edit actor form and the ActorInspector body view can show a
- * rendered preview without taking on a new dependency.
+ * actor instructions and conversation messages can be rendered consistently
+ * without taking on a new dependency.
  */
 import React from "react";
 
@@ -125,11 +125,14 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
         </code>
       );
     } else if (match[8] !== undefined && match[9] !== undefined) {
-      nodes.push(
-        <a key={`${keyPrefix}-${key++}`} href={match[9]} target="_blank" rel="noreferrer" style={{ color: "#8aa89c" }}>
+      const href = safeLinkHref(match[9]);
+      nodes.push(href ? (
+        <a key={`${keyPrefix}-${key++}`} href={href} target="_blank" rel="noreferrer" style={{ color: "#8aa89c" }}>
           {match[8]}
         </a>
-      );
+      ) : (
+        <span key={`${keyPrefix}-${key++}`}>{match[8]}</span>
+      ));
     }
     lastIndex = match.index + match[0].length;
   }
@@ -137,6 +140,13 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
     nodes.push(text.slice(lastIndex));
   }
   return nodes;
+}
+
+/** Chat content is untrusted; only schemes that cannot execute app code become links. */
+function safeLinkHref(value: string): string | null {
+  const trimmed = value.trim();
+  if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
+  return null;
 }
 
 const headingSize: Record<1 | 2 | 3, number> = { 1: 20, 2: 17, 3: 14.5 };

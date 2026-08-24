@@ -39,6 +39,7 @@ import {
 } from "../bus-client/client.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
 import { FloeModelControl } from "../workspace/FloeModelControl.tsx";
+import { MiniMarkdown } from "../actors/markdown.tsx";
 import { contextLabel } from "./ScopeDetail.tsx";
 
 // ---------------------------------------------------------------------------
@@ -96,6 +97,18 @@ function isVisibleMessage(event: EventEnvelope): boolean {
 function messageText(event: EventEnvelope): string {
   const t = event.content?.["text"];
   return typeof t === "string" ? t : JSON.stringify(event.content ?? {});
+}
+
+function workEventText(event: EventEnvelope): string {
+  const preferredKeys = ["text", "message", "summary", "description", "instructions", "result", "output"];
+  for (const key of preferredKeys) {
+    const value = event.content?.[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  const content = event.content ?? {};
+  return Object.keys(content).length > 0
+    ? `\`\`\`json\n${JSON.stringify(content, null, 2)}\n\`\`\``
+    : "No readable event content.";
 }
 
 const ACTIVE_DELIVERY_STATES = new Set(["reserved", "delivered_to_bridge", "injected_to_runtime"]);
@@ -275,24 +288,46 @@ function ParticipantPill({ name }: { name: string }): React.ReactElement {
 function MessageRow({
   event,
   endpoints,
+  alignRightEndpointId,
+  showEventType,
 }: {
   event: EventEnvelope;
   endpoints: EndpointRef[];
+  alignRightEndpointId?: string;
+  showEventType?: boolean;
 }): React.ReactElement {
   const author = endpointName(event.source_endpoint_id, endpoints);
+  const alignedRight = !!alignRightEndpointId && event.source_endpoint_id === alignRightEndpointId;
   return (
-    <div style={{ padding: "10px 0", borderBottom: `1px solid ${tk.border2}` }}>
-      <div style={{
-        display: "flex", alignItems: "baseline", gap: 8, marginBottom: 3,
+    <div
+      data-message-side={alignedRight ? "right" : "left"}
+      aria-label={`Message from ${author}`}
+      style={{ display: "flex", justifyContent: alignedRight ? "flex-end" : "flex-start", padding: "7px 0" }}
+    >
+      <article style={{
+        width: "fit-content", maxWidth: "min(76%, 760px)", minWidth: 120,
+        padding: "10px 12px", borderRadius: tk.r3,
+        background: alignedRight ? tk.accentSoft2 : tk.surface,
+        border: `1px solid ${alignedRight ? "rgba(138,168,156,0.22)" : tk.border}`,
       }}>
-        <span style={{ fontSize: 12.5, fontWeight: 590, color: tk.ink }}>{author}</span>
-        <span style={{ fontSize: 11, color: tk.ink4 }}>{formatTime(event.created_at)}</span>
-      </div>
-      <div style={{
-        fontSize: 13.5, color: tk.ink2, lineHeight: 1.5, whiteSpace: "pre-wrap",
-      }}>
-        {messageText(event)}
-      </div>
+        <div style={{
+          display: "flex", alignItems: "baseline", justifyContent: alignedRight ? "flex-end" : "flex-start",
+          gap: 8, marginBottom: 7,
+        }}>
+          {showEventType && event.type !== "message" && (
+            <span style={{
+              color: tk.accent, fontSize: 9.5, letterSpacing: "0.06em", textTransform: "uppercase",
+            }}>
+              {event.type}
+            </span>
+          )}
+          <span style={{ fontSize: 12.5, fontWeight: 590, color: tk.ink }}>{author}</span>
+          <span style={{ fontSize: 11, color: tk.ink4 }}>{formatTime(event.created_at)}</span>
+        </div>
+        <div style={{ fontSize: 13.5, color: tk.ink2, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+          <MiniMarkdown source={showEventType ? workEventText(event) : messageText(event)} />
+        </div>
+      </article>
     </div>
   );
 }
@@ -620,6 +655,12 @@ export type ContextConversationProps = {
   endpoints: EndpointRef[];
   /** Called once the context's human label is known, for the shell breadcrumb. */
   onLabelResolved?: (label: string) => void;
+  /** Align messages from this endpoint as the operator's side of the conversation. */
+  alignRightEndpointId?: string;
+  /** Inspect all public Context events rather than only chat messages. */
+  showWorkEvents?: boolean;
+  /** Hide all controls that could mutate the inspected Context. */
+  readOnly?: boolean;
   /** Neutral operator front door: fixes the human identity and hides substrate-oriented context controls. */
   operatorEntry?: {
     speakingAsEndpointId: string;
@@ -629,6 +670,7 @@ export type ContextConversationProps = {
     onBackToConversations?: () => void;
     onNewConversation?: () => void;
     onDeleteConversation?: () => void;
+    onOpenWork?: () => void;
     conversationActionsDisabled?: boolean;
     conversationActionError?: string | null;
   };
@@ -639,6 +681,9 @@ export function ContextConversation({
   workspaceId,
   endpoints,
   onLabelResolved,
+  alignRightEndpointId,
+  showWorkEvents = false,
+  readOnly = false,
   operatorEntry,
 }: ContextConversationProps): React.ReactElement {
   const [context, setContext] = useState<ContextRef | null>(null);
@@ -790,7 +835,7 @@ export function ContextConversation({
 
   // B2 — auto-scroll to bottom when messages or working state changes (if user is at bottom)
   // Re-check scroll position whenever the visible event stream changes.
-  const totalVisibleCount = events.filter(isVisibleMessage).length;
+  const totalVisibleCount = events.filter(event => showWorkEvents || isVisibleMessage(event)).length;
   const workingCount = workingEndpoints.size;
 
   useEffect(() => {
@@ -864,7 +909,7 @@ export function ContextConversation({
   const workingActorNames = Array.from(workingEndpoints.keys())
     .map(id => endpointName(id, endpoints));
 
-  const visibleMessages = events.filter(isVisibleMessage);
+  const visibleMessages = events.filter(event => showWorkEvents || isVisibleMessage(event));
   const operatorCollaborators = operatorEntry
     ? context.participants
         .filter(participant => participant !== operatorEntry.speakingAsEndpointId)
@@ -913,8 +958,20 @@ export function ContextConversation({
           }}>
             {operatorEntry ? operatorConversationName : label}
           </h2>
-          {operatorEntry && (operatorEntry.onNewConversation || operatorEntry.onDeleteConversation) && (
+          {operatorEntry && (operatorEntry.onOpenWork || operatorEntry.onNewConversation || operatorEntry.onDeleteConversation) && (
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {operatorEntry.onOpenWork && (
+                <button
+                  type="button"
+                  onClick={operatorEntry.onOpenWork}
+                  style={{
+                    background: "transparent", color: tk.accentHov, border: `1px solid ${tk.border}`,
+                    borderRadius: tk.r2, padding: "6px 10px", fontSize: 12, cursor: "pointer",
+                  }}
+                >
+                  Work
+                </button>
+              )}
               {operatorEntry.onNewConversation && (
                 <button
                   type="button"
@@ -1003,7 +1060,13 @@ export function ContextConversation({
             </div>
           ) : (
             visibleMessages.map(event => (
-              <MessageRow key={event.event_id} event={event} endpoints={endpoints} />
+              <MessageRow
+                key={event.event_id}
+                event={event}
+                endpoints={endpoints}
+                alignRightEndpointId={alignRightEndpointId ?? operatorEntry?.speakingAsEndpointId}
+                showEventType={showWorkEvents}
+              />
             ))
           )}
 
@@ -1025,7 +1088,7 @@ export function ContextConversation({
       </div>
 
       {/* Footer: composer dock (participant) or non-participant selector + join */}
-      {isParticipant ? (
+      {!readOnly && (isParticipant ? (
         <ComposerDock
           endpoints={endpoints}
           speakingAsId={speakingAsId}
@@ -1051,7 +1114,7 @@ export function ContextConversation({
           onSpeakingAsChange={handleSpeakingAsChange}
           onJoin={handleJoin}
         />
-      )}
+      ))}
     </div>
   );
 }
