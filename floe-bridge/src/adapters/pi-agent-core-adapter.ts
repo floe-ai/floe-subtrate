@@ -58,8 +58,11 @@ type AgentFactory = (input: AgentFactoryInput) => AgentLike;
 type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
 };
+
+type TurnCompletion =
+  | { outcome: "completed" }
+  | { outcome: "failed"; error: unknown };
 
 type RuntimeTurnContext = {
   runtime_turn_id: string;
@@ -78,7 +81,7 @@ type RuntimeTurnContext = {
   last_visible_telemetry_text: string;
   dependency_requested: boolean;
   finalized: boolean;
-  completion: Deferred<void>;
+  completion: Deferred<TurnCompletion>;
   tool_activity: Array<{ name: string; call_id?: string; summary?: string; is_error?: boolean; files_touched?: string[]; duration_ms?: number }>;
   emitted_events: Array<{ type: string; destination: string; text_preview: string; response_expected: boolean }>;
 };
@@ -351,7 +354,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       if (session.activeTurn === turn) session.activeTurn = undefined;
       if (!turn.finalized) {
         turn.finalized = true;
-        turn.completion.resolve();
+        turn.completion.resolve({ outcome: "failed", error });
       }
       // Write work log for failed turn
       this.writeWorkLog(context, bundle, turn, "error");
@@ -899,7 +902,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         }
       } catch (error) {
         if (session.activeTurn === turn) session.activeTurn = undefined;
-        if (!turn.finalized) turn.completion.reject(error);
+        if (!turn.finalized) {
+          turn.completion.resolve({ outcome: "failed", error });
+        }
         console.error("[bridge] pi adapter event handling failed", error);
       }
     });
@@ -931,27 +936,30 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       last_visible_telemetry_text: "",
       dependency_requested: false,
       finalized: false,
-      completion: createDeferred<void>(),
+      completion: createDeferred<TurnCompletion>(),
       tool_activity: [],
       emitted_events: []
     };
   }
 
   private async awaitTurnCompletion(context: RuntimeContext, session: SessionState, turn: RuntimeTurnContext): Promise<void> {
-    const completed = await Promise.race([
-      turn.completion.promise.then(() => true),
-      sleep(this.turnFinalizeTimeoutMs).then(() => false)
+    const timedOut = { outcome: "timed_out" } as const;
+    let completion: TurnCompletion | typeof timedOut = await Promise.race([
+      turn.completion.promise,
+      sleep(this.turnFinalizeTimeoutMs).then(() => timedOut)
     ]);
-    if (completed) return;
-    console.log("[bridge] pi turn timeout, finalizing", {
-      runtime_turn_id: turn.runtime_turn_id,
-      delivery_id: turn.delivery_id,
-      visible_output_length: turn.visible_output.length
-    });
-    if (session.activeTurn === turn && !turn.finalized) {
-      await this.finalizeTurn(context, session, turn, null);
+    if (completion.outcome === "timed_out") {
+      console.log("[bridge] pi turn timeout, finalizing", {
+        runtime_turn_id: turn.runtime_turn_id,
+        delivery_id: turn.delivery_id,
+        visible_output_length: turn.visible_output.length
+      });
+      if (session.activeTurn === turn && !turn.finalized) {
+        await this.finalizeTurn(context, session, turn, null);
+      }
+      completion = await turn.completion.promise;
     }
-    await turn.completion.promise;
+    if (completion.outcome === "failed") throw completion.error;
   }
 
   private async finalizeTurn(
@@ -1019,10 +1027,15 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
               error_message: piErrorMessage
             });
           }
-          // Reject the completion so handleBundle's catch path marks the
-          // delivery as failed. A terminal requested-actor failure is returned
-          // by the daemon through the same causal path as a successful result.
-          turn.completion.reject(new PiErrorStopReasonSignal(piErrorMessage, piHttpStatus));
+          // Complete with an explicit failure so handleBundle's catch path marks
+          // the delivery as failed. Do not temporarily reject an unobserved
+          // Promise: Node treats that as fatal while Pi is still unwinding its
+          // event loop. A terminal requested-actor failure is returned by the
+          // daemon through the same causal path as a successful result.
+          turn.completion.resolve({
+            outcome: "failed",
+            error: new PiErrorStopReasonSignal(piErrorMessage, piHttpStatus)
+          });
           return;
         }
       }
@@ -1037,9 +1050,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         });
       }
 
-      turn.completion.resolve();
+      turn.completion.resolve({ outcome: "completed" });
     } catch (error) {
-      turn.completion.reject(error);
+      turn.completion.resolve({ outcome: "failed", error });
       throw error;
     } finally {
       if (session.activeTurn === turn) session.activeTurn = undefined;
@@ -1246,12 +1259,10 @@ function extractText(message: any): string {
 
 function createDeferred<T>(): Deferred<T> {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolveFn, rejectFn) => {
+  const promise = new Promise<T>((resolveFn) => {
     resolve = resolveFn;
-    reject = rejectFn;
   });
-  return { promise, resolve, reject };
+  return { promise, resolve };
 }
 
 function sleep(ms: number): Promise<void> {

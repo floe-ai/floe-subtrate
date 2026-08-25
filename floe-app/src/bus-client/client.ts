@@ -35,6 +35,7 @@ import type {
 import { subscribeEvents as _subscribeEvents } from "./stream.ts";
 
 const BUS_BASE = "http://127.0.0.1:5377";
+const BUS_MUTATION_TIMEOUT_MS = 5_000;
 
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${BUS_BASE}${path}`, { signal });
@@ -53,11 +54,24 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BUS_BASE}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), BUS_MUTATION_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${BUS_BASE}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("Floe's local service stopped responding. Close and reopen Floe, then try again.", { cause: error });
+    }
+    throw new Error("Floe's local service is unavailable. Close and reopen Floe, then try again.", { cause: error });
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!res.ok) throw new Error(`Bus POST ${path} → ${res.status}`);
   return res.json() as Promise<T>;
 }

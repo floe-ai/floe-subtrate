@@ -2679,7 +2679,10 @@ describe("TurnFailedError propagation (FIX 1)", () => {
 // ---------------------------------------------------------------------------
 
 describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError", () => {
-  function makeAdapterWithErrorStopReason(errorStopMessage: string | null) {
+  function makeAdapterWithErrorStopReason(
+    errorStopMessage: string | null,
+    options?: { detachAgentEnd?: boolean }
+  ) {
     return new PiAgentCoreAdapter(
       {
         paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
@@ -2720,7 +2723,15 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
                 provider: "mock-provider"
               };
               for (const l of listeners) await l({ type: "message_end", message: errorAssistantMessage });
-              for (const l of listeners) await l({ type: "agent_end", messages: [errorAssistantMessage] });
+              if (options?.detachAgentEnd) {
+                // Pi's real event loop may emit agent_end before prompt() has
+                // returned to the adapter. The completion must remain inert
+                // until awaitTurnCompletion observes it.
+                for (const l of listeners) void l({ type: "agent_end", messages: [errorAssistantMessage] });
+                await new Promise((resolve) => setTimeout(resolve, 20));
+              } else {
+                for (const l of listeners) await l({ type: "agent_end", messages: [errorAssistantMessage] });
+              }
             }
           };
         },
@@ -2760,6 +2771,29 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
     expect(err.source_endpoint_id).toBe("actor:workspace:test:operator");
     // errorMessage from AssistantMessage.errorMessage field (pi-ai types.d.ts line 155)
     expect(err.message).toContain("model not found: 404 Not Found");
+  });
+
+  it("keeps a detached Pi error completion inside the delivery failure path", async () => {
+    const adapter = makeAdapterWithErrorStopReason(
+      "temporary provider failure: 503 Service Unavailable",
+      { detachAgentEnd: true }
+    );
+
+    await expect(adapter.handleBundle(
+      {
+        bridge_id: "bridge:test",
+        bus: { recordRuntimeTurnResult,
+          async appendRuntimeTelemetry() {},
+          async emit() {}
+        }
+      } as any,
+      makeDelivery("del-detached-stop-error", "thread-detached-stop-error", "hello"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
+    )).rejects.toMatchObject({
+      code: "turn_failed",
+      delivery_id: "del-detached-stop-error",
+      http_status: 503
+    });
   });
 
   it("extracts http_status from pi errorMessage when stop_reason is 'error'", async () => {

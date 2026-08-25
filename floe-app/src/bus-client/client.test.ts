@@ -10,6 +10,7 @@ import {
   listDeliveries,
   getRuntimeStatus,
   listConfigs,
+  emit,
 } from "./client.ts";
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -126,6 +128,26 @@ describe("bus-client — reads", () => {
 // ---------------------------------------------------------------------------
 
 describe("bus-client — writes", () => {
+  it("bounds a message submission when the local substrate stops responding", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    })));
+
+    const pending = expect(emit({
+      type: "message",
+      workspace_id: "ws1",
+      source_endpoint_id: "actor:ws1:operator",
+      destination: { kind: "endpoint", endpoint_id: "actor:ws1:floe" },
+      content: { text: "hello" },
+      response: { expected: true },
+      metadata: {},
+    })).rejects.toThrow("Floe's local service stopped responding");
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await pending;
+  });
+
   it("createScope unwraps { scope } and POSTs", async () => {
     const scope = { scope_id: "s-new", workspace_id: "ws1", title: "New Scope", description: null, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" };
     const fetchMock = mockFetch({ scope }, 201);
