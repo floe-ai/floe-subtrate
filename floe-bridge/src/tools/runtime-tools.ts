@@ -3,7 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { BusClient } from "../bus-client.js";
 import type { LoadedExtension } from "../extension-loader.js";
 import { createActorTools } from "./actor-tools.js";
-import { createScopeTools } from "./scope-tools.js";
+import { createCapabilityTools } from "./capability-tools.js";
 import { createWorkspaceTools } from "./index.js";
 import { createPulseTools } from "./pulse-tools.js";
 import type { ToolContext } from "./types.js";
@@ -15,6 +15,7 @@ import type { ToolContext } from "./types.js";
 export function createRuntimeTools(input: {
   bus: BusClient;
   workspaceId: string;
+  endpointId: string;
   workspaceLocator?: string;
   extensions?: LoadedExtension[];
   toolContext: Pick<ToolContext, "getActiveTurn">;
@@ -24,9 +25,9 @@ export function createRuntimeTools(input: {
     : [];
   const pulseTools = createPulseTools(input.bus, input.workspaceId, input.workspaceLocator, input.toolContext);
   const actorTools = createActorTools(input.bus, input.workspaceId, input.workspaceLocator);
-  const scopeTools = createScopeTools(input.bus, input.workspaceId, input.workspaceLocator);
+  const capabilityTools = createCapabilityTools(input.bus, input.workspaceId, input.endpointId);
   const extensionTools = (input.extensions ?? []).flatMap(extension => extension.tools) as AgentTool[];
-  return [...pulseTools, ...actorTools, ...scopeTools, ...extensionTools, ...workspaceTools];
+  return [...pulseTools, ...actorTools, ...capabilityTools, ...extensionTools, ...workspaceTools];
 }
 
 /** Tool membership is fixed when either runtime creates a model session. */

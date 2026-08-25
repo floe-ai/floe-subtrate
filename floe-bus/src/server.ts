@@ -31,6 +31,7 @@ import { listAuthModels, listAuthProfiles } from "./auth.js";
 import { browseDir } from "./fs/browseDir.js";
 import { listAgentFiles } from "./fs/agentFiles.js";
 import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs/resolveWithinRoot.js";
+import { registerActorCapabilityRoutes } from "./actor-capabilities.js";
 
 const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const BRIDGE_LIVENESS_MS = 90_000;
@@ -226,6 +227,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   app.get("/v1/workspaces", async () => ({
     workspaces: store.listWorkspaces()
   }));
+
+  registerActorCapabilityRoutes(app, store, broadcast);
 
   app.get("/v1/workspaces/:workspace_id/scopes", async (request, reply) => {
     const params = z.object({ workspace_id: z.string() }).parse(request.params);

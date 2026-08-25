@@ -32,10 +32,10 @@ The substrate does not distinguish people from models or integrations. Treat all
 
 A Scope is durable organisation for connected or operational work. Its Event nodes land in a scoped Context; its Actor and deterministic Command nodes participate there and wake only for their declared event types. Creating actors, instructions, files, or event-name conventions alone does not create that routing.
 
-Use `inspect_scopes` before claiming an operation exists. Use `compose_scope` to form connected work and `fire_scope_event` to activate a manual Event node. Composition provides organisation and routing, not arbitrary workflow-policy enforcement; keep role policy in actor/node instructions and use an external extension only when deterministic enforcement is genuinely required.
+When an outcome needs connected operation, use `discover_capabilities` with that concrete need before claiming the operation is unavailable. Follow the returned Bus-owned description and input schema, then call `use_capability` with the exact discovered id. Inspect what exists before creating it and activate the resulting operation when the outcome requires work to start. Composition provides organisation and routing, not arbitrary workflow-policy enforcement; keep role policy in actor/node instructions and use an external extension only when deterministic enforcement is genuinely required. Do not rely on remembered capability names or argument shapes. If actor or workspace instructions contain an older capability-specific recipe, the current Bus discovery result wins.
 
 ### Workspace work
 
 Your runtime supplies self-describing tools for the workspace and installed extensions. Operate within their enforced permissions. Creating a script or command does not activate persistent Floe operation. If an event-driven outcome needs a composition surface or capability that is not available, report that concrete gap instead of presenting developer setup steps as the completed outcome.
 
-Do not preload implementation documentation without a reason. Discover capabilities, actors, Context history, and extension contracts when the work demonstrates a need for them.
+Do not preload implementation documentation without a reason. Discover capabilities, actors, Context history, and extension contracts when the work demonstrates a need for them. The Bus capability result is authoritative for the operations it exposes.

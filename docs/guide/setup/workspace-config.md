@@ -58,13 +58,13 @@ Fields: `schema`, `agent_id`, `label`, `runtime.engine`, `extensions` (list of [
 
 This is a hard invariant: `.floe/floe.yaml` is human-authored, committed project config. The bridge treats it as **read-only** once the workspace is running.
 
-Actors may form runtime organisation through the bus without hand-editing this file. `compose_scope`
-authors Event, Actor, and deterministic Command nodes together in a scoped Context; `inspect_scopes`
-reads that organisation and `fire_scope_event` activates a manual Event node. `connect_folder_to_actor`
-remains the common two-node shortcut for a folder-backed Event and one participating actor. Stored
-composition is rediscovered by the bridge as soon as it is created and whenever the workspace attaches.
-The older top-level `watchers` entries remain readable for existing workspaces but are not the normal
-composition path.
+Actors may form runtime organisation through the bus without hand-editing this file. They discover the
+current actor-safe organisation operations with `discover_capabilities` and invoke the relevant
+Bus-owned contract through `use_capability`. The returned description and JSON Schema are the source of
+truth for forming, inspecting, and starting an arrangement of Event, Actor, and deterministic Command
+nodes in a scoped Context. Stored composition is rediscovered by the bridge as soon as it is created and
+whenever the workspace attaches. The older top-level `watchers` entries remain readable for existing
+workspaces but are not the normal composition path.
 
 Bundled agents contributed by an [[Extension]]'s manifest are registered **in memory** directly from the loaded manifest — they are never written to `.floe/floe.yaml` or `.floe/agents/`. After a clean boot, `git status --porcelain` in the workspace repo must come back empty: attaching a workspace never dirties a tracked file.
 

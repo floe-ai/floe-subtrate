@@ -23,9 +23,11 @@ describe("SUBSTRATE_GUIDANCE", () => {
   });
 
   it("explains real Scope composition without inventing workflow enforcement", () => {
-    expect(SUBSTRATE_GUIDANCE).toContain("Use `inspect_scopes`");
-    expect(SUBSTRATE_GUIDANCE).toContain("Use `compose_scope`");
-    expect(SUBSTRATE_GUIDANCE).toContain("`fire_scope_event`");
+    expect(SUBSTRATE_GUIDANCE).toContain("use `discover_capabilities`");
+    expect(SUBSTRATE_GUIDANCE).toContain("call `use_capability`");
+    expect(SUBSTRATE_GUIDANCE).toContain("Bus-owned description and input schema");
+    expect(SUBSTRATE_GUIDANCE).toContain("the current Bus discovery result wins");
+    expect(SUBSTRATE_GUIDANCE).not.toContain("`compose_scope`");
     expect(SUBSTRATE_GUIDANCE).toContain("not arbitrary workflow-policy enforcement");
   });
 });

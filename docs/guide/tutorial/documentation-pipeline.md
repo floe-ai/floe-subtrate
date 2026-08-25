@@ -2,7 +2,7 @@
 
 **A complete worked example: a note lands in a watched folder, a writer and reviewer argue over a draft, a command node runs a real test, and an approver writes the file.**
 
-This is the proving case for the whole model. It uses no primitive beyond what [[Concepts]] already describes: an [[Event]] node wakes on a folder, two [[Actor]]s take part in a shared [[Context]], a [[Command]] node runs deterministic work, and the result comes back to the run that asked for it. `scripts/prove-docs-pipeline.mjs` runs this for real against a live bus, bridge, and model. This page shows the underlying Bus calls; a runtime actor can perform the same composition through `compose_scope` and inspect or activate it through `inspect_scopes` and `fire_scope_event`.
+This is the proving case for the whole model. It uses no primitive beyond what [[Concepts]] already describes: an [[Event]] node wakes on a folder, two [[Actor]]s take part in a shared [[Context]], a [[Command]] node runs deterministic work, and the result comes back to the run that asked for it. `scripts/prove-docs-pipeline.mjs` runs this for real against a live bus, bridge, and model. This page shows the underlying Bus calls; a runtime actor can discover the current actor-safe organisation operations with `discover_capabilities` and invoke the relevant one through `use_capability`.
 
 The [[CLI reference]] does not expose these operations. Every step below is a real call against the [[Bus API]] on `http://localhost:5377`; it documents the contract beneath the actor-facing composition tools.
 
@@ -101,8 +101,9 @@ The bridge attaches the folder source declared on `note_arrived` whenever the wo
 files then enter the graph through ordinary Event delivery; no detached watcher process or direct edit
 to `.floe/floe.yaml` is required.
 
-Floe normally uses `compose_scope` instead of these manual Bus calls. For the common single-actor case,
-`connect_folder_to_actor` remains a shortcut that creates the same folder-backed Event node and chosen actor.
+Floe normally discovers the current organisation capability and invokes its Bus-owned contract instead
+of constructing these manual calls. The same general composition accepts a folder-backed Event and one
+actor; there is no separate folder shortcut to describe or maintain.
 
 ## 7. Drop the note and watch it run
 
@@ -153,6 +154,7 @@ See [[Glossary]].
 - `floe-bridge/src/folder-watcher.ts` — the folder watcher implementation
 - `floe-bridge/src/daemon.ts` — `attachWorkspace`, graph-source watcher registration, `handleCommandDelivery`
 - `floe-bridge/src/command-runner.ts` — command input resolution and execution
+- `GET /v1/workspaces/:id/capabilities` and `POST /v1/workspaces/:id/capabilities/:capability_id/invoke` — actor-safe discovery and invocation in `floe-bus/src/actor-capabilities.ts`
 - `POST /v1/workspaces/register`, `POST /v1/workspaces/:id/select`, `POST /v1/runtime/bindings`, `GET /v1/workspaces/:id/endpoints`, `POST /v1/workspaces/:id/scopes`, `POST /v1/workspaces/:id/scopes/:scope_id/graphs`, `GET /v1/contexts/:id/events` — `floe-bus/src/server.ts`
 - Legacy top-level `watchers` entries remain readable, but new folder-driven work should be composed
-  through an Event node source using `compose_scope` or its `connect_folder_to_actor` shortcut.
+  through an Event node source using the current Bus-discovered organisation capability.

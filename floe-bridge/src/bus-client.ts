@@ -86,6 +86,46 @@ export class BusClient {
     return result.workspaces;
   }
 
+  async discoverCapabilities(
+    workspaceId: string,
+    input: { query?: string; category?: string; limit?: number } = {},
+  ): Promise<{ capabilities: Array<{
+    capability_id: string;
+    category: string;
+    title: string;
+    description: string;
+    effect: "read" | "write";
+    input_schema: Record<string, unknown>;
+  }> }> {
+    const params = new URLSearchParams();
+    if (input.query) params.set("query", input.query);
+    if (input.category) params.set("category", input.category);
+    if (input.limit != null) params.set("limit", String(input.limit));
+    const suffix = params.size > 0 ? `?${params}` : "";
+    return this.get(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities${suffix}`,
+    ) as Promise<{ capabilities: Array<{
+      capability_id: string;
+      category: string;
+      title: string;
+      description: string;
+      effect: "read" | "write";
+      input_schema: Record<string, unknown>;
+    }> }>;
+  }
+
+  async invokeCapability(
+    workspaceId: string,
+    capabilityId: string,
+    callerEndpointId: string,
+    input: Record<string, unknown>,
+  ): Promise<{ result: { summary: string; data: Record<string, unknown> } }> {
+    return this.post(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/${encodeURIComponent(capabilityId)}/invoke`,
+      { input, caller_endpoint_id: callerEndpointId },
+    ) as Promise<{ result: { summary: string; data: Record<string, unknown> } }>;
+  }
+
   async listConfigs(): Promise<any[]> {
     const result = await this.get("/v1/configs") as { configs: any[] };
     return result.configs;
@@ -94,10 +134,6 @@ export class BusClient {
   async listEndpoints(workspaceId: string): Promise<any[]> {
     const result = await this.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`) as { endpoints: any[] };
     return result.endpoints;
-  }
-
-  async resolveEndpoint(workspaceId: string, ref: string): Promise<{ endpoint_id: string; found: boolean }> {
-    return this.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve-endpoint?ref=${encodeURIComponent(ref)}`) as Promise<{ endpoint_id: string; found: boolean }>;
   }
 
   /**
@@ -244,66 +280,6 @@ export class BusClient {
   /** All scope graphs in a workspace, across every scope — used to discover command nodes to attach at workspace-attach time. */
   async listScopeGraphsForWorkspace(workspaceId: string): Promise<{ graphs: any[] }> {
     return this.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs`) as Promise<{ graphs: any[] }>;
-  }
-
-  async listScopes(workspaceId: string): Promise<Array<{
-    scope_id: string;
-    workspace_id: string;
-    title: string;
-    description: string | null;
-    created_at: string;
-    updated_at: string;
-  }>> {
-    const result = await this.get(
-      `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`,
-    ) as { scopes: Array<{
-      scope_id: string;
-      workspace_id: string;
-      title: string;
-      description: string | null;
-      created_at: string;
-      updated_at: string;
-    }> };
-    return result.scopes;
-  }
-
-  async createScope(input: {
-    workspace_id: string;
-    scope_id: string;
-    title: string;
-    description?: string | null;
-  }): Promise<{ scope_id: string }> {
-    const result = await this.post(
-      `/v1/workspaces/${encodeURIComponent(input.workspace_id)}/scopes`,
-      {
-        scope_id: input.scope_id,
-        title: input.title,
-        description: input.description ?? null,
-      },
-    ) as { scope: { scope_id: string } };
-    return result.scope;
-  }
-
-  async deleteScope(workspaceId: string, scopeId: string): Promise<void> {
-    await this._delete(
-      `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/${encodeURIComponent(scopeId)}`,
-    );
-  }
-
-  async createScopeGraph(input: {
-    workspace_id: string;
-    scope_id: string;
-    created_by_endpoint_id?: string | null;
-    nodes: unknown[];
-  }): Promise<{ graph_id: string; context_id: string; nodes: unknown[] }> {
-    const result = await this.post(
-      `/v1/workspaces/${encodeURIComponent(input.workspace_id)}/scopes/${encodeURIComponent(input.scope_id)}/graphs`,
-      {
-        nodes: input.nodes,
-        created_by_endpoint_id: input.created_by_endpoint_id ?? null,
-      },
-    ) as { graph: { graph_id: string; context_id: string; nodes: unknown[] } };
-    return result.graph;
   }
 
   /**

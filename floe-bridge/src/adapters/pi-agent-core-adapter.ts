@@ -460,6 +460,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     const runtimeTools = createRuntimeTools({
       bus: context.bus,
       workspaceId: bundle.workspace_id,
+      endpointId: bundle.endpoint_id,
       workspaceLocator: context.workspace_locator,
       extensions: context.extensions,
       toolContext: { getActiveTurn: () => state.activeTurn },

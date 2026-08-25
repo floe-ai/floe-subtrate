@@ -86,9 +86,19 @@ The substrate still stores nodes under a `graph_id` and calls the picture a "gra
 | GET | `/v1/workspaces/:workspace_id/graphs/:graph_id` | — | Get one graph. |
 | POST | `/v1/workspaces/:workspace_id/graphs/:graph_id/nodes/:node_id/fire` | `{ content?, correlation_id? }` | Fires a `trigger`-kind node, creating events. 400 `scope_graph_node_not_a_trigger` if the node isn't a trigger. |
 
-Runtime actors normally use `inspect_scopes`, `compose_scope`, and `fire_scope_event` rather than
-constructing these HTTP calls. These are thin actor-facing operations over the same routes, not a
-second workflow or graph model. `connect_folder_to_actor` remains a shortcut over `compose_scope`.
+## Actor-safe capabilities
+
+The Bus exposes a bounded semantic surface for runtime actors. It is not raw access to every route:
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| GET | `/v1/workspaces/:workspace_id/capabilities?query=&category=&limit=` | — | Discovers matching actor-safe operations, including their authoritative description, effect, and input JSON Schema. |
+| POST | `/v1/workspaces/:workspace_id/capabilities/:capability_id/invoke` | `{ input, caller_endpoint_id? }` | Invokes an allow-listed capability. The exact schema returned by discovery validates `input`. |
+
+Runtime actors use the stable `discover_capabilities` and `use_capability` tools over this surface. The
+Bridge does not carry capability-specific descriptions or schemas. Scope inspection, composition, and
+manual Event activation are the first registered operations; their live contracts come from discovery,
+not from this guide. See ADR-0009.
 
 ## Endpoints (actors)
 
@@ -224,9 +234,9 @@ Webhook routes are **write-only** — there is no `GET` to list configured webho
 ## Folder watchers
 
 Folder ingress is represented as `source: { kind: "folder", path: "..." }` on an Event node in a
-stored scope graph. It is created through the actor-facing `compose_scope` tool or its
-`connect_folder_to_actor` shortcut and is visible through the existing graph read routes. Legacy
-top-level workspace watcher config remains readable but has no standalone HTTP resource.
+stored scope graph. It is created through the Bus-discovered organisation capability and is visible
+through the existing graph read routes. Legacy top-level workspace watcher config remains readable but
+has no standalone HTTP resource.
 
 ## Runtime bindings
 
