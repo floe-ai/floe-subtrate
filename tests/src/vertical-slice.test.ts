@@ -143,7 +143,7 @@ describe("Floe local vertical slice", () => {
       metadata: {}
     });
 
-    await waitFor(async () => agentMessages(workspaceId, agentEndpointId, humanEndpointId).then((events) => events.length >= 2), "fake runtime response");
+    await waitFor(async () => runtimeResults(workspaceId, agentEndpointId).then((events) => events.length >= 1), "fake runtime result");
     await waitFor(() => sawBusEvents([
       "event_submitted",
       "destination_selector_resolved",
@@ -510,9 +510,12 @@ You are Floe.
     return types.every((type) => busMessages.some((message) => message.type === type));
   }
 
-  async function agentMessages(workspaceId: string, agentEndpointId: string, humanEndpointId: string) {
+  async function runtimeResults(workspaceId: string, agentEndpointId: string) {
     const result = await get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
-    return result.events.filter((event) => event.source_endpoint_id === agentEndpointId && event.destination_json?.endpoint_id === humanEndpointId);
+    return result.events.filter((event) =>
+      event.source_endpoint_id === agentEndpointId &&
+      event.content?.data?.origin === "runtime_turn_result"
+    );
   }
 
   async function get<T>(path: string): Promise<T> {

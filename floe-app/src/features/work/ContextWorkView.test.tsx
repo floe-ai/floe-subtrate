@@ -87,7 +87,7 @@ function delivery(
   };
 }
 
-const root = context("context-root", null, [OPERATOR, ARCHITECT], "Build Snowball", "2026-08-24T00:00:00Z");
+const root = context("context-root", null, [OPERATOR, ARCHITECT], "Build Acme", "2026-08-24T00:00:00Z");
 const child = context("context-child", "context-root", [ARCHITECT, BUILDER], "Build the first slice", "2026-08-24T00:01:00Z");
 const grandchild = context("context-grandchild", "context-child", [BUILDER], "Verify the slice", "2026-08-24T00:02:00Z");
 const unrelated = context("context-unrelated", null, [OPERATOR], "Different conversation", "2026-08-24T00:03:00Z");
@@ -152,7 +152,7 @@ describe("ContextWorkView", () => {
     expect(await screen.findByText("2 connected contexts")).toBeTruthy();
     expect(client.listContexts).toHaveBeenCalledWith("workspace", { scope: "all", limit: 200 });
     await waitFor(() => expect(screen.getByTestId("context-inspector").textContent).toBe("context-child:true:true"));
-    fireEvent.click(screen.getByRole("button", { name: "Inspect Build Snowball" }));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect Build Acme" }));
     expect(screen.getByTestId("context-inspector").textContent).toBe("context-root:true:true");
   });
 });
