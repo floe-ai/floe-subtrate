@@ -41,6 +41,8 @@ Do not optimise for explaining Floe. Optimise for using Floe.
 
 When the requested result should continue after this turn, success means forming and activating persistent operation. A generated script plus a command for the operator to run is not an automated Floe outcome unless the operator explicitly asked for a script.
 
+Creating actors, shared instructions, state files, or event-name conventions does not by itself form that operation. When an outcome needs connected roles or repeatable routing, inspect the existing Scopes and use `compose_scope` to place the required Event, Actor, and deterministic Command nodes in a real scoped Context. Use `fire_scope_event` to start manual work. The composition defines durable organisation and routing; actor instructions or an external extension own any opinionated stage policy. Do not describe a convention-only controller or file-backed state machine as substrate execution.
+
 When ongoing work depends on model judgement, represent that labour as a Floe actor. A script may support an actor, but it must not replace the actor by invoking Codex or another model CLI itself. Do not treat a detached operating-system process as persistent Floe operation: it is not substrate-owned, restartable, or legible. Connect actors and commands to event sources using the composition capabilities available to you. If the required composition surface is missing, report that product gap instead of building a parallel runtime beside Floe.
 
 Before activating persistent ingress, verify that every downstream capability needed to complete the outcome is actually available. If a capability is missing, do not substitute personal API keys, developer setup instructions, or an automation that can only fail. Report the concrete blocker and its consequence.
@@ -55,6 +57,7 @@ Look for:
 
 - tools and capabilities currently attached to you or other actors;
 - available actors and their responsibilities;
+- existing Scope compositions and their Event, Actor, and Command nodes;
 - relevant workspace files and services;
 - runtime capability/discovery surfaces;
 - current canonical documentation and accepted ADRs when a substrate contract matters.

@@ -62,7 +62,7 @@ The script:
 1. Registers this repo as a workspace and sets the runtime binding.
 2. Writes scratch `.floe/agents/writer.md`, `reviewer.md`, `approver.md` (generic identity files)
    and authors a fresh Scope Graph under a `docs-repro` scope.
-3. Adds a temporary `watchers:` entry to `.floe/floe.yaml` pointing at that graph, and re-attaches.
+3. Adds the temporary actors to `.floe/floe.yaml` and re-attaches; the bridge discovers the folder source from the stored composition itself.
 4. Drops a real note into `.floe/inbox/docs-notes/`.
 5. Polls for `docs/plans/build-tool-guide.md` to appear (up to 5 minutes — this is a real LLM
    conversation, not a mock).

@@ -117,6 +117,30 @@ describe("BridgeDaemon shutdown", () => {
   });
 });
 
+describe("BridgeDaemon Scope composition refresh", () => {
+  it("reattaches workspaces when a Scope composition is created", () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      const attach = vi.fn(async () => {});
+      const process = vi.fn(async () => {});
+      (daemon as any).attachKnownWorkspaces = attach;
+      (daemon as any).processDeliveries = process;
+
+      (daemon as any).handleEventStreamMessage({
+        type: "scope_graph_created",
+        payload: { graph: { graph_id: "graph-1" } },
+      });
+
+      expect(attach).toHaveBeenCalledOnce();
+      expect(process).toHaveBeenCalledOnce();
+    } finally {
+      made.cleanup();
+    }
+  });
+});
+
 describe("BridgeDaemon hook event stream", () => {
   it("fires WebhookReceived once for a persisted webhook ingest event and ignores spoofed or repeated payloads", async () => {
     withoutAdapterEnv();

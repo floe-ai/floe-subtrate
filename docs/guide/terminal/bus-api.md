@@ -86,6 +86,10 @@ The substrate still stores nodes under a `graph_id` and calls the picture a "gra
 | GET | `/v1/workspaces/:workspace_id/graphs/:graph_id` | — | Get one graph. |
 | POST | `/v1/workspaces/:workspace_id/graphs/:graph_id/nodes/:node_id/fire` | `{ content?, correlation_id? }` | Fires a `trigger`-kind node, creating events. 400 `scope_graph_node_not_a_trigger` if the node isn't a trigger. |
 
+Runtime actors normally use `inspect_scopes`, `compose_scope`, and `fire_scope_event` rather than
+constructing these HTTP calls. These are thin actor-facing operations over the same routes, not a
+second workflow or graph model. `connect_folder_to_actor` remains a shortcut over `compose_scope`.
+
 ## Endpoints (actors)
 
 An [[Endpoint]] is the substrate's addressable identity for an [[Actor]].
@@ -220,9 +224,9 @@ Webhook routes are **write-only** — there is no `GET` to list configured webho
 ## Folder watchers
 
 Folder ingress is represented as `source: { kind: "folder", path: "..." }` on an Event node in a
-stored scope graph. It is created through the actor-facing `connect_folder_to_actor` composition tool
-and is visible through the existing graph read routes. Legacy top-level workspace watcher config remains
-readable but has no standalone HTTP resource.
+stored scope graph. It is created through the actor-facing `compose_scope` tool or its
+`connect_folder_to_actor` shortcut and is visible through the existing graph read routes. Legacy
+top-level workspace watcher config remains readable but has no standalone HTTP resource.
 
 ## Runtime bindings
 

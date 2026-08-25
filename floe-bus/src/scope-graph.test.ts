@@ -170,6 +170,66 @@ describe("Scope Graph API", () => {
     expect(fired.json().events).toHaveLength(0);
   });
 
+  it("routes a Planner to Builder to Judge operation through one scoped Context", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const planner = `actor:${workspaceId}:product-architect`;
+    const builder = `actor:${workspaceId}:application-builder`;
+    const judge = `actor:${workspaceId}:quality-judge`;
+    for (const endpoint of [planner, builder, judge]) registerEndpoint(handle, workspaceId, endpoint);
+    await createScope(handle, workspaceId, "application-delivery");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/application-delivery/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "work-requested", kind: "trigger", event_type: "application.work.requested" },
+          { node_id: "planner", kind: "actor", endpoint_id: planner, event_types: ["application.work.requested"] },
+          { node_id: "builder", kind: "actor", endpoint_id: builder, event_types: ["application.build.requested", "application.rework.requested"] },
+          { node_id: "judge", kind: "actor", endpoint_id: judge, event_types: ["application.review.requested"] },
+        ],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const graph = created.json().graph;
+
+    const started = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/work-requested/fire`,
+      payload: { content: { app_id: "acme" } },
+    });
+    expect(started.json().events.map((event: any) => event.destination_json.endpoint_id)).toEqual([planner]);
+
+    const emitToComposition = (source: string, type: string) => handle.store.submitEvent({
+      type,
+      workspace_id: workspaceId,
+      source_endpoint_id: source,
+      destination: { kind: "context", context_id: graph.context_id },
+      context_id: graph.context_id,
+      current_delivery_context_id: graph.context_id,
+      content: { app_id: "acme" },
+      response: { expected: false },
+    }, () => {});
+
+    emitToComposition(planner, "application.build.requested");
+    emitToComposition(builder, "application.review.requested");
+    emitToComposition(judge, "application.rework.requested");
+
+    const routed = handle.store.db.prepare(`
+      SELECT e.type, q.destination_endpoint_id
+      FROM events e
+      JOIN event_queue q ON q.event_id = e.event_id
+      WHERE e.context_id = ?
+        AND e.type IN ('application.build.requested', 'application.review.requested', 'application.rework.requested')
+      ORDER BY e.created_at ASC
+    `).all(graph.context_id) as Array<{ type: string; destination_endpoint_id: string }>;
+    expect(routed).toEqual([
+      { type: "application.build.requested", destination_endpoint_id: builder },
+      { type: "application.review.requested", destination_endpoint_id: judge },
+      { type: "application.rework.requested", destination_endpoint_id: builder },
+    ]);
+  });
+
   it("rejects a graph with a duplicate node id", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     await createScope(handle, workspaceId, "docs");

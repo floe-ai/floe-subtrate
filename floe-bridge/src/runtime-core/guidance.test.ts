@@ -21,6 +21,13 @@ describe("SUBSTRATE_GUIDANCE", () => {
     expect(SUBSTRATE_GUIDANCE).toContain("Creating a script or command does not activate persistent Floe operation");
     expect(SUBSTRATE_GUIDANCE).toContain("report that concrete gap");
   });
+
+  it("explains real Scope composition without inventing workflow enforcement", () => {
+    expect(SUBSTRATE_GUIDANCE).toContain("Use `inspect_scopes`");
+    expect(SUBSTRATE_GUIDANCE).toContain("Use `compose_scope`");
+    expect(SUBSTRATE_GUIDANCE).toContain("`fire_scope_event`");
+    expect(SUBSTRATE_GUIDANCE).toContain("not arbitrary workflow-policy enforcement");
+  });
 });
 
 describe("buildSystemPrompt", () => {

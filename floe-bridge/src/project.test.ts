@@ -122,6 +122,8 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
     expect(content).toContain("represent that labour as a Floe actor");
     expect(content).toContain("must not replace the actor by invoking Codex or another model CLI");
     expect(content).toContain("Do not treat a detached operating-system process as persistent Floe operation");
+    expect(content).toContain("use `compose_scope` to place the required Event, Actor, and deterministic Command nodes");
+    expect(content).toContain("Do not describe a convention-only controller or file-backed state machine as substrate execution");
     expect(content).toContain("verify that every downstream capability needed to complete the outcome is actually available");
     expect(content).not.toContain("runtime-backed endpoint");
     expect(content).not.toContain("source endpoint");

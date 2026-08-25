@@ -246,6 +246,27 @@ export class BusClient {
     return this.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs`) as Promise<{ graphs: any[] }>;
   }
 
+  async listScopes(workspaceId: string): Promise<Array<{
+    scope_id: string;
+    workspace_id: string;
+    title: string;
+    description: string | null;
+    created_at: string;
+    updated_at: string;
+  }>> {
+    const result = await this.get(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes`,
+    ) as { scopes: Array<{
+      scope_id: string;
+      workspace_id: string;
+      title: string;
+      description: string | null;
+      created_at: string;
+      updated_at: string;
+    }> };
+    return result.scopes;
+  }
+
   async createScope(input: {
     workspace_id: string;
     scope_id: string;

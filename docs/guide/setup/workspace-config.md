@@ -58,9 +58,11 @@ Fields: `schema`, `agent_id`, `label`, `runtime.engine`, `extensions` (list of [
 
 This is a hard invariant: `.floe/floe.yaml` is human-authored, committed project config. The bridge treats it as **read-only** once the workspace is running.
 
-Actors may form runtime organisation through the bus without hand-editing this file. In particular,
-`connect_folder_to_actor` authors a scoped Context with a folder-backed Event node and a participating
-actor. That folder source is visible on the stored graph and is restored when the workspace attaches.
+Actors may form runtime organisation through the bus without hand-editing this file. `compose_scope`
+authors Event, Actor, and deterministic Command nodes together in a scoped Context; `inspect_scopes`
+reads that organisation and `fire_scope_event` activates a manual Event node. `connect_folder_to_actor`
+remains the common two-node shortcut for a folder-backed Event and one participating actor. Stored
+composition is rediscovered by the bridge as soon as it is created and whenever the workspace attaches.
 The older top-level `watchers` entries remain readable for existing workspaces but are not the normal
 composition path.
 

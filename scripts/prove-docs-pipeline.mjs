@@ -181,8 +181,8 @@ async function main() {
   const noteDirAbs = join(REPO_ROOT, NOTE_DIR);
   mkdirSync(noteDirAbs, { recursive: true });
 
-  // Re-attach so the bridge picks up a watcher for this run's graph. This
-  // mutates .floe/floe.yaml on disk (temporary — cleaned up at the end).
+  // Re-attach so the bridge picks up the scratch actor files and the folder
+  // source stored on this run's graph. No parallel watcher config is needed.
   const floeYamlPath = join(REPO_ROOT, ".floe", "floe.yaml");
   const originalYaml = existsSync(floeYamlPath) ? await import("node:fs").then((fs) => fs.readFileSync(floeYamlPath, "utf8")) : null;
   const YAML = await import("yaml");
@@ -191,9 +191,9 @@ async function main() {
   for (const id of ["writer", "reviewer", "approver"]) {
     if (!parsed.agents.some((a) => a.id === id)) parsed.agents.push({ id, path: `./agents/${id}.md` });
   }
-  parsed.watchers = [{ id: "docs_repro_watcher", graph_id: graph.graph_id, node_id: "note_arrived", path: NOTE_DIR }];
   writeFileSync(floeYamlPath, YAML.stringify(parsed), "utf8");
 
+  await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/config-snapshot`, {});
   await post("/v1/runtime/bindings", {
     scope: "workspace_default",
     workspace_id: workspaceId,
@@ -217,7 +217,7 @@ async function main() {
   if (check.status !== 0) throw new Error("docs-structure.test.ts did not pass with the generated file present");
   console.log("docs-structure.test.ts passed with the generated file present. Pipeline proven end to end.");
 
-  console.log("\nCleanup: this script does not remove the generated file, the scratch .floe/agents/*.md files, or the .floe/floe.yaml agents/watchers entries it added — see docs/plans/documentation-pipeline-e2e-reproduction.md for the manual cleanup steps, or re-run `git checkout -- .floe/floe.yaml` and delete the untracked files it lists.");
+  console.log("\nCleanup: this script does not remove the generated file, the scratch .floe/agents/*.md files, or the .floe/floe.yaml actor entries it added — see docs/plans/documentation-pipeline-e2e-reproduction.md for the manual cleanup steps, or re-run `git checkout -- .floe/floe.yaml` and delete the untracked files it lists.");
 }
 
 main().catch((err) => {

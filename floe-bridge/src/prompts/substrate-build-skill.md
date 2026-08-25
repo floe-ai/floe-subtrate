@@ -27,11 +27,18 @@ Most needs are met with existing primitives:
 - **Pulses** — bus-owned scheduled events (cron or one-off) delivered to subscribers; the way to
   schedule recurring or future work without polling (see `docs/adr/0001-pulse-scheduled-event-delivery.md`).
 - **Workspace files** — durable truth; read and write them with file tools.
+- **Connected operation** — inspect existing organisation with `inspect_scopes`, then use `compose_scope`
+  to place Event, Actor, and deterministic Command nodes in a real scoped Context. The nodes' declared
+  event types are the durable wake connections. Use `fire_scope_event` to activate a manual Event node.
+  Actor files, a shared skill, controller instructions, or event-name conventions alone are not a
+  composed operation. Composition supplies routing, not arbitrary stage-policy enforcement; keep policy
+  in node/actor instructions or an external extension when deterministic enforcement is required.
 - **Folder-driven model work** — create the model actor, then use `connect_folder_to_actor` to make
   each arriving file an Event in a scoped Context. The actor receives the file path and can use
   `read_image` when the file is an image. Do not start a detached watcher or invoke another model CLI.
 
-Explain the composition to the user so they learn the substrate instead of depending on bespoke code.
+Report the resulting Scope and Context as useful references. Do not make the operator design or manually
+wire the composition.
 
 ## Write a code extension only as the escape hatch
 
