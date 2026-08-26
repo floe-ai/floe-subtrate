@@ -435,4 +435,37 @@ describe("Scope Graph API", () => {
     // Same pre-existing Zod .parse()-outside-try/catch behaviour as above: min(1) fails -> 500.
     expect(created.statusCode).toBe(500);
   });
+
+  it("does not resurrect stored graphs when a removed workspace locator is re-registered", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    await createScope(handle, workspaceId, "obsolete");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/obsolete/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "start", kind: "trigger", event_type: "work.started" }
+        ]
+      }
+    });
+    expect(created.statusCode).toBe(201);
+
+    const removed = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`,
+      payload: { delete_locator: false }
+    });
+    expect(removed.statusCode).toBe(200);
+
+    const reRegisteredWorkspaceId = await registerWorkspace(handle, tmp);
+    expect(reRegisteredWorkspaceId).toBe(workspaceId);
+
+    const graphs = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs`
+    });
+    expect(graphs.statusCode).toBe(200);
+    expect(graphs.json()).toEqual({ graphs: [] });
+  });
 });

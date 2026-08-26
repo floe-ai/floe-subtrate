@@ -1167,6 +1167,10 @@ export class BusStore {
       this.db.prepare("DELETE FROM runtime_telemetry WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM events WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM pulse_delivery_contexts WHERE workspace_id = ?").run(workspaceId);
+      // Scope graphs intentionally have no foreign key to the workspace table.
+      // Remove them explicitly so re-registering the same locator cannot
+      // resurrect obsolete command endpoints from an orphaned composition.
+      this.db.prepare("DELETE FROM scope_graphs WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare(`
         DELETE FROM context_participants
         WHERE context_id IN (SELECT context_id FROM contexts WHERE workspace_id = ?)
