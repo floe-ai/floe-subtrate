@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { BusStore } from "./store.js";
+import { ScopeRemovalBlockedError, type BusStore } from "./store.js";
 import {
   ScopeGraphNodeNotATriggerError,
   ScopeGraphNodeNotFoundError,
@@ -240,6 +240,19 @@ const scopeFireInputSchema: JsonSchema = {
   },
 };
 
+const scopeRemoveInputSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["scope_id"],
+  properties: {
+    scope_id: {
+      type: "string",
+      pattern: ID_PATTERN,
+      description: "Obsolete Scope id returned by Scope inspection.",
+    },
+  },
+};
+
 function inspectScopes(context: ActorCapabilityContext, input: Record<string, unknown>): ActorCapabilityResult {
   const requested = typeof input.scope_id === "string" ? input.scope_id.trim() : "";
   const scopes = context.store.listScopes(context.workspaceId);
@@ -415,6 +428,35 @@ function fireScopeEvent(context: ActorCapabilityContext, input: Record<string, u
   }
 }
 
+function removeUnusedScope(context: ActorCapabilityContext, input: Record<string, unknown>): ActorCapabilityResult {
+  const scopeId = String(input.scope_id);
+  if (!context.store.getScope(context.workspaceId, scopeId)) {
+    throw new ActorCapabilityError("scope_not_found", `Scope '${scopeId}' does not exist.`, 404, { scope_id: scopeId });
+  }
+  try {
+    const removed = context.store.removeUnusedScope(context.workspaceId, scopeId, context.broadcast);
+    return {
+      summary: `Removed unused Scope '${scopeId}' and its inactive composition.`,
+      data: removed,
+    };
+  } catch (error) {
+    if (error instanceof ScopeRemovalBlockedError) {
+      throw new ActorCapabilityError(
+        "scope_removal_blocked",
+        `Scope '${scopeId}' was not removed because it has historical work, Pulse records, or an Endpoint that is still working. Preserve it and report the concrete blocker instead of deleting evidence or interrupting work.`,
+        409,
+        {
+          scope_id: scopeId,
+          event_count: error.event_count,
+          pulse_count: error.pulse_count,
+          busy_endpoint_count: error.busy_endpoint_count,
+        },
+      );
+    }
+    throw error;
+  }
+}
+
 const definitions: ActorCapabilityDefinition[] = [
   {
     capability_id: "scope.inspect",
@@ -445,6 +487,16 @@ const definitions: ActorCapabilityDefinition[] = [
     effect: "write",
     input_schema: scopeFireInputSchema,
     invoke: fireScopeEvent,
+  },
+  {
+    capability_id: "scope.remove-unused",
+    category: "organisation",
+    title: "Remove unused organisation",
+    description:
+      "Remove an obsolete Scope, its authored nodes, and its empty scoped Contexts only when no Event history or Pulse records would be lost. The operation refuses destructive cleanup once work has happened.",
+    effect: "write",
+    input_schema: scopeRemoveInputSchema,
+    invoke: removeUnusedScope,
   },
 ];
 

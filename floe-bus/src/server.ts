@@ -11,7 +11,7 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { parseListen } from "./config.js";
-import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
+import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, EndpointRetirementBlockedError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadScopeProjectionLayout,
@@ -947,6 +947,24 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       const result = store.deleteEndpoint(params.endpoint_id, broadcast);
       return reply.send(result);
     } catch (err) {
+      return reply.code(404).send({ ok: false, error: err instanceof Error ? err.message : "Not found" });
+    }
+  });
+
+  app.post("/v1/endpoints/:endpoint_id/retire", async (request, reply) => {
+    const params = z.object({ endpoint_id: z.string().min(1) }).parse(request.params);
+    try {
+      return store.retireEndpoint(params.endpoint_id, broadcast);
+    } catch (err) {
+      if (err instanceof EndpointRetirementBlockedError) {
+        return reply.code(409).send({
+          ok: false,
+          error: "endpoint_busy",
+          endpoint_id: err.endpoint_id,
+          status: err.status,
+          message: err.message,
+        });
+      }
       return reply.code(404).send({ ok: false, error: err instanceof Error ? err.message : "Not found" });
     }
   });

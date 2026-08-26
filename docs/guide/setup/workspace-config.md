@@ -56,7 +56,7 @@ Fields: `schema`, `agent_id`, `label`, `runtime.engine`, `extensions` (list of [
 
 ## `.floe/floe.yaml` and runtime composition
 
-This is a hard invariant: `.floe/floe.yaml` is human-authored, committed project config. The bridge treats it as **read-only** once the workspace is running.
+This is a hard invariant: `.floe/floe.yaml` is committed project configuration, not runtime scratch state. Ordinary workspace attachment reads it without modification. A deliberate actor-management operation may add, update, or remove an actor definition and then request a config snapshot so the active runtime follows the committed configuration change.
 
 Actors may form runtime organisation through the bus without hand-editing this file. They discover the
 current actor-safe organisation operations with `discover_capabilities` and invoke the relevant
@@ -75,7 +75,7 @@ When an actor tool does write to the workspace (creating a new agent file, for e
 ## Implementation
 
 - `floe-bridge/src/project.ts` — `ensureProjectTemplate`, `loadProject`, `.floe/floe.yaml` and `.floe/agents/*.md` parsing, `computeConfigSurface`
-- `floe-bridge/src/tools/actor-tools.ts` — agent-creation tool that writes the agent file and updates `floe.yaml`
+- `floe-bridge/src/tools/actor-tools.ts` — actor-management tools that create, update, or safely remove agent definitions and update `floe.yaml`
 - `floe-bridge/src/extension-loader.ts` — `loadBundledAgentsInMemory` (bundled agents loaded from the extension manifest, never persisted to `.floe/`)
 - `floe-bridge/src/daemon.ts` — `attachWorkspace` iterates `ext.bundledAgents` and registers them in memory via `bus.registerEndpoint`
 

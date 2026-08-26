@@ -4,6 +4,8 @@
 
 ### Scope
 An intentional substrate organising boundary inside a Workspace for connected, event-driven, or operational work.
+
+An unused Scope may be removed together with its authored composition and empty Contexts. Once Events or Pulse records exist, cleanup must preserve them; destructive Scope removal is refused rather than treating history as disposable configuration.
 _Avoid_: Field, canvas, block, thread, context, pulse scope, universal fallback bucket.
 
 ### Workspace-level Context
@@ -65,6 +67,8 @@ A Pulse Subscriber that delivers the `pulse.fired` event to an Endpoint. If it d
 
 ### Endpoint
 An addressable participant/interface in the substrate. Humans, agents, webhooks, extensions, schedulers, and future actors are all endpoints. No endpoint type is privileged.
+
+A retired Endpoint keeps its durable identity for historical Contexts and Events but has no delivery processor or Context subscriptions and is excluded from future routing. Retiring a workspace Actor also removes its active workspace configuration; it does not rewrite historical participation.
 
 ### Actor
 A workspace-scoped Endpoint participant that may communicate through Events.

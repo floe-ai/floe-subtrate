@@ -173,6 +173,14 @@ export class BusClient {
     await this.post(`/v1/endpoints/${encodeURIComponent(endpointId)}/status`, { status });
   }
 
+  async retireEndpoint(endpointId: string): Promise<{ ok: true; endpoint_id: string; status: "retired" }> {
+    return this.post(`/v1/endpoints/${encodeURIComponent(endpointId)}/retire`, {}) as Promise<{
+      ok: true;
+      endpoint_id: string;
+      status: "retired";
+    }>;
+  }
+
   async reportAttachment(workspaceId: string, input: Record<string, unknown>): Promise<void> {
     await this.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/attachment-result`, input);
   }

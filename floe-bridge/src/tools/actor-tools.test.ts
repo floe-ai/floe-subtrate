@@ -16,6 +16,10 @@ function createMockBus(): BusClient & {
       calls.push({ method: "requestConfigSnapshot", args });
       return { ok: true };
     },
+    retireEndpoint: async (...args: unknown[]) => {
+      calls.push({ method: "retireEndpoint", args });
+      return { ok: true, endpoint_id: String(args[0]), status: "retired" as const };
+    },
   } as unknown as BusClient & { calls: Array<{ method: string; args: unknown[] }> };
 }
 
@@ -49,11 +53,12 @@ describe("actor-tools", () => {
 
   it("returns only actor management tools", () => {
     const tools = createActorTools(bus, "ws_test", workspace);
-    expect(tools).toHaveLength(3);
+    expect(tools).toHaveLength(4);
     expect(tools.map((t) => t.name)).toEqual([
       "create_actor",
       "list_actors",
       "update_actor",
+      "remove_actor",
     ]);
   });
 
@@ -307,6 +312,65 @@ describe("actor-tools", () => {
 
       expect(bus.calls).toHaveLength(1);
       expect(bus.calls[0].method).toBe("requestConfigSnapshot");
+    });
+  });
+
+  describe("remove_actor", () => {
+    it("removes the active definition and retires the runtime identity while preserving history", async () => {
+      const tools = createActorTools(bus, "ws_test", workspace);
+      const createTool = tools.find((tool) => tool.name === "create_actor")!;
+      await createTool.execute("call-1", {
+        agent_id: "controller",
+        name: "Controller",
+        instructions: "Coordinate work.",
+      });
+      bus.calls.length = 0;
+
+      const removeTool = tools.find((tool) => tool.name === "remove_actor")!;
+      const result = await removeTool.execute("call-2", { agent_id: "controller" });
+
+      expect((result as any).details).toMatchObject({
+        ok: true,
+        agent_id: "controller",
+        definition_deleted: true,
+      });
+      expect(existsSync(join(workspace, ".floe", "agents", "controller.md"))).toBe(false);
+      const config = YAML.parse(readFileSync(join(workspace, ".floe", "floe.yaml"), "utf8"));
+      expect(config.agents.map((agent: any) => agent.id)).toEqual(["floe"]);
+      expect(bus.calls).toEqual([
+        { method: "retireEndpoint", args: ["actor:ws_test:controller"] },
+        { method: "requestConfigSnapshot", args: ["ws_test"] },
+      ]);
+    });
+
+    it("protects the workspace Floe actor", async () => {
+      const tools = createActorTools(bus, "ws_test", workspace);
+      const removeTool = tools.find((tool) => tool.name === "remove_actor")!;
+      const result = await removeTool.execute("call-1", { agent_id: "floe" });
+
+      expect((result as any).details).toMatchObject({ ok: false, error: "protected_actor" });
+      expect(existsSync(join(workspace, ".floe", "agents", "floe.md"))).toBe(true);
+      expect(bus.calls).toHaveLength(0);
+    });
+
+    it("restores workspace config and definition when runtime retirement is refused", async () => {
+      const tools = createActorTools(bus, "ws_test", workspace);
+      const createTool = tools.find((tool) => tool.name === "create_actor")!;
+      await createTool.execute("call-1", {
+        agent_id: "builder",
+        name: "Builder",
+        instructions: "Build.",
+      });
+      bus.calls.length = 0;
+      (bus as any).retireEndpoint = async () => { throw new Error("endpoint_busy"); };
+
+      const removeTool = tools.find((tool) => tool.name === "remove_actor")!;
+      const result = await removeTool.execute("call-2", { agent_id: "builder" });
+
+      expect((result as any).details).toMatchObject({ ok: false, error: "retirement_failed" });
+      expect(existsSync(join(workspace, ".floe", "agents", "builder.md"))).toBe(true);
+      const config = YAML.parse(readFileSync(join(workspace, ".floe", "floe.yaml"), "utf8"));
+      expect(config.agents.map((agent: any) => agent.id)).toEqual(["floe", "builder"]);
     });
   });
 });

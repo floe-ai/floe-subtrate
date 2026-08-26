@@ -187,4 +187,129 @@ describe("actor-safe capability discovery and invocation", () => {
     expect(response.json()).toMatchObject({ error: "invalid_folder_source" });
     expect(handle.store.getScope(workspaceId, "unsafe")).toBeNull();
   });
+
+  it("removes an obsolete composition only while its Context is still unused", async () => {
+    const compose = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.compose/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: {
+          scope_id: "obsolete",
+          title: "Obsolete organisation",
+          event_nodes: [{ node_id: "start", event_type: "work.requested" }],
+          actor_nodes: [{ node_id: "builder", actor: "builder", event_types: ["work.requested"] }],
+        },
+      },
+    });
+    const composed = compose.json().result.data;
+
+    const remove = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.remove-unused/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { scope_id: "obsolete" },
+      },
+    });
+
+    expect(remove.statusCode).toBe(201);
+    expect(remove.json().result).toMatchObject({
+      summary: "Removed unused Scope 'obsolete' and its inactive composition.",
+      data: { scope_id: "obsolete", graph_count: 1, context_count: 1 },
+    });
+    expect(handle.store.getScope(workspaceId, "obsolete")).toBeNull();
+    expect(handle.store.getScopeGraph(workspaceId, composed.graph_id)).toBeNull();
+    expect(handle.store.contextStore.getContext(composed.context_id)).toBeNull();
+    expect(handle.store.contextStore.getContextSubscriptions(composed.context_id)).toEqual([]);
+  });
+
+  it("refuses to remove a Scope after work has been recorded", async () => {
+    const compose = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.compose/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: {
+          scope_id: "historical",
+          title: "Historical organisation",
+          event_nodes: [{ node_id: "start", event_type: "work.requested" }],
+          actor_nodes: [{ node_id: "builder", actor: "builder", event_types: ["work.requested"] }],
+        },
+      },
+    });
+    const graphId = compose.json().result.data.graph_id;
+    await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.event.fire/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { graph_id: graphId, event_node_id: "start", content: {} },
+      },
+    });
+
+    const remove = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.remove-unused/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { scope_id: "historical" },
+      },
+    });
+
+    expect(remove.statusCode).toBe(409);
+    expect(remove.json()).toMatchObject({
+      error: "scope_removal_blocked",
+      scope_id: "historical",
+      event_count: 1,
+    });
+    expect(handle.store.getScope(workspaceId, "historical")).not.toBeNull();
+    expect(handle.store.getScopeGraph(workspaceId, graphId)).not.toBeNull();
+  });
+
+  it("refuses to remove an unused Scope while one of its Command endpoints is still working", async () => {
+    const compose = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.compose/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: {
+          scope_id: "busy-command",
+          title: "Busy command",
+          event_nodes: [{ node_id: "start", event_type: "work.requested" }],
+          actor_nodes: [],
+          command_nodes: [{
+            node_id: "build",
+            event_types: ["work.requested"],
+            command: "echo building",
+          }],
+        },
+      },
+    });
+    const commandEndpointId = compose.json().result.data.nodes.find((node: any) => node.kind === "command").endpoint_id;
+    handle.store.registerEndpoint({
+      endpoint_id: commandEndpointId,
+      workspace_id: workspaceId,
+      name: "Build",
+      bridge_id: "bridge:test",
+      status: "active",
+    }, handle.broadcast);
+
+    const remove = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.remove-unused/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { scope_id: "busy-command" },
+      },
+    });
+
+    expect(remove.statusCode).toBe(409);
+    expect(remove.json()).toMatchObject({
+      error: "scope_removal_blocked",
+      scope_id: "busy-command",
+      busy_endpoint_count: 1,
+    });
+    expect(handle.store.getScope(workspaceId, "busy-command")).not.toBeNull();
+  });
 });

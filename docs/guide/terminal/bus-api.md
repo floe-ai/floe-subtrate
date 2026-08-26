@@ -18,7 +18,7 @@ Everything below is read straight from `floe-bus/src/server.ts`. This page is gr
 
 Broadcast message types observed in the bus source:
 
-`workspace_registered`, `workspace_selected`, `workspace_deleted`, `workspace_attachment_requested`, `workspace_attachment_result`, `scope_created`, `scope_updated`, `scope_deleted`, `scope_graph_created`, `scope_projection.layout.upserted`, `context_created`, `context_deleted`, `context_scope_assigned`, `context_compacted`, `context_history_cleared`, `participant_added`, `participant_removed`, `runtime_binding_updated`, `runtime_binding_cleared`, `bridge_registered`, `endpoint_registered`, `endpoint_deleted`, `status_changed`, `event_submitted`, `destination_selector_resolved`, `delivery_created`, `delivery_bundle_available`, `delivery_reserved`, `delivery_delivered_to_bridge`, `delivery_deferred`, `turn_end_observed`, `runtime_telemetry`, `saved_config_created`, `config_snapshot_requested`, `config_snapshot_imported`, `config_apply_requested`, `pulse_created`, `pulse_fired`, `pulse_subscriber_changed`, `extensions_updated`.
+`workspace_registered`, `workspace_selected`, `workspace_deleted`, `workspace_attachment_requested`, `workspace_attachment_result`, `scope_created`, `scope_updated`, `scope_deleted`, `scope_graph_created`, `scope_graph_deleted`, `scope_projection.layout.upserted`, `context_created`, `context_deleted`, `context_scope_assigned`, `context_compacted`, `context_history_cleared`, `participant_added`, `participant_removed`, `runtime_binding_updated`, `runtime_binding_cleared`, `bridge_registered`, `endpoint_registered`, `endpoint_retired`, `endpoint_deleted`, `status_changed`, `event_submitted`, `destination_selector_resolved`, `delivery_created`, `delivery_bundle_available`, `delivery_reserved`, `delivery_delivered_to_bridge`, `delivery_deferred`, `turn_end_observed`, `runtime_telemetry`, `saved_config_created`, `config_snapshot_requested`, `config_snapshot_imported`, `config_apply_requested`, `pulse_created`, `pulse_fired`, `pulse_subscriber_changed`, `extensions_updated`.
 
 There is no route to replay past broadcasts — the stream is live-only. Use `GET /v1/events` for history.
 
@@ -96,8 +96,8 @@ The Bus exposes a bounded semantic surface for runtime actors. It is not raw acc
 | POST | `/v1/workspaces/:workspace_id/capabilities/:capability_id/invoke` | `{ input, caller_endpoint_id? }` | Invokes an allow-listed capability. The exact schema returned by discovery validates `input`. |
 
 Runtime actors use the stable `discover_capabilities` and `use_capability` tools over this surface. The
-Bridge does not carry capability-specific descriptions or schemas. Scope inspection, composition, and
-manual Event activation are the first registered operations; their live contracts come from discovery,
+Bridge does not carry capability-specific descriptions or schemas. Scope inspection, composition,
+manual Event activation, and safe removal of an unused composition are registered operations; their live contracts come from discovery,
 not from this guide. See ADR-0009.
 
 ## Endpoints (actors)
@@ -111,6 +111,7 @@ An [[Endpoint]] is the substrate's addressable identity for an [[Actor]].
 | GET | `/v1/workspaces/:workspace_id/resolve-endpoint?ref=` | — | Resolves a subscriber ref string to an endpoint id. |
 | POST | `/v1/endpoints/register` | `{ endpoint_id, workspace_id, name, agent_id?, bridge_id?, status?, metadata? }` | Registers an endpoint. |
 | DELETE | `/v1/endpoints/:endpoint_id` | — | 404 if not found. |
+| POST | `/v1/endpoints/:endpoint_id/retire` | — | Makes an idle endpoint non-routable while preserving its historical identity. 409 if it is still working. |
 | POST | `/v1/endpoints/:endpoint_id/status` | `{ status }` | Updates endpoint status. |
 | POST | `/v1/endpoints/:endpoint_id/turn-end` | — | Bridge reports a turn ended. |
 | GET | `/v1/workspaces/:workspace_id/endpoints/:endpoint_id/watermark` | — | Reads the endpoint's event cursor (its watermark). |

@@ -89,6 +89,30 @@ export class ScopeRequiredError extends Error {
   }
 }
 
+export class ScopeRemovalBlockedError extends Error {
+  readonly code = "E_SCOPE_REMOVAL_BLOCKED" as const;
+  constructor(
+    readonly workspace_id: string,
+    readonly scope_id: string,
+    readonly event_count: number,
+    readonly pulse_count: number,
+    readonly busy_endpoint_count = 0
+  ) {
+    super(
+      `Scope '${scope_id}' cannot be removed safely: ${event_count} historical event(s), ${pulse_count} pulse(s), ${busy_endpoint_count} busy endpoint(s)`
+    );
+    this.name = "ScopeRemovalBlockedError";
+  }
+}
+
+export class EndpointRetirementBlockedError extends Error {
+  readonly code = "E_ENDPOINT_RETIREMENT_BLOCKED" as const;
+  constructor(readonly endpoint_id: string, readonly status: string) {
+    super(`Endpoint '${endpoint_id}' cannot be retired while its status is '${status}'.`);
+    this.name = "EndpointRetirementBlockedError";
+  }
+}
+
 export class ContextScopeAssignmentError extends Error {
   readonly code = "E_CONTEXT_SCOPE_ASSIGNMENT_INVALID" as const;
   constructor(
@@ -762,6 +786,96 @@ export class BusStore {
     broadcast("scope_deleted", { workspace_id: workspaceId, scope_id: scopeId });
   }
 
+  /**
+   * Removes a Scope that has never recorded work. This is deliberately stricter
+   * than destructive Context deletion: authored routing and empty Contexts are
+   * discarded, while any historical Event or Pulse blocks the operation.
+   */
+  removeUnusedScope(workspaceId: string, scopeId: string, broadcast: Broadcast): {
+    ok: true;
+    workspace_id: string;
+    scope_id: string;
+    graph_count: number;
+    context_count: number;
+  } {
+    const scope = this.scopeStore.getScope(workspaceId, scopeId);
+    if (!scope) throw new ScopeNotFoundError(workspaceId, scopeId);
+    if (scopeId === RESERVED_DEFAULT_SCOPE_ID) throw new ScopeReservedIdError(workspaceId, scopeId);
+
+    const contexts = this.contextStore.listContextsForScope(workspaceId, scopeId);
+    const eventCount = Number((this.db.prepare(`
+      SELECT count(*) AS count
+      FROM events e
+      JOIN contexts c ON c.context_id = e.context_id
+      WHERE c.workspace_id = ? AND c.scope_id = ?
+    `).get(workspaceId, scopeId) as { count: number }).count);
+    const pulses = this.listPulses({ workspace_id: workspaceId, scope_id: scopeId });
+    if (eventCount > 0 || pulses.length > 0) {
+      throw new ScopeRemovalBlockedError(workspaceId, scopeId, eventCount, pulses.length);
+    }
+
+    const graphs = this.scopeGraphStore.listScopeGraphs(workspaceId, scopeId);
+    const commandEndpointIds = Array.from(new Set(graphs.flatMap((graph) =>
+      graph.nodes
+        .filter((node): node is Extract<ScopeGraphNode, { kind: "command" }> => node.kind === "command")
+        .map((node) => node.endpoint_id)
+    )));
+    const removableEndpointStatuses = new Set(["idle", "offline", "error", "runtime_unconfigured", "retired"]);
+    const busyCommandEndpointCount = commandEndpointIds.filter((endpointId) => {
+      const endpoint = this.getEndpoint(endpointId);
+      return endpoint && !removableEndpointStatuses.has(String(endpoint.status));
+    }).length;
+    if (busyCommandEndpointCount > 0) {
+      throw new ScopeRemovalBlockedError(workspaceId, scopeId, eventCount, pulses.length, busyCommandEndpointCount);
+    }
+
+    this.transaction(() => {
+      for (const context of contexts) {
+        this.db.prepare("UPDATE contexts SET parent_context_id = NULL WHERE parent_context_id = ?").run(context.context_id);
+        this.db.prepare("DELETE FROM context_subscriptions WHERE context_id = ?").run(context.context_id);
+        this.db.prepare("DELETE FROM context_participants WHERE context_id = ?").run(context.context_id);
+        this.db.prepare("DELETE FROM contexts WHERE context_id = ?").run(context.context_id);
+      }
+      this.db.prepare("DELETE FROM scope_graphs WHERE workspace_id = ? AND scope_id = ?").run(workspaceId, scopeId);
+      for (const endpointId of commandEndpointIds) {
+        this.db.prepare("DELETE FROM event_queue WHERE destination_endpoint_id = ?").run(endpointId);
+        this.db.prepare("DELETE FROM runtime_bindings WHERE endpoint_id = ?").run(endpointId);
+        this.db.prepare("DELETE FROM endpoint_watermarks WHERE endpoint_id = ?").run(endpointId);
+        this.db.prepare("DELETE FROM endpoints WHERE endpoint_id = ?").run(endpointId);
+      }
+      this.scopeStore.deleteScope(workspaceId, scopeId);
+    });
+
+    for (const context of contexts) {
+      broadcast("context_deleted", {
+        ok: true,
+        context_id: context.context_id,
+        workspace_id: workspaceId,
+        events_deleted: 0,
+        delivery_bundles_deleted: 0,
+        pulse_subscribers_deleted: 0,
+      });
+    }
+    for (const graph of graphs) {
+      broadcast("scope_graph_deleted", {
+        workspace_id: workspaceId,
+        scope_id: scopeId,
+        graph_id: graph.graph_id,
+      });
+    }
+    for (const endpointId of commandEndpointIds) {
+      broadcast("endpoint_deleted", { endpoint_id: endpointId });
+    }
+    broadcast("scope_deleted", { workspace_id: workspaceId, scope_id: scopeId });
+    return {
+      ok: true,
+      workspace_id: workspaceId,
+      scope_id: scopeId,
+      graph_count: graphs.length,
+      context_count: contexts.length,
+    };
+  }
+
   listScopeGraphs(workspaceId: string, scopeId: string): ScopeGraphRecord[] {
     return this.scopeGraphStore.listScopeGraphs(workspaceId, scopeId);
   }
@@ -1299,6 +1413,34 @@ export class BusStore {
     this.db.prepare("DELETE FROM endpoints WHERE endpoint_id = ?").run(endpointId);
     broadcast("endpoint_deleted", { endpoint_id: endpointId });
     return { ok: true, endpoint_id: endpointId };
+  }
+
+  /**
+   * Makes an Endpoint permanently inert without erasing its identity from
+   * historical Contexts and Events. Workspace configuration must also stop
+   * declaring the Endpoint, otherwise a later registration intentionally
+   * reactivates it.
+   */
+  retireEndpoint(endpointId: string, broadcast: Broadcast): { ok: true; endpoint_id: string; status: "retired" } {
+    const endpoint = this.getEndpoint(endpointId);
+    if (!endpoint) throw new Error(`Endpoint not found: ${endpointId}`);
+    const status = String(endpoint.status);
+    if (!new Set(["idle", "offline", "error", "runtime_unconfigured", "retired"]).has(status)) {
+      throw new EndpointRetirementBlockedError(endpointId, status);
+    }
+
+    this.transaction(() => {
+      this.db.prepare("DELETE FROM context_subscriptions WHERE endpoint_id = ?").run(endpointId);
+      this.db.prepare("DELETE FROM runtime_bindings WHERE endpoint_id = ?").run(endpointId);
+      this.db.prepare(`
+        UPDATE endpoints
+        SET bridge_id = NULL, status = 'retired', updated_at = ?
+        WHERE endpoint_id = ?
+      `).run(now(), endpointId);
+    });
+    const retired = this.getEndpoint(endpointId);
+    broadcast("endpoint_retired", { endpoint: retired });
+    return { ok: true, endpoint_id: endpointId, status: "retired" };
   }
 
   updateEndpointStatus(endpointId: string, status: string, broadcast: Broadcast): unknown {
@@ -2467,7 +2609,10 @@ export class BusStore {
 
   private resolveDestinations(event: EventEnvelope): string[] {
     const destination = event.destination_json;
-    if (destination.kind === "endpoint") return [destination.endpoint_id];
+    if (destination.kind === "endpoint") {
+      const endpoint = this.getEndpoint(destination.endpoint_id);
+      return endpoint?.status === "retired" ? [] : [destination.endpoint_id];
+    }
     // Single context-delivery path: record + route to subscribed actors.
     // Actors subscribed to the event type (or "*") are delivered;
     // a context with no matching subscriptions naturally yields zero deliveries.
@@ -2476,13 +2621,15 @@ export class BusStore {
       const eventType = event.type;
       return subs
         .filter((sub) => sub.event_types.includes("*") || sub.event_types.includes(eventType))
-        .map((sub) => sub.endpoint_id);
+        .map((sub) => sub.endpoint_id)
+        .filter((endpointId) => this.getEndpoint(endpointId)?.status !== "retired");
     }
     const target = destination.target;
     const query = `
       SELECT endpoint_id
       FROM endpoints
       WHERE workspace_id = ?
+        AND status <> 'retired'
         AND (
           (? = 'all')
           OR (? = 'active' AND status = 'active')

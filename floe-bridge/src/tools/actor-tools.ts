@@ -6,8 +6,8 @@
  * ones, and update their configuration — enabling self-organizing workspaces.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import YAML from "yaml";
@@ -251,5 +251,111 @@ export function createActorTools(
     },
   };
 
-  return [createActorTool, listActorsTool, updateActorTool];
+  const removeActorTool: AgentTool = {
+    name: "remove_actor",
+    label: "Remove Actor",
+    description:
+      "Remove an unused specialist actor from the current workspace configuration and make it inert without erasing historical Contexts or Events. Refuses to remove Floe or an actor that is still working.",
+    parameters: Type.Object({
+      agent_id: Type.String({ description: "Unused specialist actor to remove" }),
+    }),
+    execute: async (_toolCallId, params: any) => {
+      if (!workspaceLocator) {
+        return {
+          content: [{ type: "text", text: "Cannot remove actor: workspace locator is not available." }],
+          details: { ok: false, error: "no_workspace_locator" },
+        };
+      }
+
+      const agentId = String(params.agent_id ?? "").toLowerCase();
+      if (!AGENT_ID_RE.test(agentId)) {
+        return {
+          content: [{ type: "text", text: `Invalid agent_id '${agentId}'.` }],
+          details: { ok: false, error: "invalid_agent_id" },
+        };
+      }
+      if (agentId === "floe") {
+        return {
+          content: [{ type: "text", text: "Floe is the workspace front door and cannot remove itself." }],
+          details: { ok: false, error: "protected_actor" },
+        };
+      }
+
+      const floeYamlPath = join(workspaceLocator, ".floe", "floe.yaml");
+      if (!existsSync(floeYamlPath)) {
+        return {
+          content: [{ type: "text", text: "Cannot remove actor: .floe/floe.yaml is missing." }],
+          details: { ok: false, error: "no_floe_yaml" },
+        };
+      }
+
+      const removed = removeAgentFromFloeYaml(floeYamlPath, agentId);
+      if (!removed) {
+        return {
+          content: [{ type: "text", text: `Actor '${agentId}' is not declared in this workspace.` }],
+          details: { ok: false, error: "not_found" },
+        };
+      }
+
+      const definitionPath = localAgentDefinitionPath(workspaceLocator, removed.file);
+      const definition = definitionPath && existsSync(definitionPath)
+        ? readFileSync(definitionPath, "utf8")
+        : null;
+      try {
+        if (definitionPath && definition !== null) unlinkSync(definitionPath);
+        await bus.retireEndpoint(`actor:${workspaceId}:${agentId}`);
+      } catch (error) {
+        writeFileSync(floeYamlPath, removed.original, "utf8");
+        if (definitionPath && definition !== null) writeFileSync(definitionPath, definition, "utf8");
+        return {
+          content: [{ type: "text", text: `Actor '${agentId}' was not removed: ${error instanceof Error ? error.message : String(error)}` }],
+          details: { ok: false, error: "retirement_failed" },
+        };
+      }
+
+      try {
+        await bus.requestConfigSnapshot(workspaceId);
+      } catch (error) {
+        console.error("[bridge] actor removal: config snapshot request failed", { agent_id: agentId, error });
+      }
+
+      return {
+        content: [{ type: "text", text: `Actor '${agentId}' removed from the current organisation. Historical conversations and Events were preserved.` }],
+        details: {
+          ok: true,
+          agent_id: agentId,
+          definition_deleted: definitionPath !== null && definition !== null,
+        },
+      };
+    },
+  };
+
+  return [createActorTool, listActorsTool, updateActorTool, removeActorTool];
+}
+
+function removeAgentFromFloeYaml(
+  floeYamlPath: string,
+  agentId: string,
+): { original: string; file: string } | null {
+  const original = readFileSync(floeYamlPath, "utf8");
+  const doc = YAML.parseDocument(original);
+  const agents = doc.get("agents");
+  if (!YAML.isSeq(agents)) return null;
+  const index = agents.items.findIndex((item: any) =>
+    YAML.isMap(item) && String(item.get("id") ?? item.get("agent_id") ?? "") === agentId
+  );
+  if (index < 0) return null;
+  const item = agents.items[index] as any;
+  const file = String(item.get("path") ?? item.get("file") ?? `./agents/${agentId}.md`);
+  agents.items.splice(index, 1);
+  writeFileSync(floeYamlPath, doc.toString(), "utf8");
+  return { original, file };
+}
+
+function localAgentDefinitionPath(workspaceLocator: string, file: string): string | null {
+  const floeDir = resolve(workspaceLocator, ".floe");
+  const candidate = resolve(floeDir, file);
+  const within = relative(floeDir, candidate);
+  if (within === "" || within.startsWith("..") || isAbsolute(within)) return null;
+  return candidate;
 }
