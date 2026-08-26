@@ -1,8 +1,7 @@
 /**
  * ScopeDetail — main-area view shown when a scope is selected.
  *
- * Header: scope name + description + Delete scope action (409 scope_not_empty
- * renders inline "Has N contexts, N pulses — remove them first").
+ * Header: scope name + description.
  *
  * Body: list of contexts in that scope, shown by human label (never raw id as
  * primary). Each row: label + meta line + delete affordance.
@@ -13,9 +12,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import type { ScopeRef, ContextRef } from "../bus-client/types.ts";
 import {
   listContextsForScope,
-  deleteScope,
   deleteContext,
-  ScopeNotEmptyError,
 } from "../bus-client/client.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
 import { Ops } from "./Ops.tsx";
@@ -166,135 +163,6 @@ export function relativeTime(dateStr: string | null): string {
 }
 
 // ---------------------------------------------------------------------------
-// Delete scope button with inline states
-// ---------------------------------------------------------------------------
-
-type ScopeDeleteState =
-  | { phase: "idle" }
-  | { phase: "confirming" }
-  | { phase: "deleting" }
-  | { phase: "error"; message: string }
-  | { phase: "notEmpty"; context_count: number; pulse_count: number };
-
-function DeleteScopeAction({
-  scope,
-  workspaceId,
-  onDeleted,
-}: {
-  scope: ScopeRef;
-  workspaceId: string;
-  onDeleted: () => void;
-}): React.ReactElement {
-  const [state, setState] = useState<ScopeDeleteState>({ phase: "idle" });
-
-  async function handleDelete() {
-    setState({ phase: "deleting" });
-    try {
-      await deleteScope(workspaceId, scope.scope_id);
-      onDeleted();
-    } catch (err) {
-      if (err instanceof ScopeNotEmptyError) {
-        setState({ phase: "notEmpty", context_count: err.context_count, pulse_count: err.pulse_count });
-      } else {
-        setState({ phase: "error", message: err instanceof Error ? err.message : String(err) });
-      }
-    }
-  }
-
-  if (state.phase === "idle") {
-    return (
-      <button
-        onClick={() => setState({ phase: "confirming" })}
-        style={{
-          background: "transparent", border: `1px solid ${tk.danger}`,
-          color: tk.danger, borderRadius: tk.r2, padding: "4px 12px",
-          fontSize: 12, cursor: "pointer", fontWeight: 510,
-          fontFamily: tk.fontUi,
-        }}
-      >
-        Delete scope
-      </button>
-    );
-  }
-
-  if (state.phase === "confirming") {
-    return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 12, color: tk.ink2 }}>
-          Delete "{scope.title || scope.scope_id}"?
-        </span>
-        <button
-          onClick={() => void handleDelete()}
-          style={{
-            background: tk.danger, color: "#fff", border: "none",
-            borderRadius: tk.r2, padding: "4px 12px", fontSize: 12, cursor: "pointer",
-            fontFamily: tk.fontUi,
-          }}
-        >
-          Confirm
-        </button>
-        <button
-          onClick={() => setState({ phase: "idle" })}
-          style={{
-            background: "transparent", border: `1px solid ${tk.border}`,
-            color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 12,
-            fontFamily: tk.fontUi,
-          }}
-        >
-          Cancel
-        </button>
-      </div>
-    );
-  }
-
-  if (state.phase === "deleting") {
-    return <span style={{ fontSize: 12, color: tk.ink3, fontFamily: tk.fontUi }}>Deleting…</span>;
-  }
-
-  if (state.phase === "notEmpty") {
-    return (
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span role="alert" style={{ fontSize: 12, color: tk.ink2, lineHeight: 1.45 }}>
-          Has{" "}
-          <strong style={{ color: tk.ink }}>{state.context_count} context{state.context_count !== 1 ? "s" : ""}</strong>
-          {state.pulse_count > 0 && (
-            <>, <strong style={{ color: tk.ink }}>{state.pulse_count} pulse{state.pulse_count !== 1 ? "s" : ""}</strong></>
-          )}
-          {" "}— remove them first.
-        </span>
-        <button
-          onClick={() => setState({ phase: "idle" })}
-          style={{
-            background: "transparent", border: `1px solid ${tk.border}`,
-            color: tk.ink3, borderRadius: tk.r2, padding: "3px 8px", fontSize: 11,
-            fontFamily: tk.fontUi,
-          }}
-        >
-          Dismiss
-        </button>
-      </div>
-    );
-  }
-
-  // error
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-      <span role="alert" style={{ fontSize: 12, color: tk.danger }}>{state.message}</span>
-      <button
-        onClick={() => setState({ phase: "idle" })}
-        style={{
-          background: "transparent", border: `1px solid ${tk.border}`,
-          color: tk.ink3, borderRadius: tk.r2, padding: "3px 8px", fontSize: 11,
-          fontFamily: tk.fontUi,
-        }}
-      >
-        Dismiss
-      </button>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Context row
 // ---------------------------------------------------------------------------
 
@@ -394,7 +262,6 @@ export type ScopeDetailProps = {
   workspaceId: string;
   selectedContextId: string | null;
   onSelectContext: (id: string | null) => void;
-  onScopeDeleted: () => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -415,7 +282,6 @@ export function ScopeDetail({
   workspaceId,
   selectedContextId,
   onSelectContext,
-  onScopeDeleted,
 }: ScopeDetailProps): React.ReactElement {
   const [contexts, setContexts] = useState<ContextRef[]>([]);
   const [loading, setLoading] = useState(true);
@@ -538,14 +404,6 @@ export function ScopeDetail({
                 No description
               </p>
             )}
-          </div>
-          {/* Delete scope action */}
-          <div style={{ flexShrink: 0, paddingTop: 2 }}>
-            <DeleteScopeAction
-              scope={scope}
-              workspaceId={workspaceId}
-              onDeleted={onScopeDeleted}
-            />
           </div>
         </div>
       </div>

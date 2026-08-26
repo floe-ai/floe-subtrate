@@ -95,10 +95,12 @@ export function LeftNav({
             {actors.map(a => (
               <NavRow
                 key={a.endpoint_id}
-                label={a.name || a.endpoint_id}
+                label={`${a.name || a.endpoint_id}${a.status === "retired" ? " (retired)" : ""}`}
                 glyph={(a.name || a.endpoint_id).charAt(0).toUpperCase()}
                 isOn={!isSystemActive && selectedActorId === a.endpoint_id}
                 onClick={() => onSelectActor(a.endpoint_id)}
+                faint={a.status === "retired"}
+                title={a.status === "retired" ? "Historical actor identity; no longer available for work" : undefined}
               />
             ))}
             {actors.length === 0 && (

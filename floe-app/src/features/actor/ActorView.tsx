@@ -10,7 +10,6 @@ export type ActorViewProps = {
   workspaceId: string;
   workspace: WorkspaceFsRef;
   onSaved: (updated: EndpointRef) => void;
-  onDeleted: (endpointId: string) => void;
   onOpenContext: (contextId: string) => void;
   endpoints: EndpointRef[];
 };
@@ -20,7 +19,6 @@ export function ActorView({
   workspaceId,
   workspace,
   onSaved,
-  onDeleted,
   endpoints,
 }: ActorViewProps): React.ReactElement {
   const [activeTab, setActiveTab] = useState<"conversations" | "configure">("conversations");
@@ -28,6 +26,8 @@ export function ActorView({
 
   const actorName = actor.name || actor.endpoint_id;
   const initialGlyph = actorName.charAt(0).toUpperCase();
+  const isRetired = actor.status === "retired";
+  const statusColor = isRetired ? tk.ink4 : tk.ok;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: tk.canvas }}>
@@ -81,27 +81,29 @@ export function ActorView({
             >
               Conversations
             </button>
-            <button
-              onClick={() => setActiveTab("configure")}
-              style={{
-                background: activeTab === "configure" ? "rgba(255,255,255,0.06)" : "transparent",
-                border: "none",
-                borderRadius: tk.r1,
-                padding: "6px 14px",
-                color: activeTab === "configure" ? tk.accent : tk.ink3,
-                fontWeight: 510, fontSize: 12.5, cursor: "pointer",
-                transition: "background 100ms ease, color 100ms ease",
-              }}
-            >
-              ⚙ Configure Agent
-            </button>
+            {!isRetired && (
+              <button
+                onClick={() => setActiveTab("configure")}
+                style={{
+                  background: activeTab === "configure" ? "rgba(255,255,255,0.06)" : "transparent",
+                  border: "none",
+                  borderRadius: tk.r1,
+                  padding: "6px 14px",
+                  color: activeTab === "configure" ? tk.accent : tk.ink3,
+                  fontWeight: 510, fontSize: 12.5, cursor: "pointer",
+                  transition: "background 100ms ease, color 100ms ease",
+                }}
+              >
+                ⚙ Configure Agent
+              </button>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Viewport Content */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        {activeTab === "conversations" ? (
+        {activeTab === "conversations" || isRetired ? (
           <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
             {/* Left Split Pane: Conversations Master List */}
             <div style={{
@@ -121,8 +123,8 @@ export function ActorView({
                 </div>
                 <div>
                   <span style={{ fontSize: 10, color: tk.ink4, display: "block", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>Status</span>
-                  <span style={{ fontSize: 12, color: tk.ok, fontWeight: 510, display: "inline-flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: tk.ok }} />
+                  <span style={{ fontSize: 12, color: statusColor, fontWeight: 510, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: statusColor }} />
                     {actor.status}
                   </span>
                 </div>
@@ -146,6 +148,7 @@ export function ActorView({
                   workspaceId={workspaceId}
                   onOpenContext={(contextId) => setSelectedSubContextId(contextId)}
                   endpoints={endpoints}
+                  canStartContext={!isRetired}
                 />
               </div>
             </div>
@@ -215,7 +218,6 @@ export function ActorView({
                 workspaceId={workspaceId}
                 workspace={workspace}
                 onSaved={onSaved}
-                onDeleted={onDeleted}
                 onOpenContext={(contextId) => {
                   setSelectedSubContextId(contextId);
                   setActiveTab("conversations");

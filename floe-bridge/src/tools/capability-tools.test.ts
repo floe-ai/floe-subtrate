@@ -69,7 +69,9 @@ describe("capability-tools", () => {
       input: { scope_id: "delivery" },
     });
 
-    expect((result.content[0] as { type: "text"; text: string }).text).toBe("Bus completed the operation.");
+    expect((result.content[0] as { type: "text"; text: string }).text).toBe(
+      "Bus completed the operation.\n\n{\n  \"graph_id\": \"graph-1\",\n  \"context_id\": \"context-1\"\n}",
+    );
     expect(result.details).toMatchObject({
       ok: true,
       capability_id: "scope.compose",

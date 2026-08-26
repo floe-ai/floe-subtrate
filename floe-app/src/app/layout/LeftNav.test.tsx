@@ -40,4 +40,38 @@ describe("LeftNav", () => {
     expect(screen.getByText("Research")).toBeTruthy();
     expect(screen.getByText("Substrate Settings")).toBeTruthy();
   });
+
+  it("distinguishes retained actor history from active actors", () => {
+    render(
+      <LeftNav
+        view="conversations"
+        scopes={[]}
+        selectedScopeId={null}
+        actors={[{
+          endpoint_id: "actor:ws-1:old-controller",
+          workspace_id: "ws-1",
+          name: "Old Controller",
+          agent_id: "old-controller",
+          bridge_id: null,
+          status: "retired",
+          metadata_json: "{}",
+          created_at: "",
+          updated_at: "",
+        }]}
+        selectedActorId={null}
+        onView={vi.fn()}
+        onSelectScope={vi.fn()}
+        onSelectActor={vi.fn()}
+        onNewScope={vi.fn()}
+        onNewActor={vi.fn()}
+        showNewActor={false}
+        appMode="workspace"
+        onViewSystem={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Developer tools/ }));
+    expect((screen.getByRole("button", { name: "O Old Controller (retired)" }) as HTMLButtonElement).title)
+      .toBe("Historical actor identity; no longer available for work");
+  });
 });

@@ -23,7 +23,6 @@ import type {
 } from "../bus-client/types.ts";
 import {
   registerEndpoint,
-  deleteEndpoint,
   getAuthProfiles,
   resolveRuntimeBinding,
   upsertRuntimeBinding,
@@ -157,11 +156,13 @@ export function ActorContexts({
   workspaceId,
   onOpenContext,
   endpoints = [],
+  canStartContext = true,
 }: {
   endpointId: string;
   workspaceId: string;
   onOpenContext: (contextId: string) => void;
   endpoints?: EndpointRef[];
+  canStartContext?: boolean;
 }): React.ReactElement {
   const [contexts, setContexts] = useState<ContextRef[]>([]);
   const [loading, setLoading] = useState(true);
@@ -172,7 +173,7 @@ export function ActorContexts({
   const [selectedParticipant, setSelectedParticipant] = useState("");
   const [createState, setCreateState] = useState<SaveState>({ phase: "idle" });
 
-  const otherEndpoints = endpoints.filter((e) => e.endpoint_id !== endpointId);
+  const otherEndpoints = endpoints.filter((e) => e.endpoint_id !== endpointId && e.status !== "retired");
 
   function fetchContexts() {
     setLoading(true);
@@ -247,18 +248,20 @@ export function ActorContexts({
             {contexts.length}
           </span>
         )}
-        <button
-          onClick={() => { setPickerOpen(true); setCreateState({ phase: "idle" }); setSelectedParticipant(otherEndpoints[0]?.endpoint_id ?? ""); }}
-          aria-label="New context"
-          style={{
-            marginLeft: "auto", background: "transparent",
-            border: `1px solid ${tk.border}`, color: tk.ink3,
-            borderRadius: tk.r1, padding: "2px 8px", fontSize: 10.5,
-            cursor: "pointer", fontFamily: tk.fontUi, textTransform: "none", letterSpacing: 0,
-          }}
-        >
-          + New
-        </button>
+        {canStartContext && (
+          <button
+            onClick={() => { setPickerOpen(true); setCreateState({ phase: "idle" }); setSelectedParticipant(otherEndpoints[0]?.endpoint_id ?? ""); }}
+            aria-label="New context"
+            style={{
+              marginLeft: "auto", background: "transparent",
+              border: `1px solid ${tk.border}`, color: tk.ink3,
+              borderRadius: tk.r1, padding: "2px 8px", fontSize: 10.5,
+              cursor: "pointer", fontFamily: tk.fontUi, textTransform: "none", letterSpacing: 0,
+            }}
+          >
+            + New
+          </button>
+        )}
       </div>
 
       {pickerOpen && (
@@ -352,122 +355,17 @@ export function ActorContexts({
 }
 
 // ---------------------------------------------------------------------------
-// Delete action (mirrors ScopeInspector's delete-confirm pattern in App.tsx)
+// Lifecycle note
 // ---------------------------------------------------------------------------
 
-type DeleteState =
-  | { phase: "idle" }
-  | { phase: "confirming" }
-  | { phase: "deleting" }
-  | { phase: "error"; message: string };
-
-export function ActorDeleteSection({
-  actor,
-  onDeleted,
-}: {
-  actor: EndpointRef;
-  onDeleted: () => void;
-}): React.ReactElement {
-  const [deleteState, setDeleteState] = useState<DeleteState>({ phase: "idle" });
-  const [confirmName, setConfirmName] = useState("");
-  const actorLabel = actor.name || actor.endpoint_id;
-
-  // Reset the confirm/error state whenever the selected actor changes.
-  useEffect(() => {
-    setDeleteState({ phase: "idle" });
-    setConfirmName("");
-  }, [actor.endpoint_id]);
-
-  async function handleDelete() {
-    setDeleteState({ phase: "deleting" });
-    try {
-      await deleteEndpoint(actor.endpoint_id);
-      onDeleted();
-    } catch (err) {
-      // Treat "already gone" as success — the desired end state is reached.
-      if (err instanceof Error && /(404|not.?found)/i.test(err.message)) {
-        onDeleted();
-        return;
-      }
-      setDeleteState({ phase: "error", message: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
+export function ActorLifecycleNote({ actor }: { actor: EndpointRef }): React.ReactElement {
   return (
     <div style={{ padding: "12px 16px" }}>
-      {deleteState.phase === "idle" && (
-        <button
-          onClick={() => { setDeleteState({ phase: "confirming" }); setConfirmName(""); }}
-          style={{
-            background: "transparent", border: `1px solid ${tk.danger}`,
-            color: tk.danger, borderRadius: tk.r2, padding: "5px 12px",
-            fontSize: 12, cursor: "pointer", fontWeight: 510, fontFamily: tk.fontUi,
-          }}
-        >
-          Delete actor
-        </button>
-      )}
-
-      {deleteState.phase === "confirming" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <p style={{ fontSize: 12, color: tk.ink2, lineHeight: 1.45, margin: 0 }}>
-            Type "{actorLabel}" to confirm deletion. This cannot be undone.
-          </p>
-          <input
-            aria-label="Confirm actor name"
-            value={confirmName}
-            onChange={(e) => setConfirmName(e.target.value)}
-            placeholder={actorLabel}
-            autoFocus
-            style={{ ...inputStyle }}
-          />
-          <div style={{ display: "flex", gap: 6 }}>
-            <button
-              onClick={() => void handleDelete()}
-              disabled={confirmName !== actorLabel}
-              style={{
-                background: confirmName === actorLabel ? tk.danger : "rgba(184,90,90,0.35)",
-                color: "#fff", border: "none",
-                borderRadius: tk.r2, padding: "5px 12px", fontSize: 12,
-                cursor: confirmName === actorLabel ? "pointer" : "not-allowed",
-                fontFamily: tk.fontUi,
-              }}
-            >
-              Confirm delete
-            </button>
-            <button
-              onClick={() => { setDeleteState({ phase: "idle" }); setConfirmName(""); }}
-              style={{
-                background: "transparent", border: `1px solid ${tk.border}`,
-                color: tk.ink3, borderRadius: tk.r2, padding: "5px 12px", fontSize: 12,
-                fontFamily: tk.fontUi, cursor: "pointer",
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {deleteState.phase === "deleting" && (
-        <p style={{ fontSize: 12, color: tk.ink3 }}>Deleting…</p>
-      )}
-
-      {deleteState.phase === "error" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <p role="alert" style={{ fontSize: 12, color: tk.danger, margin: 0 }}>{deleteState.message}</p>
-          <button
-            onClick={() => setDeleteState({ phase: "idle" })}
-            style={{
-              background: "transparent", border: `1px solid ${tk.border}`,
-              color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 12,
-              alignSelf: "flex-start", fontFamily: tk.fontUi, cursor: "pointer",
-            }}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
+      <p style={{ margin: 0, fontSize: 12, color: tk.ink3, lineHeight: 1.5 }}>
+        {actor.status === "retired"
+          ? "This historical actor identity is retained so earlier conversations and Events remain attributable. It cannot receive new work."
+          : "Ask Floe to remove an unused actor so its workspace definition and durable identity are handled together."}
+      </p>
     </div>
   );
 }
@@ -752,8 +650,6 @@ export type ActorInspectorProps = {
   onSaved?: (updated: EndpointRef) => void;
   /** Open this context's conversation (sets selected context + switches main view). */
   onOpenContext?: (contextId: string) => void;
-  /** Actor was deleted — caller should remove it from the Actors nav and clear selection. */
-  onDeleted?: (endpointId: string) => void;
   hideContexts?: boolean;
 };
 
@@ -767,7 +663,6 @@ export function ActorInspector({
   workspace,
   onSaved,
   onOpenContext,
-  onDeleted,
   hideContexts,
 }: ActorInspectorProps): React.ReactElement {
   // Name editing
@@ -1045,6 +940,7 @@ export function ActorInspector({
             endpointId={actor.endpoint_id}
             workspaceId={workspaceId}
             onOpenContext={(contextId) => onOpenContext?.(contextId)}
+            canStartContext={actor.status !== "retired"}
           />
         </div>
       )}
@@ -1052,9 +948,9 @@ export function ActorInspector({
       {/* File-backed definition (frontmatter + body) — Tauri only */}
       <ActorFileSection actor={actor} workspace={workspace ?? null} />
 
-      {/* Delete action */}
+      {/* Lifecycle is changed through Floe so configuration and durable identity stay coherent. */}
       <div style={{ borderTop: `1px solid ${tk.border2}` }}>
-        <ActorDeleteSection actor={actor} onDeleted={() => onDeleted?.(actor.endpoint_id)} />
+        <ActorLifecycleNote actor={actor} />
       </div>
     </div>
   );

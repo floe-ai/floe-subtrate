@@ -16,12 +16,7 @@ import * as client from "../bus-client/client.ts";
 
 vi.mock("../bus-client/client.ts", () => ({
   listContextsForScope: vi.fn(),
-  deleteScope: vi.fn(),
   deleteContext: vi.fn(),
-  ScopeNotEmptyError: class ScopeNotEmptyError extends Error {
-    context_count = 0;
-    pulse_count = 0;
-  },
 }));
 
 // Mock Ops to avoid rendering its full subtree
@@ -102,6 +97,20 @@ afterEach(() => cleanup());
 // ---------------------------------------------------------------------------
 
 describe("ScopeDetail — contexts list push subscription", () => {
+  it("does not expose raw Scope deletion from the developer observatory", async () => {
+    render(
+      <ScopeDetail
+        scope={SCOPE as any}
+        workspaceId={WS_ID}
+        selectedContextId={null}
+        onSelectContext={vi.fn()}
+      />
+    );
+
+    await screen.findByText("No contexts in this scope yet.");
+    expect(screen.queryByRole("button", { name: /delete scope/i })).toBeNull();
+  });
+
   it("reloads contexts when context_created arrives for this scope", async () => {
     const ctx1 = makeContext({ context_id: "ctx-1", first_message_preview: "Hello world" });
     vi.mocked(client.listContextsForScope).mockResolvedValueOnce([]);
@@ -112,7 +121,6 @@ describe("ScopeDetail — contexts list push subscription", () => {
         workspaceId={WS_ID}
         selectedContextId={null}
         onSelectContext={vi.fn()}
-        onScopeDeleted={vi.fn()}
       />
     );
 
@@ -139,7 +147,6 @@ describe("ScopeDetail — contexts list push subscription", () => {
         workspaceId={WS_ID}
         selectedContextId={null}
         onSelectContext={vi.fn()}
-        onScopeDeleted={vi.fn()}
       />
     );
 
@@ -163,7 +170,6 @@ describe("ScopeDetail — contexts list push subscription", () => {
         workspaceId={WS_ID}
         selectedContextId={null}
         onSelectContext={vi.fn()}
-        onScopeDeleted={vi.fn()}
       />
     );
 
@@ -187,7 +193,6 @@ describe("ScopeDetail — contexts list push subscription", () => {
         workspaceId={WS_ID}
         selectedContextId={null}
         onSelectContext={vi.fn()}
-        onScopeDeleted={vi.fn()}
       />
     );
 

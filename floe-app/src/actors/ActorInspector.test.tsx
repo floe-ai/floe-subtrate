@@ -1,13 +1,12 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import { ActorInspector, ActorContexts, actorExtensionName, actorFileRelPath } from "./ActorInspector.tsx";
+import { ActorInspector, ActorContexts, ActorLifecycleNote, actorExtensionName, actorFileRelPath } from "./ActorInspector.tsx";
 import * as client from "../bus-client/client.ts";
 import * as modelsForProfileHelper from "./modelsForProfile.ts";
 
 vi.mock("../bus-client/client.ts", () => ({
   registerEndpoint: vi.fn(),
-  deleteEndpoint: vi.fn(),
   getAuthProfiles: vi.fn(),
   resolveRuntimeBinding: vi.fn(),
   upsertRuntimeBinding: vi.fn(),
@@ -42,6 +41,17 @@ const mockActor = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };
+
+describe("Actor lifecycle presentation", () => {
+  afterEach(() => cleanup());
+
+  it("keeps retired identity legible without exposing hard deletion", () => {
+    render(<ActorLifecycleNote actor={{ ...mockActor, status: "retired", bridge_id: null }} />);
+
+    expect(screen.getByText(/historical actor identity is retained/i)).toBeDefined();
+    expect(screen.queryByRole("button", { name: /delete actor/i })).toBeNull();
+  });
+});
 
 describe("ActorInspector - Effort reset behavior", () => {
   beforeEach(() => {
@@ -103,6 +113,7 @@ const mockEndpoints = [
   { endpoint_id: "ep-1", workspace_id: "ws-1", name: "Actor One", agent_id: null, bridge_id: null, status: "idle", metadata_json: "{}", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
   { endpoint_id: "ep-2", workspace_id: "ws-1", name: "Actor Two", agent_id: null, bridge_id: null, status: "idle", metadata_json: "{}", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
   { endpoint_id: "ep-3", workspace_id: "ws-1", name: "Actor Three", agent_id: null, bridge_id: null, status: "idle", metadata_json: "{}", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { endpoint_id: "ep-retired", workspace_id: "ws-1", name: "Old Actor", agent_id: null, bridge_id: null, status: "retired", metadata_json: "{}", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
 ];
 
 describe("ActorContexts - New Context picker", () => {
@@ -152,8 +163,24 @@ describe("ActorContexts - New Context picker", () => {
     const select = screen.getByRole("combobox", { name: "Select participant" }) as HTMLSelectElement;
     const options = Array.from(select.options).map((o) => o.value);
     expect(options).not.toContain("ep-1");
+    expect(options).not.toContain("ep-retired");
     expect(options).toContain("ep-2");
     expect(options).toContain("ep-3");
+  });
+
+  it("does not offer new work from a retired actor history view", async () => {
+    render(
+      <ActorContexts
+        endpointId="ep-retired"
+        workspaceId="ws-1"
+        onOpenContext={vi.fn()}
+        endpoints={mockEndpoints}
+        canStartContext={false}
+      />
+    );
+
+    await waitFor(() => expect(client.listContextsByParticipant).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "New context" })).toBeNull();
   });
 
   it("calls createDirectContext with correct args on confirm and calls onOpenContext", async () => {

@@ -81,8 +81,14 @@ export function createCapabilityTools(
           endpointId,
           params?.input && typeof params.input === "object" ? params.input : {},
         );
+        const data = result.data && Object.keys(result.data).length > 0
+          ? `\n\n${JSON.stringify(result.data, null, 2)}`
+          : "";
         return {
-          content: [{ type: "text", text: result.summary }],
+          // Pi exposes tool content to the model; details are host telemetry.
+          // Keep the Bus result intact at this generic boundary so identifiers
+          // returned by any capability remain usable by a subsequent operation.
+          content: [{ type: "text", text: `${result.summary}${data}` }],
           details: { ok: true, capability_id: capabilityId, ...result.data },
         };
       } catch (error) {

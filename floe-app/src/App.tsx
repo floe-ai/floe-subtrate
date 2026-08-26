@@ -325,11 +325,6 @@ export function App(): React.ReactElement {
     nav.navigateToScope(scope.scope_id);
   }, [activeWorkspace, refreshScopes, nav]);
 
-  const handleScopeDeleted = useCallback(async () => {
-    nav.navigateToHome();
-    await refreshScopes();
-  }, [refreshScopes, nav]);
-
   const handleSelectScope = useCallback((id: string) => {
     if (id) {
       nav.navigateToScope(id);
@@ -374,35 +369,42 @@ export function App(): React.ReactElement {
     void refreshActors();
   }, [refreshActors]);
 
-  const handleActorDeleted = useCallback((endpointId: string) => {
-    setActors(prev => prev.filter(a => a.endpoint_id !== endpointId));
-    if (nav.selectedActorId === endpointId) {
-      nav.clearActorSelection();
-    }
-    void refreshActors();
-  }, [refreshActors, nav]);
-
   const inspResizeRef = useInspectorResize(setInspWidth);
 
-  // Auto-refresh actors when registered by bridge
+  // Keep the developer observatory aligned with actor and Scope lifecycle
+  // changes made through Floe as well as changes made in this client.
   useEffect(() => {
     if (!activeWorkspace) return;
     const workspaceId = activeWorkspace.workspace_id;
     const unsub = subscribeEvents((msg) => {
-      if (msg.type === "endpoint_registered" || msg.type === "endpoint_updated" || msg.type === "endpoint_deleted") {
+      if (
+        msg.type === "endpoint_registered"
+        || msg.type === "endpoint_updated"
+        || msg.type === "endpoint_retired"
+        || msg.type === "endpoint_deleted"
+      ) {
         const epWsId = (msg.payload?.endpoint as any)?.workspace_id;
         if (msg.payload?.workspace_id === workspaceId || epWsId === workspaceId) {
           void refreshActors();
+        }
+      }
+      if (msg.type === "scope_created" || msg.type === "scope_updated" || msg.type === "scope_deleted") {
+        const scopeWsId = (msg.payload?.scope as any)?.workspace_id;
+        if (msg.payload?.workspace_id === workspaceId || scopeWsId === workspaceId) {
+          void refreshScopes();
         }
       }
     }, {
       // Subscribe first, then take a fresh snapshot. This closes the startup
       // race where the bridge registered Floe between the onboarding snapshot
       // and the live stream becoming ready.
-      onOpen: () => { void refreshActors(); },
+      onOpen: () => {
+        void refreshActors();
+        void refreshScopes();
+      },
     });
     return unsub;
-  }, [activeWorkspace?.workspace_id, refreshActors]);
+  }, [activeWorkspace?.workspace_id, refreshActors, refreshScopes]);
 
   // ---------------------------------------------------------------------------
   // Guard states
@@ -654,7 +656,6 @@ export function App(): React.ReactElement {
                 workspaceId={activeWorkspace.workspace_id}
                 workspace={activeWorkspace}
                 onSaved={handleActorSaved}
-                onDeleted={handleActorDeleted}
                 onOpenContext={(id) => nav.navigateToContext(id, null, nav.selectedActorId)}
                 endpoints={actors}
               />
@@ -664,7 +665,6 @@ export function App(): React.ReactElement {
                 workspaceId={activeWorkspace.workspace_id}
                 selectedContextId={nav.selectedContextId}
                 onSelectContext={handleSelectContext}
-                onScopeDeleted={() => void handleScopeDeleted()}
               />
             ) : nav.view === "home" && !nav.selectedActorId ? (
               <HomeView
