@@ -645,6 +645,46 @@ describe("Slice 2 — Context API HTTP routes", () => {
   });
 });
 
+describe("Endpoint lifecycle routes", () => {
+  let handle: ServerHandle;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(async () => {
+    const made = await makeServer();
+    handle = made.handle;
+    cleanup = made.cleanup;
+  });
+  afterEach(async () => { await cleanup(); });
+
+  it("accepts the long opaque endpoint ids created for command nodes", async () => {
+    const endpointId =
+      "command:workspace:158878416ce47ff1:acme-development-scoped:" +
+      "dry-run-evidence:8a267e28-41db-4cd2-949c-0e184420b15c";
+    handle.store.registerEndpoint({
+      endpoint_id: endpointId,
+      workspace_id: WS,
+      name: "Dry-run evidence",
+      bridge_id: "bridge:local",
+      status: "active"
+    }, () => {});
+
+    const statusRes = await handle.app.inject({
+      method: "POST",
+      url: `/v1/endpoints/${encodeURIComponent(endpointId)}/status`,
+      payload: { status: "error" }
+    });
+    expect(statusRes.statusCode).toBe(200);
+    expect(statusRes.json().endpoint.status).toBe("error");
+
+    const turnEndRes = await handle.app.inject({
+      method: "POST",
+      url: `/v1/endpoints/${encodeURIComponent(endpointId)}/turn-end`
+    });
+    expect(turnEndRes.statusCode).toBe(200);
+    expect(turnEndRes.json().endpoint.status).toBe("idle");
+  });
+});
+
 describe("Trigger ingress Scope API routes", () => {
   let handle: ServerHandle;
   let cleanup: () => Promise<void>;
@@ -710,6 +750,13 @@ describe("Runtime config truth and auth registry routes", () => {
     const wsUrl = address.replace(/^http/, "ws") + "/v1/events/stream";
     const wsMod = await import("ws" as any);
     const WsCtor = (wsMod as any).WebSocket ?? (wsMod as any).default;
+    const observer = new WsCtor(wsUrl);
+    const lifecycleMessages: any[] = [];
+    observer.on("message", (data: any) => lifecycleMessages.push(JSON.parse(data.toString())));
+    await new Promise<void>((resolve, reject) => {
+      observer.on("open", () => resolve());
+      observer.on("error", (err: any) => reject(err));
+    });
     const ws = new WsCtor(wsUrl);
     await new Promise<void>((resolve, reject) => {
       ws.on("open", () => {
@@ -729,6 +776,9 @@ describe("Runtime config truth and auth registry routes", () => {
         runtime_adapter: "pi-agent-core"
       }
     });
+    expect(lifecycleMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "bridge_connected", payload: { bridge_id: "bridge:runtime" } })
+    ]));
 
     ws.close();
     // Give the server a tick to process the socket close (marks bridge offline).
@@ -736,6 +786,10 @@ describe("Runtime config truth and auth registry routes", () => {
 
     const res2 = await handle.app.inject({ method: "GET", url: "/v1/runtime/status" });
     expect(res2.json()).toMatchObject({ bridge: { online: false } });
+    expect(lifecycleMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "bridge_disconnected", payload: { bridge_id: "bridge:runtime" } })
+    ]));
+    observer.close();
   });
 
   it("serves auth models merged from local overlays", async () => {

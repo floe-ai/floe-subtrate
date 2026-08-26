@@ -16,7 +16,10 @@ const MAX_BACKOFF_MS = 16_000;
 
 export function subscribeEvents(
   handler: (msg: StreamMsg) => void,
-  options: { onOpen?: () => void } = {},
+  options: {
+    onOpen?: () => void;
+    onStateChange?: (state: "connecting" | "open" | "closed") => void;
+  } = {},
 ): () => void {
   let cancelled = false;
   let ws: WebSocket | null = null;
@@ -25,10 +28,12 @@ export function subscribeEvents(
 
   function connect(): void {
     if (cancelled) return;
+    options.onStateChange?.("connecting");
     try {
       ws = new WebSocket(BUS_WS_URL);
     } catch {
       // WebSocket unavailable (test/SSR env without browser globals)
+      options.onStateChange?.("closed");
       return;
     }
 
@@ -49,11 +54,13 @@ export function subscribeEvents(
       }
       // Reset back-off on successful connection.
       backoffMs = INITIAL_BACKOFF_MS;
+      options.onStateChange?.("open");
       options.onOpen?.();
     };
 
     ws.onclose = () => {
       if (cancelled) return;
+      options.onStateChange?.("closed");
       retryTimer = setTimeout(() => {
         if (!cancelled) connect();
       }, backoffMs);

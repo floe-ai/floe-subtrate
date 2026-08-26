@@ -323,6 +323,40 @@ describe("conversation delivery state", () => {
   });
 });
 
+describe("runtime interruption", () => {
+  it("replaces stale working state with an explicit service failure", async () => {
+    vi.mocked(client.listDeliveries).mockResolvedValue([{
+      delivery_id: "delivery-active",
+      endpoint_id: PARTICIPANT_EP,
+      workspace_id: "ws-1",
+      trigger_event_id: "event-1",
+      events_json: JSON.stringify([{ context_id: "ctx-1" }]),
+      state: "injected_to_runtime",
+      lease_expires_at: null,
+      attempt_count: 1,
+      last_error: null,
+      created_at: "2026-01-01T00:00:00Z",
+      claimed_at: null,
+    }] as any);
+
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        runtimeHealth={{
+          state: "offline",
+          label: "Floe needs attention",
+          detail: "Local services stopped.",
+        }}
+      />,
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/local services stopped while this work was active/i);
+    await waitFor(() => expect(screen.queryByText("Alice is working")).toBeNull());
+  });
+});
+
 describe("operator work progress", () => {
   const telemetry = (kind: string, payload: Record<string, unknown>, createdAt = "2026-01-01T00:00:00Z") => ({
     telemetry_id: `telemetry-${kind}-${createdAt}`,

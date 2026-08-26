@@ -219,6 +219,16 @@ export class BridgeDaemon {
         void (async () => {
           try {
             await this.handleDelivery(delivery);
+          } catch (error) {
+            // Delivery work is deliberately detached so different endpoints
+            // can progress independently. An unexpected reporting failure
+            // must not become an unhandled rejection that terminates the
+            // shared packaged Bus/Bridge process.
+            console.error("[bridge] delivery handling escaped", {
+              delivery_id: delivery.delivery_id,
+              endpoint_id: delivery.endpoint_id,
+              error: error instanceof Error ? error.message : String(error)
+            });
           } finally {
             this.processingEndpoints.delete(delivery.endpoint_id);
           }
@@ -828,8 +838,7 @@ export class BridgeDaemon {
       }, delivery, effectiveRuntime);
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
       console.log("[bridge] delivery acknowledged", { delivery_id: delivery.delivery_id });
-      await this.bus.reportTurnEnd(delivery.endpoint_id);
-      console.log("[bridge] turn end reported", { endpoint_id: delivery.endpoint_id });
+      await this.reportTurnEndSafely(delivery.endpoint_id);
     } catch (error) {
       console.error("[bridge] adapter failed", error);
       const deferCodes = [
@@ -890,7 +899,7 @@ export class BridgeDaemon {
             console.error("[bridge] failed to record terminal turn failure", recordErr);
           }
         }
-        await this.bus.reportTurnEnd(delivery.endpoint_id);
+        await this.reportTurnEndSafely(delivery.endpoint_id);
         return;
       }
 
@@ -899,7 +908,7 @@ export class BridgeDaemon {
         error: (error as Error).message
       });
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", (error as Error).message);
-      await this.bus.updateEndpointStatus(delivery.endpoint_id, "error");
+      await this.updateEndpointStatusSafely(delivery.endpoint_id, "error");
     }
   }
 
@@ -945,14 +954,38 @@ export class BridgeDaemon {
         metadata: { command_node: true, graph_id: config.graph_id, node_id: config.node_id }
       });
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
-      await this.bus.reportTurnEnd(delivery.endpoint_id);
+      await this.reportTurnEndSafely(delivery.endpoint_id);
     } catch (error) {
       const message = error instanceof CommandInputMissingError
         ? error.message
         : `command node execution failed: ${(error as Error).message}`;
       console.error("[bridge] command node delivery failed", { delivery_id: delivery.delivery_id, node_id: config.node_id, error: message });
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", message);
-      await this.bus.updateEndpointStatus(delivery.endpoint_id, "error");
+      await this.updateEndpointStatusSafely(delivery.endpoint_id, "error");
+    }
+  }
+
+  private async reportTurnEndSafely(endpointId: string): Promise<void> {
+    try {
+      await this.bus.reportTurnEnd(endpointId);
+      console.log("[bridge] turn end reported", { endpoint_id: endpointId });
+    } catch (error) {
+      console.error("[bridge] turn end report failed", {
+        endpoint_id: endpointId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  private async updateEndpointStatusSafely(endpointId: string, status: string): Promise<void> {
+    try {
+      await this.bus.updateEndpointStatus(endpointId, status);
+    } catch (error) {
+      console.error("[bridge] endpoint status report failed", {
+        endpoint_id: endpointId,
+        status,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 

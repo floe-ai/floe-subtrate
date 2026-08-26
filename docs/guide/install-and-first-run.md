@@ -52,7 +52,7 @@ floe desktop
 
 Starts services if they aren't already running, waits for the 5379 frontend to answer a health check, then opens a native Tauri window attached to that same running frontend — it never starts a second frontend. First launch compiles Rust and takes about 2–5 minutes; the build output streams to your terminal. Later launches are fast.
 
-Once the native shell opens, it renders a lightweight **Starting Floe…** state immediately and checks the local substrate while it becomes ready. The packaged app verifies the substrate's HTTP health rather than only checking that its port is occupied. On Windows it replaces an unresponsive packaged sidecar left by an earlier Floe run. If startup still fails, the wait is bounded and the app shows a recovery message instead of remaining on the starting screen.
+Once the native shell opens, it renders a lightweight **Starting Floe…** state immediately and checks the local substrate while it becomes ready. The packaged app verifies the substrate's HTTP health rather than only checking that its port is occupied. On Windows it replaces an unresponsive packaged sidecar left by an earlier Floe run. If startup still fails, the wait is bounded and the app shows a recovery message instead of remaining on the starting screen. After startup, a compact green/amber/red status at the bottom of the navigation continues to reflect the live Bus connection and model-runtime attachment without polling. Opening a failed status shows the packaged process detail and can restart stopped local services without closing the application.
 
 ## First-use onboarding
 

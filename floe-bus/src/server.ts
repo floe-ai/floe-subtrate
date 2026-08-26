@@ -113,7 +113,11 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   broadcast: (type: string, payload?: Record<string, unknown>) => void;
   listen: () => Promise<void>;
 }> {
-  const app = Fastify({ logger: true });
+  // Endpoint ids are opaque substrate identifiers. Command-node endpoints can
+  // legitimately include workspace, Scope, node, and graph ids in one route
+  // segment, which exceeds Fastify's 100-character default. Keep the HTTP
+  // router aligned with the identifiers the substrate itself creates.
+  const app = Fastify({ logger: true, routerOptions: { maxParamLength: 2_048 } });
   const store = new BusStore(configPath, config);
   const sockets = new Set<SocketLike>();
   /** Maps bridge_id → the WS socket it opened; used for socket-presence liveness (D4). */
@@ -205,6 +209,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
           bridgeSockets.set(bridgeId, client);
           // Also update the DB last_seen_at so stored timestamps stay fresh.
           store.reportBridgeLiveness(bridgeId);
+          broadcast("bridge_connected", { bridge_id: bridgeId });
         }
       } catch {
         // ignore malformed frames
@@ -214,12 +219,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       sockets.delete(client);
       if (connectedBridgeId !== null && bridgeSockets.get(connectedBridgeId) === client) {
         bridgeSockets.delete(connectedBridgeId);
+        broadcast("bridge_disconnected", { bridge_id: connectedBridgeId });
       }
     });
     client.on("error", () => {
       sockets.delete(client);
       if (connectedBridgeId !== null && bridgeSockets.get(connectedBridgeId) === client) {
         bridgeSockets.delete(connectedBridgeId);
+        broadcast("bridge_disconnected", { bridge_id: connectedBridgeId });
       }
     });
   });

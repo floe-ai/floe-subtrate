@@ -12,6 +12,7 @@ import { ContextConversation } from "../../scope/ContextConversation.tsx";
 import { FloeModelControl } from "../../workspace/FloeModelControl.tsx";
 import { tk } from "../../theme.ts";
 import { ContextWorkView } from "../work/ContextWorkView.tsx";
+import type { RuntimeHealth } from "../../runtime/health.ts";
 
 const RECENT_LIMIT = 6;
 
@@ -88,6 +89,7 @@ export type OperatorConversationsProps = {
   onOpenContext: (contextId: string) => void;
   onCloseContext: () => void;
   onOpenSettings?: () => void;
+  runtimeHealth?: RuntimeHealth;
 };
 
 export function OperatorConversations({
@@ -97,6 +99,7 @@ export function OperatorConversations({
   onOpenContext,
   onCloseContext,
   onOpenSettings,
+  runtimeHealth,
 }: OperatorConversationsProps): React.ReactElement {
   const operator = useMemo(() => findOperatorEndpoint(endpoints), [endpoints]);
   const floe = useMemo(() => findFloeEndpoint(endpoints), [endpoints]);
@@ -297,6 +300,7 @@ export function OperatorConversations({
         contextId={selectedContextId}
         workspaceId={workspaceId}
         endpoints={endpoints}
+        runtimeHealth={runtimeHealth}
         operatorEntry={{
           speakingAsEndpointId: operator.endpoint_id,
           showContextIdentity: true,

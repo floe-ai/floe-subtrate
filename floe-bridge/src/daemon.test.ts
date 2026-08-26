@@ -1106,6 +1106,53 @@ describe("BridgeDaemon – command node delivery routing", () => {
       made.cleanup();
     }
   });
+
+  it("keeps an acknowledged command successful when turn-end reporting fails", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    const statuses: string[] = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      (daemon as any).adapter = { name: "test-adapter", async handleBundle() {} };
+      (daemon as any).bus = {
+        async reportDeliveryStatus(_bridgeId: string, _deliveryId: string, state: string) { statuses.push(state); },
+        async emit() {},
+        async reportTurnEnd() { throw new Error("lifecycle route unavailable"); },
+        async updateEndpointStatus() {}
+      };
+      (daemon as any).commandNodes.set("endpoint:check", {
+        graph_id: "graph_1",
+        node_id: "check_node",
+        context_id: "ctx_1",
+        endpoint_id: "endpoint:check",
+        command: `node -e "process.exit(0)"`,
+        inputs: [],
+        outputs: [],
+        result_event_type: "command.result",
+        workspace_locator: process.cwd()
+      });
+
+      await expect((daemon as any).handleDelivery({
+        delivery_id: "del-cmd-reporting",
+        endpoint_id: "endpoint:check",
+        workspace_id: "workspace:test",
+        trigger_event_id: "evt:3",
+        events: [{ content: {} }],
+        delivered_at: new Date().toISOString()
+      })).resolves.toBeUndefined();
+
+      expect(statuses).toEqual(["injected_to_runtime", "acknowledged"]);
+      expect(consoleError).toHaveBeenCalledWith(
+        "[bridge] turn end report failed",
+        expect.objectContaining({ endpoint_id: "endpoint:check", error: "lifecycle route unavailable" })
+      );
+    } finally {
+      consoleError.mockRestore();
+      made.cleanup();
+    }
+  });
 });
 
 describe("BridgeDaemon – node instructions binding injection", () => {

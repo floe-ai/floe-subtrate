@@ -20,6 +20,7 @@ import {
   registerEndpoint,
   deleteWorkspace,
   getAuthProfiles,
+  getRuntimeStatus,
   upsertRuntimeBinding,
   DirectoryNotFoundError,
 } from "./bus-client/client.ts";
@@ -42,6 +43,11 @@ import { ScopeInspectorEmpty, DefaultInspector, useInspectorResize, readRinspWid
 import { tk } from "./theme.ts";
 import { getModelProviders, type ModelProviderStatus } from "./providers/modelProviders.ts";
 import { isTauri } from "./fs/workspaceFs.ts";
+import {
+  STARTING_RUNTIME_HEALTH,
+  type RuntimeHealth,
+  type SubstrateHealthEvent,
+} from "./runtime/health.ts";
 
 // ---------------------------------------------------------------------------
 // Global style injection (scrollbars, html/body reset, focus ring)
@@ -124,6 +130,7 @@ export function App(): React.ReactElement {
   const [actors, setActors] = useState<EndpointRef[]>([]);
   const [authProfiles, setAuthProfiles] = useState<AuthProfileRecord[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProviderStatus[] | null>(null);
+  const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth>(STARTING_RUNTIME_HEALTH);
 
   const nav = useNavigation();
   const [inspWidth, setInspWidth] = useState<number>(readRinspWidth);
@@ -131,6 +138,102 @@ export function App(): React.ReactElement {
 
   // Notification cleanup ref
   const notifUnsubRef = useRef<(() => void) | null>(null);
+  const runtimeOfflineTimerRef = useRef<number | null>(null);
+  const runtimeWasConnectedRef = useRef(false);
+  const nativeRuntimeFailureRef = useRef(false);
+
+  const clearRuntimeOfflineTimer = useCallback(() => {
+    if (runtimeOfflineTimerRef.current !== null) {
+      window.clearTimeout(runtimeOfflineTimerRef.current);
+      runtimeOfflineTimerRef.current = null;
+    }
+  }, []);
+
+  const refreshRuntimeHealth = useCallback(async () => {
+    try {
+      const runtime = await getRuntimeStatus();
+      if (nativeRuntimeFailureRef.current) return;
+      if (runtime.bridge.online) {
+        setRuntimeHealth({
+          state: "healthy",
+          label: "Floe is ready",
+          detail: runtime.bridge.runtime_adapter
+            ? `Local services and the ${runtime.bridge.runtime_adapter} model runtime are connected.`
+            : "Local services and the model runtime are connected.",
+        });
+      } else {
+        setRuntimeHealth({
+          state: "degraded",
+          label: "Model runtime connecting",
+          detail: "The local Bus is available, but the model runtime is not connected yet.",
+        });
+      }
+    } catch (error) {
+      if (nativeRuntimeFailureRef.current) return;
+      setRuntimeHealth({
+        state: "degraded",
+        label: "Floe is reconnecting",
+        detail: "The local services stopped responding. Floe is trying to reconnect.",
+        technicalDetail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, []);
+
+  const handleRuntimeStreamState = useCallback((state: "connecting" | "open" | "closed") => {
+    if (state === "open") {
+      nativeRuntimeFailureRef.current = false;
+      runtimeWasConnectedRef.current = true;
+      clearRuntimeOfflineTimer();
+      void refreshRuntimeHealth();
+      return;
+    }
+
+    if (state === "connecting") {
+      if (nativeRuntimeFailureRef.current) return;
+      setRuntimeHealth(previous => previous.state === "healthy" || runtimeWasConnectedRef.current
+        ? {
+            state: "degraded",
+            label: "Floe is reconnecting",
+            detail: "The connection to Floe's local services was interrupted.",
+          }
+        : STARTING_RUNTIME_HEALTH);
+      return;
+    }
+
+    if (nativeRuntimeFailureRef.current) return;
+    setRuntimeHealth({
+      state: "degraded",
+      label: "Floe is reconnecting",
+      detail: "The connection to Floe's local services was interrupted.",
+    });
+    clearRuntimeOfflineTimer();
+    runtimeOfflineTimerRef.current = window.setTimeout(() => {
+      setRuntimeHealth(previous => previous.state === "healthy"
+        ? previous
+        : {
+            state: "offline",
+            label: "Floe needs attention",
+            detail: "The local services are not responding. Active work cannot continue until they restart.",
+          });
+    }, 2_500);
+  }, [clearRuntimeOfflineTimer, refreshRuntimeHealth]);
+
+  const handleRestartRuntime = useCallback(async () => {
+    clearRuntimeOfflineTimer();
+    nativeRuntimeFailureRef.current = false;
+    setRuntimeHealth(STARTING_RUNTIME_HEALTH);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("restart_packaged_substrate");
+    } catch (error) {
+      setRuntimeHealth({
+        state: "offline",
+        label: "Floe could not restart",
+        detail: "The local services could not be restarted from the app.",
+        technicalDetail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [clearRuntimeOfflineTimer]);
 
   // ---------------------------------------------------------------------------
   // Bootstrap
@@ -199,6 +302,56 @@ export function App(): React.ReactElement {
     void boot();
     return () => { cancelled = true; };
   }, []);
+
+  // One existing source of truth drives the operator health read: the Bus
+  // stream tells us whether the local service is reachable, while
+  // /v1/runtime/status tells us whether its model Bridge is attached.
+  useEffect(() => {
+    const unsubscribe = subscribeEvents((msg) => {
+      if (msg.type === "bridge_registered" || msg.type === "bridge_connected" || msg.type === "bridge_disconnected") {
+        void refreshRuntimeHealth();
+      }
+    }, { onStateChange: handleRuntimeStreamState });
+    return () => {
+      clearRuntimeOfflineTimer();
+      unsubscribe();
+    };
+  }, [clearRuntimeOfflineTimer, handleRuntimeStreamState, refreshRuntimeHealth]);
+
+  // The packaged shell can name a process exit more precisely than a lost WebSocket.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen<SubstrateHealthEvent>("substrate-health", event => {
+        if (cancelled) return;
+        clearRuntimeOfflineTimer();
+        if (event.payload.state === "starting") {
+          nativeRuntimeFailureRef.current = false;
+          setRuntimeHealth(STARTING_RUNTIME_HEALTH);
+          return;
+        }
+        nativeRuntimeFailureRef.current = true;
+        setRuntimeHealth({
+          state: "offline",
+          label: "Floe needs attention",
+          detail: event.payload.detail,
+          technicalDetail: event.payload.technicalDetail,
+        });
+      }))
+      .then(stop => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {
+        // Browser/dev builds do not have the native process event channel.
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [clearRuntimeOfflineTimer]);
 
   // Notification subscription
   useEffect(() => {
@@ -608,6 +761,8 @@ export function App(): React.ReactElement {
             showNewActor={nav.showNewActor}
             appMode={nav.appMode}
             onViewSystem={nav.navigateToSystem}
+            runtimeHealth={runtimeHealth}
+            onRestartRuntime={() => void handleRestartRuntime()}
           />
 
           {/* Main column */}
@@ -639,6 +794,7 @@ export function App(): React.ReactElement {
                 onOpenContext={nav.navigateToOperatorContext}
                 onCloseContext={nav.navigateToConversations}
                 onOpenSettings={handleOpenWorkspaceSettings}
+                runtimeHealth={runtimeHealth}
               />
             ) : nav.selectedContextId ? (
               // Developer tools can open any Context independently of Scope.
@@ -649,6 +805,7 @@ export function App(): React.ReactElement {
                 workspaceId={activeWorkspace.workspace_id}
                 endpoints={actors}
                 onLabelResolved={nav.setContextLabel}
+                runtimeHealth={runtimeHealth}
               />
             ) : nav.selectedActorId ? (
               <ActorView

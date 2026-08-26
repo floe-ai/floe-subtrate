@@ -1,15 +1,17 @@
 mod fs_commands;
 mod substrate_commands;
 
+use serde::Serialize;
+#[cfg(target_os = "windows")]
+use std::process::Command;
 use std::{
+  collections::VecDeque,
   io::{Read, Write},
   net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
   thread,
   time::Duration,
 };
-#[cfg(target_os = "windows")]
-use std::process::Command;
-use tauri::{path::BaseDirectory, Manager};
+use tauri::{path::BaseDirectory, Emitter, Manager};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +19,43 @@ enum SubstrateStatus {
   Healthy,
   NotRunning,
   Unresponsive,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubstrateHealthEvent {
+  state: &'static str,
+  detail: String,
+  technical_detail: Option<String>,
+}
+
+fn emit_substrate_health(
+  app: &tauri::AppHandle,
+  state: &'static str,
+  detail: impl Into<String>,
+  technical_detail: Option<String>,
+) {
+  if let Err(error) = app.emit(
+    "substrate-health",
+    SubstrateHealthEvent {
+      state,
+      detail: detail.into(),
+      technical_detail,
+    },
+  ) {
+    log::warn!("could not publish substrate health: {error}");
+  }
+}
+
+fn remember_stderr(tail: &mut VecDeque<String>, line: &[u8]) {
+  let text = String::from_utf8_lossy(line).trim().to_string();
+  if text.is_empty() {
+    return;
+  }
+  if tail.len() == 8 {
+    tail.pop_front();
+  }
+  tail.push_back(text.chars().take(500).collect());
 }
 
 fn is_healthy_http_response(response: &[u8]) -> bool {
@@ -72,7 +111,7 @@ fn wait_for_substrate_to_stop() -> bool {
   false
 }
 
-fn start_packaged_substrate(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+fn start_packaged_substrate(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
   match substrate_status() {
     SubstrateStatus::Healthy => return Ok(()),
     SubstrateStatus::NotRunning => {}
@@ -84,6 +123,7 @@ fn start_packaged_substrate(app: &tauri::App) -> Result<(), Box<dyn std::error::
     }
   }
 
+  emit_substrate_health(app, "starting", "Starting Floe's local services.", None);
   let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)?;
   let script_dir = script.parent().ok_or("desktop resource has no parent directory")?;
   let (mut events, _child) = app
@@ -93,20 +133,53 @@ fn start_packaged_substrate(app: &tauri::App) -> Result<(), Box<dyn std::error::
     .arg("floe-desktop.js")
     .arg("substrate")
     .spawn()?;
+  let health_app = app.clone();
   tauri::async_runtime::spawn(async move {
+    let mut stderr_tail = VecDeque::new();
     while let Some(event) = events.recv().await {
       match event {
         CommandEvent::Stdout(line) => log::info!("substrate: {}", String::from_utf8_lossy(&line)),
-        CommandEvent::Stderr(line) => log::warn!("substrate: {}", String::from_utf8_lossy(&line)),
-        CommandEvent::Error(error) => log::error!("substrate: {error}"),
-        CommandEvent::Terminated(status) if status.code != Some(0) => {
-          log::error!("packaged substrate exited with status {:?}", status.code);
+        CommandEvent::Stderr(line) => {
+          remember_stderr(&mut stderr_tail, &line);
+          log::warn!("substrate: {}", String::from_utf8_lossy(&line));
+        }
+        CommandEvent::Error(error) => {
+          let detail = format!("The local service process failed: {error}");
+          log::error!("substrate: {error}");
+          emit_substrate_health(&health_app, "offline", detail, None);
+        }
+        CommandEvent::Terminated(status) => {
+          let code = status
+            .code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into());
+          let detail = format!("Floe's local services stopped unexpectedly (exit code {code}).");
+          let technical_detail = if stderr_tail.is_empty() {
+            None
+          } else {
+            Some(stderr_tail.iter().cloned().collect::<Vec<_>>().join("\n"))
+          };
+          if status.code == Some(0) {
+            log::info!("packaged substrate exited with status {:?}", status.code);
+          } else {
+            log::error!("packaged substrate exited with status {:?}", status.code);
+          }
+          emit_substrate_health(&health_app, "offline", detail, technical_detail);
         }
         _ => {}
       }
     }
   });
   Ok(())
+}
+
+#[tauri::command]
+fn restart_packaged_substrate(app: tauri::AppHandle) -> Result<(), String> {
+  start_packaged_substrate(&app).map_err(|error| {
+    let detail = format!("Floe could not restart its local services: {error}");
+    emit_substrate_health(&app, "offline", detail.clone(), None);
+    detail
+  })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -120,10 +193,16 @@ pub fn run() {
     )
     .manage(substrate_commands::ProviderLoginProcess::default())
     .setup(|app| {
-      if let Err(error) = start_packaged_substrate(app) {
+      if let Err(error) = start_packaged_substrate(app.handle()) {
         // Keep the window alive: the frontend has a bounded startup wait and
         // can explain the failure rather than disappearing without feedback.
         log::error!("could not start packaged substrate: {error}");
+        emit_substrate_health(
+          app.handle(),
+          "offline",
+          format!("Floe could not start its local services: {error}"),
+          None,
+        );
       }
       Ok(())
     })
@@ -138,6 +217,7 @@ pub fn run() {
       substrate_commands::connect_model_provider,
       substrate_commands::get_runtime_adapter,
       substrate_commands::set_runtime_adapter,
+      restart_packaged_substrate,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application");
@@ -151,12 +231,25 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-  use super::is_healthy_http_response;
+  use std::collections::VecDeque;
+
+  use super::{is_healthy_http_response, remember_stderr};
 
   #[test]
   fn accepts_only_successful_http_health_responses() {
     assert!(is_healthy_http_response(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{}"));
     assert!(!is_healthy_http_response(b"HTTP/1.1 503 Service Unavailable\r\n\r\n"));
     assert!(!is_healthy_http_response(b""));
+  }
+
+  #[test]
+  fn keeps_a_bounded_stderr_tail_for_operator_diagnostics() {
+    let mut tail = VecDeque::new();
+    for index in 0..10 {
+      remember_stderr(&mut tail, format!("failure {index}").as_bytes());
+    }
+    assert_eq!(tail.len(), 8);
+    assert_eq!(tail.front().map(String::as_str), Some("failure 2"));
+    assert_eq!(tail.back().map(String::as_str), Some("failure 9"));
   }
 }

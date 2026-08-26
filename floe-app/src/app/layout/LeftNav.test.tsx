@@ -74,4 +74,38 @@ describe("LeftNav", () => {
     expect((screen.getByRole("button", { name: "O Old Controller (retired)" }) as HTMLButtonElement).title)
       .toBe("Historical actor identity; no longer available for work");
   });
+
+  it("shows operator-readable health details and recovery when services stop", () => {
+    const onRestartRuntime = vi.fn();
+    render(
+      <LeftNav
+        view="conversations"
+        scopes={[]}
+        selectedScopeId={null}
+        actors={[]}
+        selectedActorId={null}
+        onView={vi.fn()}
+        onSelectScope={vi.fn()}
+        onSelectActor={vi.fn()}
+        onNewScope={vi.fn()}
+        onNewActor={vi.fn()}
+        showNewActor={false}
+        appMode="workspace"
+        onViewSystem={vi.fn()}
+        runtimeHealth={{
+          state: "offline",
+          label: "Floe needs attention",
+          detail: "Floe's local services stopped unexpectedly (exit code 1).",
+          technicalDetail: "turn-end failed: 404",
+        }}
+        onRestartRuntime={onRestartRuntime}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Floe status: Floe needs attention" }));
+    expect(screen.getByText(/exit code 1/)).toBeTruthy();
+    expect(screen.getByText("Technical detail")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Restart local services" }));
+    expect(onRestartRuntime).toHaveBeenCalledOnce();
+  });
 });

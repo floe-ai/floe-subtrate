@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import type { ScopeRef, EndpointRef } from "../../bus-client/types.ts";
+import type { RuntimeHealth } from "../../runtime/health.ts";
 import { tk } from "../../theme.ts";
 
 export type NavView = "conversations" | "home" | "activity";
@@ -18,12 +19,14 @@ export type NavProps = {
   showNewActor: boolean;
   appMode: "workspace" | "system";
   onViewSystem: () => void;
+  runtimeHealth?: RuntimeHealth;
+  onRestartRuntime?: () => void;
 };
 
 export function LeftNav({
   view, scopes, selectedScopeId, actors, selectedActorId,
   onView, onSelectScope, onSelectActor, onNewScope, onNewActor, showNewActor,
-  appMode, onViewSystem,
+  appMode, onViewSystem, runtimeHealth, onRestartRuntime,
 }: NavProps): React.ReactElement {
   const isSystemActive = appMode === "system";
   const [developerOpen, setDeveloperOpen] = useState(false);
@@ -114,7 +117,113 @@ export function LeftNav({
           </>
         )}
       </div>
+
+      {runtimeHealth && (
+        <RuntimeHealthIndicator health={runtimeHealth} onRestart={onRestartRuntime} />
+      )}
     </aside>
+  );
+}
+
+export function RuntimeHealthIndicator({
+  health,
+  onRestart,
+}: {
+  health: RuntimeHealth;
+  onRestart?: () => void;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const color = health.state === "healthy"
+    ? tk.ok
+    : health.state === "offline"
+      ? tk.danger
+      : "#d2a85e";
+
+  return (
+    <div style={{ marginTop: "auto", paddingTop: 8, borderTop: `1px solid ${tk.border2}` }}>
+      {open && (
+        <div
+          role="status"
+          style={{
+            margin: "0 10px 7px",
+            padding: "10px 11px",
+            background: tk.surfaceSunk,
+            border: `1px solid ${tk.border}`,
+            borderRadius: tk.r2,
+          }}
+        >
+          <div style={{ color: tk.ink, fontSize: 12.5, fontWeight: 560 }}>{health.label}</div>
+          <div style={{ color: tk.ink3, fontSize: 11.5, marginTop: 4, lineHeight: 1.45 }}>
+            {health.detail}
+          </div>
+          {health.technicalDetail && (
+            <details style={{ marginTop: 7, color: tk.ink4, fontSize: 11 }}>
+              <summary style={{ cursor: "pointer", color: tk.ink3 }}>Technical detail</summary>
+              <pre style={{
+                marginTop: 5,
+                maxHeight: 96,
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
+                fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
+                fontSize: 10.5,
+              }}>
+                {health.technicalDetail}
+              </pre>
+            </details>
+          )}
+          {health.state === "offline" && onRestart && (
+            <button
+              type="button"
+              onClick={onRestart}
+              style={{
+                marginTop: 9,
+                padding: "5px 8px",
+                borderRadius: tk.r2,
+                border: `1px solid ${tk.border}`,
+                background: tk.surfaceHov,
+                color: tk.ink2,
+                fontSize: 11.5,
+              }}
+            >
+              Restart local services
+            </button>
+          )}
+        </div>
+      )}
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={`Floe status: ${health.label}`}
+        title={`${health.label}. ${health.detail}`}
+        onClick={() => setOpen(value => !value)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          width: "100%",
+          padding: "7px 14px",
+          border: "none",
+          background: open ? "rgba(255,255,255,0.03)" : "transparent",
+          color: tk.ink3,
+          textAlign: "left",
+          fontSize: 11.5,
+        }}
+      >
+        <span style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: color,
+          boxShadow: `0 0 0 3px ${color}1f`,
+          flexShrink: 0,
+        }} />
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {health.label}
+        </span>
+        <span aria-hidden="true" style={{ marginLeft: "auto", color: tk.ink4 }}>{open ? "▾" : "▴"}</span>
+      </button>
+    </div>
   );
 }
 

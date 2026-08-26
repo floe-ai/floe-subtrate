@@ -41,6 +41,7 @@ import { subscribeEvents } from "../bus-client/stream.ts";
 import { FloeModelControl } from "../workspace/FloeModelControl.tsx";
 import { MiniMarkdown } from "../actors/markdown.tsx";
 import { contextLabel } from "./ScopeDetail.tsx";
+import type { RuntimeHealth } from "../runtime/health.ts";
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk)
@@ -661,6 +662,8 @@ export type ContextConversationProps = {
   showWorkEvents?: boolean;
   /** Hide all controls that could mutate the inspected Context. */
   readOnly?: boolean;
+  /** Local Bus/Bridge reachability from the operator shell. */
+  runtimeHealth?: RuntimeHealth;
   /** Neutral operator front door: fixes the human identity and hides substrate-oriented context controls. */
   operatorEntry?: {
     speakingAsEndpointId: string;
@@ -684,6 +687,7 @@ export function ContextConversation({
   alignRightEndpointId,
   showWorkEvents = false,
   readOnly = false,
+  runtimeHealth,
   operatorEntry,
 }: ContextConversationProps): React.ReactElement {
   const [context, setContext] = useState<ContextRef | null>(null);
@@ -736,6 +740,18 @@ export function ContextConversation({
   useEffect(() => {
     load();
   }, [load]);
+
+  // A process exit is terminal information for the current visible turn. Do
+  // not leave a stale "working" indicator running after its runtime is gone.
+  useEffect(() => {
+    if (runtimeHealth?.state === "offline" && workingEndpoints.size > 0) {
+      setWorkingEndpoints(new Map());
+      setWorkProgress([]);
+      setDeliveryNotice(
+        "Floe's local services stopped while this work was active. Your message is safe; restart the services to continue.",
+      );
+    }
+  }, [runtimeHealth?.state, workingEndpoints.size]);
 
   // Live push refresh: reload whenever a new event lands in this context.
   // B1: also track delivery_bundle_available / turn_end_observed for working indicator.
