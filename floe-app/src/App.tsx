@@ -789,6 +789,7 @@ export function App(): React.ReactElement {
             ) : nav.view === "conversations" ? (
               <OperatorConversations
                 workspaceId={activeWorkspace.workspace_id}
+                workspaceLocator={activeWorkspace.locator}
                 endpoints={actors}
                 selectedContextId={nav.selectedContextId}
                 onOpenContext={nav.navigateToOperatorContext}

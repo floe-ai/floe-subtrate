@@ -210,6 +210,7 @@ pub fn run() {
       fs_commands::list_agent_files,
       fs_commands::read_file,
       fs_commands::write_file,
+      fs_commands::stage_attachment,
       substrate_commands::get_substrate_auth_profiles,
       substrate_commands::save_substrate_auth_profile,
       substrate_commands::delete_substrate_auth_profile,

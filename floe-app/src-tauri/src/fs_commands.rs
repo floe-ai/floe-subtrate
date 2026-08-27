@@ -12,6 +12,17 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+
+#[derive(Debug, serde::Serialize)]
+pub struct StagedAttachment {
+    path: String,
+    name: String,
+    media_type: String,
+    bytes: usize,
+}
 
 /// Errors returned to the frontend. Kept as plain strings since that's what
 /// crosses the Tauri IPC boundary by default (serialized via `Display`).
@@ -213,6 +224,73 @@ pub fn write_file(workspace_root: String, rel_path: String, contents: String) ->
     fs::write(&resolved, contents).map_err(|e| e.to_string())
 }
 
+fn safe_attachment_segment(value: &str, fallback: &str, max_len: usize) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(max_len)
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('.').trim_matches('_');
+    if trimmed.is_empty() { fallback.to_string() } else { trimmed.to_string() }
+}
+
+/// Copy one file deliberately selected by the local operator into ignored
+/// workspace state. Actors retain their workspace-only sandbox: they receive
+/// the returned relative path, never access to the source path or its parent.
+#[tauri::command]
+pub fn stage_attachment(
+    workspace_root: String,
+    context_id: String,
+    file_name: String,
+    media_type: Option<String>,
+    bytes: Vec<u8>,
+) -> Result<StagedAttachment, String> {
+    if bytes.is_empty() {
+        return Err("The selected file is empty.".to_string());
+    }
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err("The selected file exceeds the 20MB attachment limit.".to_string());
+    }
+
+    // Treat both separators as path boundaries so a Windows-origin filename
+    // is still reduced to its basename when tests or future clients run on
+    // another platform.
+    let source_name = file_name
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.trim().is_empty())
+        .unwrap_or("attachment");
+    let safe_name = safe_attachment_segment(source_name, "attachment", 120);
+    let safe_context = safe_attachment_segment(&context_id, "conversation", 100);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let relative_path = format!(
+        ".floe/state/attachments/{safe_context}/{}-{nonce}-{safe_name}",
+        std::process::id()
+    );
+    let resolved = resolve_within_root(&workspace_root, &relative_path).map_err(|e| e.to_string())?;
+    if let Some(parent) = resolved.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&resolved, &bytes).map_err(|e| e.to_string())?;
+
+    Ok(StagedAttachment {
+        path: relative_path.replace('\\', "/"),
+        name: source_name.to_string(),
+        media_type: media_type
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "application/octet-stream".to_string()),
+        bytes: bytes.len(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +456,41 @@ mod tests {
             root.to_str().unwrap().to_string(),
             "../escape.md".to_string(),
             "pwned".to_string(),
+        );
+        assert!(result.is_err());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn stages_operator_attachment_inside_ignored_workspace_state() {
+        let root = temp_workspace();
+        let attachment = stage_attachment(
+            root.to_str().unwrap().to_string(),
+            "ctx:operator/architect".to_string(),
+            "..\\Screenshot 2026-08-27.png".to_string(),
+            Some("image/png".to_string()),
+            b"png bytes".to_vec(),
+        )
+        .unwrap();
+
+        assert!(attachment.path.starts_with(".floe/state/attachments/ctx_operator_architect/"));
+        assert!(attachment.path.ends_with("-Screenshot_2026-08-27.png"));
+        assert_eq!(attachment.name, "Screenshot 2026-08-27.png");
+        assert_eq!(attachment.media_type, "image/png");
+        assert_eq!(fs::read(root.join(&attachment.path)).unwrap(), b"png bytes");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_oversized_operator_attachment() {
+        let root = temp_workspace();
+        let result = stage_attachment(
+            root.to_str().unwrap().to_string(),
+            "context".to_string(),
+            "large.bin".to_string(),
+            None,
+            vec![0; MAX_ATTACHMENT_BYTES + 1],
         );
         assert!(result.is_err());
         fs::remove_dir_all(&root).ok();

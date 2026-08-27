@@ -42,6 +42,17 @@ import { FloeModelControl } from "../workspace/FloeModelControl.tsx";
 import { MiniMarkdown } from "../actors/markdown.tsx";
 import { contextLabel } from "./ScopeDetail.tsx";
 import type { RuntimeHealth } from "../runtime/health.ts";
+import {
+  conversationAttachments,
+  formatAttachmentBytes,
+  stageConversationAttachments,
+  type ConversationAttachment,
+} from "../fs/conversationAttachments.ts";
+import {
+  appendAttachmentFiles,
+  AttachmentPicker,
+  pastedFiles,
+} from "../features/conversations/AttachmentPicker.tsx";
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk)
@@ -97,7 +108,8 @@ function isVisibleMessage(event: EventEnvelope): boolean {
 
 function messageText(event: EventEnvelope): string {
   const t = event.content?.["text"];
-  return typeof t === "string" ? t : JSON.stringify(event.content ?? {});
+  if (typeof t === "string") return t;
+  return conversationAttachments(event.content).length > 0 ? "" : JSON.stringify(event.content ?? {});
 }
 
 function workEventText(event: EventEnvelope): string {
@@ -282,6 +294,31 @@ function ParticipantPill({ name }: { name: string }): React.ReactElement {
   );
 }
 
+function AttachmentRefs({ attachments }: { attachments: ConversationAttachment[] }): React.ReactElement {
+  return (
+    <div aria-label="Message attachments" style={{ display: "grid", gap: 6, marginTop: 8 }}>
+      {attachments.map(attachment => (
+        <div
+          key={attachment.path}
+          title={attachment.path}
+          style={{
+            display: "flex", alignItems: "baseline", gap: 7,
+            padding: "6px 8px", borderRadius: tk.r2,
+            border: `1px solid ${tk.border}`, background: tk.surfaceSunk,
+            fontSize: 11.5, color: tk.ink2,
+          }}
+        >
+          <span aria-hidden="true">📎</span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{attachment.name}</span>
+          {formatAttachmentBytes(attachment.bytes) && (
+            <span style={{ color: tk.ink4, whiteSpace: "nowrap" }}>{formatAttachmentBytes(attachment.bytes)}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Message stream row
 // ---------------------------------------------------------------------------
@@ -299,6 +336,7 @@ function MessageRow({
 }): React.ReactElement {
   const author = endpointName(event.source_endpoint_id, endpoints);
   const alignedRight = !!alignRightEndpointId && event.source_endpoint_id === alignRightEndpointId;
+  const attachments = conversationAttachments(event.content);
   return (
     <div
       data-message-side={alignedRight ? "right" : "left"}
@@ -327,6 +365,7 @@ function MessageRow({
         </div>
         <div style={{ fontSize: 13.5, color: tk.ink2, lineHeight: 1.5, overflowWrap: "anywhere" }}>
           <MiniMarkdown source={showEventType ? workEventText(event) : messageText(event)} />
+          {attachments.length > 0 && <AttachmentRefs attachments={attachments} />}
         </div>
       </article>
     </div>
@@ -456,28 +495,32 @@ function ComposerDock({
   placeholder = "Write a message… (Enter to send, Shift+Enter for newline)",
   disabled = false,
   disabledReason,
+  allowAttachments = false,
 }: {
   endpoints: EndpointRef[];
   speakingAsId: string;
   onSpeakingAsChange: (id: string) => void;
-  onSend: (text: string) => Promise<void>;
+  onSend: (text: string, files: File[]) => Promise<void>;
   hideSpeakingAs?: boolean;
   placeholder?: string;
   disabled?: boolean;
   disabledReason?: string;
+  allowAttachments?: boolean;
 }): React.ReactElement {
   const [text, setText] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSend() {
     const trimmed = text.trim();
-    if (!trimmed || sending || !speakingAsId || disabled) return;
+    if ((!trimmed && files.length === 0) || sending || !speakingAsId || disabled) return;
     setSending(true);
     setError(null);
     try {
-      await onSend(trimmed);
+      await onSend(trimmed, files);
       setText("");
+      setFiles([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send message");
     } finally {
@@ -525,32 +568,46 @@ function ComposerDock({
 
       {/* Input row */}
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-        <textarea
-          aria-label="Compose message"
-          value={text}
-          onChange={e => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          disabled={disabled || sending || !speakingAsId}
-          rows={2}
-          style={{
-            flex: 1, resize: "vertical",
-            background: tk.canvas, color: tk.ink,
-            border: `1px solid ${tk.border}`, borderRadius: tk.r2,
-            padding: "8px 10px", fontSize: 13.5, fontFamily: tk.fontUi,
-            lineHeight: 1.5, outline: "none",
-          }}
-        />
+        <div style={{ flex: 1, display: "grid", gap: 7 }}>
+          <textarea
+            aria-label="Compose message"
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onPaste={event => {
+              if (!allowAttachments) return;
+              const incoming = pastedFiles(event);
+              if (incoming.length === 0) return;
+              event.preventDefault();
+              const result = appendAttachmentFiles(files, incoming);
+              setError(result.error);
+              if (!result.error) setFiles(result.files);
+            }}
+            placeholder={placeholder}
+            disabled={disabled || sending || !speakingAsId}
+            rows={2}
+            style={{
+              width: "100%", boxSizing: "border-box", resize: "vertical",
+              background: tk.canvas, color: tk.ink,
+              border: `1px solid ${tk.border}`, borderRadius: tk.r2,
+              padding: "8px 10px", fontSize: 13.5, fontFamily: tk.fontUi,
+              lineHeight: 1.5, outline: "none",
+            }}
+          />
+          {allowAttachments && (
+            <AttachmentPicker files={files} onChange={setFiles} disabled={disabled || sending || !speakingAsId} />
+          )}
+        </div>
         <button
           onClick={() => void handleSend()}
-          disabled={disabled || sending || !text.trim() || !speakingAsId}
+          disabled={disabled || sending || (!text.trim() && files.length === 0) || !speakingAsId}
           aria-label="Send message"
           style={{
             background: tk.accent, color: "#0c1714", border: "none",
             borderRadius: tk.r2, padding: "8px 18px", fontSize: 13,
             fontWeight: 510, fontFamily: tk.fontUi,
-            cursor: disabled || sending || !text.trim() || !speakingAsId ? "not-allowed" : "pointer",
-            opacity: disabled || sending || !text.trim() || !speakingAsId ? 0.5 : 1,
+            cursor: disabled || sending || (!text.trim() && files.length === 0) || !speakingAsId ? "not-allowed" : "pointer",
+            opacity: disabled || sending || (!text.trim() && files.length === 0) || !speakingAsId ? 0.5 : 1,
             flexShrink: 0,
           }}
         >
@@ -653,6 +710,8 @@ const SCROLL_BOTTOM_THRESHOLD = 80; // px from bottom — within this, considere
 export type ContextConversationProps = {
   contextId: string;
   workspaceId: string;
+  /** Local desktop workspace root used only for files deliberately selected by the operator. */
+  workspaceLocator?: string;
   endpoints: EndpointRef[];
   /** Called once the context's human label is known, for the shell breadcrumb. */
   onLabelResolved?: (label: string) => void;
@@ -682,6 +741,7 @@ export type ContextConversationProps = {
 export function ContextConversation({
   contextId,
   workspaceId,
+  workspaceLocator,
   endpoints,
   onLabelResolved,
   alignRightEndpointId,
@@ -870,12 +930,23 @@ export function ContextConversation({
     }
   }, [loading]);
 
-  async function handleSend(text: string) {
+  async function handleSend(text: string, files: File[]) {
     if (!context) return;
     const others = context.participants.filter(p => p !== speakingAsId);
     const destination = others[0]
       ? { kind: "endpoint" as const, endpoint_id: others[0] }
       : { kind: "broadcast" as const, scope: "workspace" as const, target: "all" };
+
+    const attachments = files.length > 0
+      ? await stageConversationAttachments(
+          { workspace_id: workspaceId, locator: workspaceLocator ?? "" },
+          contextId,
+          files,
+        )
+      : [];
+    const content: Record<string, unknown> = {};
+    if (text) content.text = text;
+    if (attachments.length > 0) content.attachments = attachments;
 
     await emit({
       type: "message",
@@ -883,7 +954,7 @@ export function ContextConversation({
       source_endpoint_id: speakingAsId,
       destination,
       context_id: contextId,
-      content: { text },
+      content,
       response: { expected: !!operatorEntry },
       metadata: {},
     });
@@ -1122,6 +1193,7 @@ export function ContextConversation({
           disabledReason={operatorEntry && !operatorModelReady
             ? `Choose a provider and model before talking to ${operatorConversationName}.`
             : undefined}
+          allowAttachments={!!workspaceLocator}
         />
       ) : (
         <NonParticipantFooter

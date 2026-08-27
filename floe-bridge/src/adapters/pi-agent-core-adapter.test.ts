@@ -1,7 +1,37 @@
 import { describe, expect, it, vi } from "vitest";
-import { PiAgentCoreAdapter, TurnFailedError, summarizePiRequestPayload, applyThinkingCapabilityClamp } from "./pi-agent-core-adapter.js";
+import {
+  PiAgentCoreAdapter,
+  TurnFailedError,
+  summarizePiRequestPayload,
+  applyThinkingCapabilityClamp,
+  eventContentToPrompt,
+} from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import { HookRegistry, type HookName, type HookPayload } from "../hooks.js";
+
+describe("operator-selected conversation attachments", () => {
+  it("makes workspace attachment paths discoverable without host filesystem access", () => {
+    const prompt = eventContentToPrompt({
+      text: "Please inspect this result.",
+      attachments: [{
+        path: ".floe/state/attachments/context/screenshot.png",
+        name: "screenshot.png",
+        media_type: "image/png",
+        bytes: 1280,
+      }],
+    });
+
+    expect(prompt).toContain("Please inspect this result.");
+    expect(prompt).toContain("[Attached workspace files]");
+    expect(prompt).toContain("screenshot.png (image/png, 1280 bytes)");
+    expect(prompt).toContain(".floe/state/attachments/context/screenshot.png");
+  });
+
+  it("ignores malformed attachment references", () => {
+    expect(eventContentToPrompt({ attachments: [{ name: "missing-path.png" }] }))
+      .toBe('{"attachments":[{"name":"missing-path.png"}]}');
+  });
+});
 
 const recordRuntimeTurnResult = async (input: any) => ({
   result_event: { event_id: `result:${input.delivery_id}` },

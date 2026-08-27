@@ -13,6 +13,8 @@ import { FloeModelControl } from "../../workspace/FloeModelControl.tsx";
 import { tk } from "../../theme.ts";
 import { ContextWorkView } from "../work/ContextWorkView.tsx";
 import type { RuntimeHealth } from "../../runtime/health.ts";
+import { conversationAttachments, stageConversationAttachments } from "../../fs/conversationAttachments.ts";
+import { appendAttachmentFiles, AttachmentPicker, pastedFiles } from "./AttachmentPicker.tsx";
 
 const RECENT_LIMIT = 6;
 
@@ -62,7 +64,13 @@ export function summarizeOperatorConversation(
     .filter(participant => participant !== operatorEndpointId)
     .map(participant => endpointName(participant, endpoints))
     .join(", ") || "Workspace conversation";
-  const previewText = (typeof message?.content?.["text"] === "string" ? message.content["text"] : null)
+  const attachmentPreview = conversationAttachments(message?.content)
+    .map(attachment => `Attached ${attachment.name}`)
+    .join(", ");
+  const previewText = (typeof message?.content?.["text"] === "string" && message.content["text"].trim()
+    ? message.content["text"]
+    : null)
+    ?? (attachmentPreview || null)
     ?? context.first_message_preview
     ?? "No messages yet";
 
@@ -84,6 +92,7 @@ export function latestConversationWith(
 
 export type OperatorConversationsProps = {
   workspaceId: string;
+  workspaceLocator?: string;
   endpoints: EndpointRef[];
   selectedContextId: string | null;
   onOpenContext: (contextId: string) => void;
@@ -94,6 +103,7 @@ export type OperatorConversationsProps = {
 
 export function OperatorConversations({
   workspaceId,
+  workspaceLocator,
   endpoints,
   selectedContextId,
   onOpenContext,
@@ -201,7 +211,7 @@ export function OperatorConversations({
     onCloseContext();
   }
 
-  async function startOutcome(text: string) {
+  async function startOutcome(text: string, files: File[]) {
     if (!operator || !draftTargetId || sending || !modelReady) return;
     setSending(true);
     setError(null);
@@ -215,13 +225,23 @@ export function OperatorConversations({
         contextId = context.context_id;
         draftContextId.current = contextId;
       }
+      const attachments = files.length > 0
+        ? await stageConversationAttachments(
+            { workspace_id: workspaceId, locator: workspaceLocator ?? "" },
+            contextId,
+            files,
+          )
+        : [];
+      const content: Record<string, unknown> = {};
+      if (text) content.text = text;
+      if (attachments.length > 0) content.attachments = attachments;
       await emit({
         type: "message",
         workspace_id: workspaceId,
         source_endpoint_id: operator.endpoint_id,
         destination: { kind: "endpoint", endpoint_id: draftTargetId },
         context_id: contextId,
-        content: { text },
+        content,
         response: { expected: true },
         metadata: {},
       });
@@ -266,6 +286,7 @@ export function OperatorConversations({
     return (
       <NewConversation
         workspaceId={workspaceId}
+        attachmentsEnabled={!!workspaceLocator}
         collaboratorName={endpointName(draftTargetId, endpoints)}
         onOpenSettings={onOpenSettings}
         onReadyChange={setModelReady}
@@ -299,6 +320,7 @@ export function OperatorConversations({
         key={selectedContextId}
         contextId={selectedContextId}
         workspaceId={workspaceId}
+        workspaceLocator={workspaceLocator}
         endpoints={endpoints}
         runtimeHealth={runtimeHealth}
         operatorEntry={{
@@ -397,6 +419,7 @@ export function OperatorConversations({
 
 function NewConversation({
   workspaceId,
+  attachmentsEnabled,
   collaboratorName,
   onOpenSettings,
   onReadyChange,
@@ -407,17 +430,20 @@ function NewConversation({
   error,
 }: {
   workspaceId: string;
+  attachmentsEnabled: boolean;
   collaboratorName: string;
   onOpenSettings?: () => void;
   onReadyChange: (ready: boolean) => void;
   onCancel: () => void;
-  onStart: (text: string) => Promise<void>;
+  onStart: (text: string, files: File[]) => Promise<void>;
   sending: boolean;
   modelReady: boolean;
   error: string | null;
 }): React.ReactElement {
   const [outcome, setOutcome] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
   const text = outcome.trim();
+  const hasMessage = !!text || files.length > 0;
 
   return (
     <div style={{
@@ -461,36 +487,49 @@ function NewConversation({
         )}
         {error && <div role="alert" style={{ marginBottom: 10, color: tk.danger, fontSize: 12 }}>{error}</div>}
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-          <textarea
-            autoFocus
-            aria-label="Outcome"
-            value={outcome}
-            onChange={event => setOutcome(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === "Enter" && !event.shiftKey) {
+          <div style={{ flex: 1, display: "grid", gap: 8 }}>
+            <textarea
+              autoFocus
+              aria-label="Outcome"
+              value={outcome}
+              onChange={event => setOutcome(event.target.value)}
+              onPaste={event => {
+                if (!attachmentsEnabled) return;
+                const incoming = pastedFiles(event);
+                if (incoming.length === 0) return;
                 event.preventDefault();
-                if (text && modelReady && !sending) void onStart(text);
-              }
-            }}
-            placeholder={modelReady ? "Describe an outcome…" : "Choose a provider and model above"}
-            disabled={sending || !modelReady}
-            rows={4}
-            style={{
-              flex: 1, resize: "vertical", minHeight: 104,
-              background: tk.surface, color: tk.ink,
-              border: `1px solid ${tk.border}`, borderRadius: tk.r3,
-              padding: "13px 14px", fontSize: 14, fontFamily: tk.fontUi,
-              lineHeight: 1.5, outline: "none",
-            }}
-          />
+                const result = appendAttachmentFiles(files, incoming);
+                if (!result.error) setFiles(result.files);
+              }}
+              onKeyDown={event => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (hasMessage && modelReady && !sending) void onStart(text, files);
+                }
+              }}
+              placeholder={modelReady ? "Describe an outcome…" : "Choose a provider and model above"}
+              disabled={sending || !modelReady}
+              rows={4}
+              style={{
+                width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: 104,
+                background: tk.surface, color: tk.ink,
+                border: `1px solid ${tk.border}`, borderRadius: tk.r3,
+                padding: "13px 14px", fontSize: 14, fontFamily: tk.fontUi,
+                lineHeight: 1.5, outline: "none",
+              }}
+            />
+            {attachmentsEnabled && (
+              <AttachmentPicker files={files} onChange={setFiles} disabled={sending || !modelReady} />
+            )}
+          </div>
           <button
             type="button"
-            onClick={() => void onStart(text)}
-            disabled={sending || !modelReady || !text}
+            onClick={() => void onStart(text, files)}
+            disabled={sending || !modelReady || !hasMessage}
             style={{
               background: tk.accent, color: "#0c1714", border: "none",
               borderRadius: tk.r2, padding: "10px 18px", fontSize: 13,
-              fontWeight: 590, opacity: sending || !modelReady || !text ? 0.5 : 1,
+              fontWeight: 590, opacity: sending || !modelReady || !hasMessage ? 0.5 : 1,
             }}
           >
             {sending ? "Starting…" : "Start"}

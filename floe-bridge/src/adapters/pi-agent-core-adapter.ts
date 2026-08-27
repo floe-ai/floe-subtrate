@@ -714,7 +714,8 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
               : "system",
           created_at: event.created_at,
           text: typeof event.content?.text === "string" ? event.content.text.slice(0, 4_000) : undefined,
-          data: event.content?.data ?? undefined
+          data: event.content?.data ?? undefined,
+          attachments: eventAttachments(event.content)
         }));
         let rendered = JSON.stringify({ events, next_cursor: page.next_cursor }, null, 2);
         if (rendered.length > 16_000) {
@@ -1219,6 +1220,53 @@ export function renderHookInjections(results: Array<{ inject?: Record<string, un
   return lines.join("\n");
 }
 
+type EventAttachment = {
+  path: string;
+  name: string;
+  media_type: string;
+  bytes: number | null;
+};
+
+export function eventAttachments(content: Record<string, unknown> | null | undefined): EventAttachment[] {
+  const value = content?.attachments;
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 10).flatMap(item => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Record<string, unknown>;
+    if (typeof candidate.path !== "string" || typeof candidate.name !== "string") return [];
+    return [{
+      path: candidate.path.slice(0, 500),
+      name: candidate.name.slice(0, 200),
+      media_type: typeof candidate.media_type === "string"
+        ? candidate.media_type.slice(0, 100)
+        : "application/octet-stream",
+      bytes: typeof candidate.bytes === "number" ? candidate.bytes : null,
+    }];
+  });
+}
+
+export function eventContentToPrompt(content: Record<string, unknown> | null | undefined): string {
+  const attachments = eventAttachments(content);
+  const text = typeof content?.text === "string" ? content.text : "";
+  const remaining = Object.fromEntries(
+    Object.entries(content ?? {}).filter(([key]) => key !== "text" && key !== "attachments"),
+  );
+  const parts: string[] = [];
+  if (text) parts.push(text);
+  if (!text && Object.keys(remaining).length > 0) parts.push(JSON.stringify(remaining));
+  if (attachments.length > 0) {
+    parts.push([
+      "[Attached workspace files]",
+      "These files were deliberately shared into this conversation. Inspect the workspace-relative path with the appropriate workspace tool when relevant.",
+      ...attachments.map(attachment =>
+        `- ${attachment.name} (${attachment.media_type}${attachment.bytes == null ? "" : `, ${attachment.bytes} bytes`}): ${attachment.path}`
+      ),
+      "[End attached workspace files]",
+    ].join("\n"));
+  }
+  return parts.join("\n\n") || JSON.stringify(content ?? {});
+}
+
 function deliveryToPrompt(bundle: DeliveryBundle): string {
   const trigger = bundle.events[0];
   const returnedBy = typeof trigger?.metadata?.responding_endpoint_id === "string"
@@ -1241,7 +1289,7 @@ function deliveryToPrompt(bundle: DeliveryBundle): string {
   // Only the current causes are included. Older Context events and the actor
   // directory are available through tools when the work demonstrates a need.
   const eventLines = bundle.events.map((event) => {
-    const text = typeof event.content?.text === "string" ? event.content.text : JSON.stringify(event.content ?? {});
+    const text = eventContentToPrompt(event.content);
     return `[Input ${event.event_id} / ${event.type}]\n${text}`;
   }).filter((t) => t.length > 0);
 

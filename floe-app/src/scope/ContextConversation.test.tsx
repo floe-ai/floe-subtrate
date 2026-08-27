@@ -269,6 +269,33 @@ describe("ContextConversation — participant gate", () => {
     expect(screen.getByText("First step").tagName).toBe("LI");
   });
 
+  it("renders files deliberately attached to a conversation message", async () => {
+    vi.mocked(client.listContextEvents).mockResolvedValue([
+      conversationEvent("event-attachment", PARTICIPANT_EP, "message", {
+        text: "This is what I see.",
+        attachments: [{
+          path: ".floe/state/attachments/ctx-1/screen.png",
+          name: "screen.png",
+          media_type: "image/png",
+          bytes: 2048,
+        }],
+      }),
+    ] as any);
+
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP }}
+      />,
+    );
+
+    expect(await screen.findByText("This is what I see.")).toBeTruthy();
+    expect(screen.getByText("screen.png")).toBeTruthy();
+    expect(screen.getByText("2 KB")).toBeTruthy();
+  });
+
   it("shows public work events in a read-only inspector without exposing a composer", async () => {
     vi.mocked(client.listContextEvents).mockResolvedValue([
       conversationEvent("event-work", NON_PARTICIPANT_EP, "application.slice.dispatched", {

@@ -10,6 +10,12 @@ import {
 import * as client from "../../bus-client/client.ts";
 
 const modelControl = vi.hoisted(() => ({ ready: true }));
+const attachmentStage = vi.hoisted(() => vi.fn());
+
+vi.mock("../../fs/conversationAttachments.ts", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../fs/conversationAttachments.ts")>()),
+  stageConversationAttachments: attachmentStage,
+}));
 
 vi.mock("../../bus-client/client.ts", () => ({
   createDirectContext: vi.fn(),
@@ -141,6 +147,7 @@ function Harness(): React.ReactElement {
   return (
     <OperatorConversations
       workspaceId="workspace"
+      workspaceLocator={"C:\\workspace"}
       endpoints={endpoints}
       selectedContextId={selectedContextId}
       onOpenContext={open}
@@ -156,6 +163,7 @@ beforeEach(() => {
   vi.mocked(client.listContextEvents).mockResolvedValue([]);
   vi.mocked(client.deleteContext).mockResolvedValue({} as never);
   vi.mocked(client.emit).mockResolvedValue({} as never);
+  attachmentStage.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -318,6 +326,42 @@ describe("unified operator conversations", () => {
       destination: { kind: "endpoint", endpoint_id: FLOE },
       content: { text: "Ship the customer report" },
     })));
+  });
+
+  it("stages an operator-selected file and sends only its workspace reference", async () => {
+    vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
+    vi.mocked(client.createDirectContext).mockResolvedValue(
+      context("context-new", FLOE, "", "2026-08-24T03:00:00Z"),
+    );
+    attachmentStage.mockResolvedValue([{
+      path: ".floe/state/attachments/context-new/screen.png",
+      name: "screen.png",
+      media_type: "image/png",
+      bytes: 3,
+    }]);
+    render(<Harness />);
+
+    expect(await screen.findByText("New conversation with Floe")).toBeTruthy();
+    const selected = new File(["png"], "screen.png", { type: "image/png" });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [selected] } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(attachmentStage).toHaveBeenCalledWith(
+      { workspace_id: "workspace", locator: "C:\\workspace" },
+      "context-new",
+      [selected],
+    ));
+    expect(client.emit).toHaveBeenCalledWith(expect.objectContaining({
+      content: {
+        attachments: [{
+          path: ".floe/state/attachments/context-new/screen.png",
+          name: "screen.png",
+          media_type: "image/png",
+          bytes: 3,
+        }],
+      },
+    }));
   });
 
   it("does not accept an outcome until the workspace model is ready", async () => {
