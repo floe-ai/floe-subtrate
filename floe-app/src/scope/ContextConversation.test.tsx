@@ -267,6 +267,25 @@ describe("ContextConversation — participant gate", () => {
     expect(collaboratorMessage.getAttribute("data-message-side")).toBe("left");
     expect(screen.getByText("Outcome").tagName).toBe("STRONG");
     expect(screen.getByText("First step").tagName).toBe("LI");
+    expect(client.listContextEvents).toHaveBeenCalledWith("ctx-1", { all: true });
+  });
+
+  it("keeps durable messages visible when supplementary delivery status cannot load", async () => {
+    vi.mocked(client.listContextEvents).mockResolvedValue([
+      conversationEvent("event-safe", PARTICIPANT_EP, "message", { text: "The durable message remains visible." }),
+    ] as any);
+    vi.mocked(client.listDeliveries).mockRejectedValue(new Error("runtime diagnostics unavailable"));
+
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP }}
+      />,
+    );
+
+    expect(await screen.findByText("The durable message remains visible.")).toBeTruthy();
   });
 
   it("renders files deliberately attached to a conversation message", async () => {

@@ -25,11 +25,13 @@ If no Floe conversation exists, the app asks what outcome the operator wants. Su
 
 The list contains only Contexts where the ordinary workspace operator is already a participant; actor-to-actor operational traffic is not promoted into this view. Floe is the default collaborator and new-outcome target, not a separate navigation hierarchy.
 
-Active Scopes appear under **Organised work** on the same index. Opening one shows the current Event, Actor, and Command nodes, the subscription-derived connections between them, live participant status, and the shared scoped Context alongside it. This is read-only operator legibility over Bus-owned state, not an editor or a second routing model. Retired Scopes remain available under Developer tools for history/debugging and do not appear here.
+Active Scopes appear under **Organised work** on the same index. Opening one shows the current Actor and Command responsibilities plus planned “Event → participant” routes derived from subscriptions. Selecting any planned node reveals the executions that reached it; **Context history** exposes the complete shared scoped Context separately. This is read-only operator legibility over Bus-owned state, not an editor or a second routing model. Retired Scopes remain available under Developer tools for history/debugging and do not appear here.
 
 An incoming message addressed to the operator with a response expected appears under **Needs you**. Once the operator replies, the conversation returns to **Recent**. This is an interpretation of existing Event response metadata, not separate task or notification state.
 
 Opening an item keeps the speaking identity fixed to the operator and names the other participant in the conversation header. Every selected operator conversation has the same back, new-conversation, and delete controls. New conversation starts a fresh Context with the current collaborator; from the list, **New with Floe** starts a fresh outcome with Floe. A compact provider → model → effort control sits at the conversation boundary, and the composer remains disabled until the workspace has a connected provider and saved model.
+
+Conversation history is read through the Bus cursor contract until the current end of the Context, rather than silently stopping at the first default page. Supplementary runtime/delivery status may fail independently without hiding durable messages.
 
 The operator view omits participant controls, substrate inventory, and the inspector. The general participant and identity controls remain available when the same Context is opened through Developer tools.
 
@@ -69,7 +71,7 @@ See [[Glossary]].
 - `floe-app/src/app/layout/LeftNav.tsx` — the left nav
 - `floe-app/src/hooks/useNavigation.ts` — navigation state machine
 - `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator entry, conversation lifecycle, list, and attention projection
-- `floe-app/src/features/work/ScopeWorkView.tsx` — read-only current Scope organisation and scoped Context
+- `floe-app/src/features/work/ScopeWorkView.tsx` — read-only Scope plan, per-node executions, and scoped Context history
 - `floe-app/src/workspace/FloeModelControl.tsx` — inline workspace model selection and readiness gate
 - `floe-app/src/features/home/HomeView.tsx` — scope grid
 - `floe-app/src/scope/ScopeDetail.tsx` — Contexts/Ops/extension tabs

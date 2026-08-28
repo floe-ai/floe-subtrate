@@ -771,8 +771,8 @@ export function ContextConversation({
     setError(null);
     Promise.all([
       getContext(contextId),
-      listContextEvents(contextId),
-      listDeliveries({ workspace_id: workspaceId, limit: 500 }),
+      listContextEvents(contextId, { all: true }),
+      listDeliveries({ workspace_id: workspaceId, limit: 500 }).catch(() => []),
     ])
       .then(([ctx, evts, deliveries]) => {
         const deliveryState = conversationDeliveryState(deliveries, contextId);

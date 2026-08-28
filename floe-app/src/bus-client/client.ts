@@ -337,7 +337,19 @@ export async function addContextParticipant(
   });
 }
 
-export async function listContextEvents(id: string, options?: { limit?: number }): Promise<EventEnvelope[]> {
+export async function listContextEvents(id: string, options?: { limit?: number; all?: boolean }): Promise<EventEnvelope[]> {
+  if (options?.all) {
+    const events: EventEnvelope[] = [];
+    let since: string | undefined;
+    const pageSize = 500;
+    while (true) {
+      const page = await listEvents({ context_id: id, since, limit: pageSize });
+      events.push(...page.events);
+      if (page.events.length < pageSize || !page.next_cursor || page.next_cursor === since) break;
+      since = page.next_cursor;
+    }
+    return events;
+  }
   const params = new URLSearchParams();
   if (options?.limit != null) params.set("limit", String(options.limit));
   const qs = params.toString();

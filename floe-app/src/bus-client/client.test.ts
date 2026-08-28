@@ -3,6 +3,7 @@ import {
   listWorkspaces,
   listScopes,
   listScopeCompositions,
+  listContextEvents,
   createScope,
   updateScope,
   deleteScope,
@@ -147,6 +148,30 @@ describe("bus-client — writes", () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
     await pending;
+  });
+
+  it("pages through an entire Context history without dropping newer messages", async () => {
+    const first = Array.from({ length: 500 }, (_, index) => ({ event_id: `event-${index}` }));
+    const last = { event_id: "event-500" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ events: first, next_cursor: "cursor-500" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ events: [last], next_cursor: "cursor-501" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await listContextEvents("ctx:long", { all: true });
+
+    expect(result).toHaveLength(501);
+    expect(result.at(-1)).toEqual(last);
+    expect(fetchMock.mock.calls[0][0] as string).toContain("context_id=ctx%3Along");
+    expect(fetchMock.mock.calls[1][0] as string).toContain("since=cursor-500");
   });
 
   it("listScopeCompositions unwraps the Scope's stored composition", async () => {

@@ -1,20 +1,20 @@
 # The Scope view
 
-An active [[Scope]] appears under **Organised work** on the Conversations workspace index. Opening it shows the current organisation Floe composed for that work.
+An active [[Scope]] appears under **Organised work** on the Conversations workspace index. Opening it shows the current plan Floe composed for that work.
 
 ## What it shows
 
-- Event nodes on the left.
-- Actor and deterministic Command nodes on the right.
-- Connections derived from the Event types each participant subscribes to.
+- Persistent Actor and deterministic Command responsibilities.
+- Planned routes phrased as “when this Event lands → these participants act,” derived from declared Event subscriptions.
 - Live endpoint state such as Working, Ready, Waiting, Error, or Not configured.
-- The shared scoped [[Context]] beside the diagram, so the operator can inspect the work that actually happened.
+- An execution count on each planned node. Selecting a node reveals its authored responsibility and the actual Event or delivery records that reached it.
+- The complete shared scoped [[Context]] behind **Context history**, so execution traffic does not obscure the plan.
 
 The view reads the Bus-owned Scope composition and endpoint state. It does not persist another graph, infer workflow policy, or turn the app into a graph editor.
 
 ## Current boundaries
 
-The diagram shows declared routing and current participant availability. It does not claim that an Actor will emit a particular next Event unless that relationship is present in substrate state. Context history remains the source for what happened.
+The plan map shows declared routing and current participant availability. It does not infer a sequential workflow or claim that an Actor will emit a particular next Event unless that relationship is present in substrate state. Node executions and Context history remain projections of what actually happened.
 
 Re-composing the same Scope replaces its current nodes and subscriptions in place while preserving that history. A retired Scope is inert and hidden from the normal operator index, but remains available under Developer tools for historical inspection.
 

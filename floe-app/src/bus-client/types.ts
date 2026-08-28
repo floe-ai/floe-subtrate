@@ -43,6 +43,18 @@ export type ScopeCompositionActorNode = {
   label?: string;
   endpoint_id: string;
   event_types?: string[];
+  bindings?: Array<{ kind: "instructions"; text: string }>;
+};
+
+export type ScopeCompositionCommandInput = {
+  name: string;
+  content_key: string;
+  required?: boolean;
+};
+
+export type ScopeCompositionCommandOutput = {
+  name: string;
+  from: "exit_code" | "passed" | "stdout" | "stderr";
 };
 
 export type ScopeCompositionCommandNode = {
@@ -53,6 +65,8 @@ export type ScopeCompositionCommandNode = {
   event_types?: string[];
   result_event_type?: string;
   command: string;
+  inputs?: ScopeCompositionCommandInput[];
+  outputs?: ScopeCompositionCommandOutput[];
 };
 
 export type ScopeCompositionNode =

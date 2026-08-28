@@ -145,7 +145,7 @@ export function OperatorConversations({
         workspace_id: workspaceId,
       });
       const summaries = await Promise.all(contexts.map(async context => {
-        const events = await listContextEvents(context.context_id, { limit: 500 }).catch(() => []);
+        const events = await listContextEvents(context.context_id, { all: true }).catch(() => []);
         return summarizeOperatorConversation(context, events, operator.endpoint_id, endpoints);
       }));
       if (sequence !== loadSequence.current) return;
