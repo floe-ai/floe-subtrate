@@ -1041,9 +1041,22 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       thread_id: z.string().optional(),
       context_id: z.string().optional(),
       scope_id: z.string().optional(),
+      type: z.string().min(1).optional(),
       since: z.string().optional(),
+      before: z.string().optional(),
+      direction: z.enum(["forward", "backward"]).optional().default("forward"),
       limit: z.coerce.number().int().positive().optional()
     }).parse(request.query);
+    if (
+      (query.since && query.before)
+      || (query.direction === "backward" && query.since)
+      || (query.direction === "forward" && query.before)
+    ) {
+      return reply.code(400).send({
+        error: "invalid_event_pagination",
+        message: "Forward Event reads use since; backward Event reads use before."
+      });
+    }
     let events;
     try {
       events = store.listEvents(query);
@@ -1053,11 +1066,21 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       }
       throw err;
     }
-    // The cursor of the last Event returned, for the caller to page or advance a
-    // watermark from. Null when nothing came back, so the caller holds position.
+    // Forward reads retain the cursor contract used by runtimes and endpoint
+    // watermarks. Backward reads expose the oldest returned Event as the cursor
+    // for the next earlier page; clients may receive one final empty page when
+    // the total happens to be an exact multiple of the requested page size.
     const last = events[events.length - 1];
-    const next_cursor = last ? encodeEventCursor({ created_at: last.created_at, event_id: last.event_id }) : null;
-    return { events, next_cursor };
+    const first = events[0];
+    const next_cursor = query.direction === "forward" && last
+      ? encodeEventCursor({ created_at: last.created_at, event_id: last.event_id })
+      : null;
+    const previous_cursor = query.direction === "backward" && first && events.length === (query.limit ?? 100)
+      ? encodeEventCursor({ created_at: first.created_at, event_id: first.event_id })
+      : null;
+    return query.direction === "backward"
+      ? { events, next_cursor, previous_cursor }
+      : { events, next_cursor };
   });
 
   app.get("/v1/workspaces/:workspace_id/endpoints/:endpoint_id/watermark", async (request, reply) => {

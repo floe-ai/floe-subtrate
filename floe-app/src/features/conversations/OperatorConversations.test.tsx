@@ -22,7 +22,7 @@ vi.mock("../../bus-client/client.ts", () => ({
   deleteContext: vi.fn(),
   emit: vi.fn(),
   listContextsByParticipant: vi.fn(),
-  listContextEvents: vi.fn(),
+  listContextEventHistoryPage: vi.fn(),
   subscribeEvents: vi.fn(() => () => {}),
 }));
 
@@ -170,7 +170,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   modelControl.ready = true;
   vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
-  vi.mocked(client.listContextEvents).mockResolvedValue([]);
+  vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({ events: [], previous_cursor: null });
   vi.mocked(client.deleteContext).mockResolvedValue({} as never);
   vi.mocked(client.emit).mockResolvedValue({} as never);
   attachmentStage.mockResolvedValue([]);
@@ -231,11 +231,12 @@ describe("unified operator conversations", () => {
 
   beforeEach(() => {
     vi.mocked(client.listContextsByParticipant).mockResolvedValue([architectContext, floeContext]);
-    vi.mocked(client.listContextEvents).mockImplementation(async contextId => (
-      contextId === architectContext.context_id
+    vi.mocked(client.listContextEventHistoryPage).mockImplementation(async contextId => ({
+      events: contextId === architectContext.context_id
         ? [message("event-1", ARCHITECT, OPERATOR, "I need your decision.", true, "2026-08-24T02:00:00Z")]
-        : [message("event-2", FLOE, OPERATOR, "The pipeline is ready.", false, "2026-08-24T01:00:00Z")]
-    ));
+        : [message("event-2", FLOE, OPERATOR, "The pipeline is ready.", false, "2026-08-24T01:00:00Z")],
+      previous_cursor: null,
+    }));
   });
 
   it("lands on the conversation index when conversations already exist", async () => {

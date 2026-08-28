@@ -8,7 +8,7 @@ An active [[Scope]] appears under **Organised work** on the Conversations worksp
 - Planned routes phrased as “when this Event lands → these participants act,” derived from declared Event subscriptions.
 - Live endpoint state such as Working, Ready, Waiting, Error, or Not configured.
 - An execution count on each planned node. Selecting a node reveals its authored responsibility and the actual Event or delivery records that reached it.
-- The complete shared scoped [[Context]] behind **Context history**, so execution traffic does not obscure the plan.
+- The shared scoped [[Context]] behind **Context history**, opening at its newest page and progressively retrieving earlier Events as the operator scrolls upward, so execution traffic does not obscure the plan or make the initial view grow with history.
 
 The view reads the Bus-owned Scope composition and endpoint state. It does not persist another graph, infer workflow policy, or turn the app into a graph editor.
 

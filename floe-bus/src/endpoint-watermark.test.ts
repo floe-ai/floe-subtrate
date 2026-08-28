@@ -108,6 +108,21 @@ describe("listEvents since — same-instant tie-break", () => {
       since: encodeEventCursor({ created_at: sameTs, event_id: "evt_bbb" })
     });
     expect(afterSecond).toEqual([]);
+
+    const latest = store.listEvents({
+      workspace_id: WS,
+      direction: "backward",
+      limit: 1
+    });
+    expect(latest.map((e) => e.event_id)).toEqual(["evt_bbb"]);
+
+    const beforeSecond = store.listEvents({
+      workspace_id: WS,
+      direction: "backward",
+      before: encodeEventCursor({ created_at: sameTs, event_id: "evt_bbb" }),
+      limit: 1
+    });
+    expect(beforeSecond.map((e) => e.event_id)).toEqual(["evt_aaa"]);
   });
 });
 

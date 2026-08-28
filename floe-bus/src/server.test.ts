@@ -228,6 +228,39 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
   });
 
+  describe("GET /v1/events backward history", () => {
+    it("returns the newest bounded Context page and an earlier-page cursor", async () => {
+      const first = emit(handle, { source: E1, destination: E2, text: "first" });
+      const contextId = first.event.context_id;
+      emit(handle, { source: E1, destination: E2, text: "second", context_id: contextId });
+      emit(handle, { source: E1, destination: E2, text: "third", context_id: contextId });
+
+      const latest = await handle.app.inject({
+        method: "GET",
+        url: `/v1/events?context_id=${encodeURIComponent(contextId)}&type=message&direction=backward&limit=2`
+      });
+      expect(latest.statusCode).toBe(200);
+      expect((latest.json().events as any[]).map(event => event.content.text)).toEqual(["second", "third"]);
+      expect(latest.json().previous_cursor).toEqual(expect.any(String));
+
+      const earlier = await handle.app.inject({
+        method: "GET",
+        url: `/v1/events?context_id=${encodeURIComponent(contextId)}&type=message&direction=backward&limit=2&before=${encodeURIComponent(latest.json().previous_cursor)}`
+      });
+      expect(earlier.statusCode).toBe(200);
+      expect((earlier.json().events as any[]).map(event => event.content.text)).toEqual(["first"]);
+      expect(earlier.json().previous_cursor).toBeNull();
+    });
+
+    it("keeps forward and backward cursor directions mutually exclusive", async () => {
+      const res = await handle.app.inject({
+        method: "GET",
+        url: "/v1/events?direction=backward&since=garbage"
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
   describe("DELETE /v1/contexts/:id", () => {
     it("hard deletes a conversation and removes it from context lists and event reads", async () => {
       const r1 = emit(handle, { source: E1, destination: E2, text: "delete me" });

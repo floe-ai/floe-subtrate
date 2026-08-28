@@ -31,7 +31,7 @@ import type {
 } from "../bus-client/types.ts";
 import {
   getContext,
-  listContextEvents,
+  listContextEventHistoryPage,
   emit,
   addContextParticipant,
   listDeliveries,
@@ -104,6 +104,17 @@ function formatTime(iso: string): string {
 /** Message-vs-lifecycle filter: only `type === "message"` events render in the stream. */
 function isVisibleMessage(event: EventEnvelope): boolean {
   return event.type === "message";
+}
+
+const HISTORY_PAGE_SIZE = 50;
+const HISTORY_TOP_THRESHOLD = 160;
+
+function mergeEventPages(existing: EventEnvelope[], incoming: EventEnvelope[]): EventEnvelope[] {
+  const byId = new Map(existing.map(event => [event.event_id, event]));
+  for (const event of incoming) byId.set(event.event_id, event);
+  return [...byId.values()].sort((left, right) =>
+    left.created_at.localeCompare(right.created_at) || left.event_id.localeCompare(right.event_id)
+  );
 }
 
 function messageText(event: EventEnvelope): string {
@@ -753,6 +764,9 @@ export function ContextConversation({
   const [context, setContext] = useState<ContextRef | null>(null);
   const [events, setEvents] = useState<EventEnvelope[]>([]);
   const [loading, setLoading] = useState(true);
+  const [previousCursor, setPreviousCursor] = useState<string | null>(null);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deliveryNotice, setDeliveryNotice] = useState<string | null>(null);
   const [speakingAsId, setSpeakingAsId] = useState<string>("");
@@ -765,20 +779,28 @@ export function ContextConversation({
   // B2 — scroll-to-bottom refs
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  const loadingEarlierRef = useRef(false);
 
-  const load = useCallback(() => {
-    setLoading(true);
+  const load = useCallback((preserveLoadedHistory = false) => {
+    if (!preserveLoadedHistory) setLoading(true);
     setError(null);
+    setHistoryNotice(null);
     Promise.all([
       getContext(contextId),
-      listContextEvents(contextId, { all: true }),
+      listContextEventHistoryPage(contextId, {
+        limit: HISTORY_PAGE_SIZE,
+        type: showWorkEvents ? undefined : "message",
+      }),
       listDeliveries({ workspace_id: workspaceId, limit: 500 }).catch(() => []),
     ])
-      .then(([ctx, evts, deliveries]) => {
+      .then(([ctx, history, deliveries]) => {
         const deliveryState = conversationDeliveryState(deliveries, contextId);
         const activeDeliveryIds = new Set(deliveryState.working.values());
         setContext(ctx);
-        setEvents(evts);
+        setEvents(previous => preserveLoadedHistory
+          ? mergeEventPages(previous, history.events)
+          : history.events);
+        if (!preserveLoadedHistory) setPreviousCursor(history.previous_cursor);
         setWorkingEndpoints(deliveryState.working);
         setWorkProgress(previous => previous.filter(progress => activeDeliveryIds.has(progress.deliveryId)));
         setDeliveryNotice(deliveryState.notice);
@@ -792,13 +814,23 @@ export function ContextConversation({
         });
       })
       .catch(err => {
-        setError(err instanceof Error ? err.message : "Failed to load context");
+        if (preserveLoadedHistory) {
+          setHistoryNotice("Couldn’t refresh the newest messages. The loaded conversation remains available.");
+        } else {
+          setError(err instanceof Error ? err.message : "Failed to load context");
+        }
         setLoading(false);
       });
-  }, [contextId, workspaceId]);
+  }, [contextId, showWorkEvents, workspaceId]);
 
   useEffect(() => {
-    load();
+    setEvents([]);
+    setPreviousCursor(null);
+    setLoadingEarlier(false);
+    setHistoryNotice(null);
+    loadingEarlierRef.current = false;
+    isAtBottomRef.current = true;
+    load(false);
   }, [load]);
 
   // A process exit is terminal information for the current visible turn. Do
@@ -820,7 +852,7 @@ export function ContextConversation({
       if (msg.type === "event_submitted") {
         const event = (msg.payload as { event?: { context_id?: string } }).event;
         if (event?.context_id === contextId) {
-          load();
+          load(true);
         }
       }
 
@@ -901,12 +933,45 @@ export function ContextConversation({
     try { localStorage.setItem(SPEAKING_AS_KEY, id); } catch { /* ignore */ }
   }
 
-  // B2 — track whether the user is near the bottom
+  async function loadEarlierHistory() {
+    if (!previousCursor || loadingEarlierRef.current) return;
+    const container = scrollRef.current;
+    const heightBefore = container?.scrollHeight ?? 0;
+    loadingEarlierRef.current = true;
+    setLoadingEarlier(true);
+    setHistoryNotice(null);
+    try {
+      const page = await listContextEventHistoryPage(contextId, {
+        before: previousCursor,
+        limit: HISTORY_PAGE_SIZE,
+        type: showWorkEvents ? undefined : "message",
+      });
+      setEvents(previous => mergeEventPages(previous, page.events));
+      setPreviousCursor(page.previous_cursor);
+
+      const restorePosition = () => {
+        const current = scrollRef.current;
+        if (current) current.scrollTop += current.scrollHeight - heightBefore;
+      };
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(restorePosition);
+      else restorePosition();
+    } catch {
+      setHistoryNotice("Couldn’t load earlier messages. Scroll upward to try again.");
+    } finally {
+      loadingEarlierRef.current = false;
+      setLoadingEarlier(false);
+    }
+  }
+
+  // B2 — track whether the user is near the bottom and progressively reveal history.
   function handleScroll() {
     const el = scrollRef.current;
     if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     isAtBottomRef.current = distFromBottom < SCROLL_BOTTOM_THRESHOLD;
+    if (!isAtBottomRef.current && el.scrollTop < HISTORY_TOP_THRESHOLD) {
+      void loadEarlierHistory();
+    }
   }
 
   // B2 — auto-scroll to bottom when messages or working state changes (if user is at bottom)
@@ -958,13 +1023,13 @@ export function ContextConversation({
       response: { expected: !!operatorEntry },
       metadata: {},
     });
-    await load();
+    await load(true);
   }
 
   // B3 — join context as selected actor
   async function handleJoin() {
     await addContextParticipant(contextId, speakingAsId);
-    await load();
+    await load(true);
   }
 
   const label = context ? contextLabel(context) : null;
@@ -1137,6 +1202,14 @@ export function ContextConversation({
           style={{ flex: 1, overflow: "auto", padding: "8px 24px" }}
           aria-label="Message stream"
         >
+          {(loadingEarlier || historyNotice) && (
+            <div
+              role={historyNotice ? "alert" : "status"}
+              style={{ padding: "10px 0", color: historyNotice ? tk.warn : tk.ink4, fontSize: 12, textAlign: "center" }}
+            >
+              {historyNotice ?? "Loading earlier messages…"}
+            </div>
+          )}
           {visibleMessages.length === 0 && workingActorNames.length === 0 ? (
             <div style={{ padding: "32px 0", color: tk.ink4, fontSize: 13, fontStyle: "italic" }}>
               {operatorEntry

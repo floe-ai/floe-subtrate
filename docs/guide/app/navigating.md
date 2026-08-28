@@ -31,7 +31,7 @@ An incoming message addressed to the operator with a response expected appears u
 
 Opening an item keeps the speaking identity fixed to the operator and names the other participant in the conversation header. Every selected operator conversation has the same back, new-conversation, and delete controls. New conversation starts a fresh Context with the current collaborator; from the list, **New with Floe** starts a fresh outcome with Floe. A compact provider → model → effort control sits at the conversation boundary, and the composer remains disabled until the workspace has a connected provider and saved model.
 
-Conversation history is read through the Bus cursor contract until the current end of the Context, rather than silently stopping at the first default page. Supplementary runtime/delivery status may fail independently without hiding durable messages.
+Conversation history opens on a bounded newest page. Scrolling upward retrieves earlier pages through the Bus cursor contract without hiding or discarding durable messages. The conversation index reads only each Context's newest message, and supplementary runtime/delivery status may fail independently without hiding conversation history.
 
 The operator view omits participant controls, substrate inventory, and the inspector. The general participant and identity controls remain available when the same Context is opened through Developer tools.
 

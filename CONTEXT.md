@@ -92,7 +92,7 @@ The universal substrate publish operation. Endpoints use emit when they delibera
 An Event made available to a specific Endpoint for processing. Context subscribers do not create deliveries.
 
 ### Event Cursor
-An opaque, ordered position in a Workspace's Event stream, keyed by `(created_at, event_id)`. It is the unit the `since` parameter on Event queries speaks, and what an Endpoint Watermark stores. The `event_id` tie-break makes Events sharing a `created_at` safe to page past without skipping or repeating.
+An opaque, ordered position in a Workspace's Event stream, keyed by `(created_at, event_id)`. It is the unit the `since` and backward-history `before` parameters on Event queries speak, and what an Endpoint Watermark stores. The `event_id` tie-break makes Events sharing a `created_at` safe to page past without skipping or repeating.
 _Avoid_: offset, page number, timestamp-only cursor.
 
 ### Endpoint Watermark

@@ -2261,7 +2261,10 @@ export class BusStore {
     thread_id?: string;
     context_id?: string;
     scope_id?: string;
+    type?: string;
     since?: string;
+    before?: string;
+    direction?: "forward" | "backward";
     limit?: number;
   }): EventEnvelope[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
@@ -2283,6 +2286,10 @@ export class BusStore {
       conditions.push("scope_id = ?");
       params.push(filters.scope_id);
     }
+    if (filters.type) {
+      conditions.push("type = ?");
+      params.push(filters.type);
+    }
     if (filters.since) {
       const cursor = decodeEventCursor(filters.since);
       // Strictly after the cursor in (created_at, event_id) order. The event_id
@@ -2290,13 +2297,25 @@ export class BusStore {
       conditions.push("(created_at > ? OR (created_at = ? AND event_id > ?))");
       params.push(cursor.created_at, cursor.created_at, cursor.event_id);
     }
+    if (filters.before) {
+      const cursor = decodeEventCursor(filters.before);
+      // Strictly before the cursor in the same total Event order. Backward
+      // history reads are returned chronologically after the bounded SQL page
+      // is selected, so clients can prepend without reordering their stream.
+      conditions.push("(created_at < ? OR (created_at = ? AND event_id < ?))");
+      params.push(cursor.created_at, cursor.created_at, cursor.event_id);
+    }
     let sql = "SELECT * FROM events";
     if (conditions.length > 0) {
       sql += " WHERE " + conditions.join(" AND ");
     }
-    sql += " ORDER BY created_at ASC, event_id ASC LIMIT ?";
+    const backward = filters.direction === "backward";
+    sql += backward
+      ? " ORDER BY created_at DESC, event_id DESC LIMIT ?"
+      : " ORDER BY created_at ASC, event_id ASC LIMIT ?";
     params.push(limit);
-    return (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
+    const events = (this.db.prepare(sql).all(...params) as any[]).map((row) => this.rowToEvent(row));
+    return backward ? events.reverse() : events;
   }
 
   getEndpointWatermark(workspaceId: string, endpointId: string): EndpointWatermark | null {

@@ -38,6 +38,6 @@ See [[Glossary]].
 - `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator conversation lifecycle, discovery, and Needs you/Recent grouping
 - `floe-app/src/app/layout/LeftNav.tsx` — compact operator health status and recovery action
 - `POST /v1/contexts/:id/participants` — join a context (`addContextParticipant`)
-- `GET /v1/contexts/:id/events` — message stream (`listContextEvents`)
+- `GET /v1/events?context_id=…&type=message&direction=backward` — newest-first bounded message history with earlier-page cursors (`listContextEventHistoryPage`)
 - `POST /v1/workspaces/:ws/contexts` — create a context (`createContext` / `createDirectContext`)
 - Bus WebSocket `GET /v1/events/stream` — live updates, `delivery_bundle_available` / turn-end signals drive the working indicator

@@ -155,7 +155,7 @@ An [[Event]] is not a citizen — something that lands, with a source.
 | Method | Path | Body | Notes |
 |---|---|---|---|
 | POST | `/v1/events/emit` | See `EventCommandSchema` below | Submits an event. Returns 202 with `event_id`, `deliveries_created`, full `event`. |
-| GET | `/v1/events?workspace_id=&thread_id=&context_id=&scope_id=&since=&limit=` | — | Lists events; returns `next_cursor` for paging. |
+| GET | `/v1/events?workspace_id=&thread_id=&context_id=&scope_id=&type=&since=&before=&direction=&limit=` | — | Lists Events chronologically. Forward reads use `since` and return `next_cursor`. `direction=backward` starts at the newest bounded page, accepts `before`, and returns `previous_cursor` for earlier history. |
 | GET | `/v1/events/:event_id/trace` | — | Full delivery trace for one event. 404 `event_not_found`. |
 
 `EventCommandSchema` fields: `type`, `workspace_id`, `source_endpoint_id`, `destination` (one of `{kind:"endpoint", endpoint_id}`, `{kind:"broadcast", scope:"workspace", target, exclude_source?}`, `{kind:"context", context_id}`), `thread_id?`, `context_id?`, `current_delivery_context_id?`, `scope_id?`, `correlation_id?`, `content` (object), `response?` (`{expected, mode?, correlation_id?, timeout_at?}`), `metadata?`, `idempotency_key?`.

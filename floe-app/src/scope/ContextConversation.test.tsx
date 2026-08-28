@@ -20,7 +20,7 @@ const modelControl = vi.hoisted(() => ({ ready: true }));
 
 vi.mock("../bus-client/client.ts", () => ({
   getContext: vi.fn(),
-  listContextEvents: vi.fn(),
+  listContextEventHistoryPage: vi.fn(),
   listDeliveries: vi.fn(),
   listRuntimeTelemetry: vi.fn(),
   emit: vi.fn(),
@@ -92,7 +92,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   modelControl.ready = true;
   vi.mocked(client.getContext).mockResolvedValue(mockContext as any);
-  vi.mocked(client.listContextEvents).mockResolvedValue([]);
+  vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({ events: [], previous_cursor: null });
   vi.mocked(client.listDeliveries).mockResolvedValue([]);
   vi.mocked(client.listRuntimeTelemetry).mockResolvedValue([]);
   vi.mocked(client.emit).mockResolvedValue({} as never);
@@ -247,10 +247,13 @@ describe("ContextConversation — participant gate", () => {
       ...mockContext,
       participants: [PARTICIPANT_EP, NON_PARTICIPANT_EP],
     } as any);
-    vi.mocked(client.listContextEvents).mockResolvedValue([
-      conversationEvent("event-operator", PARTICIPANT_EP, "message", { text: "**Outcome** accepted" }),
-      conversationEvent("event-collaborator", NON_PARTICIPANT_EP, "message", { text: "- First step\n- Second step" }),
-    ] as any);
+    vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({
+      events: [
+        conversationEvent("event-operator", PARTICIPANT_EP, "message", { text: "**Outcome** accepted" }),
+        conversationEvent("event-collaborator", NON_PARTICIPANT_EP, "message", { text: "- First step\n- Second step" }),
+      ] as any,
+      previous_cursor: null,
+    });
 
     render(
       <ContextConversation
@@ -267,13 +270,14 @@ describe("ContextConversation — participant gate", () => {
     expect(collaboratorMessage.getAttribute("data-message-side")).toBe("left");
     expect(screen.getByText("Outcome").tagName).toBe("STRONG");
     expect(screen.getByText("First step").tagName).toBe("LI");
-    expect(client.listContextEvents).toHaveBeenCalledWith("ctx-1", { all: true });
+    expect(client.listContextEventHistoryPage).toHaveBeenCalledWith("ctx-1", { limit: 50, type: "message" });
   });
 
   it("keeps durable messages visible when supplementary delivery status cannot load", async () => {
-    vi.mocked(client.listContextEvents).mockResolvedValue([
-      conversationEvent("event-safe", PARTICIPANT_EP, "message", { text: "The durable message remains visible." }),
-    ] as any);
+    vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({
+      events: [conversationEvent("event-safe", PARTICIPANT_EP, "message", { text: "The durable message remains visible." })] as any,
+      previous_cursor: null,
+    });
     vi.mocked(client.listDeliveries).mockRejectedValue(new Error("runtime diagnostics unavailable"));
 
     render(
@@ -288,18 +292,66 @@ describe("ContextConversation — participant gate", () => {
     expect(await screen.findByText("The durable message remains visible.")).toBeTruthy();
   });
 
+  it("starts with the newest page and prepends earlier messages when scrolled upward", async () => {
+    vi.mocked(client.listContextEventHistoryPage)
+      .mockResolvedValueOnce({
+        events: [{
+          ...conversationEvent("event-new", NON_PARTICIPANT_EP, "message", { text: "Newest message" }),
+          created_at: "2026-01-02T00:00:00Z",
+        }] as any,
+        previous_cursor: "cursor-before-newest",
+      })
+      .mockResolvedValueOnce({
+        events: [{
+          ...conversationEvent("event-old", PARTICIPANT_EP, "message", { text: "Earlier message" }),
+          created_at: "2026-01-01T00:00:00Z",
+        }] as any,
+        previous_cursor: null,
+      });
+
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP }}
+      />,
+    );
+
+    expect(await screen.findByText("Newest message")).toBeTruthy();
+    expect(screen.queryByText("Earlier message")).toBeNull();
+
+    const stream = screen.getByLabelText("Message stream");
+    Object.defineProperties(stream, {
+      scrollHeight: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 20 },
+    });
+    fireEvent.scroll(stream);
+
+    expect(await screen.findByText("Earlier message")).toBeTruthy();
+    expect(client.listContextEventHistoryPage).toHaveBeenNthCalledWith(2, "ctx-1", {
+      before: "cursor-before-newest",
+      limit: 50,
+      type: "message",
+    });
+    const visibleText = stream.textContent ?? "";
+    expect(visibleText.indexOf("Earlier message")).toBeLessThan(visibleText.indexOf("Newest message"));
+  });
+
   it("renders files deliberately attached to a conversation message", async () => {
-    vi.mocked(client.listContextEvents).mockResolvedValue([
-      conversationEvent("event-attachment", PARTICIPANT_EP, "message", {
-        text: "This is what I see.",
-        attachments: [{
-          path: ".floe/state/attachments/ctx-1/screen.png",
-          name: "screen.png",
-          media_type: "image/png",
-          bytes: 2048,
-        }],
-      }),
-    ] as any);
+    vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({
+      events: [conversationEvent("event-attachment", PARTICIPANT_EP, "message", {
+          text: "This is what I see.",
+          attachments: [{
+            path: ".floe/state/attachments/ctx-1/screen.png",
+            name: "screen.png",
+            media_type: "image/png",
+            bytes: 2048,
+          }],
+        })] as any,
+      previous_cursor: null,
+    });
 
     render(
       <ContextConversation
@@ -316,11 +368,12 @@ describe("ContextConversation — participant gate", () => {
   });
 
   it("shows public work events in a read-only inspector without exposing a composer", async () => {
-    vi.mocked(client.listContextEvents).mockResolvedValue([
-      conversationEvent("event-work", NON_PARTICIPANT_EP, "application.slice.dispatched", {
-        summary: "Implement the first vertical slice",
-      }),
-    ] as any);
+    vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({
+      events: [conversationEvent("event-work", NON_PARTICIPANT_EP, "application.slice.dispatched", {
+          summary: "Implement the first vertical slice",
+        })] as any,
+      previous_cursor: null,
+    });
 
     render(
       <ContextConversation

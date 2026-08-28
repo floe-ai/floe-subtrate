@@ -4,7 +4,7 @@ import {
   createDirectContext,
   deleteContext,
   emit,
-  listContextEvents,
+  listContextEventHistoryPage,
   listContextsByParticipant,
   subscribeEvents,
 } from "../../bus-client/client.ts";
@@ -145,8 +145,9 @@ export function OperatorConversations({
         workspace_id: workspaceId,
       });
       const summaries = await Promise.all(contexts.map(async context => {
-        const events = await listContextEvents(context.context_id, { all: true }).catch(() => []);
-        return summarizeOperatorConversation(context, events, operator.endpoint_id, endpoints);
+        const page = await listContextEventHistoryPage(context.context_id, { limit: 1, type: "message" })
+          .catch(() => ({ events: [], previous_cursor: null }));
+        return summarizeOperatorConversation(context, page.events, operator.endpoint_id, endpoints);
       }));
       if (sequence !== loadSequence.current) return;
       const sorted = summaries.sort((left, right) => right.activityAt.localeCompare(left.activityAt));

@@ -3,6 +3,7 @@ import {
   listWorkspaces,
   listScopes,
   listScopeCompositions,
+  listContextEventHistoryPage,
   listContextEvents,
   createScope,
   updateScope,
@@ -172,6 +173,31 @@ describe("bus-client — writes", () => {
     expect(result.at(-1)).toEqual(last);
     expect(fetchMock.mock.calls[0][0] as string).toContain("context_id=ctx%3Along");
     expect(fetchMock.mock.calls[1][0] as string).toContain("since=cursor-500");
+  });
+
+  it("requests bounded Context history backward from the newest page", async () => {
+    const fetchMock = mockFetch({
+      events: [{ event_id: "event-older" }],
+      next_cursor: null,
+      previous_cursor: "cursor-earlier",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listContextEventHistoryPage("ctx:long", {
+      before: "cursor-newer",
+      limit: 50,
+      type: "message",
+    })).resolves.toEqual({
+      events: [{ event_id: "event-older" }],
+      previous_cursor: "cursor-earlier",
+    });
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("context_id=ctx%3Along");
+    expect(url).toContain("direction=backward");
+    expect(url).toContain("before=cursor-newer");
+    expect(url).toContain("type=message");
+    expect(url).toContain("limit=50");
   });
 
   it("listScopeCompositions unwraps the Scope's stored composition", async () => {

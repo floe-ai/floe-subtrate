@@ -359,6 +359,26 @@ export async function listContextEvents(id: string, options?: { limit?: number; 
   return data.events;
 }
 
+export type ContextEventHistoryPage = {
+  events: EventEnvelope[];
+  previous_cursor: string | null;
+};
+
+/** Read one chronological page from the newest end of a Context. */
+export async function listContextEventHistoryPage(
+  id: string,
+  options?: { before?: string; limit?: number; type?: string },
+): Promise<ContextEventHistoryPage> {
+  const page = await listEvents({
+    context_id: id,
+    type: options?.type,
+    before: options?.before,
+    direction: "backward",
+    limit: options?.limit,
+  });
+  return { events: page.events, previous_cursor: page.previous_cursor ?? null };
+}
+
 /** POST /v1/workspaces/:ws/contexts — create a workspace-level context with the given participants */
 export async function createDirectContext(
   ws: string,
@@ -436,18 +456,24 @@ export async function listEvents(q: {
   scope_id?: string;
   context_id?: string;
   thread_id?: string;
+  type?: string;
   since?: string;
+  before?: string;
+  direction?: "forward" | "backward";
   limit?: number;
-}): Promise<{ events: EventEnvelope[]; next_cursor: string | null }> {
+}): Promise<{ events: EventEnvelope[]; next_cursor: string | null; previous_cursor?: string | null }> {
   const params = new URLSearchParams();
   if (q.workspace_id) params.set("workspace_id", q.workspace_id);
   if (q.scope_id) params.set("scope_id", q.scope_id);
   if (q.context_id) params.set("context_id", q.context_id);
   if (q.thread_id) params.set("thread_id", q.thread_id);
+  if (q.type) params.set("type", q.type);
   if (q.since) params.set("since", q.since);
+  if (q.before) params.set("before", q.before);
+  if (q.direction) params.set("direction", q.direction);
   if (q.limit != null) params.set("limit", String(q.limit));
   const qs = params.toString();
-  return get<{ events: EventEnvelope[]; next_cursor: string | null }>(`/v1/events${qs ? `?${qs}` : ""}`);
+  return get<{ events: EventEnvelope[]; next_cursor: string | null; previous_cursor?: string | null }>(`/v1/events${qs ? `?${qs}` : ""}`);
 }
 
 export async function getEventTrace(eventId: string): Promise<EventTrace> {
