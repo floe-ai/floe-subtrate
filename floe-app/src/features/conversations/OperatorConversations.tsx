@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ContextRef, EndpointRef, EventEnvelope } from "../../bus-client/types.ts";
+import type { ContextRef, EndpointRef, EventEnvelope, ScopeRef } from "../../bus-client/types.ts";
 import {
   createDirectContext,
   deleteContext,
@@ -12,6 +12,7 @@ import { ContextConversation } from "../../scope/ContextConversation.tsx";
 import { FloeModelControl } from "../../workspace/FloeModelControl.tsx";
 import { tk } from "../../theme.ts";
 import { ContextWorkView } from "../work/ContextWorkView.tsx";
+import { ScopeWorkView } from "../work/ScopeWorkView.tsx";
 import type { RuntimeHealth } from "../../runtime/health.ts";
 import { conversationAttachments, stageConversationAttachments } from "../../fs/conversationAttachments.ts";
 import { appendAttachmentFiles, AttachmentPicker, pastedFiles } from "./AttachmentPicker.tsx";
@@ -94,6 +95,7 @@ export type OperatorConversationsProps = {
   workspaceId: string;
   workspaceLocator?: string;
   endpoints: EndpointRef[];
+  scopes: ScopeRef[];
   selectedContextId: string | null;
   onOpenContext: (contextId: string) => void;
   onCloseContext: () => void;
@@ -105,6 +107,7 @@ export function OperatorConversations({
   workspaceId,
   workspaceLocator,
   endpoints,
+  scopes,
   selectedContextId,
   onOpenContext,
   onCloseContext,
@@ -122,6 +125,7 @@ export function OperatorConversations({
   const [sending, setSending] = useState(false);
   const [conversationActionPending, setConversationActionPending] = useState(false);
   const [selectedSurface, setSelectedSurface] = useState<"conversation" | "work">("conversation");
+  const [selectedScopeWorkId, setSelectedScopeWorkId] = useState<string | null>(null);
   const loadSequence = useRef(0);
   const initialWorkspace = useRef<string | null>(null);
   const initialConversationChosen = useRef(false);
@@ -150,10 +154,7 @@ export function OperatorConversations({
 
       if (!initialConversationChosen.current) {
         initialConversationChosen.current = true;
-        const latestFloe = floe ? latestConversationWith(sorted, floe.endpoint_id) : null;
-        if (latestFloe) {
-          onOpenContext(latestFloe.context.context_id);
-        } else if (floe) {
+        if (sorted.length === 0 && floe) {
           draftContextId.current = null;
           setDraftTargetId(floe.endpoint_id);
         }
@@ -174,6 +175,7 @@ export function OperatorConversations({
       setDraftTargetId(null);
       setShowAll(false);
       setSelectedSurface("conversation");
+      setSelectedScopeWorkId(null);
     }
     setLoading(true);
     void load();
@@ -196,6 +198,7 @@ export function OperatorConversations({
   }, [load, workspaceId]);
 
   function openConversation(contextId: string) {
+    setSelectedScopeWorkId(null);
     draftContextId.current = null;
     setDraftTargetId(null);
     setError(null);
@@ -204,6 +207,7 @@ export function OperatorConversations({
   }
 
   function startNewWith(targetEndpointId: string) {
+    setSelectedScopeWorkId(null);
     draftContextId.current = null;
     setDraftTargetId(targetEndpointId);
     setError(null);
@@ -282,6 +286,24 @@ export function OperatorConversations({
     participant => participant !== operator?.endpoint_id,
   ) ?? null;
 
+  const selectedScopeWork = scopes.find((scope) => scope.scope_id === selectedScopeWorkId) ?? null;
+
+  useEffect(() => {
+    if (selectedScopeWork?.status === "retired") setSelectedScopeWorkId(null);
+  }, [selectedScopeWork]);
+
+  if (selectedScopeWork?.status !== "retired" && selectedScopeWork && operator) {
+    return (
+      <ScopeWorkView
+        workspaceId={workspaceId}
+        scope={selectedScopeWork}
+        endpoints={endpoints}
+        operatorEndpointId={operator.endpoint_id}
+        onBack={() => setSelectedScopeWorkId(null)}
+      />
+    );
+  }
+
   if (draftTargetId && operator) {
     return (
       <NewConversation
@@ -341,6 +363,7 @@ export function OperatorConversations({
   const needsYou = conversations.filter(conversation => conversation.needsOperator);
   const recent = conversations.filter(conversation => !conversation.needsOperator);
   const visibleRecent = showAll ? recent : recent.slice(0, RECENT_LIMIT);
+  const activeScopes = scopes.filter((scope) => scope.status !== "retired");
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "34px 32px 48px", fontFamily: tk.fontUi }}>
@@ -383,6 +406,10 @@ export function OperatorConversations({
           <StatusText>No conversations yet. Start with Floe and describe an outcome.</StatusText>
         )}
 
+        {!loading && !error && operator && activeScopes.length > 0 && (
+          <ScopeSection scopes={activeScopes} onOpen={setSelectedScopeWorkId} />
+        )}
+
         {!loading && !error && needsYou.length > 0 && (
           <ConversationSection
             label="Needs you"
@@ -414,6 +441,48 @@ export function OperatorConversations({
         )}
       </section>
     </div>
+  );
+}
+
+function ScopeSection({
+  scopes,
+  onOpen,
+}: {
+  scopes: ScopeRef[];
+  onOpen: (scopeId: string) => void;
+}): React.ReactElement {
+  return (
+    <section style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 8, color: tk.ink3, fontSize: 10.5, fontWeight: 590, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+        Organised work
+      </div>
+      <div role="list" aria-label="Organised work" style={{ border: `1px solid ${tk.border}`, borderRadius: tk.r3, overflow: "hidden", background: tk.surface }}>
+        {scopes.map((scope, index) => (
+          <div key={scope.scope_id} role="listitem">
+            <button
+              type="button"
+              onClick={() => onOpen(scope.scope_id)}
+              aria-label={`Open organised work ${scope.title || scope.scope_id}`}
+              style={{
+                width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: 16,
+                padding: "14px 16px", textAlign: "left", background: "transparent", border: "none",
+                borderTop: index > 0 ? `1px solid ${tk.border2}` : "none", cursor: "pointer", color: tk.ink,
+              }}
+            >
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: "block", marginBottom: 4, fontSize: 14, fontWeight: 550 }}>{scope.title || scope.scope_id}</span>
+                <span style={{ display: "block", color: tk.ink3, fontSize: 12.5, lineHeight: 1.45, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {scope.description || "Connected actors and events in this workspace"}
+                </span>
+              </span>
+              <span style={{ alignSelf: "center", color: tk.ink4, fontSize: 11.5, whiteSpace: "nowrap" }}>
+                View organisation →
+              </span>
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

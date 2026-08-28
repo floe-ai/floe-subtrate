@@ -8,6 +8,7 @@ export type ScopeRecord = {
   workspace_id: string;
   title: string;
   description: string | null;
+  status: "active" | "retired";
   created_at: string;
   updated_at: string;
 };
@@ -59,6 +60,7 @@ export function applyScopeSchema(db: DatabaseSync): void {
       scope_id TEXT NOT NULL,
       title TEXT NOT NULL,
       description TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (workspace_id, scope_id)
@@ -70,6 +72,10 @@ export function applyScopeSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_scopes_workspace
       ON scopes(workspace_id, created_at ASC);
   `);
+  const columns = db.prepare("PRAGMA table_info(scopes)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "status")) {
+    db.exec("ALTER TABLE scopes ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+  }
 }
 
 export class ScopeStore {
@@ -144,6 +150,15 @@ export class ScopeStore {
     return this.getScope(input.workspace_id, input.scope_id);
   }
 
+  setScopeStatus(workspaceId: string, scopeId: string, status: "active" | "retired"): ScopeRecord | null {
+    if (!this.getScope(workspaceId, scopeId)) return null;
+    this.db.prepare(`
+      UPDATE scopes SET status = ?, updated_at = ?
+      WHERE workspace_id = ? AND scope_id = ?
+    `).run(status, nowIso(), workspaceId, scopeId);
+    return this.getScope(workspaceId, scopeId);
+  }
+
   /**
    * Deletes the Scope row only. Emptiness and safety checks are the
    * caller's responsibility (BusStore.deleteScope orchestrates them).
@@ -160,6 +175,7 @@ export class ScopeStore {
       workspace_id: String(row.workspace_id),
       title: String(row.title),
       description: row.description ?? null,
+      status: row.status === "retired" ? "retired" : "active",
       created_at: String(row.created_at),
       updated_at: String(row.updated_at)
     };

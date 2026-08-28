@@ -10,7 +10,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ScopeRemovalBlockedError, type BusStore } from "./store.js";
+import {
+  ScopeRemovalBlockedError,
+  ScopeRetiredError,
+  ScopeRetirementBlockedError,
+  type BusStore,
+} from "./store.js";
 import {
   ScopeGraphNodeNotATriggerError,
   ScopeGraphNodeNotFoundError,
@@ -220,12 +225,12 @@ const scopeComposeInputSchema: JsonSchema = {
 const scopeFireInputSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["graph_id", "event_node_id"],
+  required: ["scope_id", "event_node_id"],
   properties: {
-    graph_id: {
+    scope_id: {
       type: "string",
       minLength: 1,
-      description: "Stored composition id returned by Scope inspection or composition.",
+      description: "Organising Scope id returned by Scope inspection or composition.",
     },
     event_node_id: {
       type: "string",
@@ -236,6 +241,19 @@ const scopeFireInputSchema: JsonSchema = {
       type: "object",
       additionalProperties: true,
       description: "Facts or work contract delivered with the Event.",
+    },
+  },
+};
+
+const scopeRetireInputSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["scope_id"],
+  properties: {
+    scope_id: {
+      type: "string",
+      pattern: ID_PATTERN,
+      description: "Scope id to make inert while preserving its Context and Event history.",
     },
   },
 };
@@ -256,19 +274,26 @@ const scopeRemoveInputSchema: JsonSchema = {
 function inspectScopes(context: ActorCapabilityContext, input: Record<string, unknown>): ActorCapabilityResult {
   const requested = typeof input.scope_id === "string" ? input.scope_id.trim() : "";
   const scopes = context.store.listScopes(context.workspaceId);
-  const graphs = context.store.listScopeGraphsForWorkspace(context.workspaceId);
   const selected = requested ? scopes.filter((scope) => scope.scope_id === requested) : scopes;
   if (requested && selected.length === 0) {
     throw new ActorCapabilityError("scope_not_found", `Scope '${requested}' does not exist.`, 404, { scope_id: requested });
   }
-  const compositions = selected.map((scope) => ({
+  const compositions = selected.map((scope) => {
+    const composition = context.store.getScopeGraphForScope(context.workspaceId, scope.scope_id);
+    return {
     ...scope,
-    compositions: graphs.filter((graph) => graph.scope_id === scope.scope_id),
-  }));
+      composition: composition ? {
+        context_id: composition.context_id,
+        nodes: composition.nodes,
+        created_at: composition.created_at,
+        updated_at: composition.updated_at,
+      } : null,
+    };
+  });
   return {
     summary: compositions.length === 0
       ? "No Scopes have been composed in this workspace."
-      : `Found ${compositions.length} Scope${compositions.length === 1 ? "" : "s"} and their stored compositions.`,
+      : `Found ${compositions.length} Scope${compositions.length === 1 ? "" : "s"} and their current organisation.`,
     data: { scopes: compositions },
   };
 }
@@ -282,6 +307,12 @@ function composeScope(context: ActorCapabilityContext, input: Record<string, unk
   const eventInputs = input.event_nodes as Array<Record<string, any>>;
   const actorInputs = input.actor_nodes as Array<Record<string, any>>;
   const commandInputs = (input.command_nodes ?? []) as Array<Record<string, any>>;
+  const existingComposition = context.store.getScopeGraphForScope(context.workspaceId, scopeId);
+  const existingCommandEndpoints = new Map(
+    (existingComposition?.nodes ?? [])
+      .filter((node): node is Extract<ScopeGraphNode, { kind: "command" }> => node.kind === "command")
+      .map((node) => [node.node_id, node.endpoint_id]),
+  );
   if (actorInputs.length + commandInputs.length === 0) {
     throw new ActorCapabilityError(
       "incomplete_composition",
@@ -350,7 +381,8 @@ function composeScope(context: ActorCapabilityContext, input: Record<string, unk
     node_id: String(command.node_id),
     kind: "command",
     label: typeof command.label === "string" ? command.label : undefined,
-    endpoint_id: commandEndpointId(context.workspaceId, scopeId, String(command.node_id)),
+    endpoint_id: existingCommandEndpoints.get(String(command.node_id))
+      ?? commandEndpointId(context.workspaceId, scopeId, String(command.node_id)),
     event_types: command.event_types as string[],
     result_event_type: typeof command.result_event_type === "string" ? command.result_event_type : undefined,
     command: String(command.command),
@@ -360,7 +392,8 @@ function composeScope(context: ActorCapabilityContext, input: Record<string, unk
 
   let scopeCreated = false;
   try {
-    if (!context.store.getScope(context.workspaceId, scopeId)) {
+    const existingScope = context.store.getScope(context.workspaceId, scopeId);
+    if (!existingScope) {
       context.store.createScope({
         workspace_id: context.workspaceId,
         scope_id: scopeId,
@@ -375,11 +408,18 @@ function composeScope(context: ActorCapabilityContext, input: Record<string, unk
       created_by_endpoint_id: context.callerEndpointId,
       nodes: [...eventNodes, ...actorNodes, ...commandNodes],
     }, context.broadcast);
+    if (existingScope) {
+      context.store.updateScope({
+        workspace_id: context.workspaceId,
+        scope_id: scopeId,
+        title: String(input.title),
+        description: typeof input.description === "string" ? input.description : null,
+      }, context.broadcast);
+    }
     return {
-      summary: `Composed Scope '${scopeId}' with ${graph.nodes.length} nodes.`,
+      summary: `${existingComposition ? "Updated" : "Composed"} Scope '${scopeId}' with ${graph.nodes.length} current nodes${existingComposition ? "; its existing Context history was preserved" : ""}.`,
       data: {
         scope_id: scopeId,
-        graph_id: graph.graph_id,
         context_id: graph.context_id,
         nodes: graph.nodes,
       },
@@ -402,10 +442,15 @@ function composeScope(context: ActorCapabilityContext, input: Record<string, unk
 }
 
 function fireScopeEvent(context: ActorCapabilityContext, input: Record<string, unknown>): ActorCapabilityResult {
+  const scopeId = String(input.scope_id);
+  const graph = context.store.getScopeGraphForScope(context.workspaceId, scopeId);
+  if (!graph) {
+    throw new ActorCapabilityError("scope_composition_not_found", `Scope '${scopeId}' has no current composition.`, 404);
+  }
   try {
     const events = context.store.fireScopeGraphTrigger({
       workspace_id: context.workspaceId,
-      graph_id: String(input.graph_id),
+      graph_id: graph.graph_id,
       node_id: String(input.event_node_id),
       content: input.content && typeof input.content === "object" ? input.content as Record<string, unknown> : {},
       correlation_id: null,
@@ -423,6 +468,33 @@ function fireScopeEvent(context: ActorCapabilityContext, input: Record<string, u
     }
     if (error instanceof ScopeGraphNodeNotATriggerError) {
       throw new ActorCapabilityError("scope_graph_node_not_an_event", error.message);
+    }
+    if (error instanceof ScopeRetiredError) {
+      throw new ActorCapabilityError("scope_retired", error.message, 409, { scope_id: scopeId });
+    }
+    throw error;
+  }
+}
+
+function retireScope(context: ActorCapabilityContext, input: Record<string, unknown>): ActorCapabilityResult {
+  const scopeId = String(input.scope_id);
+  if (!context.store.getScope(context.workspaceId, scopeId)) {
+    throw new ActorCapabilityError("scope_not_found", `Scope '${scopeId}' does not exist.`, 404, { scope_id: scopeId });
+  }
+  try {
+    const result = context.store.retireScope(context.workspaceId, scopeId, context.broadcast);
+    return {
+      summary: `Retired Scope '${scopeId}'. Its routing is inert and its Context and Event history remain available.`,
+      data: result,
+    };
+  } catch (error) {
+    if (error instanceof ScopeRetirementBlockedError) {
+      throw new ActorCapabilityError(
+        "scope_retirement_blocked",
+        error.message,
+        409,
+        { scope_id: scopeId, active_work_count: error.active_work_count },
+      );
     }
     throw error;
   }
@@ -473,7 +545,7 @@ const definitions: ActorCapabilityDefinition[] = [
     category: "organisation",
     title: "Compose connected operation",
     description:
-      "Create durable organisation for a connected operation, pipeline, or folder-driven workflow from existing Floe primitives: Events land in one scoped Context, while Actors and deterministic Commands participate and wake for declared event types. This establishes routing, not opinionated workflow policy.",
+      "Create or correct the current durable organisation for a connected operation, pipeline, or folder-driven workflow from existing Floe primitives. Reusing a Scope id replaces its current nodes and subscriptions in place while preserving its Context history. Events land in that scoped Context, while Actors and deterministic Commands participate and wake for declared event types. This establishes routing, not opinionated workflow policy.",
     effect: "write",
     input_schema: scopeComposeInputSchema,
     invoke: composeScope,
@@ -483,10 +555,20 @@ const definitions: ActorCapabilityDefinition[] = [
     category: "organisation",
     title: "Start a composed operation",
     description:
-      "Fire a manual Event node in an existing Scope composition so the Event lands in its Context and wakes subscribed Actors or Commands.",
+      "Fire a manual Event node in an active Scope so the Event lands in its Context and wakes subscribed Actors or Commands.",
     effect: "write",
     input_schema: scopeFireInputSchema,
     invoke: fireScopeEvent,
+  },
+  {
+    capability_id: "scope.retire",
+    category: "organisation",
+    title: "Retire connected organisation",
+    description:
+      "Make an obsolete Scope inert without deleting its durable Context or Event history. Retired Scopes cannot route new work and are excluded from the normal operator work surface.",
+    effect: "write",
+    input_schema: scopeRetireInputSchema,
+    invoke: retireScope,
   },
   {
     capability_id: "scope.remove-unused",

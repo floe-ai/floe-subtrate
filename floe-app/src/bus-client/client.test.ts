@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   listWorkspaces,
   listScopes,
+  listScopeCompositions,
   createScope,
   updateScope,
   deleteScope,
@@ -69,7 +70,7 @@ describe("bus-client — reads", () => {
   });
 
   it("listScopes unwraps { scopes } and encodes workspace_id", async () => {
-    const scopes = [{ scope_id: "s1", workspace_id: "ws:abc", title: "Scope 1", description: null, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" }];
+    const scopes = [{ scope_id: "s1", workspace_id: "ws:abc", title: "Scope 1", description: null, status: "active", created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" }];
     const fetchMock = mockFetch({ scopes });
     vi.stubGlobal("fetch", fetchMock);
     const result = await listScopes("ws:abc");
@@ -146,6 +147,14 @@ describe("bus-client — writes", () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
     await pending;
+  });
+
+  it("listScopeCompositions unwraps the Scope's stored composition", async () => {
+    const graphs = [{ graph_id: "graph-1", workspace_id: "ws:abc", scope_id: "delivery", context_id: "ctx-1", nodes: [], created_at: "2026-08-27T00:00:00Z", updated_at: "2026-08-27T00:00:00Z" }];
+    const fetchMock = mockFetch({ graphs });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(listScopeCompositions("ws:abc", "delivery pipeline")).resolves.toEqual(graphs);
+    expect(fetchMock.mock.calls[0][0] as string).toContain("/scopes/delivery%20pipeline/graphs");
   });
 
   it("createScope unwraps { scope } and POSTs", async () => {

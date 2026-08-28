@@ -38,7 +38,7 @@ Therefore:
 - an Event **lands in** a Context
 - an Actor or a Command **takes part in** a Context
 
-**A graph is not a primitive.** It is the picture of the nodes and how they are connected. Nothing is stored for it beyond layout.
+**A graph is not a primitive.** It is the picture of the nodes and how they are connected. The implementation may keep a stable internal routing handle for a Scope's current node composition, but actors and operators identify and revise the Scope rather than creating or naming graph versions. Re-composition replaces current nodes and subscriptions while Context history remains durable.
 
 **What will happen is the nodes in the scope. What has happened is in the context.** These are not two competing pictures of a scope. An outcome — a written file, a haiku — is inside the scope because its context is; it was never a node and does not become one.
 

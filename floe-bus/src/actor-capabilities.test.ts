@@ -120,10 +120,9 @@ describe("actor-safe capability discovery and invocation", () => {
 
     expect(compose.statusCode).toBe(201);
     const composed = compose.json().result;
-    expect(composed.summary).toBe("Composed Scope 'concept-processing' with 2 nodes.");
+    expect(composed.summary).toBe("Composed Scope 'concept-processing' with 2 current nodes.");
     expect(composed.data).toMatchObject({
       scope_id: "concept-processing",
-      graph_id: expect.any(String),
       context_id: expect.any(String),
       nodes: [
         expect.objectContaining({ kind: "trigger", node_id: "concept-arrived" }),
@@ -142,7 +141,7 @@ describe("actor-safe capability discovery and invocation", () => {
     expect(inspect.statusCode).toBe(200);
     expect(inspect.json().result.data.scopes[0]).toMatchObject({
       scope_id: "concept-processing",
-      compositions: [expect.objectContaining({ graph_id: composed.data.graph_id })],
+      composition: expect.objectContaining({ context_id: composed.data.context_id }),
     });
 
     const fire = await handle.app.inject({
@@ -151,7 +150,7 @@ describe("actor-safe capability discovery and invocation", () => {
       payload: {
         caller_endpoint_id: floeEndpointId,
         input: {
-          graph_id: composed.data.graph_id,
+          scope_id: "concept-processing",
           event_node_id: "concept-arrived",
           content: { file_path: "concepts/castle.png" },
         },
@@ -162,6 +161,108 @@ describe("actor-safe capability discovery and invocation", () => {
       summary: "Event node 'concept-arrived' fired; 1 subscribed participant(s) were woken.",
       data: { event_count: 1 },
     });
+  });
+
+  it("corrects one stable Scope composition in place and preserves its Context history", async () => {
+    const first = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.compose/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: {
+          scope_id: "delivery",
+          title: "Delivery",
+          event_nodes: [{ node_id: "start", event_type: "work.requested" }],
+          actor_nodes: [{ node_id: "builder", actor: "builder", event_types: ["work.requested"] }],
+        },
+      },
+    });
+    const firstData = first.json().result.data;
+    const firstGraph = handle.store.getScopeGraphForScope(workspaceId, "delivery")!;
+
+    await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.event.fire/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { scope_id: "delivery", event_node_id: "start", content: { slice: "one" } },
+      },
+    });
+
+    const revised = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.compose/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: {
+          scope_id: "delivery",
+          title: "Delivery corrected",
+          event_nodes: [{ node_id: "resume", event_type: "work.resumed" }],
+          actor_nodes: [{ node_id: "floe", actor: "floe", event_types: ["work.resumed"] }],
+        },
+      },
+    });
+
+    expect(revised.statusCode).toBe(201);
+    expect(revised.json().result.summary).toContain("Updated Scope 'delivery'");
+    const current = handle.store.getScopeGraphForScope(workspaceId, "delivery")!;
+    expect(current.graph_id).toBe(firstGraph.graph_id);
+    expect(current.context_id).toBe(firstData.context_id);
+    expect(handle.store.listScopeGraphs(workspaceId, "delivery")).toHaveLength(1);
+    expect(current.nodes.map((node) => node.node_id)).toEqual(["resume", "floe"]);
+    expect(handle.store.contextStore.getContextSubscriptions(current.context_id)).toEqual([
+      expect.objectContaining({ endpoint_id: floeEndpointId, event_types: ["work.resumed"] }),
+    ]);
+    const historical = handle.store.db.prepare(
+      "SELECT COUNT(*) AS count FROM events WHERE context_id = ?"
+    ).get(current.context_id) as { count: number };
+    expect(historical.count).toBe(1);
+  });
+
+  it("retires obsolete connected work without deleting its Context history", async () => {
+    await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.compose/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: {
+          scope_id: "old-delivery",
+          title: "Old delivery",
+          event_nodes: [{ node_id: "start", event_type: "work.requested" }],
+          actor_nodes: [{ node_id: "builder", actor: "builder", event_types: ["work.requested"] }],
+        },
+      },
+    });
+    await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.event.fire/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { scope_id: "old-delivery", event_node_id: "start", content: {} },
+      },
+    });
+    const contextId = handle.store.getScopeGraphForScope(workspaceId, "old-delivery")!.context_id;
+
+    const retired = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.retire/invoke`,
+      payload: { caller_endpoint_id: floeEndpointId, input: { scope_id: "old-delivery" } },
+    });
+    expect(retired.statusCode).toBe(201);
+    expect(handle.store.getScope(workspaceId, "old-delivery")?.status).toBe("retired");
+    expect(handle.store.contextStore.getContext(contextId)).not.toBeNull();
+    expect(handle.store.contextStore.getContextSubscriptions(contextId)).toEqual([]);
+
+    const fire = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.event.fire/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { scope_id: "old-delivery", event_node_id: "start", content: {} },
+      },
+    });
+    expect(fire.statusCode).toBe(409);
+    expect(fire.json()).toMatchObject({ error: "scope_retired", scope_id: "old-delivery" });
   });
 
   it("rejects folder sources that escape the workspace", async () => {
@@ -203,6 +304,7 @@ describe("actor-safe capability discovery and invocation", () => {
       },
     });
     const composed = compose.json().result.data;
+    const graphId = handle.store.getScopeGraphForScope(workspaceId, "obsolete")?.graph_id as string;
 
     const remove = await handle.app.inject({
       method: "POST",
@@ -219,7 +321,7 @@ describe("actor-safe capability discovery and invocation", () => {
       data: { scope_id: "obsolete", graph_count: 1, context_count: 1 },
     });
     expect(handle.store.getScope(workspaceId, "obsolete")).toBeNull();
-    expect(handle.store.getScopeGraph(workspaceId, composed.graph_id)).toBeNull();
+    expect(handle.store.getScopeGraph(workspaceId, graphId)).toBeNull();
     expect(handle.store.contextStore.getContext(composed.context_id)).toBeNull();
     expect(handle.store.contextStore.getContextSubscriptions(composed.context_id)).toEqual([]);
   });
@@ -238,13 +340,12 @@ describe("actor-safe capability discovery and invocation", () => {
         },
       },
     });
-    const graphId = compose.json().result.data.graph_id;
     await handle.app.inject({
       method: "POST",
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.event.fire/invoke`,
       payload: {
         caller_endpoint_id: floeEndpointId,
-        input: { graph_id: graphId, event_node_id: "start", content: {} },
+        input: { scope_id: "historical", event_node_id: "start", content: {} },
       },
     });
 
@@ -264,7 +365,7 @@ describe("actor-safe capability discovery and invocation", () => {
       event_count: 1,
     });
     expect(handle.store.getScope(workspaceId, "historical")).not.toBeNull();
-    expect(handle.store.getScopeGraph(workspaceId, graphId)).not.toBeNull();
+    expect(handle.store.getScopeGraphForScope(workspaceId, "historical")).not.toBeNull();
   });
 
   it("refuses to remove an unused Scope while one of its Command endpoints is still working", async () => {

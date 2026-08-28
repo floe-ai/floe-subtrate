@@ -24,6 +24,48 @@ export type ScopeRef = {
   workspace_id: string;
   title: string;
   description: string | null;
+  status: "active" | "retired";
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScopeCompositionEventNode = {
+  node_id: string;
+  kind: "trigger";
+  label?: string;
+  event_type: string;
+  source?: { kind: "folder"; path: string };
+};
+
+export type ScopeCompositionActorNode = {
+  node_id: string;
+  kind: "actor";
+  label?: string;
+  endpoint_id: string;
+  event_types?: string[];
+};
+
+export type ScopeCompositionCommandNode = {
+  node_id: string;
+  kind: "command";
+  label?: string;
+  endpoint_id: string;
+  event_types?: string[];
+  result_event_type?: string;
+  command: string;
+};
+
+export type ScopeCompositionNode =
+  | ScopeCompositionEventNode
+  | ScopeCompositionActorNode
+  | ScopeCompositionCommandNode;
+
+export type ScopeComposition = {
+  graph_id: string;
+  workspace_id: string;
+  scope_id: string;
+  context_id: string;
+  nodes: ScopeCompositionNode[];
   created_at: string;
   updated_at: string;
 };

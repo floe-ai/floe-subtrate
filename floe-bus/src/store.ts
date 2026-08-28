@@ -105,6 +105,38 @@ export class ScopeRemovalBlockedError extends Error {
   }
 }
 
+export class ScopeRetirementBlockedError extends Error {
+  readonly code = "E_SCOPE_RETIREMENT_BLOCKED" as const;
+  constructor(
+    readonly workspace_id: string,
+    readonly scope_id: string,
+    readonly active_work_count: number
+  ) {
+    super(`Scope '${scope_id}' cannot be retired while ${active_work_count} delivery or command runtime(s) are active.`);
+    this.name = "ScopeRetirementBlockedError";
+  }
+}
+
+export class ScopeCompositionBlockedError extends Error {
+  readonly code = "E_SCOPE_COMPOSITION_BLOCKED" as const;
+  constructor(
+    readonly workspace_id: string,
+    readonly scope_id: string,
+    readonly busy_endpoint_count: number
+  ) {
+    super(`Scope '${scope_id}' cannot be recomposed while ${busy_endpoint_count} command endpoint(s) are working.`);
+    this.name = "ScopeCompositionBlockedError";
+  }
+}
+
+export class ScopeRetiredError extends Error {
+  readonly code = "E_SCOPE_RETIRED" as const;
+  constructor(readonly workspace_id: string, readonly scope_id: string) {
+    super(`Scope '${scope_id}' is retired and cannot route new work.`);
+    this.name = "ScopeRetiredError";
+  }
+}
+
 export class EndpointRetirementBlockedError extends Error {
   readonly code = "E_ENDPOINT_RETIREMENT_BLOCKED" as const;
   constructor(readonly endpoint_id: string, readonly status: string) {
@@ -880,17 +912,31 @@ export class BusStore {
     return this.scopeGraphStore.listScopeGraphs(workspaceId, scopeId);
   }
 
-  /** All graphs in a workspace, across every scope — used by the bridge to discover command nodes at attach time. */
+  /** Current compositions across active Scopes — used by the bridge at attach time. */
   listScopeGraphsForWorkspace(workspaceId: string): ScopeGraphRecord[] {
-    return this.scopeGraphStore.listScopeGraphsForWorkspace(workspaceId);
+    return this.scopeStore.listScopes(workspaceId)
+      .filter((scope) => scope.status === "active")
+      .flatMap((scope) => {
+        const current = this.scopeGraphStore.getScopeGraphForScope(workspaceId, scope.scope_id);
+        return current ? [current] : [];
+      });
   }
 
   getScopeGraph(workspaceId: string, graphId: string): ScopeGraphRecord | null {
     return this.scopeGraphStore.getScopeGraph(workspaceId, graphId);
   }
 
+  getScopeGraphForScope(workspaceId: string, scopeId: string): ScopeGraphRecord | null {
+    return this.scopeGraphStore.getScopeGraphForScope(workspaceId, scopeId);
+  }
+
   /**
-   * Authors a Scope Graph. The wiring is realised entirely through EXISTING
+   * Authors or replaces the current composition of a Scope. The internal
+   * graph/context handles remain stable when replacing nodes, so routing can be
+   * corrected without creating a second live-looking organisation or rewriting
+   * the Context history.
+   *
+   * The wiring is realised entirely through EXISTING
    * Context primitives, not a bespoke edge record:
    * - One Context is created (ContextStore.createContext) to carry the graph.
    * - Each actor OR command node is added as a participant AND subscribed to
@@ -907,6 +953,84 @@ export class BusStore {
     nodes: ScopeGraphNode[];
   }, broadcast: Broadcast): ScopeGraphRecord {
     validateScopeGraphNodes(input.nodes);
+
+    const existing = this.scopeGraphStore.getScopeGraphForScope(input.workspace_id, input.scope_id);
+    if (existing) {
+      const currentCommandNodes = existing.nodes.filter(
+        (node): node is Extract<ScopeGraphNode, { kind: "command" }> => node.kind === "command"
+      );
+      const nextCommandEndpointIds = new Set(input.nodes
+        .filter((node): node is Extract<ScopeGraphNode, { kind: "command" }> => node.kind === "command")
+        .map((node) => node.endpoint_id));
+      const removedCommandEndpointIds = currentCommandNodes
+        .map((node) => node.endpoint_id)
+        .filter((endpointId) => !nextCommandEndpointIds.has(endpointId));
+      const safeStatuses = new Set(["idle", "offline", "error", "runtime_unconfigured", "retired"]);
+      const affectedCommandEndpointIds = new Set([
+        ...currentCommandNodes.map((node) => node.endpoint_id),
+        ...nextCommandEndpointIds,
+      ]);
+      const busy = [...affectedCommandEndpointIds].filter((endpointId) => {
+        const endpoint = this.getEndpoint(endpointId);
+        return endpoint && !safeStatuses.has(String(endpoint.status));
+      });
+      if (busy.length > 0) {
+        throw new ScopeCompositionBlockedError(input.workspace_id, input.scope_id, busy.length);
+      }
+
+      const subscriptions = input.nodes
+        .filter((node): node is Extract<ScopeGraphNode, { kind: "actor" | "command" }> => node.kind === "actor" || node.kind === "command")
+        .map((node) => ({ endpoint_id: node.endpoint_id, event_types: node.event_types ?? ["*"] }));
+      const timestamp = now();
+      this.transaction(() => {
+        this.db.prepare("DELETE FROM context_subscriptions WHERE context_id = ?").run(existing.context_id);
+        const insertParticipant = this.db.prepare(
+          "INSERT OR IGNORE INTO context_participants (context_id, endpoint_id, joined_at) VALUES (?, ?, ?)"
+        );
+        const insertSubscription = this.db.prepare(`
+          INSERT INTO context_subscriptions (context_id, endpoint_id, event_types, subscribed_at)
+          VALUES (?, ?, ?, ?)
+        `);
+        for (const subscription of subscriptions) {
+          insertParticipant.run(existing.context_id, subscription.endpoint_id, timestamp);
+          insertSubscription.run(
+            existing.context_id,
+            subscription.endpoint_id,
+            JSON.stringify(subscription.event_types),
+            timestamp
+          );
+        }
+        this.scopeGraphStore.updateScopeGraph({
+          workspace_id: input.workspace_id,
+          graph_id: existing.graph_id,
+          nodes: input.nodes,
+        });
+        for (const endpointId of nextCommandEndpointIds) {
+          this.db.prepare(`
+            UPDATE endpoints
+            SET bridge_id = NULL, status = 'runtime_unconfigured', updated_at = ?
+            WHERE endpoint_id = ?
+          `).run(timestamp, endpointId);
+        }
+        for (const endpointId of removedCommandEndpointIds) {
+          this.db.prepare("DELETE FROM runtime_bindings WHERE endpoint_id = ?").run(endpointId);
+          this.db.prepare(`
+            UPDATE endpoints SET bridge_id = NULL, status = 'retired', updated_at = ?
+            WHERE endpoint_id = ?
+          `).run(timestamp, endpointId);
+        }
+        this.scopeStore.setScopeStatus(input.workspace_id, input.scope_id, "active");
+      });
+      const graph = this.scopeGraphStore.getScopeGraph(input.workspace_id, existing.graph_id) as ScopeGraphRecord;
+      broadcast("scope_graph_updated", { graph });
+      const scope = this.scopeStore.getScope(input.workspace_id, input.scope_id);
+      if (scope) broadcast("scope_updated", { scope });
+      for (const endpointId of removedCommandEndpointIds) {
+        const endpoint = this.getEndpoint(endpointId);
+        if (endpoint) broadcast("endpoint_retired", { endpoint });
+      }
+      return graph;
+    }
 
     const contextId = this.contextStore.createContext({
       workspace_id: input.workspace_id,
@@ -932,6 +1056,58 @@ export class BusStore {
     return graph;
   }
 
+  retireScope(workspaceId: string, scopeId: string, broadcast: Broadcast): {
+    ok: true;
+    workspace_id: string;
+    scope_id: string;
+    status: "retired";
+  } {
+    const scope = this.scopeStore.getScope(workspaceId, scopeId);
+    if (!scope) throw new ScopeNotFoundError(workspaceId, scopeId);
+    const graphs = this.scopeGraphStore.listScopeGraphs(workspaceId, scopeId);
+    const commandEndpointIds = Array.from(new Set(graphs.flatMap((graph) => graph.nodes
+      .filter((node): node is Extract<ScopeGraphNode, { kind: "command" }> => node.kind === "command")
+      .map((node) => node.endpoint_id))));
+    const safeStatuses = new Set(["idle", "offline", "error", "runtime_unconfigured", "retired"]);
+    const busyCount = commandEndpointIds.filter((endpointId) => {
+      const endpoint = this.getEndpoint(endpointId);
+      return endpoint && !safeStatuses.has(String(endpoint.status));
+    }).length;
+    const contextIds = graphs.map((graph) => graph.context_id);
+    const activeDeliveryCount = contextIds.length === 0 ? 0 : Number((this.db.prepare(`
+      SELECT COUNT(DISTINCT d.delivery_id) AS count
+      FROM delivery_bundles d
+      JOIN events e ON e.event_id = d.trigger_event_id
+      WHERE e.context_id IN (${contextIds.map(() => "?").join(", ")})
+        AND d.state IN ('reserved', 'delivered_to_bridge', 'injected_to_runtime')
+    `).get(...contextIds) as { count: number }).count);
+    if (busyCount + activeDeliveryCount > 0) {
+      throw new ScopeRetirementBlockedError(workspaceId, scopeId, busyCount + activeDeliveryCount);
+    }
+
+    const timestamp = now();
+    this.transaction(() => {
+      for (const graph of graphs) {
+        this.db.prepare("DELETE FROM context_subscriptions WHERE context_id = ?").run(graph.context_id);
+      }
+      for (const endpointId of commandEndpointIds) {
+        this.db.prepare("DELETE FROM runtime_bindings WHERE endpoint_id = ?").run(endpointId);
+        this.db.prepare(`
+          UPDATE endpoints SET bridge_id = NULL, status = 'retired', updated_at = ?
+          WHERE endpoint_id = ?
+        `).run(timestamp, endpointId);
+      }
+      this.scopeStore.setScopeStatus(workspaceId, scopeId, "retired");
+    });
+    const retired = this.scopeStore.getScope(workspaceId, scopeId);
+    broadcast("scope_retired", { scope: retired });
+    for (const endpointId of commandEndpointIds) {
+      const endpoint = this.getEndpoint(endpointId);
+      if (endpoint) broadcast("endpoint_retired", { endpoint });
+    }
+    return { ok: true, workspace_id: workspaceId, scope_id: scopeId, status: "retired" };
+  }
+
   /**
    * Fires a trigger node: emits into the graph's Context once per endpoint
    * whose EXISTING context subscription (ContextStore.getContextSubscriptions)
@@ -949,6 +1125,8 @@ export class BusStore {
   }, broadcast: Broadcast): EventEnvelope[] {
     const graph = this.scopeGraphStore.getScopeGraph(input.workspace_id, input.graph_id);
     if (!graph) throw new ScopeGraphNotFoundError(input.workspace_id, input.graph_id);
+    const scope = this.scopeStore.getScope(input.workspace_id, graph.scope_id);
+    if (scope?.status === "retired") throw new ScopeRetiredError(input.workspace_id, graph.scope_id);
 
     const node = graph.nodes.find((candidate) => candidate.node_id === input.node_id);
     if (!node) throw new ScopeGraphNodeNotFoundError(input.graph_id, input.node_id);

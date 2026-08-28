@@ -61,6 +61,15 @@ vi.mock("../work/ContextWorkView.tsx", () => ({
   ),
 }));
 
+vi.mock("../work/ScopeWorkView.tsx", () => ({
+  ScopeWorkView: ({ scope, onBack }: { scope: { title: string }; onBack: () => void }) => (
+    <div data-testid="scope-work-view">
+      <span>{scope.title}</span>
+      <button type="button" onClick={onBack}>Workspace</button>
+    </div>
+  ),
+}));
+
 vi.mock("../../workspace/FloeModelControl.tsx", async () => {
   const ReactModule = await import("react");
   return {
@@ -141,7 +150,7 @@ function message(
 }
 
 function Harness(): React.ReactElement {
-  const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
+  const [selectedContextId, setSelectedContextId] = useState<string | null>("context-floe");
   const open = useCallback((contextId: string) => setSelectedContextId(contextId), []);
   const close = useCallback(() => setSelectedContextId(null), []);
   return (
@@ -149,6 +158,7 @@ function Harness(): React.ReactElement {
       workspaceId="workspace"
       workspaceLocator={"C:\\workspace"}
       endpoints={endpoints}
+      scopes={[]}
       selectedContextId={selectedContextId}
       onOpenContext={open}
       onCloseContext={close}
@@ -228,23 +238,49 @@ describe("unified operator conversations", () => {
     ));
   });
 
-  it("opens the latest Floe conversation on workspace entry, even when another conversation is newer", async () => {
+  it("lands on the conversation index when conversations already exist", async () => {
     const onOpenContext = vi.fn();
     render(
       <OperatorConversations
         workspaceId="workspace"
         endpoints={endpoints}
+        scopes={[]}
         selectedContextId={null}
         onOpenContext={onOpenContext}
         onCloseContext={vi.fn()}
       />,
     );
 
-    await waitFor(() => expect(onOpenContext).toHaveBeenCalledWith("context-floe"));
+    expect(await screen.findByRole("heading", { name: "Conversations" })).toBeTruthy();
+    expect(onOpenContext).not.toHaveBeenCalled();
     expect(client.listContextsByParticipant).toHaveBeenCalledWith({
       participant: OPERATOR,
       workspace_id: "workspace",
     });
+  });
+
+  it("opens active organised work from the same workspace index", async () => {
+    render(
+      <OperatorConversations
+        workspaceId="workspace"
+        endpoints={endpoints}
+        scopes={[{
+          scope_id: "acme-delivery",
+          workspace_id: "workspace",
+          title: "Acme delivery",
+          description: "Build and judge one slice at a time.",
+          status: "active",
+          created_at: "2026-08-27T00:00:00Z",
+          updated_at: "2026-08-27T00:00:00Z",
+        }]}
+        selectedContextId={null}
+        onOpenContext={vi.fn()}
+        onCloseContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open organised work Acme delivery" }));
+    expect(screen.getByTestId("scope-work-view").textContent).toContain("Acme delivery");
   });
 
   it("returns from the selected Floe conversation to the one shared conversation list", async () => {

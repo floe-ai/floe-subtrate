@@ -541,7 +541,7 @@ export function App(): React.ReactElement {
           void refreshActors();
         }
       }
-      if (msg.type === "scope_created" || msg.type === "scope_updated" || msg.type === "scope_deleted") {
+      if (msg.type === "scope_created" || msg.type === "scope_updated" || msg.type === "scope_deleted" || msg.type === "scope_retired") {
         const scopeWsId = (msg.payload?.scope as any)?.workspace_id;
         if (msg.payload?.workspace_id === workspaceId || scopeWsId === workspaceId) {
           void refreshScopes();
@@ -791,6 +791,7 @@ export function App(): React.ReactElement {
                 workspaceId={activeWorkspace.workspace_id}
                 workspaceLocator={activeWorkspace.locator}
                 endpoints={actors}
+                scopes={scopes}
                 selectedContextId={nav.selectedContextId}
                 onOpenContext={nav.navigateToOperatorContext}
                 onCloseContext={nav.navigateToConversations}

@@ -11,7 +11,7 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { parseListen } from "./config.js";
-import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, EndpointRetirementBlockedError, PulseNotFoundError, ScopeRequiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
+import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, EndpointRetirementBlockedError, PulseNotFoundError, ScopeRequiredError, ScopeRetiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
   loadScopeProjectionLayout,
@@ -423,6 +423,13 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
           error: "scope_graph_node_not_a_trigger",
           graph_id: err.graph_id,
           node_id: err.node_id
+        });
+      }
+      if (err instanceof ScopeRetiredError) {
+        return reply.code(409).send({
+          error: "scope_retired",
+          workspace_id: err.workspace_id,
+          scope_id: err.scope_id
         });
       }
       throw err;

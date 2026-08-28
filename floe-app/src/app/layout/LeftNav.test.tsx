@@ -11,7 +11,7 @@ describe("LeftNav", () => {
     render(
       <LeftNav
         view="conversations"
-        scopes={[{ scope_id: "scope-1", workspace_id: "ws-1", title: "Research", description: null, created_at: "", updated_at: "" }]}
+        scopes={[{ scope_id: "scope-1", workspace_id: "ws-1", title: "Research", description: null, status: "active", created_at: "", updated_at: "" }]}
         selectedScopeId={null}
         actors={[]}
         selectedActorId={null}

@@ -74,15 +74,15 @@ curl -X POST http://localhost:5377/v1/workspaces/$WORKSPACE_ID/scopes \
   -d '{"title": "Billing"}'
 ```
 
-## Nodes / graphs (stored vocabulary predates the current model)
+## Scope node composition (stored routes retain legacy graph vocabulary)
 
-The substrate still stores nodes under a `graph_id` and calls the picture a "graph". In the current locked model, a scope IS the canvas and a graph is only the picture of what's connected in it — there is no separate graph primitive to create or name. These routes are documented as they exist today:
+The substrate stores current Scope nodes under a stable internal `graph_id` routing handle. In the product model, a Scope is the organisation and the graph is only its picture; actors use the Scope id and do not create or name graph versions. These lower-level routes remain for bridge and developer use:
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
 | GET | `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs` | — | List graphs stored under a scope. |
-| POST | `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs` | `{ nodes: [...], created_by_endpoint_id? }` | Each node is `trigger` (event source), `actor`, or `command`, per the zod union in `server.ts`. |
-| GET | `/v1/workspaces/:workspace_id/graphs` | — | List all graphs for a workspace. |
+| POST | `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs` | `{ nodes: [...], created_by_endpoint_id? }` | Creates the current composition or replaces its nodes/subscriptions in place. Each node is `trigger` (event source), `actor`, or `command`, per the zod union in `server.ts`. |
+| GET | `/v1/workspaces/:workspace_id/graphs` | — | List the current composition for each active Scope (used by the Bridge). |
 | GET | `/v1/workspaces/:workspace_id/graphs/:graph_id` | — | Get one graph. |
 | POST | `/v1/workspaces/:workspace_id/graphs/:graph_id/nodes/:node_id/fire` | `{ content?, correlation_id? }` | Fires a `trigger`-kind node, creating events. 400 `scope_graph_node_not_a_trigger` if the node isn't a trigger. |
 
@@ -97,7 +97,7 @@ The Bus exposes a bounded semantic surface for runtime actors. It is not raw acc
 
 Runtime actors use the stable `discover_capabilities` and `use_capability` tools over this surface. The
 Bridge does not carry capability-specific descriptions or schemas. Scope inspection, composition,
-manual Event activation, and safe removal of an unused composition are registered operations; their live contracts come from discovery,
+manual Event activation, in-place correction, safe removal of unused organisation, and history-preserving Scope retirement are registered operations; their live contracts come from discovery,
 not from this guide. See ADR-0009.
 
 ## Endpoints (actors)

@@ -86,10 +86,12 @@ export function LeftNav({
             {scopes.map(s => (
               <NavRow
                 key={s.scope_id}
-                label={s.title || s.scope_id}
+                label={`${s.title || s.scope_id}${s.status === "retired" ? " (retired)" : ""}`}
                 glyph={(s.title || s.scope_id).charAt(0).toUpperCase()}
                 isOn={!isSystemActive && selectedScopeId === s.scope_id}
                 onClick={() => onSelectScope(s.scope_id)}
+                faint={s.status === "retired"}
+                title={s.status === "retired" ? "Historical Scope; routing is inactive" : undefined}
               />
             ))}
             <NavRow label="New scope" glyph="+" isOn={false} onClick={onNewScope} faint />

@@ -8,10 +8,11 @@ graph.
 
 ## There is no graph primitive
 
-You never create a graph. You never name a graph. A graph is not a thing that
-exists in the substrate — it is the picture you get when you look at a scope. The
-substrate stores the nodes and infers the wiring from shared [[Context]]
-membership; nothing else is stored for "the graph."
+You never create or name a graph as a separate organisation. It is the picture
+you get when you look at a scope. The substrate stores the current nodes under
+an internal stable routing handle and infers wiring from shared [[Context]]
+membership. Re-composing the same Scope replaces those current nodes and
+subscriptions without replacing its Context history.
 
 ## Scopes nest
 
@@ -38,7 +39,7 @@ for its parts.
 - `floe-bus/src/scope-graphs.ts` — node kinds and how connections are inferred from context membership (no stored edge record)
 - `floe-bus/src/server.ts` — `POST /v1/workspaces/:workspace_id/scopes`, `DELETE /v1/workspaces/:workspace_id/scopes/:scope_id`, `GET /v1/workspaces/:workspace_id/scopes`
 - `floe-bus/src/server.ts` — `GET /v1/workspaces/:workspace_id/scopes/:scope_id/projection` — the derived, read-only view of what happened
-- `floe-bus/src/server.ts` — `GET`/`POST /v1/workspaces/:workspace_id/scopes/:scope_id/graphs` — the substrate still stores authored nodes under a `graphs`/`graph_id` table; this contradicts the model above. Write the model, not the table.
-- The scope canvas does not exist in `floe-app` yet. There is a scope detail view with Contexts and Ops tabs only.
+- `floe-bus/src/server.ts` — `GET`/`POST /v1/workspaces/:workspace_id/scopes/:scope_id/graphs` — internal node-composition storage; POST creates or replaces the current composition for the stable Scope.
+- `floe-app/src/features/work/ScopeWorkView.tsx` — read-only operator view of current nodes, connections, endpoint state, and the scoped Context. Editing remains actor-owned rather than a human graph editor.
 
 See [[Glossary]].

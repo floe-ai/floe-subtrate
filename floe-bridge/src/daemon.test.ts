@@ -118,7 +118,9 @@ describe("BridgeDaemon shutdown", () => {
 });
 
 describe("BridgeDaemon Scope composition refresh", () => {
-  it("reattaches workspaces when a Scope composition is created", () => {
+  it.each(["scope_graph_created", "scope_graph_updated", "scope_retired"])(
+    "reattaches workspaces when receiving %s",
+    (messageType) => {
     withoutAdapterEnv();
     const made = makeConfig("fake");
     try {
@@ -129,7 +131,7 @@ describe("BridgeDaemon Scope composition refresh", () => {
       (daemon as any).processDeliveries = process;
 
       (daemon as any).handleEventStreamMessage({
-        type: "scope_graph_created",
+        type: messageType,
         payload: { graph: { graph_id: "graph-1" } },
       });
 
@@ -138,7 +140,8 @@ describe("BridgeDaemon Scope composition refresh", () => {
     } finally {
       made.cleanup();
     }
-  });
+    },
+  );
 });
 
 describe("BridgeDaemon hook event stream", () => {

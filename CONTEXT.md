@@ -6,6 +6,7 @@
 An intentional substrate organising boundary inside a Workspace for connected, event-driven, or operational work.
 
 An unused Scope may be removed together with its authored composition and empty Contexts. Once Events or Pulse records exist, cleanup must preserve them; destructive Scope removal is refused rather than treating history as disposable configuration.
+A retired Scope preserves its durable identity, Contexts, and Events but has no active subscriptions or world sources and cannot route new work. It remains available to developer/history inspection and is excluded from the normal operator work surface.
 _Avoid_: Field, canvas, block, thread, context, pulse scope, universal fallback bucket.
 
 ### Workspace-level Context
@@ -145,6 +146,7 @@ The implemented behaviour-changing Extension Hook result where `BeforeTurn` hand
 - A **Workspace** is the top-level boundary; it has **Actors**, **Contexts**, and zero or more named **Scopes**
 - **Workspace Home** is an index/dashboard over Workspace state; it is not a **Scope**
 - A **Scope** organises **Scoped Primitives**; it does not execute work, contain Actors, or own a duplicated membership list
+- Re-composing an active **Scope** replaces its current nodes and subscriptions while preserving the Scope's Context history; it does not create a second operator-visible organisation
 - A **Scope Projection** derives visible primitives and relationships from substrate state; it is not a storage source
 - A **Scope** is the user-facing visual representation of itself
 - A **Scope Projection Layout** belongs to a renderer's projection of a **Scope** and must not determine membership

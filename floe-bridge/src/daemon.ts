@@ -194,7 +194,9 @@ export class BridgeDaemon {
       message.type === "workspace_attachment_requested" ||
       message.type === "config_snapshot_requested" ||
       message.type === "scope_graph_created" ||
+      message.type === "scope_graph_updated" ||
       message.type === "scope_graph_deleted" ||
+      message.type === "scope_retired" ||
       message.type === "runtime_binding_updated" ||
       message.type === "runtime_binding_cleared"
     ) {

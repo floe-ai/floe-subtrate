@@ -1,10 +1,12 @@
 /**
- * Scope Graphs — the authored graph primitive.
+ * Scope composition storage.
  *
  * `buildScopeProjection` (scopes/projection.ts) is DESCRIPTIVE: it derives refs
  * and relationships from contexts, pulses, events and activity that have
- * already happened. A Scope Graph is the opposite — PRESCRIPTIVE: nodes
- * authored before anything happens, that then cause the work.
+ * already happened. The stored composition is PRESCRIPTIVE: nodes authored
+ * before anything happens describe what is currently placed in the Scope and
+ * then cause the work. `graph_id` is an internal, stable routing handle rather
+ * than a second product object beside the Scope.
  *
  * This slice supports three node kinds: `trigger`, `actor` and `command`.
  * There is deliberately no stored "edge" record. A graph owns exactly one
@@ -31,9 +33,8 @@
  * Node ownership, typed ports and nesting are deliberately out of scope for
  * this slice.
  *
- * A Scope Graph never claims to describe a Scope's derived history — it and
- * buildScopeProjection are separate records, never merged into one "the"
- * graph for a scope.
+ * A composition never claims to describe a Scope's derived history. What
+ * happened remains in the Context; replacing current nodes does not rewrite it.
  */
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -225,6 +226,16 @@ export class ScopeGraphStore {
     return row ? this.rowToGraph(row) : null;
   }
 
+  getScopeGraphForScope(workspaceId: string, scopeId: string): ScopeGraphRecord | null {
+    const row = this.db.prepare(`
+      SELECT * FROM scope_graphs
+      WHERE workspace_id = ? AND scope_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(workspaceId, scopeId) as any;
+    return row ? this.rowToGraph(row) : null;
+  }
+
   insertScopeGraph(input: {
     workspace_id: string;
     scope_id: string;
@@ -249,6 +260,20 @@ export class ScopeGraphStore {
       timestamp
     );
     return this.getScopeGraph(input.workspace_id, graphId) as ScopeGraphRecord;
+  }
+
+  updateScopeGraph(input: {
+    workspace_id: string;
+    graph_id: string;
+    nodes: ScopeGraphNode[];
+  }): ScopeGraphRecord {
+    validateScopeGraphNodes(input.nodes);
+    this.db.prepare(`
+      UPDATE scope_graphs
+      SET nodes_json = ?, updated_at = ?
+      WHERE workspace_id = ? AND graph_id = ?
+    `).run(JSON.stringify(input.nodes), nowIso(), input.workspace_id, input.graph_id);
+    return this.getScopeGraph(input.workspace_id, input.graph_id) as ScopeGraphRecord;
   }
 
   private rowToGraph(row: any): ScopeGraphRecord {

@@ -1,6 +1,6 @@
 # Navigating floe-app
 
-**The app opens Conversations with the latest Floe conversation selected. Developer inspection remains available without being the default product path.**
+**The app opens the Conversations workspace index. Developer inspection remains available without being the default product path.**
 
 ## The shell
 
@@ -19,11 +19,13 @@ After onboarding, the gear beside the workspace name opens normal **Settings**. 
 
 ## Conversations
 
-Conversations is the operator's single way into work with Floe or another actor. Opening or selecting a workspace selects its most recent conversation between the ordinary `operator` and `floe` endpoints, whether or not Floe has since attached that Context to a Scope. Deliberately clicking Conversations returns to the list.
+Conversations is the operator's normal way into work with Floe or another actor. When conversations already exist, opening or selecting a workspace leaves the operator at the shared index instead of silently choosing one. When there are none, the app opens a new outcome with Floe. Deliberately clicking Conversations returns to the index.
 
 If no Floe conversation exists, the app asks what outcome the operator wants. Submitting the first outcome creates a direct [[Context]], emits the message to Floe, and opens the conversation. Merely opening the workspace does not create a Context.
 
 The list contains only Contexts where the ordinary workspace operator is already a participant; actor-to-actor operational traffic is not promoted into this view. Floe is the default collaborator and new-outcome target, not a separate navigation hierarchy.
+
+Active Scopes appear under **Organised work** on the same index. Opening one shows the current Event, Actor, and Command nodes, the subscription-derived connections between them, live participant status, and the shared scoped Context alongside it. This is read-only operator legibility over Bus-owned state, not an editor or a second routing model. Retired Scopes remain available under Developer tools for history/debugging and do not appear here.
 
 An incoming message addressed to the operator with a response expected appears under **Needs you**. Once the operator replies, the conversation returns to **Recent**. This is an interpretation of existing Event response metadata, not separate task or notification state.
 
@@ -67,6 +69,7 @@ See [[Glossary]].
 - `floe-app/src/app/layout/LeftNav.tsx` — the left nav
 - `floe-app/src/hooks/useNavigation.ts` — navigation state machine
 - `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator entry, conversation lifecycle, list, and attention projection
+- `floe-app/src/features/work/ScopeWorkView.tsx` — read-only current Scope organisation and scoped Context
 - `floe-app/src/workspace/FloeModelControl.tsx` — inline workspace model selection and readiness gate
 - `floe-app/src/features/home/HomeView.tsx` — scope grid
 - `floe-app/src/scope/ScopeDetail.tsx` — Contexts/Ops/extension tabs

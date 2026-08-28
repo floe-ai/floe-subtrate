@@ -6,6 +6,7 @@
 import type {
   WorkspaceRef,
   ScopeRef,
+  ScopeComposition,
   ScopeProjection,
   ScopeProjectionLayout,
   ContextRef,
@@ -210,6 +211,13 @@ export async function busWriteFile(workspaceId: string, relPath: string, content
 export async function listScopes(ws: string): Promise<ScopeRef[]> {
   const data = await get<{ scopes: ScopeRef[] }>(`/v1/workspaces/${encodeURIComponent(ws)}/scopes`);
   return data.scopes;
+}
+
+export async function listScopeCompositions(ws: string, scope: string): Promise<ScopeComposition[]> {
+  const data = await get<{ graphs: ScopeComposition[] }>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}/graphs`
+  );
+  return data.graphs;
 }
 
 export async function getScopeProjection(ws: string, scope: string): Promise<ScopeProjection> {

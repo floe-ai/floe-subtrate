@@ -1,35 +1,27 @@
-# The scope canvas
+# The Scope view
 
-**A [[Scope]] IS the canvas — but the canvas mostly does not exist yet.**
+An active [[Scope]] appears under **Organised work** on the Conversations workspace index. Opening it shows the current organisation Floe composed for that work.
 
-This page describes the intended surface, not something you can open today. Read [[Navigating floe-app]] for what actually ships: a scope detail view with Contexts and Ops tabs, not a canvas.
+## What it shows
 
-## What it is meant to show
+- Event nodes on the left.
+- Actor and deterministic Command nodes on the right.
+- Connections derived from the Event types each participant subscribes to.
+- Live endpoint state such as Working, Ready, Waiting, Error, or Not configured.
+- The shared scoped [[Context]] beside the diagram, so the operator can inspect the work that actually happened.
 
-There is no separate "graph" object. Nodes are placed in a scope and connected to each other, and that picture of connected nodes is the canvas — it does not need a name of its own.
+The view reads the Bus-owned Scope composition and endpoint state. It does not persist another graph, infer workflow policy, or turn the app into a graph editor.
 
-- **[[Node]]s** are drawn as cards carrying their kind ([[Event]], working space, or [[Command]]) and their current run count.
-- **Connections** are drawn as edges carrying multiplicity labels — `1 → 50`, `140 → 46` — so a split or a convergence reads at a glance, without opening anything.
-- A running node shows per-node state counts, an attention marker for runs that want a human, and a stack behind the card for the runs it currently holds.
+## Current boundaries
 
-The canvas shows **current state and the shape of what will happen next — never history**. History belongs to the activity log ([[Navigating floe-app]] → Activity), not the canvas. If you want to know what happened, you look at the log. If you want to know what is running and what is about to run, you look at the canvas.
+The diagram shows declared routing and current participant availability. It does not claim that an Actor will emit a particular next Event unless that relationship is present in substrate state. Context history remains the source for what happened.
 
-## Opening detail
+Re-composing the same Scope replaces its current nodes and subscriptions in place while preserving that history. A retired Scope is inert and hidden from the normal operator index, but remains available under Developer tools for historical inspection.
 
-Clicking a node is meant to open it in the right-hand inspector aside, two levels deep: the node itself, then its runs, then one run — a [[Context]]. A [[Command]] run is drawn returning to the working-space [[Context]] that called it: dashed and faint always, as the permanent shape of the relationship, lit up only while that call is actually live.
-
-## Layout is per-machine, stored in the bus
-
-A node's position on the canvas is stored in the bus, keyed per machine, so a team looking at the same scope from different machines sees the same auto-arranged picture — layout is not something each person redraws for themselves.
-
-## Enumeration dies at scale
-
-At any real size, you do not read a canvas by looking at every node. You search for the thing you are looking for. The only thing the canvas volunteers unprompted, without being asked, is what is wrong — an attention marker, a stalled run. Everything else you find by searching, not by scanning.
-
-See [[Glossary]].
+The developer Scope detail view still provides Contexts, Ops, and extension tabs. It is a secondary observatory rather than the operator's route to understanding organised work.
 
 ## Implementation
 
-Not built yet.
-
-There is a scope detail view with Contexts and Ops tabs (`floe-app/src/scope/ScopeDetail.tsx`, `floe-app/src/scope/Ops.tsx`) but no canvas, no node cards, no edges, and no per-machine layout storage in the shipped app. The substrate's own node storage (`floe-bus/src/scope-graphs.ts`) still uses a `scope_graphs` table with a `graph_id` column, which contradicts the locked model above — that is a storage detail, not the model to build the canvas against.
+- `floe-app/src/features/work/ScopeWorkView.tsx` renders the read-only operator representation.
+- `floe-bus/src/scope-graphs.ts` stores the current node composition behind an internal stable routing handle.
+- `floe-bus/src/actor-capabilities.ts` owns actor-safe inspection, in-place composition, Event activation, and retirement contracts.
