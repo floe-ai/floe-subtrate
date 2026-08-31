@@ -92,6 +92,12 @@ Floe should make it possible to understand:
 - what needs human judgement;
 - why an important decision or action occurred.
 
+When connected work is still active, the operator must be able to stop it from
+the same work surface. Stopping is durable: queued work, active model or command
+turns, folder sources, and scheduled pulses for that operation do not resume on
+restart. Its history remains available so stopping work does not erase what
+happened.
+
 The appropriate representation should be discovered through use. It may be conversation, summaries, references, notifications, generated surfaces, or other forms.
 
 No universal visualisation architecture is assumed.

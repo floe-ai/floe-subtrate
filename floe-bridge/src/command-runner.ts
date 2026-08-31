@@ -4,7 +4,7 @@
  * a new envelope, kind tag, or discriminator visible outside the bridge. This module is the
  * ONLY place that substitutes deterministic command execution for the LLM adapter.
  */
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 
 const EXECUTION_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
@@ -87,12 +87,15 @@ function truncate(text: string): string {
  * cmd.exe /d /s /c argv array mangles nested quoting on Windows and silently no-ops instead
  * of failing loudly. A non-zero exit code is data, never a thrown error.
  */
-export function executeCommand(resolvedCommand: string, cwd: string): Promise<CommandExecutionFacts> {
+export function executeCommand(resolvedCommand: string, cwd: string, signal?: AbortSignal): Promise<CommandExecutionFacts> {
   return new Promise((resolvePromise) => {
-    exec(
+    let settled = false;
+    const child = exec(
       resolvedCommand,
       { cwd, timeout: EXECUTION_TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES },
       (error, stdout, stderr) => {
+        if (settled) return;
+        settled = true;
         const exit_code = error && typeof (error as NodeJS.ErrnoException & { code?: number }).code === "number"
           ? (error as unknown as { code: number }).code
           : error
@@ -106,6 +109,18 @@ export function executeCommand(resolvedCommand: string, cwd: string): Promise<Co
         });
       }
     );
+    const cancel = (): void => {
+      if (settled) return;
+      settled = true;
+      if (process.platform === "win32" && child.pid) {
+        execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], () => {});
+      } else {
+        child.kill("SIGTERM");
+      }
+      resolvePromise({ exit_code: 130, passed: false, stdout: "", stderr: "Command stopped by operator" });
+    };
+    if (signal?.aborted) cancel();
+    else signal?.addEventListener("abort", cancel, { once: true });
   });
 }
 
@@ -132,10 +147,11 @@ export function buildCommandResultContent(
 /** Full command node cycle: resolve inputs -> substitute placeholders -> execute -> build result content. */
 export async function runCommandNode(
   config: CommandNodeConfig,
-  content: Record<string, unknown>
+  content: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   const values = resolveCommandInputValues(config, content);
   const resolvedCommand = substituteCommandPlaceholders(config.command, values);
-  const facts = await executeCommand(resolvedCommand, config.workspace_locator);
+  const facts = await executeCommand(resolvedCommand, config.workspace_locator, signal);
   return buildCommandResultContent(config, facts, resolvedCommand);
 }

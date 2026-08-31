@@ -56,15 +56,15 @@ describe("actor-safe capability discovery and invocation", () => {
 
     expect(response.statusCode).toBe(200);
     const capabilities = response.json().capabilities as any[];
-    expect(capabilities).toHaveLength(1);
-    expect(capabilities[0]).toMatchObject({
+    const compose = capabilities.find((capability) => capability.capability_id === "scope.compose");
+    expect(compose).toMatchObject({
       capability_id: "scope.compose",
       category: "organisation",
       effect: "write",
       title: "Compose connected operation",
     });
-    expect(capabilities[0].description).toContain("folder-driven workflow");
-    expect(capabilities[0].input_schema.properties.event_nodes.description).toContain("shared scoped Context");
+    expect(compose.description).toContain("folder-driven workflow");
+    expect(compose.input_schema.properties.event_nodes.description).toContain("shared scoped Context");
   });
 
   it("uses the discovered JSON Schema as the invocation validator", async () => {
@@ -123,6 +123,7 @@ describe("actor-safe capability discovery and invocation", () => {
     expect(composed.summary).toBe("Composed Scope 'concept-processing' with 2 current nodes.");
     expect(composed.data).toMatchObject({
       scope_id: "concept-processing",
+      graph_id: expect.stringMatching(/^graph_/),
       context_id: expect.any(String),
       nodes: [
         expect.objectContaining({ kind: "trigger", node_id: "concept-arrived" }),
@@ -141,7 +142,15 @@ describe("actor-safe capability discovery and invocation", () => {
     expect(inspect.statusCode).toBe(200);
     expect(inspect.json().result.data.scopes[0]).toMatchObject({
       scope_id: "concept-processing",
-      composition: expect.objectContaining({ context_id: composed.data.context_id }),
+      composition: expect.objectContaining({
+        graph_id: expect.stringMatching(/^graph_/),
+        context_id: composed.data.context_id,
+        operation: expect.objectContaining({
+          state: "settled",
+          active_deliveries: [],
+          queued_event_count: 0,
+        }),
+      }),
     });
 
     const fire = await handle.app.inject({
@@ -160,6 +169,20 @@ describe("actor-safe capability discovery and invocation", () => {
     expect(fire.json().result).toMatchObject({
       summary: "Event node 'concept-arrived' fired; 1 subscribed participant(s) were woken.",
       data: { event_count: 1 },
+    });
+
+    const workingInspect = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.inspect/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { scope_id: "concept-processing" },
+      },
+    });
+    expect(workingInspect.json().result.data.scopes[0].composition.operation).toMatchObject({
+      state: "queued",
+      active_deliveries: [],
+      queued_event_count: 1,
     });
   });
 
@@ -249,6 +272,10 @@ describe("actor-safe capability discovery and invocation", () => {
       payload: { caller_endpoint_id: floeEndpointId, input: { scope_id: "old-delivery" } },
     });
     expect(retired.statusCode).toBe(201);
+    expect(retired.json().result.data).toMatchObject({
+      status: "retired",
+      cancelled_queue_count: 1,
+    });
     expect(handle.store.getScope(workspaceId, "old-delivery")?.status).toBe("retired");
     expect(handle.store.contextStore.getContext(contextId)).not.toBeNull();
     expect(handle.store.contextStore.getContextSubscriptions(contextId)).toEqual([]);
@@ -263,6 +290,70 @@ describe("actor-safe capability discovery and invocation", () => {
     });
     expect(fire.statusCode).toBe(409);
     expect(fire.json()).toMatchObject({ error: "scope_retired", scope_id: "old-delivery" });
+  });
+
+  it("stops an injected Scope turn durably instead of allowing it to resume", async () => {
+    const bridgeId = "bridge:stop-test";
+    handle.store.registerBridge({ bridge_id: bridgeId }, handle.broadcast);
+    handle.store.registerEndpoint({
+      endpoint_id: builderEndpointId,
+      workspace_id: workspaceId,
+      name: "Builder",
+      bridge_id: bridgeId,
+      status: "idle",
+    }, handle.broadcast);
+    await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.compose/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: {
+          scope_id: "active-delivery",
+          title: "Active delivery",
+          event_nodes: [{ node_id: "start", event_type: "work.requested" }],
+          actor_nodes: [{ node_id: "builder", actor: "builder", event_types: ["work.requested"] }],
+        },
+      },
+    });
+    await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.event.fire/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { scope_id: "active-delivery", event_node_id: "start", content: {} },
+      },
+    });
+    const delivery = handle.store.claimDeliveries(bridgeId, 1, handle.broadcast)[0]!;
+    handle.store.reportDeliveryStatus({
+      bridge_id: bridgeId,
+      delivery_id: delivery.delivery_id,
+      state: "injected_to_runtime",
+    }, handle.broadcast);
+
+    const stopped = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/active-delivery/retire`,
+      payload: {},
+    });
+
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json()).toMatchObject({
+      status: "retired",
+      cancelled_delivery_count: 1,
+      cancelled_queue_count: 1,
+    });
+    expect((handle.store.listDeliveries({ workspace_id: workspaceId }) as any[])
+      .find((row) => row.delivery_id === delivery.delivery_id)?.state).toBe("cancelled");
+    handle.store.reportDeliveryStatus({
+      bridge_id: bridgeId,
+      delivery_id: delivery.delivery_id,
+      state: "acknowledged",
+    }, handle.broadcast);
+    expect((handle.store.listDeliveries({ workspace_id: workspaceId }) as any[])
+      .find((row) => row.delivery_id === delivery.delivery_id)?.state).toBe("cancelled");
+    const contextId = handle.store.getScopeGraphForScope(workspaceId, "active-delivery")!.context_id;
+    expect(handle.store.listEvents({ context_id: contextId, limit: 20 }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ type: "work.stopped" })]));
   });
 
   it("rejects folder sources that escape the workspace", async () => {

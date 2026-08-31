@@ -14,7 +14,13 @@ export type ContextRecord = {
 export type ContextListRow = ContextRecord & {
   participants: string[];
   last_event_at: string | null;
+  activity_at: string;
   topic: string | null;
+};
+
+export type ContextPageCursor = {
+  activity_at: string;
+  context_id: string;
 };
 
 export type ContextScopeFilter = "all" | "scoped" | "unscoped";
@@ -27,7 +33,12 @@ export interface ContextStoreReader {
   getContext(context_id: string): ContextRecord | null;
   getContextParticipants(context_id: string): string[];
   isParticipant(context_id: string, endpoint_id: string): boolean;
-  listContextsForParticipant(endpoint_id: string): ContextListRow[];
+  listContextsForParticipant(endpoint_id: string, options?: {
+    workspace_id?: string;
+    scope_id?: string;
+    limit?: number;
+    before?: ContextPageCursor;
+  }): ContextListRow[];
 }
 
 function nowIso(): string {
@@ -295,6 +306,23 @@ export class ContextStore implements ContextStoreReader {
     return text.slice(0, maxChars) + "…";
   }
 
+  getLatestMessagePreview(context_id: string, maxChars = 160): string | null {
+    const row = this.db
+      .prepare(
+        "SELECT content_json FROM events WHERE context_id = ? AND type = 'message' ORDER BY created_at DESC LIMIT 1"
+      )
+      .get(context_id) as { content_json: string | null } | undefined;
+    if (!row?.content_json) return null;
+    try {
+      const parsed = JSON.parse(row.content_json) as { text?: unknown };
+      const text = typeof parsed.text === "string" ? parsed.text.trim() : "";
+      if (!text) return null;
+      return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
+    } catch {
+      return null;
+    }
+  }
+
   private mapContextListRow(row: any): ContextListRow {
     return {
       context_id: row.context_id,
@@ -305,31 +333,52 @@ export class ContextStore implements ContextStoreReader {
       created_at: row.created_at,
       title: (row.title as string | null) ?? null,
       last_event_at: (row.last_event_at as string | null) ?? null,
+      activity_at: (row.activity_at as string | null) ?? (row.last_event_at as string | null) ?? row.created_at,
       topic: null,
       participants: this.getContextParticipants(row.context_id)
     };
   }
 
-  listContextsForParticipant(endpoint_id: string): ContextListRow[] {
-    const rows = this.db
-      .prepare(
-        `
-        SELECT c.*, MAX(e.created_at) AS last_event_at
+  listContextsForParticipant(endpoint_id: string, options: {
+    workspace_id?: string;
+    scope_id?: string;
+    limit?: number;
+    before?: ContextPageCursor;
+  } = {}): ContextListRow[] {
+    const conditions = ["cp.endpoint_id = ?"];
+    const params: Array<string | number> = [endpoint_id];
+    if (options.workspace_id) {
+      conditions.push("c.workspace_id = ?");
+      params.push(options.workspace_id);
+    }
+    if (options.scope_id) {
+      conditions.push("c.scope_id = ?");
+      params.push(options.scope_id);
+    }
+    if (options.before) {
+      params.push(options.before.activity_at, options.before.activity_at, options.before.context_id);
+    }
+    params.push(options.limit ?? 50);
+    const rows = this.db.prepare(`
+      SELECT * FROM (
+        SELECT c.*, MAX(e.created_at) AS last_event_at,
+          COALESCE(MAX(e.created_at), c.created_at) AS activity_at
         FROM context_participants cp
         JOIN contexts c ON c.context_id = cp.context_id
         LEFT JOIN events e ON e.context_id = c.context_id
-        WHERE cp.endpoint_id = ?
+        WHERE ${conditions.join(" AND ")}
         GROUP BY c.context_id
-        ORDER BY (last_event_at IS NULL) ASC, last_event_at DESC, c.created_at DESC
-      `
-      )
-      .all(endpoint_id) as any[];
+      ) AS ranked
+      ${options.before ? "WHERE (ranked.activity_at < ? OR (ranked.activity_at = ? AND ranked.context_id < ?))" : ""}
+      ORDER BY ranked.activity_at DESC, ranked.context_id DESC
+      LIMIT ?
+    `).all(...params) as any[];
     return rows.map((row) => this.mapContextListRow(row));
   }
 
   listContextsForWorkspace(
     workspace_id: string,
-    options: { scope?: ContextScopeFilter; limit?: number } = {}
+    options: { scope?: ContextScopeFilter; limit?: number; before?: ContextPageCursor } = {}
   ): ContextListRow[] {
     const params: Array<string | number> = [workspace_id];
     let scopeClause = "";
@@ -338,21 +387,51 @@ export class ContextStore implements ContextStoreReader {
     } else if (options.scope === "unscoped") {
       scopeClause = "AND c.scope_id IS NULL";
     }
+    if (options.before) {
+      params.push(options.before.activity_at, options.before.activity_at, options.before.context_id);
+    }
     const limit = options.limit ?? 50;
     params.push(limit);
     const rows = this.db
       .prepare(
         `
-        SELECT c.*, MAX(e.created_at) AS last_event_at
-        FROM contexts c
-        LEFT JOIN events e ON e.context_id = c.context_id
-        WHERE c.workspace_id = ? ${scopeClause}
-        GROUP BY c.context_id
-        ORDER BY (last_event_at IS NULL) ASC, last_event_at DESC, c.created_at DESC
+        SELECT * FROM (
+          SELECT c.*, MAX(e.created_at) AS last_event_at,
+            COALESCE(MAX(e.created_at), c.created_at) AS activity_at
+          FROM contexts c
+          LEFT JOIN events e ON e.context_id = c.context_id
+          WHERE c.workspace_id = ? ${scopeClause}
+          GROUP BY c.context_id
+        ) AS ranked
+        ${options.before ? "WHERE (ranked.activity_at < ? OR (ranked.activity_at = ? AND ranked.context_id < ?))" : ""}
+        ORDER BY ranked.activity_at DESC, ranked.context_id DESC
         LIMIT ?
       `
       )
       .all(...params) as any[];
+    return rows.map((row) => this.mapContextListRow(row));
+  }
+
+  /** One bounded Context lineage for the operator Work projection. */
+  listContextTree(rootContextId: string, limit = 200): ContextListRow[] {
+    const rows = this.db.prepare(`
+      WITH RECURSIVE tree(context_id, depth) AS (
+        SELECT context_id, 0 FROM contexts WHERE context_id = ?
+        UNION ALL
+        SELECT child.context_id, tree.depth + 1
+        FROM contexts child
+        JOIN tree ON child.parent_context_id = tree.context_id
+      )
+      SELECT c.*, MAX(e.created_at) AS last_event_at,
+        COALESCE(MAX(e.created_at), c.created_at) AS activity_at,
+        tree.depth AS tree_depth
+      FROM tree
+      JOIN contexts c ON c.context_id = tree.context_id
+      LEFT JOIN events e ON e.context_id = c.context_id
+      GROUP BY c.context_id, tree.depth
+      ORDER BY tree.depth ASC, c.created_at ASC, c.context_id ASC
+      LIMIT ?
+    `).all(rootContextId, limit) as any[];
     return rows.map((row) => this.mapContextListRow(row));
   }
 

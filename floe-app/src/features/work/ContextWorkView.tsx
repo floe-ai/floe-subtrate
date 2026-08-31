@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ContextRef, DeliveryRow, EndpointRef } from "../../bus-client/types.ts";
-import { listContexts, listDeliveries, subscribeEvents } from "../../bus-client/client.ts";
+import { listContextTree, listDeliveries, subscribeEvents } from "../../bus-client/client.ts";
 import { ContextConversation } from "../../scope/ContextConversation.tsx";
 import { tk } from "../../theme.ts";
 
 const ACTIVE_DELIVERY_STATES = new Set(["reserved", "delivered_to_bridge", "injected_to_runtime"]);
 const FAILED_DELIVERY_STATES = new Set(["failed", "dead_lettered", "deferred"]);
 
-export type ContextWorkStatus = "working" | "attention" | "responded" | "queued" | "context";
+export type ContextWorkStatus = "working" | "attention" | "responded" | "stopped" | "queued" | "context";
 
 export type ContextWorkNode = {
   context: ContextRef;
@@ -45,6 +45,7 @@ function statusForContext(contextId: string, deliveries: DeliveryRow[]): Context
   if (!latest) return "context";
   if (FAILED_DELIVERY_STATES.has(latest.state)) return "attention";
   if (latest.state === "acknowledged") return "responded";
+  if (latest.state === "cancelled") return "stopped";
   return "queued";
 }
 
@@ -152,6 +153,7 @@ const statusPresentation: Record<ContextWorkStatus, { label: string; color: stri
   working: { label: "Working", color: tk.accentHov, background: tk.accentSoft2 },
   attention: { label: "Needs attention", color: "#d18a82", background: "rgba(184,90,90,0.12)" },
   responded: { label: "Responded", color: tk.ink3, background: tk.surfaceHov },
+  stopped: { label: "Stopped", color: tk.ink4, background: tk.surfaceHov },
   queued: { label: "Queued", color: "#c9a14a", background: "rgba(201,161,74,0.10)" },
   context: { label: "Context", color: tk.ink4, background: tk.surfaceHov },
 };
@@ -174,18 +176,20 @@ export function ContextWorkView({
   const [selectedContextId, setSelectedContextId] = useState(rootContextId);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const loadSequence = useRef(0);
   const selectionInitialized = useRef(false);
 
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current;
     try {
-      const [nextContexts, nextDeliveries] = await Promise.all([
-        listContexts(workspaceId, { scope: "all", limit: 200 }),
+      const [tree, nextDeliveries] = await Promise.all([
+        listContextTree(rootContextId, 200),
         listDeliveries({ workspace_id: workspaceId, limit: 500 }),
       ]);
       if (sequence !== loadSequence.current) return;
-      setContexts(nextContexts);
+      setContexts(tree.contexts);
+      setTruncated(tree.truncated);
       setDeliveries(nextDeliveries);
       setError(null);
     } catch (loadError) {
@@ -194,7 +198,7 @@ export function ContextWorkView({
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [workspaceId]);
+  }, [rootContextId, workspaceId]);
 
   useEffect(() => {
     selectionInitialized.current = false;
@@ -221,6 +225,7 @@ export function ContextWorkView({
         || message.type === "delivery_deferred"
         || message.type === "delivery_failed"
         || message.type === "delivery_dead_lettered"
+        || message.type === "delivery_cancelled"
         || message.type === "turn_end_observed";
       if (relevantType && (!eventWorkspaceId || eventWorkspaceId === workspaceId)) void load();
     });
@@ -263,6 +268,11 @@ export function ContextWorkView({
         <p style={{ margin: "5px 0 0", color: tk.ink3, fontSize: 12.5, lineHeight: 1.45 }}>
           Each card is a Context Floe opened from this conversation. Lines show actual parentage; status reflects its latest delivery.
         </p>
+        {truncated && (
+          <div role="status" style={{ marginTop: 7, color: "#c9a14a", fontSize: 11.5 }}>
+            Showing the first 200 connected Contexts. The durable history remains available.
+          </div>
+        )}
       </header>
 
       {loading ? (

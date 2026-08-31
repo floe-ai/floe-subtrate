@@ -92,10 +92,13 @@ export type ContextRef = {
   created_by_endpoint_id: string | null;
   created_at: string;
   last_event_at: string | null;
+  activity_at?: string;
   participants: string[];
   /** Extension-owned display title (e.g. card title). Preferred over first_message_preview when present. */
   title: string | null;
   first_message_preview: string | null;
+  latest_message_preview?: string | null;
+  latest_message?: EventEnvelope | null;
 };
 
 export type EndpointRef = {

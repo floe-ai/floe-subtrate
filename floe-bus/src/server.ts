@@ -271,7 +271,9 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       event_type: z.string().min(1),
       source: z.object({
         kind: z.literal("folder"),
-        path: z.string().min(1)
+        path: z.string().min(1),
+        extensions: z.array(z.string().min(1)).optional(),
+        settle_ms: z.number().int().min(0).max(60_000).optional()
       }).optional()
     }),
     z.object({
@@ -392,7 +394,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }).parse(request.params);
     const body = z.object({
       content: z.record(z.unknown()).default({}),
-      correlation_id: z.string().nullable().optional()
+      correlation_id: z.string().nullable().optional(),
+      idempotency_key: z.string().min(1).nullable().optional()
     }).parse(request.body ?? {});
     try {
       const events = store.fireScopeGraphTrigger({
@@ -400,7 +403,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
         graph_id: params.graph_id,
         node_id: params.node_id,
         content: body.content,
-        correlation_id: body.correlation_id ?? null
+        correlation_id: body.correlation_id ?? null,
+        idempotency_key: body.idempotency_key ?? null
       }, broadcast);
       return reply.code(201).send({ events });
     } catch (err) {
@@ -501,6 +505,24 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       });
     }
     return { scope };
+  });
+
+  app.post("/v1/workspaces/:workspace_id/scopes/:scope_id/retire", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      scope_id: z.string().min(1)
+    }).parse(request.params);
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
+    }
+    if (!store.getScope(params.workspace_id, params.scope_id)) {
+      return reply.code(404).send({
+        error: "scope_not_found",
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id,
+      });
+    }
+    return store.retireScope(params.workspace_id, params.scope_id, broadcast);
   });
 
   app.delete("/v1/workspaces/:workspace_id/scopes/:scope_id", async (request, reply) => {
@@ -1118,6 +1140,20 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   // Context API (Slice 2) — thin wrappers over ContextStore
   // ---------------------------------------------------------------------------
 
+  function encodeContextCursor(row: { activity_at: string; context_id: string }): string {
+    return Buffer.from(JSON.stringify({ activity_at: row.activity_at, context_id: row.context_id }), "utf8")
+      .toString("base64url");
+  }
+
+  function decodeContextCursor(value: string | undefined): { activity_at: string; context_id: string } | undefined {
+    if (!value) return undefined;
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    return z.object({
+      activity_at: z.string().datetime(),
+      context_id: z.string().min(1),
+    }).parse(parsed);
+  }
+
   function serializeContextListRow(r: {
     context_id: string;
     workspace_id: string;
@@ -1126,9 +1162,13 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     created_by_endpoint_id: string | null;
     created_at: string;
     last_event_at: string | null;
+    activity_at: string;
     participants: string[];
     title?: string | null;
   }) {
+    const latestMessageRow = store.db.prepare(
+      "SELECT event_id FROM events WHERE context_id = ? AND type = 'message' ORDER BY created_at DESC LIMIT 1"
+    ).get(r.context_id) as { event_id: string } | undefined;
     return {
       context_id: r.context_id,
       workspace_id: r.workspace_id,
@@ -1137,9 +1177,12 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       created_by_endpoint_id: r.created_by_endpoint_id,
       created_at: r.created_at,
       last_event_at: r.last_event_at,
+      activity_at: r.activity_at,
       participants: r.participants,
       title: (r.title as string | null | undefined) ?? null,
-      first_message_preview: store.contextStore.getFirstMessagePreview(r.context_id)
+      first_message_preview: store.contextStore.getFirstMessagePreview(r.context_id),
+      latest_message_preview: store.contextStore.getLatestMessagePreview(r.context_id),
+      latest_message: latestMessageRow ? store.getEvent(latestMessageRow.event_id) : null,
     };
   }
 
@@ -1148,7 +1191,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const query = z.object({
       scope: z.enum(["all", "scoped", "unscoped"]).optional().default("all"),
       scope_id: z.string().min(1).optional(),
-      limit: z.coerce.number().int().positive().max(200).optional().default(50)
+      limit: z.coerce.number().int().positive().max(200).optional().default(50),
+      before: z.string().min(1).optional()
     }).parse(request.query);
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
@@ -1158,27 +1202,50 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       const rows = store.contextStore.listContextsForScope(params.workspace_id, query.scope_id);
       return { contexts: rows.map(serializeContextListRow) };
     }
+    let before: { activity_at: string; context_id: string } | undefined;
+    try {
+      before = decodeContextCursor(query.before);
+    } catch {
+      return reply.code(400).send({ error: "invalid_context_cursor" });
+    }
     const rows = store.contextStore.listContextsForWorkspace(params.workspace_id, {
       scope: query.scope,
-      limit: query.limit
+      limit: query.limit + 1,
+      before,
     });
-    return { contexts: rows.map(serializeContextListRow) };
+    const hasMore = rows.length > query.limit;
+    const page = rows.slice(0, query.limit);
+    return {
+      contexts: page.map(serializeContextListRow),
+      next_cursor: hasMore && page.length > 0 ? encodeContextCursor(page.at(-1)!) : null,
+    };
   });
 
-  app.get("/v1/contexts", async (request) => {
+  app.get("/v1/contexts", async (request, reply) => {
     const query = z.object({
       participant: z.string().min(1),
       workspace_id: z.string().optional(),
-      scope_id: z.string().optional()
+      scope_id: z.string().optional(),
+      limit: z.coerce.number().int().positive().max(100).optional().default(20),
+      before: z.string().min(1).optional(),
     }).parse(request.query);
-    const rows = store.contextStore.listContextsForParticipant(query.participant);
-    const filtered = rows.filter((r) => {
-      if (query.workspace_id && r.workspace_id !== query.workspace_id) return false;
-      if (query.scope_id && r.scope_id !== query.scope_id) return false;
-      return true;
+    let before: { activity_at: string; context_id: string } | undefined;
+    try {
+      before = decodeContextCursor(query.before);
+    } catch {
+      return reply.code(400).send({ error: "invalid_context_cursor" });
+    }
+    const rows = store.contextStore.listContextsForParticipant(query.participant, {
+      workspace_id: query.workspace_id,
+      scope_id: query.scope_id,
+      limit: query.limit + 1,
+      before,
     });
+    const hasMore = rows.length > query.limit;
+    const page = rows.slice(0, query.limit);
     return {
-      contexts: filtered.map(serializeContextListRow)
+      contexts: page.map(serializeContextListRow),
+      next_cursor: hasMore && page.length > 0 ? encodeContextCursor(page.at(-1)!) : null,
     };
   });
 
@@ -1198,6 +1265,22 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       title: ctx.title,
       participants: store.contextStore.getContextParticipants(ctx.context_id),
       first_message_preview: store.contextStore.getFirstMessagePreview(ctx.context_id)
+    };
+  });
+
+  app.get("/v1/contexts/:id/tree", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const query = z.object({
+      limit: z.coerce.number().int().positive().max(500).optional().default(200),
+    }).parse(request.query);
+    const context = store.contextStore.getContext(params.id);
+    if (!context) {
+      return reply.code(404).send({ error: "context_not_found", context_id: params.id });
+    }
+    const rows = store.contextStore.listContextTree(params.id, query.limit + 1);
+    return {
+      contexts: rows.slice(0, query.limit).map(serializeContextListRow),
+      truncated: rows.length > query.limit,
     };
   });
 
@@ -1271,6 +1354,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const serialized = serializeContextListRow({
       ...ctx,
       last_event_at: null,
+      activity_at: ctx.created_at,
       participants,
     });
     broadcast("context_created", { context: serialized });

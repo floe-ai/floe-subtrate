@@ -14,45 +14,85 @@
  * observed_at plus the raw reference, so the file changing after that point
  * is someone else's problem to reconcile, never floe's to detect.
  */
-import { existsSync, statSync, watch as fsWatch, type FSWatcher } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { statSync, watch as fsWatch, type FSWatcher } from "node:fs";
+import { extname, join, resolve } from "node:path";
 
 export type FileArrival = {
+  arrival_id: string;
   file_path: string;
   file_name: string;
   observed_at: string;
 };
 
+export type FolderWatchOptions = {
+  /** Wait for a path to stop producing filesystem notifications before observing it. */
+  settle_ms?: number;
+  /** Optional case-insensitive file extensions, with or without a leading dot. */
+  extensions?: string[];
+};
+
 /**
- * Watches `folderPath` (non-recursive) and invokes `onFile` once per
- * filesystem notification that resolves to an existing file — both file
- * creation and file modification are arrivals worth observing.
+ * Watches `folderPath` (non-recursive) and invokes `onFile` once per stable
+ * file version. Native filesystem notifications are hints rather than arrival
+ * identities: duplicate notifications are coalesced, while a later file
+ * version (different size or modification time) remains a new observation.
  *
  * Returns an unsubscribe function that stops the watcher.
  */
-export function watchFolder(folderPath: string, onFile: (arrival: FileArrival) => void): () => void {
+export function watchFolder(
+  folderPath: string,
+  onFile: (arrival: FileArrival) => void,
+  options: FolderWatchOptions = {}
+): () => void {
   let watcher: FSWatcher;
+  const settleMs = Math.max(0, options.settle_ms ?? 250);
+  const extensions = new Set((options.extensions ?? []).map(value => {
+    const normalized = value.trim().toLowerCase();
+    return normalized.startsWith(".") ? normalized : `.${normalized}`;
+  }).filter(value => value.length > 1));
+  const pending = new Map<string, ReturnType<typeof setTimeout>>();
+  const lastArrivalByPath = new Map<string, string>();
+
+  const observe = (filePath: string, fileName: string): void => {
+    pending.delete(filePath);
+    if (extensions.size > 0 && !extensions.has(extname(fileName).toLowerCase())) return;
+    let stat: ReturnType<typeof statSync>;
+    try {
+      stat = statSync(filePath);
+    } catch {
+      return;
+    }
+    if (!stat.isFile()) return;
+    const arrivalId = createHash("sha256")
+      .update(`${resolve(filePath).toLowerCase()}\0${stat.size}\0${stat.mtimeMs}`)
+      .digest("hex");
+    if (lastArrivalByPath.get(filePath) === arrivalId) return;
+    lastArrivalByPath.set(filePath, arrivalId);
+    onFile({
+      arrival_id: arrivalId,
+      file_path: filePath,
+      file_name: fileName,
+      observed_at: new Date().toISOString()
+    });
+  };
+
   try {
     watcher = fsWatch(folderPath, { persistent: false }, (_eventType, filename) => {
       if (!filename) return;
-      const filePath = join(folderPath, filename.toString());
-      if (!existsSync(filePath)) return; // removal, not an arrival
-      let isFile: boolean;
-      try {
-        isFile = statSync(filePath).isFile();
-      } catch {
-        return; // vanished between existsSync and statSync
-      }
-      if (!isFile) return;
-      onFile({
-        file_path: filePath,
-        file_name: filename.toString(),
-        observed_at: new Date().toISOString()
-      });
+      const fileName = filename.toString();
+      const filePath = join(folderPath, fileName);
+      const existing = pending.get(filePath);
+      if (existing) clearTimeout(existing);
+      pending.set(filePath, setTimeout(() => observe(filePath, fileName), settleMs));
     });
   } catch (error) {
     console.error("[bridge] folder watcher failed to start", { folderPath, error });
     return () => {};
   }
-  return () => watcher.close();
+  return () => {
+    for (const timer of pending.values()) clearTimeout(timer);
+    pending.clear();
+    watcher.close();
+  };
 }

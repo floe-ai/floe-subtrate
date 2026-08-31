@@ -12,6 +12,7 @@ import {
   listContextEvents,
   listDeliveries,
   listScopeCompositions,
+  retireScope,
   subscribeEvents,
 } from "../../bus-client/client.ts";
 import { ContextConversation } from "../../scope/ContextConversation.tsx";
@@ -31,6 +32,37 @@ export type ScopeNodeExecution = {
   summary: string;
   content: Record<string, unknown>;
 };
+
+export type ScopeOperationState = {
+  state: "working" | "attention" | "settled";
+  activeCount: number;
+  attentionCount: number;
+};
+
+export function scopeOperationState(
+  contextId: string,
+  events: EventEnvelope[],
+  deliveries: DeliveryRow[],
+): ScopeOperationState {
+  const eventIds = new Set(events.filter(event => event.context_id === contextId).map(event => event.event_id));
+  const latestByInvocation = new Map<string, DeliveryRow>();
+  for (const delivery of deliveries) {
+    if (!eventIds.has(delivery.trigger_event_id)) continue;
+    latestByInvocation.set(`${delivery.endpoint_id}:${delivery.trigger_event_id}`, delivery);
+  }
+  const latest = [...latestByInvocation.values()];
+  const activeCount = latest.filter(delivery =>
+    ["reserved", "delivered_to_bridge", "injected_to_runtime"].includes(delivery.state)
+  ).length;
+  const attentionCount = latest.filter(delivery =>
+    ["failed", "dead_lettered", "deferred"].includes(delivery.state)
+  ).length;
+  return {
+    state: activeCount > 0 ? "working" : attentionCount > 0 ? "attention" : "settled",
+    activeCount,
+    attentionCount,
+  };
+}
 
 export function buildScopeWorkLinks(nodes: ScopeCompositionNode[]): ScopeWorkLink[] {
   const events = nodes.filter((node) => node.kind === "trigger");
@@ -111,6 +143,7 @@ const executionState: Record<string, string> = {
   acknowledged: "Completed",
   failed: "Failed",
   dead_lettered: "Failed",
+  cancelled: "Stopped",
   deferred: "Deferred",
   reserved: "Queued",
   delivered_to_bridge: "Working",
@@ -306,6 +339,7 @@ export function ScopeWorkView({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showContext, setShowContext] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -347,6 +381,18 @@ export function ScopeWorkView({
       const current = compositions.at(-1);
       if (event?.context_id === current?.context_id) void load();
     }
+    if ([
+      "delivery_bundle_available",
+      "delivery_delivered_to_bridge",
+      "delivery_injected_to_runtime",
+      "delivery_acknowledged",
+      "delivery_deferred",
+      "delivery_failed",
+      "delivery_dead_lettered",
+      "delivery_cancelled",
+      "scope_retired",
+      "turn_end_observed",
+    ].includes(message.type)) void load();
   }), [compositions, load, scope.scope_id, workspaceId]);
 
   const composition = compositions.at(-1) ?? null;
@@ -359,9 +405,28 @@ export function ScopeWorkView({
     node.node_id,
     executionsForScopeNode(node, events, deliveries).length,
   ])), [deliveries, events, nodes]);
-  const workingCount = participantNodes.filter((node) =>
-    endpoints.find((endpoint) => endpoint.endpoint_id === node.endpoint_id)?.status === "active"
-  ).length;
+  const operation = useMemo(
+    () => composition ? scopeOperationState(composition.context_id, events, deliveries) : null,
+    [composition, deliveries, events],
+  );
+  const operationPresentation = operation?.state === "working"
+    ? { label: `${operation.activeCount} working`, color: tk.accentHov, background: tk.accentSoft2 }
+    : operation?.state === "attention"
+      ? { label: "Needs attention", color: "#d18a82", background: "rgba(184,90,90,0.12)" }
+      : { label: "Settled", color: tk.ink3, background: tk.surfaceHov };
+  const stopWork = useCallback(async () => {
+    if (stopping) return;
+    if (!window.confirm(`Stop ${scope.title || scope.scope_id}? Active turns, queued work, folder monitoring, and scheduled pulses will stop. History will be kept.`)) return;
+    setStopping(true);
+    setError(null);
+    try {
+      await retireScope(workspaceId, scope.scope_id);
+      onBack();
+    } catch (stopError) {
+      setError(stopError instanceof Error ? stopError.message : "Could not stop this work");
+      setStopping(false);
+    }
+  }, [onBack, scope.scope_id, scope.title, stopping, workspaceId]);
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden", fontFamily: tk.fontUi }}>
@@ -373,20 +438,35 @@ export function ScopeWorkView({
           <div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
               <h2 style={{ margin: 0, color: tk.ink, fontSize: 19, fontWeight: 550 }}>{scope.title || scope.scope_id}</h2>
-              {!loading && composition && <span style={{ color: tk.ink4, fontSize: 11.5 }}>{participantNodes.length} participants · {workingCount} working</span>}
+              {!loading && composition && <span style={{ color: tk.ink4, fontSize: 11.5 }}>{participantNodes.length} participants</span>}
+              {!loading && composition && operation && (
+                <span role="status" style={{ padding: "2px 7px", borderRadius: 999, color: operationPresentation.color, background: operationPresentation.background, fontSize: 10.5 }}>
+                  {operationPresentation.label}
+                </span>
+              )}
             </div>
             <p style={{ margin: "5px 0 0", color: tk.ink3, fontSize: 12.5, lineHeight: 1.45 }}>
               The current plan Floe authored. Each route shows what starts a participant; select a node to inspect its responsibility and executions.
             </p>
           </div>
           {composition && (
-            <button
-              type="button"
-              onClick={() => setShowContext((value) => !value)}
-              style={{ padding: "7px 10px", color: showContext ? tk.ink : tk.accentHov, background: showContext ? tk.surfaceHov : "transparent", border: `1px solid ${tk.border}`, borderRadius: tk.r2, cursor: "pointer", fontSize: 12 }}
-            >
-              {showContext ? "Back to plan" : "Context history"}
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => void stopWork()}
+                disabled={stopping}
+                style={{ padding: "7px 10px", color: tk.danger, background: "transparent", border: `1px solid ${tk.border}`, borderRadius: tk.r2, cursor: stopping ? "wait" : "pointer", fontSize: 12 }}
+              >
+                {stopping ? "Stopping…" : "Stop work"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowContext((value) => !value)}
+                style={{ padding: "7px 10px", color: showContext ? tk.ink : tk.accentHov, background: showContext ? tk.surfaceHov : "transparent", border: `1px solid ${tk.border}`, borderRadius: tk.r2, cursor: "pointer", fontSize: 12 }}
+              >
+                {showContext ? "Back to plan" : "Context history"}
+              </button>
+            </div>
           )}
         </div>
       </header>

@@ -35,6 +35,8 @@ export type WatcherConfig = {
   node_id: string;
   /** Path relative to the workspace root. */
   path: string;
+  extensions?: string[];
+  settle_ms?: number;
 };
 
 export type ProjectLoadResult = {
@@ -214,7 +216,9 @@ export function loadProject(workspacePath: string): ProjectLoadResult {
           id: String(w.id ?? `${w.graph_id}:${w.node_id}`),
           graph_id: String(w.graph_id),
           node_id: String(w.node_id),
-          path: String(w.path)
+          path: String(w.path),
+          extensions: Array.isArray(w.extensions) ? w.extensions.map(String) : undefined,
+          settle_ms: Number.isInteger(w.settle_ms) ? Number(w.settle_ms) : undefined
         }))
     : [];
 

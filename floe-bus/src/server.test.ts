@@ -80,7 +80,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
     it("returns empty list when participant has no contexts", async () => {
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ contexts: [] });
+      expect(res.json()).toEqual({ contexts: [], next_cursor: null });
     });
 
     it("returns only contexts the endpoint participates in", async () => {
@@ -126,6 +126,30 @@ describe("Slice 2 — Context API HTTP routes", () => {
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
       const entry = (res.json().contexts as any[]).find((c) => c.context_id === a);
       expect(entry.first_message_preview).toBe("hello world");
+      expect(entry.latest_message_preview).toBe("hello world");
+      expect(entry.latest_message).toMatchObject({ type: "message", content: { text: "hello world" } });
+    });
+
+    it("pages newest participant Contexts with an opaque backward cursor", async () => {
+      const oldest = emit(handle, { source: E1, destination: E2, text: "oldest" }).event.context_id;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const newest = emit(handle, { source: E1, destination: E3, text: "newest" }).event.context_id;
+
+      const first = await handle.app.inject({
+        method: "GET",
+        url: `/v1/contexts?participant=${encodeURIComponent(E1)}&workspace_id=${encodeURIComponent(WS)}&limit=1`,
+      });
+      expect(first.statusCode).toBe(200);
+      expect(first.json().contexts.map((entry: any) => entry.context_id)).toEqual([newest]);
+      expect(first.json().next_cursor).toEqual(expect.any(String));
+
+      const second = await handle.app.inject({
+        method: "GET",
+        url: `/v1/contexts?participant=${encodeURIComponent(E1)}&workspace_id=${encodeURIComponent(WS)}&limit=1&before=${encodeURIComponent(first.json().next_cursor)}`,
+      });
+      expect(second.statusCode).toBe(200);
+      expect(second.json().contexts.map((entry: any) => entry.context_id)).toEqual([oldest]);
+      expect(second.json().next_cursor).toBeNull();
     });
 
     it("first_message_preview is truncated to ~80 chars", async () => {
@@ -174,6 +198,26 @@ describe("Slice 2 — Context API HTTP routes", () => {
     it("404 when context not found", async () => {
       const res = await handle.app.inject({ method: "GET", url: "/v1/contexts/ctx_does_not_exist" });
       expect(res.statusCode).toBe(404);
+    });
+
+    it("returns one bounded Context tree without unrelated workspace Contexts", async () => {
+      const root = emit(handle, { source: E1, destination: E2, text: "root" }).event.context_id;
+      const child = emit(handle, {
+        source: E2,
+        destination: E3,
+        text: "child",
+        current_delivery_context_id: root,
+      }).event.context_id;
+      emit(handle, { source: E1, destination: E3, text: "unrelated" });
+
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/contexts/${encodeURIComponent(root)}/tree?limit=20`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().contexts.map((entry: any) => entry.context_id)).toEqual([root, child]);
+      expect(res.json().truncated).toBe(false);
     });
   });
 

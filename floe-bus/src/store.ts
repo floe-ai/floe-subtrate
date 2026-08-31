@@ -1061,32 +1061,82 @@ export class BusStore {
     workspace_id: string;
     scope_id: string;
     status: "retired";
+    cancelled_delivery_count: number;
+    cancelled_queue_count: number;
+    cancelled_pulse_count: number;
   } {
     const scope = this.scopeStore.getScope(workspaceId, scopeId);
     if (!scope) throw new ScopeNotFoundError(workspaceId, scopeId);
+    if (scope.status === "retired") {
+      return {
+        ok: true,
+        workspace_id: workspaceId,
+        scope_id: scopeId,
+        status: "retired",
+        cancelled_delivery_count: 0,
+        cancelled_queue_count: 0,
+        cancelled_pulse_count: 0,
+      };
+    }
     const graphs = this.scopeGraphStore.listScopeGraphs(workspaceId, scopeId);
     const commandEndpointIds = Array.from(new Set(graphs.flatMap((graph) => graph.nodes
       .filter((node): node is Extract<ScopeGraphNode, { kind: "command" }> => node.kind === "command")
       .map((node) => node.endpoint_id))));
-    const safeStatuses = new Set(["idle", "offline", "error", "runtime_unconfigured", "retired"]);
-    const busyCount = commandEndpointIds.filter((endpointId) => {
-      const endpoint = this.getEndpoint(endpointId);
-      return endpoint && !safeStatuses.has(String(endpoint.status));
-    }).length;
     const contextIds = graphs.map((graph) => graph.context_id);
-    const activeDeliveryCount = contextIds.length === 0 ? 0 : Number((this.db.prepare(`
-      SELECT COUNT(DISTINCT d.delivery_id) AS count
+    const activeDeliveries = contextIds.length === 0 ? [] : this.db.prepare(`
+      SELECT DISTINCT d.*
       FROM delivery_bundles d
       JOIN events e ON e.event_id = d.trigger_event_id
       WHERE e.context_id IN (${contextIds.map(() => "?").join(", ")})
         AND d.state IN ('reserved', 'delivered_to_bridge', 'injected_to_runtime')
-    `).get(...contextIds) as { count: number }).count);
-    if (busyCount + activeDeliveryCount > 0) {
-      throw new ScopeRetirementBlockedError(workspaceId, scopeId, busyCount + activeDeliveryCount);
-    }
+    `).all(...contextIds) as any[];
 
     const timestamp = now();
+    let cancelledQueueCount = 0;
+    let cancelledPulseCount = 0;
     this.transaction(() => {
+      if (contextIds.length > 0) {
+        cancelledQueueCount = Number((this.db.prepare(`
+          SELECT COUNT(*) AS count
+          FROM event_queue q
+          JOIN events e ON e.event_id = q.event_id
+          WHERE e.context_id IN (${contextIds.map(() => "?").join(", ")})
+            AND q.state IN ('queued', 'reserved', 'delivered_to_bridge', 'injected_to_runtime')
+        `).get(...contextIds) as { count: number }).count);
+        this.db.prepare(`
+          UPDATE event_queue
+          SET state = 'cancelled', lease_expires_at = NULL,
+              last_error = 'Scope stopped by operator'
+          WHERE event_id IN (
+            SELECT event_id FROM events
+            WHERE context_id IN (${contextIds.map(() => "?").join(", ")})
+          ) AND state IN ('queued', 'reserved', 'delivered_to_bridge', 'injected_to_runtime')
+        `).run(...contextIds);
+        this.db.prepare(`
+          UPDATE pending_responses
+          SET status = 'cancelled', resolved_at = ?
+          WHERE source_event_id IN (
+            SELECT event_id FROM events
+            WHERE context_id IN (${contextIds.map(() => "?").join(", ")})
+          ) AND status = 'pending'
+        `).run(timestamp, ...contextIds);
+      }
+      for (const delivery of activeDeliveries) {
+        this.db.prepare(`
+          UPDATE delivery_bundles
+          SET state = 'cancelled', lease_expires_at = NULL,
+              last_error = 'Scope stopped by operator'
+          WHERE delivery_id = ?
+        `).run(delivery.delivery_id);
+      }
+      cancelledPulseCount = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count FROM pulses
+        WHERE workspace_id = ? AND scope_id = ? AND status IN ('active', 'paused')
+      `).get(workspaceId, scopeId) as { count: number }).count);
+      this.db.prepare(`
+        UPDATE pulses SET status = 'cancelled', next_fire_at = NULL, updated_at = ?
+        WHERE workspace_id = ? AND scope_id = ? AND status IN ('active', 'paused')
+      `).run(timestamp, workspaceId, scopeId);
       for (const graph of graphs) {
         this.db.prepare("DELETE FROM context_subscriptions WHERE context_id = ?").run(graph.context_id);
       }
@@ -1100,12 +1150,60 @@ export class BusStore {
       this.scopeStore.setScopeStatus(workspaceId, scopeId, "retired");
     });
     const retired = this.scopeStore.getScope(workspaceId, scopeId);
-    broadcast("scope_retired", { scope: retired });
+    for (const delivery of activeDeliveries) {
+      broadcast("delivery_cancel_requested", {
+        workspace_id: workspaceId,
+        scope_id: scopeId,
+        delivery_id: delivery.delivery_id,
+        endpoint_id: delivery.endpoint_id,
+      });
+      broadcast("delivery_cancelled", {
+        workspace_id: workspaceId,
+        scope_id: scopeId,
+        delivery_id: delivery.delivery_id,
+        endpoint_id: delivery.endpoint_id,
+      });
+    }
+    const commandEndpointSet = new Set(commandEndpointIds);
+    for (const endpointId of new Set(activeDeliveries.map((delivery) => String(delivery.endpoint_id)))) {
+      if (!commandEndpointSet.has(endpointId)) this.reportTurnEnd(endpointId, broadcast);
+    }
+    const currentContextId = graphs.at(-1)?.context_id;
+    if (currentContextId) {
+      this.appendContextEvent({
+        type: "work.stopped",
+        workspace_id: workspaceId,
+        context_id: currentContextId,
+        content: {
+          text: "This work was stopped. No queued or active delivery will be resumed automatically.",
+          scope_id: scopeId,
+          cancelled_delivery_count: activeDeliveries.length,
+          cancelled_queue_count: cancelledQueueCount,
+          cancelled_pulse_count: cancelledPulseCount,
+        },
+        metadata: { origin: "scope_retirement", terminal: true },
+        idempotency_key: `scope-stopped:${workspaceId}:${scopeId}`,
+      }, broadcast);
+    }
+    broadcast("scope_retired", {
+      scope: retired,
+      cancelled_delivery_count: activeDeliveries.length,
+      cancelled_queue_count: cancelledQueueCount,
+      cancelled_pulse_count: cancelledPulseCount,
+    });
     for (const endpointId of commandEndpointIds) {
       const endpoint = this.getEndpoint(endpointId);
       if (endpoint) broadcast("endpoint_retired", { endpoint });
     }
-    return { ok: true, workspace_id: workspaceId, scope_id: scopeId, status: "retired" };
+    return {
+      ok: true,
+      workspace_id: workspaceId,
+      scope_id: scopeId,
+      status: "retired",
+      cancelled_delivery_count: activeDeliveries.length,
+      cancelled_queue_count: cancelledQueueCount,
+      cancelled_pulse_count: cancelledPulseCount,
+    };
   }
 
   /**
@@ -1122,6 +1220,7 @@ export class BusStore {
     node_id: string;
     content: Record<string, unknown>;
     correlation_id?: string | null;
+    idempotency_key?: string | null;
   }, broadcast: Broadcast): EventEnvelope[] {
     const graph = this.scopeGraphStore.getScopeGraph(input.workspace_id, input.graph_id);
     if (!graph) throw new ScopeGraphNotFoundError(input.workspace_id, input.graph_id);
@@ -1148,7 +1247,10 @@ export class BusStore {
             trigger_kind: "scope_graph",
             graph_id: input.graph_id,
             node_id: input.node_id
-          }
+          },
+          idempotency_key: input.idempotency_key
+            ? `${input.idempotency_key}:${subscription.endpoint_id}`
+            : null
         },
         broadcast
       )
@@ -1531,6 +1633,24 @@ export class BusStore {
     `).run(input.bridge_id, json(input.capabilities ?? {}), timestamp, timestamp);
     const bridge = this.db.prepare("SELECT * FROM bridges WHERE bridge_id = ?").get(input.bridge_id);
     broadcast("bridge_registered", { bridge });
+    // Runtime sessions are process-local and intentionally ephemeral. A fresh
+    // bridge registration cannot still own a turn injected by the previous
+    // process with the same bridge id. Settle those turns without replaying
+    // work that may already have changed the workspace.
+    const abandoned = this.db.prepare(`
+      SELECT db.*
+      FROM delivery_bundles db
+      JOIN endpoints e ON e.endpoint_id = db.endpoint_id
+      WHERE e.bridge_id = ? AND db.state = 'injected_to_runtime'
+      ORDER BY db.created_at ASC
+    `).all(input.bridge_id) as any[];
+    for (const delivery of abandoned) {
+      this.failUnknownRuntimeDelivery(
+        delivery,
+        "runtime process restarted before reporting a durable completion",
+        broadcast
+      );
+    }
     return bridge;
   }
 
@@ -2111,7 +2231,10 @@ export class BusStore {
   }, broadcast: Broadcast): unknown {
     const delivery = this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id) as any;
     if (!delivery) throw new Error(`Unknown delivery_id: ${input.delivery_id}`);
-    if (delivery.state === "acknowledged") return delivery;
+    // Ignore late callbacks after another owner has settled this delivery.
+    if (["acknowledged", "dead_lettered", "failed", "deferred", "cancelled"].includes(String(delivery.state))) {
+      return delivery;
+    }
 
     if (input.state === "deferred") {
       this.db.prepare("UPDATE delivery_bundles SET state = 'deferred', lease_expires_at = NULL, last_error = ? WHERE delivery_id = ?")
@@ -2154,6 +2277,23 @@ export class BusStore {
         WHERE delivery_id = ?
       `).run(queueState, queueState, input.error ?? null, input.delivery_id);
       broadcast(bundleState === "dead_lettered" ? "delivery_dead_lettered" : "delivery_failed", {
+        bridge_id: input.bridge_id,
+        delivery_id: input.delivery_id,
+        error: input.error ?? null
+      });
+      this.scheduleNextLeaseExpiryCheck();
+      return this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id);
+    }
+
+    if (input.state === "dead_lettered") {
+      this.db.prepare("UPDATE delivery_bundles SET state = 'dead_lettered', lease_expires_at = NULL, last_error = ? WHERE delivery_id = ?")
+        .run(input.error ?? null, input.delivery_id);
+      this.db.prepare(`
+        UPDATE event_queue
+        SET state = 'dead_lettered', lease_expires_at = NULL, last_error = ?
+        WHERE delivery_id = ?
+      `).run(input.error ?? null, input.delivery_id);
+      broadcast("delivery_dead_lettered", {
         bridge_id: input.bridge_id,
         delivery_id: input.delivery_id,
         error: input.error ?? null
@@ -2209,6 +2349,9 @@ export class BusStore {
       telemetry.payload_json,
       telemetry.created_at
     );
+    if (telemetry.delivery_id) {
+      this.renewRuntimeDeliveryLease(telemetry.delivery_id, broadcast);
+    }
     broadcast("runtime_telemetry", { telemetry: { ...telemetry, payload: input.payload } });
     return telemetry;
   }
@@ -3004,6 +3147,67 @@ export class BusStore {
     return new Date(Date.now() + 15 * 60_000).toISOString();
   }
 
+  /**
+   * Runtime activity is the ownership signal. Renew from pushed telemetry
+   * rather than adding a polling heartbeat to the substrate.
+   */
+  private renewRuntimeDeliveryLease(deliveryId: string, broadcast: Broadcast): void {
+    const delivery = this.db.prepare("SELECT state FROM delivery_bundles WHERE delivery_id = ?")
+      .get(deliveryId) as { state: string } | undefined;
+    if (delivery?.state !== "injected_to_runtime") return;
+    const leaseExpiresAt = this.runtimeTurnLeaseExpiresAt();
+    this.db.prepare("UPDATE delivery_bundles SET lease_expires_at = ? WHERE delivery_id = ? AND state = 'injected_to_runtime'")
+      .run(leaseExpiresAt, deliveryId);
+    this.db.prepare("UPDATE event_queue SET lease_expires_at = ? WHERE delivery_id = ? AND state = 'injected_to_runtime'")
+      .run(leaseExpiresAt, deliveryId);
+    broadcast("delivery_lease_renewed", { delivery_id: deliveryId, lease_expires_at: leaseExpiresAt });
+    this.scheduleNextLeaseExpiryCheck();
+  }
+
+  /**
+   * Once a turn has entered a runtime it may have produced effects. Losing its
+   * owner is therefore an ambiguous terminal failure, never a retry signal.
+   */
+  private failUnknownRuntimeDelivery(delivery: any, reason: string, broadcast: Broadcast): void {
+    const current = this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?")
+      .get(delivery.delivery_id) as any;
+    if (!current || current.state !== "injected_to_runtime") return;
+
+    this.transaction(() => {
+      this.db.prepare(`
+        UPDATE delivery_bundles
+        SET state = 'dead_lettered', lease_expires_at = NULL, last_error = ?
+        WHERE delivery_id = ? AND state = 'injected_to_runtime'
+      `).run(reason, current.delivery_id);
+      this.db.prepare(`
+        UPDATE event_queue
+        SET state = 'dead_lettered', lease_expires_at = NULL, last_error = ?
+        WHERE delivery_id = ?
+      `).run(reason, current.delivery_id);
+      this.db.prepare("UPDATE endpoints SET status = 'error', updated_at = ? WHERE endpoint_id = ?")
+        .run(now(), current.endpoint_id);
+    });
+
+    broadcast("delivery_dead_lettered", {
+      delivery_id: current.delivery_id,
+      endpoint_id: current.endpoint_id,
+      error: reason,
+      outcome_unknown: true
+    });
+    broadcast("status_changed", { endpoint: this.getEndpoint(current.endpoint_id) });
+    this.recordRuntimeTurnResult({
+      delivery_id: current.delivery_id,
+      outcome: "failed",
+      text: "Work stopped because its runtime session ended before Floe received a durable completion. It was not retried automatically because the turn may already have changed the workspace. Review the recorded work before retrying.",
+      metadata: {
+        origin: "runtime_ownership_lost",
+        reason,
+        outcome_unknown: true,
+        safe_to_retry_automatically: false
+      }
+    }, broadcast);
+  }
+
   private requeueExpiredDeliveryLeases(broadcast: Broadcast): void {
     const timestamp = now();
     const expired = this.db.prepare(`
@@ -3014,6 +3218,10 @@ export class BusStore {
       LIMIT 100
     `).all(timestamp) as any[];
     for (const row of expired) {
+      if (row.state === "injected_to_runtime") {
+        this.failUnknownRuntimeDelivery(row, "runtime turn stopped reporting activity before its lease expired", broadcast);
+        continue;
+      }
       const attempts = Number(row.attempt_count ?? 1);
       const queueState = attempts >= 3 ? "dead_lettered" : "queued";
       const bundleState = attempts >= 3 ? "dead_lettered" : "failed";

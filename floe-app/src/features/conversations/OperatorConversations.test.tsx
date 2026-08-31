@@ -21,8 +21,7 @@ vi.mock("../../bus-client/client.ts", () => ({
   createDirectContext: vi.fn(),
   deleteContext: vi.fn(),
   emit: vi.fn(),
-  listContextsByParticipant: vi.fn(),
-  listContextEventHistoryPage: vi.fn(),
+  listContextsByParticipantPage: vi.fn(),
   subscribeEvents: vi.fn(() => () => {}),
 }));
 
@@ -169,8 +168,7 @@ function Harness(): React.ReactElement {
 beforeEach(() => {
   vi.clearAllMocks();
   modelControl.ready = true;
-  vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
-  vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({ events: [], previous_cursor: null });
+  vi.mocked(client.listContextsByParticipantPage).mockResolvedValue({ contexts: [], next_cursor: null });
   vi.mocked(client.deleteContext).mockResolvedValue({} as never);
   vi.mocked(client.emit).mockResolvedValue({} as never);
   attachmentStage.mockResolvedValue([]);
@@ -230,13 +228,19 @@ describe("unified operator conversations", () => {
   const floeContext = context("context-floe", FLOE, "Build the pipeline", "2026-08-24T01:00:00Z");
 
   beforeEach(() => {
-    vi.mocked(client.listContextsByParticipant).mockResolvedValue([architectContext, floeContext]);
-    vi.mocked(client.listContextEventHistoryPage).mockImplementation(async contextId => ({
-      events: contextId === architectContext.context_id
-        ? [message("event-1", ARCHITECT, OPERATOR, "I need your decision.", true, "2026-08-24T02:00:00Z")]
-        : [message("event-2", FLOE, OPERATOR, "The pipeline is ready.", false, "2026-08-24T01:00:00Z")],
-      previous_cursor: null,
-    }));
+    vi.mocked(client.listContextsByParticipantPage).mockResolvedValue({
+      contexts: [
+        {
+          ...architectContext,
+          latest_message: message("event-1", ARCHITECT, OPERATOR, "I need your decision.", true, "2026-08-24T02:00:00Z"),
+        },
+        {
+          ...floeContext,
+          latest_message: message("event-2", FLOE, OPERATOR, "The pipeline is ready.", false, "2026-08-24T01:00:00Z"),
+        },
+      ],
+      next_cursor: null,
+    });
   });
 
   it("lands on the conversation index when conversations already exist", async () => {
@@ -254,9 +258,51 @@ describe("unified operator conversations", () => {
 
     expect(await screen.findByRole("heading", { name: "Conversations" })).toBeTruthy();
     expect(onOpenContext).not.toHaveBeenCalled();
-    expect(client.listContextsByParticipant).toHaveBeenCalledWith({
+    expect(client.listContextsByParticipantPage).toHaveBeenCalledWith({
       participant: OPERATOR,
       workspace_id: "workspace",
+      limit: 20,
+    });
+  });
+
+  it("loads older conversation summaries only when the operator asks", async () => {
+    vi.mocked(client.listContextsByParticipantPage)
+      .mockResolvedValueOnce({
+        contexts: [{
+          ...architectContext,
+          latest_message: message("event-1", ARCHITECT, OPERATOR, "I need your decision.", true, "2026-08-24T02:00:00Z"),
+        }],
+        next_cursor: "older-page",
+      })
+      .mockResolvedValueOnce({
+        contexts: [{
+          ...floeContext,
+          latest_message: message("event-2", FLOE, OPERATOR, "The pipeline is ready.", false, "2026-08-24T01:00:00Z"),
+        }],
+        next_cursor: null,
+      });
+
+    render(
+      <OperatorConversations
+        workspaceId="workspace"
+        endpoints={endpoints}
+        scopes={[]}
+        selectedContextId={null}
+        onOpenContext={vi.fn()}
+        onCloseContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("I need your decision.")).toBeTruthy();
+    expect(screen.queryByText("The pipeline is ready.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show more conversations" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load older conversations" }));
+    expect(await screen.findByText("The pipeline is ready.")).toBeTruthy();
+    expect(client.listContextsByParticipantPage).toHaveBeenLastCalledWith({
+      participant: OPERATOR,
+      workspace_id: "workspace",
+      limit: 20,
+      before: "older-page",
     });
   });
 
@@ -348,7 +394,7 @@ describe("unified operator conversations", () => {
   });
 
   it("starts with a new Floe outcome when the workspace has no conversations", async () => {
-    vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
+    vi.mocked(client.listContextsByParticipantPage).mockResolvedValue({ contexts: [], next_cursor: null });
     vi.mocked(client.createDirectContext).mockResolvedValue(
       context("context-new", FLOE, "", "2026-08-24T03:00:00Z"),
     );
@@ -366,7 +412,7 @@ describe("unified operator conversations", () => {
   });
 
   it("stages an operator-selected file and sends only its workspace reference", async () => {
-    vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
+    vi.mocked(client.listContextsByParticipantPage).mockResolvedValue({ contexts: [], next_cursor: null });
     vi.mocked(client.createDirectContext).mockResolvedValue(
       context("context-new", FLOE, "", "2026-08-24T03:00:00Z"),
     );
@@ -403,7 +449,7 @@ describe("unified operator conversations", () => {
 
   it("does not accept an outcome until the workspace model is ready", async () => {
     modelControl.ready = false;
-    vi.mocked(client.listContextsByParticipant).mockResolvedValue([]);
+    vi.mocked(client.listContextsByParticipantPage).mockResolvedValue({ contexts: [], next_cursor: null });
     render(<Harness />);
 
     const input = await screen.findByLabelText("Outcome") as HTMLTextAreaElement;

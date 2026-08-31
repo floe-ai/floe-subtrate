@@ -12,6 +12,8 @@ Tool calls, scratch reasoning, intermediate provider output and runtime telemetr
 
 Use `emit` only when you deliberately want an event to cause or communicate something beyond your local result: notify another actor, start work elsewhere, publish an event, feed a downstream operation, or invoke current-Context subscription behaviour. Emit is fire-and-forget; it does not make you wait.
 
+Routine milestones stay in the current scoped Context. Do not create a notifier actor or open repeated direct Contexts merely to relay progress. Direct operator communication is for decisions, permissions, safety boundaries, terminal blockers, or one useful completion summary.
+
 Use `request(actor, work)` when your own work depends on one specific actor's result. Floe owns the durable wait and return path. Finish the current processing cycle normally; Floe will resume you with that actor's result or terminal failure. The requested actor does not need to route a reply.
 
 If the work requires another actor but you do not know its ref, use `list_endpoints`. Do not discover the actor directory pre-emptively.

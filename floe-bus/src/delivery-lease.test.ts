@@ -37,7 +37,7 @@ afterEach(() => {
 });
 
 describe("D5 — lease-expiry requeue via scheduled single-shot timer (no recurring poll)", () => {
-  it("extends the lease while a runtime turn is actively processing", () => {
+  it("renews an active runtime lease from pushed telemetry and never replays it after ownership is lost", () => {
     vi.useFakeTimers();
 
     const { store, cleanup } = makeStore();
@@ -65,13 +65,71 @@ describe("D5 — lease-expiry requeue via scheduled single-shot timer (no recurr
         state: "injected_to_runtime"
       }, broadcast);
 
+      vi.advanceTimersByTime(14 * 60_000);
+      store.appendRuntimeTelemetry({
+        workspace_id: WS,
+        endpoint_id: EP,
+        delivery_id: delivery.delivery_id,
+        kind: "turn_progress",
+        payload: { text: "still working" }
+      }, broadcast);
+
       broadcasts.length = 0;
-      vi.advanceTimersByTime(31_000);
-      expect(broadcasts.find(b => b.type === "delivery_failed")).toBeUndefined();
+      vi.advanceTimersByTime(2 * 60_000);
+      expect(broadcasts.find(b => b.type === "delivery_dead_lettered")).toBeUndefined();
       expect((store.listDeliveries({ workspace_id: WS }) as any[])[0]?.state).toBe("injected_to_runtime");
 
-      vi.advanceTimersByTime(15 * 60_000);
-      expect(broadcasts.find(b => b.type === "delivery_failed")?.payload.delivery_id).toBe(delivery.delivery_id);
+      vi.advanceTimersByTime(14 * 60_000);
+      expect(broadcasts.find(b => b.type === "delivery_dead_lettered")?.payload.delivery_id).toBe(delivery.delivery_id);
+      expect((store.listDeliveries({ workspace_id: WS }) as any[])[0]?.state).toBe("dead_lettered");
+      expect(broadcasts.find(b => b.type === "delivery_bundle_available")).toBeUndefined();
+      const events = store.listEvents({ context_id: delivery.events[0]!.context_id ?? undefined, limit: 20 });
+      expect(events.some(event =>
+        event.metadata.origin === "runtime_turn_result" &&
+        event.metadata.outcome_unknown === true &&
+        event.metadata.safe_to_retry_automatically === false
+      )).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("settles an injected turn on bridge restart and ignores a late acknowledgement", () => {
+    const { store, cleanup } = makeStore();
+    const broadcasts: Array<{ type: string; payload: any }> = [];
+    const broadcast = (type: string, payload: any = {}) => broadcasts.push({ type, payload });
+
+    try {
+      store.setBroadcast(broadcast);
+      store.registerWorkspace({ locator: "/fake/path", name: "Restart Safety Test", init_authorized: true }, broadcast);
+      store.registerEndpoint({ endpoint_id: EP, workspace_id: WS, name: "Agent", bridge_id: BRIDGE, status: "idle" }, broadcast);
+      store.submitEvent({
+        type: "message",
+        workspace_id: WS,
+        source_endpoint_id: "actor:lease:operator",
+        thread_id: "thread:lease:restart",
+        destination: { kind: "endpoint", endpoint_id: EP },
+        content: { text: "make an effect" },
+        response: { expected: true }
+      }, broadcast);
+      const delivery = store.claimDeliveries(BRIDGE, 1, broadcast)[0]!;
+      store.reportDeliveryStatus({
+        bridge_id: BRIDGE,
+        delivery_id: delivery.delivery_id,
+        state: "injected_to_runtime"
+      }, broadcast);
+
+      store.registerBridge({ bridge_id: BRIDGE }, broadcast);
+      expect((store.listDeliveries({ workspace_id: WS }) as any[])[0]?.state).toBe("dead_lettered");
+      expect(store.getEndpoint(EP)?.status).toBe("error");
+
+      store.reportDeliveryStatus({
+        bridge_id: BRIDGE,
+        delivery_id: delivery.delivery_id,
+        state: "acknowledged"
+      }, broadcast);
+      expect((store.listDeliveries({ workspace_id: WS }) as any[])[0]?.state).toBe("dead_lettered");
+      expect(broadcasts.filter(item => item.type === "delivery_bundle_available")).toHaveLength(1);
     } finally {
       cleanup();
     }

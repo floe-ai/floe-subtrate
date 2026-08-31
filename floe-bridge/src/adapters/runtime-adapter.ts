@@ -19,5 +19,7 @@ export type RuntimeContext = {
 export interface RuntimeAdapter {
   readonly name: string;
   handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void>;
+  /** Interrupt one active delivery when the Bus has durably cancelled it. */
+  cancelDelivery?(deliveryId: string): Promise<boolean> | boolean;
   dispose?(reason?: HookPayload<"SessionEnd">["reason"]): Promise<void>;
 }

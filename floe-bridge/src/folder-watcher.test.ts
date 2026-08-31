@@ -37,7 +37,38 @@ describe("watchFolder", () => {
 
     const arrival = await waitFor(() => arrivals.find((a) => a.file_name === "note.md"));
     expect(arrival.file_path).toBe(filePath);
+    expect(arrival.arrival_id).toMatch(/^[a-f0-9]{64}$/);
     expect(arrival.observed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
+
+  it("coalesces duplicate native notifications for one stable file version", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "floe-folder-watch-"));
+    const arrivals: FileArrival[] = [];
+    stop = watchFolder(tmp, (arrival) => arrivals.push(arrival), { settle_ms: 100 });
+
+    const filePath = join(tmp, "note.md");
+    writeFileSync(filePath, "# hello", "utf8");
+    writeFileSync(filePath, "# hello again", "utf8");
+
+    await waitFor(() => arrivals[0]);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(arrivals).toHaveLength(1);
+  });
+
+  it("filters arrivals by configured extension before invoking the pipeline", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "floe-folder-watch-"));
+    const arrivals: FileArrival[] = [];
+    stop = watchFolder(tmp, (arrival) => arrivals.push(arrival), {
+      settle_ms: 50,
+      extensions: ["png", ".jpg"]
+    });
+
+    writeFileSync(join(tmp, ".gitkeep"), "", "utf8");
+    writeFileSync(join(tmp, "concept.png"), "image", "utf8");
+
+    await waitFor(() => arrivals[0]);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(arrivals.map(arrival => arrival.file_name)).toEqual(["concept.png"]);
   });
 
   it("fires again on a later modification — a mutation is just another observation, not a correction", async () => {

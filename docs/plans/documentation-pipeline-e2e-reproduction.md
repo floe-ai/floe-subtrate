@@ -82,16 +82,14 @@ Remove-Item .floe/inbox -Recurse -Force
 Remove-Item docs/plans/build-tool-guide.md
 ```
 
-## Known quirk worth knowing before re-running this
+## Folder-arrival behaviour when re-running this
 
-On Windows, `fs.watch` (`floe-bridge/src/folder-watcher.ts`) commonly fires **twice** for a single
-file creation (rename + change events both land). Combined with a Reviewer node that was
-subscribed to the trigger's fan-out, this produced two parallel, interleaved Writer/Reviewer
-conversations in one run. Keeping the Reviewer's `event_types: []` (as this script does — only
-reachable by the Writer's direct emit, never by fan-out) avoids that; the double folder-watcher
-fire itself does still occur but is a duplicate arrival "event", not a wiring bug — see the
-folder-watcher's own doc comment. Not yet ticketed as its own roadblock; flagging here since it
-will visibly double the LLM calls (and cost) if you drop more than one note per run.
+The original proof exposed duplicate Windows `fs.watch` rename/change notifications and could
+start two paid turns for one file. The watcher now waits for the path to settle, gives each stable
+file version a deterministic arrival identity, and the Bus idempotently accepts that arrival once
+per Event node and subscriber. Event sources may also declare file extensions so placeholders such
+as `.gitkeep` do not activate the graph. A later real edit has a new identity and remains a new
+arrival.
 
 ## Bug found and fixed while first proving this
 

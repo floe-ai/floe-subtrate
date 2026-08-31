@@ -41,6 +41,7 @@ class PiErrorStopReasonSignal extends Error {
 type AgentLike = {
   prompt(input: unknown): Promise<void>;
   subscribe(listener: (event: any) => void | Promise<void>): void;
+  abort?(): void;
   followUp?(input: unknown): void;
   reset?(): void;
 };
@@ -385,8 +386,19 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     for (const session of sessions) {
+      if (session.activeTurn && !session.activeTurn.finalized) session.agent.abort?.();
       await this.fireSessionEnd(session, { reason });
     }
+  }
+
+  cancelDelivery(deliveryId: string): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.activeTurn?.delivery_id !== deliveryId || session.activeTurn.finalized) continue;
+      if (!session.agent.abort) return false;
+      session.agent.abort();
+      return true;
+    }
+    return false;
   }
 
   private async getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle, resolved: RuntimeAuthResolved, runtimeConfig?: AgentRuntimeConfig): Promise<SessionState> {

@@ -6,7 +6,7 @@ import { buildContextWorkProjection, ContextWorkView } from "./ContextWorkView.t
 import * as client from "../../bus-client/client.ts";
 
 vi.mock("../../bus-client/client.ts", () => ({
-  listContexts: vi.fn(),
+  listContextTree: vi.fn(),
   listDeliveries: vi.fn(),
   subscribeEvents: vi.fn(() => () => {}),
 }));
@@ -94,7 +94,10 @@ const unrelated = context("context-unrelated", null, [OPERATOR], "Different conv
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(client.listContexts).mockResolvedValue([unrelated, grandchild, root, child]);
+  vi.mocked(client.listContextTree).mockResolvedValue({
+    contexts: [grandchild, root, child],
+    truncated: false,
+  });
   vi.mocked(client.listDeliveries).mockResolvedValue([
     delivery("delivery-root", root.context_id, ARCHITECT, "acknowledged", "2026-08-24T00:01:00Z"),
     delivery("delivery-child", child.context_id, BUILDER, "injected_to_runtime", "2026-08-24T00:02:00Z"),
@@ -135,6 +138,16 @@ describe("Context work projection", () => {
     );
     expect(projection.nodes[0]?.status).toBe("context");
   });
+
+  it("renders an operator-stopped delivery as stopped rather than queued", () => {
+    const projection = buildContextWorkProjection(
+      [root],
+      [delivery("delivery-stopped", root.context_id, ARCHITECT, "cancelled", "2026-08-24T00:01:00Z")],
+      endpoints,
+      root.context_id,
+    );
+    expect(projection.nodes[0]?.status).toBe("stopped");
+  });
 });
 
 describe("ContextWorkView", () => {
@@ -150,7 +163,7 @@ describe("ContextWorkView", () => {
     );
 
     expect(await screen.findByText("2 connected contexts")).toBeTruthy();
-    expect(client.listContexts).toHaveBeenCalledWith("workspace", { scope: "all", limit: 200 });
+    expect(client.listContextTree).toHaveBeenCalledWith(root.context_id, 200);
     await waitFor(() => expect(screen.getByTestId("context-inspector").textContent).toBe("context-child:true:true"));
     fireEvent.click(screen.getByRole("button", { name: "Inspect Build Acme" }));
     expect(screen.getByTestId("context-inspector").textContent).toBe("context-root:true:true");

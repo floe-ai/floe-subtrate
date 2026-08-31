@@ -89,6 +89,19 @@ class FakeAgent {
 }
 
 describe("PiAgentCoreAdapter", () => {
+  it("aborts only the active delivery selected by the Bus", () => {
+    const adapter = new PiAgentCoreAdapter({} as any);
+    const abort = vi.fn();
+    (adapter as any).sessions.set("actor:context", {
+      agent: { abort },
+      activeTurn: { delivery_id: "delivery:one", finalized: false },
+    });
+
+    expect(adapter.cancelDelivery("delivery:other")).toBe(false);
+    expect(adapter.cancelDelivery("delivery:one")).toBe(true);
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
   it("summarizes openai-responses reasoning separately from thinking", () => {
     const summary = summarizePiRequestPayload(
       {
@@ -2422,7 +2435,7 @@ describe("Full actor work loop acceptance", () => {
     };
   }
 
-  it("agent uses read/write/ls/bash tools, writes work log, and emits response", async () => {
+  it("agent uses workspace tools, writes work log, and emits response", async () => {
     const workspaceDir = mkdtempSync(join(tmpdir(), "floe-acceptance-"));
     writeFileSync(join(workspaceDir, "hello.txt"), "Hello from workspace\n");
 
@@ -2433,7 +2446,7 @@ describe("Full actor work loop acceptance", () => {
     // 1. ls to list files
     // 2. read to read hello.txt
     // 3. write to create output.txt
-    // 4. bash to run a command
+    // 4. platform-aware command execution
     // 5. emit to send a response
     const fakeAgent = {
       registeredTools: [] as any[],
@@ -2465,9 +2478,9 @@ describe("Full actor work loop acceptance", () => {
         const writeResult = await callTool("write", "tc_write", { path: "output.txt", content: "Work loop verified" });
         expect(writeResult.content[0].text).toContain("output.txt");
 
-        // Step 4: bash a simple command
-        const bashResult = await callTool("bash", "tc_bash", { command: "echo floe-test-ok" });
-        expect(bashResult.content[0].text).toContain("floe-test-ok");
+        // Step 4: run a simple command using the declared host shell
+        const commandResult = await callTool("run_command", "tc_command", { command: "echo floe-test-ok" });
+        expect(commandResult.content[0].text).toContain("floe-test-ok");
 
         // Step 5: emit response
         await callTool("emit", "tc_emit", {
@@ -2527,7 +2540,8 @@ describe("Full actor work loop acceptance", () => {
     expect(toolNames).toContain("ls");
     expect(toolNames).toContain("grep");
     expect(toolNames).toContain("find");
-    expect(toolNames).toContain("bash");
+    expect(toolNames).toContain("run_command");
+    expect(toolNames).not.toContain("bash");
     expect(toolNames).toContain("emit");
     expect(toolNames).toContain("list_endpoints");
 

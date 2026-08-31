@@ -84,7 +84,7 @@ describe("Scope Graph API", () => {
             kind: "trigger",
             event_type: "note.landed",
             label: "note landed",
-            source: { kind: "folder", path: "notes" },
+            source: { kind: "folder", path: "notes", extensions: ["md"], settle_ms: 400 },
           },
           { node_id: "writer_node", kind: "actor", endpoint_id: writer, label: "writer" }
         ]
@@ -94,7 +94,7 @@ describe("Scope Graph API", () => {
     const graph = created.json().graph;
     expect(graph.graph_id).toMatch(/^graph_/);
     expect(graph.nodes).toHaveLength(2);
-    expect(graph.nodes[0].source).toEqual({ kind: "folder", path: "notes" });
+    expect(graph.nodes[0].source).toEqual({ kind: "folder", path: "notes", extensions: ["md"], settle_ms: 400 });
     expect(graph.context_id).toMatch(/^ctx_/);
 
     // Authoring the actor node already wired it into the graph's Context via
@@ -116,7 +116,10 @@ describe("Scope Graph API", () => {
     const fired = await handle.app.inject({
       method: "POST",
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
-      payload: { content: { path: "docs/README.md" } }
+      payload: {
+        content: { path: "docs/README.md" },
+        idempotency_key: "folder-arrival:readme-v1"
+      }
     });
     expect(fired.statusCode).toBe(201);
     const events = fired.json().events;
@@ -132,6 +135,18 @@ describe("Scope Graph API", () => {
     ).get(writer) as any;
     expect(queued).toBeTruthy();
     expect(queued.event_id).toBe(events[0].event_id);
+
+    const duplicate = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
+      payload: {
+        content: { path: "docs/README.md" },
+        idempotency_key: "folder-arrival:readme-v1"
+      }
+    });
+    expect(duplicate.statusCode).toBe(201);
+    expect(duplicate.json().events[0].event_id).toBe(events[0].event_id);
+    expect((handle.store.db.prepare("SELECT COUNT(*) AS count FROM events").get() as { count: number }).count).toBe(1);
 
     // The graph persists as read afterward — it did not vanish on firing.
     const reread = await handle.app.inject({

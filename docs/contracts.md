@@ -20,6 +20,8 @@ boundary. The operational interface is:
 interface RuntimeAdapter {
   readonly name: string;
   handleBundle(context: RuntimeContext, bundle: DeliveryBundle): Promise<void>;
+  cancelDelivery?(deliveryId: string): Promise<boolean> | boolean;
+  dispose?(reason?: "bridge_shutdown" | "normal" | "error"): Promise<void>;
 }
 ```
 
@@ -45,8 +47,12 @@ development-only and must not define product semantics.
   metadata (`response.expected: true`), not through held runtime calls.
 - Queued events are delivered as bundles at safe bridge/runtime boundaries.
 - Delivery state progresses durably as `queued -> reserved ->
-  delivered_to_bridge -> injected_to_runtime -> acknowledged`, with failed and
-  dead-letter states available for retries and lease expiry.
+  delivered_to_bridge -> injected_to_runtime -> acknowledged`. Transport work
+  may be retried before runtime injection. After injection, pushed telemetry
+  renews a single-shot ownership lease; runtime failure or ownership loss is a
+  terminal dead letter because effects may already exist. Operator cancellation
+  is terminal, interrupts the exact runtime or command process, and ignores late
+  acknowledgements.
 - Turn end is a lifecycle signal, not a message. The bridge observes native
   runtime turn completion and reports endpoint state to the bus.
 

@@ -244,7 +244,8 @@ export function operatorProgressFromTelemetry(
     case "grep": action = "Inspecting the workspace"; break;
     case "write": action = path ? `Writing ${path}` : "Writing a workspace file"; break;
     case "edit": action = path ? `Updating ${path}` : "Updating a workspace file"; break;
-    case "bash": action = "Running and verifying workspace automation"; break;
+    case "bash":
+    case "run_command": action = "Running and verifying workspace automation"; break;
     case "list_actors":
     case "list_endpoints":
     case "resolve_destination": action = "Checking available collaborators"; break;
@@ -257,7 +258,7 @@ export function operatorProgressFromTelemetry(
     text = "A step did not succeed; Floe is adapting";
   } else if (completed) {
     if (toolName === "write" || toolName === "edit") text = path ? `Updated ${path}` : "Updated the workspace";
-    else if (toolName === "bash") text = "Verified a workspace step";
+    else if (toolName === "bash" || toolName === "run_command") text = "Verified a workspace step";
     else if (toolName === "emit") text = "Response ready";
   }
 

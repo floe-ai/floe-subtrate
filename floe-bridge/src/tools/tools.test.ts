@@ -744,9 +744,9 @@ describe("read_image tool", () => {
   });
 });
 
-// --- Bash tool tests ---
+// --- Platform command tool tests ---
 
-describe("bash tool", () => {
+describe("run_command tool", () => {
   const isWindows = platform() === "win32";
   let workspace: string;
 
@@ -762,7 +762,9 @@ describe("bash tool", () => {
   it("executes a simple command and captures output", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b1" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b1" });
+    expect(tool.name).toBe("run_command");
+    expect(tool.description).toContain(isWindows ? "This is not Bash" : "Use Bash syntax");
     const cmd = isWindows ? "echo hello" : "echo hello";
     const result = await tool.execute("b1", { command: cmd });
     expect(result.details?.ok).toBe(true);
@@ -773,7 +775,7 @@ describe("bash tool", () => {
   it("runs in workspace root directory", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b2" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b2" });
     const cmd = isWindows ? "type test.txt" : "cat test.txt";
     const result = await tool.execute("b2", { command: cmd });
     expect(result.details?.ok).toBe(true);
@@ -783,7 +785,7 @@ describe("bash tool", () => {
   it("returns exit code for failing command", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b3" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b3" });
     const cmd = isWindows ? "exit /b 42" : "exit 42";
     const result = await tool.execute("b3", { command: cmd });
     expect(result.details?.ok).toBe(false);
@@ -793,7 +795,7 @@ describe("bash tool", () => {
   it("captures stderr output", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b4" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b4" });
     const cmd = isWindows ? "echo error message 1>&2" : "echo error message >&2";
     const result = await tool.execute("b4", { command: cmd });
     expect(firstText(result)).toContain("error message");
@@ -802,7 +804,7 @@ describe("bash tool", () => {
   it("returns error when command is empty", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b5" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b5" });
     const result = await tool.execute("b5", { command: "" });
     expect(result.details?.ok).toBe(false);
     expect(firstText(result)).toContain("command is required");
@@ -811,10 +813,10 @@ describe("bash tool", () => {
   it("enriches tool activity with command summary and duration", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b6" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b6" });
     await tool.execute("b6", { command: "echo test" });
     const entry = ctx.toolActivity.find((t) => t.call_id === "b6");
-    expect(entry?.summary).toContain("bash");
+    expect(entry?.summary).toContain("run_command");
     expect(entry?.summary).toContain("echo test");
     expect(entry?.is_error).toBe(false);
     expect(entry?.duration_ms).toBeGreaterThanOrEqual(0);
@@ -823,7 +825,7 @@ describe("bash tool", () => {
   it("sanitises environment — Floe secrets are not available", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b7" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b7" });
     // Set a FLOE_ var in current env temporarily
     const oldVal = process.env.FLOE_TEST_SECRET;
     process.env.FLOE_TEST_SECRET = "super_secret";
@@ -844,7 +846,7 @@ describe("bash tool", () => {
     writeFileSync(join(workspace, "big.txt"), lines.join("\n"));
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b8" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b8" });
     const cmd = isWindows ? "type big.txt" : "cat big.txt";
     const result = await tool.execute("b8", { command: cmd });
     expect(result.details?.ok).toBe(true);
@@ -855,7 +857,7 @@ describe("bash tool", () => {
   it("reports duration in details", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b9" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b9" });
     const result = await tool.execute("b9", { command: "echo fast" });
     expect(typeof (result.details as any).duration_ms).toBe("number");
     expect((result.details as any).duration_ms).toBeGreaterThanOrEqual(0);
@@ -864,7 +866,7 @@ describe("bash tool", () => {
   it("does not block the bridge event loop while a command runs", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
-    ctx.toolActivity.push({ name: "bash", call_id: "b10" });
+    ctx.toolActivity.push({ name: "run_command", call_id: "b10" });
     const cmd = isWindows ? "ping -n 2 127.0.0.1 >nul" : "sleep 1";
 
     const startedAt = Date.now();

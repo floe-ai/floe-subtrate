@@ -5,8 +5,11 @@ import {
   listScopeCompositions,
   listContextEventHistoryPage,
   listContextEvents,
+  listContextTree,
+  listContextsByParticipantPage,
   createScope,
   updateScope,
+  retireScope,
   deleteScope,
   getRuntimeBindings,
   resolveRuntimeBinding,
@@ -200,6 +203,37 @@ describe("bus-client — writes", () => {
     expect(url).toContain("limit=50");
   });
 
+  it("pages recent participant Contexts without one request per conversation", async () => {
+    const page = {
+      contexts: [{ context_id: "ctx:recent", latest_message_preview: "Done" }],
+      next_cursor: "older-contexts",
+    };
+    const fetchMock = mockFetch(page);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listContextsByParticipantPage({
+      participant: "actor:workspace:operator",
+      workspace_id: "workspace:test",
+      limit: 20,
+      before: "newer-contexts",
+    })).resolves.toEqual(page);
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("participant=actor%3Aworkspace%3Aoperator");
+    expect(url).toContain("workspace_id=workspace%3Atest");
+    expect(url).toContain("limit=20");
+    expect(url).toContain("before=newer-contexts");
+  });
+
+  it("loads one bounded Context lineage for the Work projection", async () => {
+    const result = { contexts: [{ context_id: "ctx:root" }], truncated: false };
+    const fetchMock = mockFetch(result);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listContextTree("ctx:root", 200)).resolves.toEqual(result);
+    expect(fetchMock.mock.calls[0][0] as string).toContain("/v1/contexts/ctx%3Aroot/tree?limit=200");
+  });
+
   it("listScopeCompositions unwraps the Scope's stored composition", async () => {
     const graphs = [{ graph_id: "graph-1", workspace_id: "ws:abc", scope_id: "delivery", context_id: "ctx-1", nodes: [], created_at: "2026-08-27T00:00:00Z", updated_at: "2026-08-27T00:00:00Z" }];
     const fetchMock = mockFetch({ graphs });
@@ -224,6 +258,21 @@ describe("bus-client — writes", () => {
     const result = await updateScope("ws1", "s1", { title: "Updated" });
     expect(result).toEqual(scope);
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("PATCH");
+  });
+
+  it("retireScope stops active work while preserving the Scope", async () => {
+    const result = {
+      status: "retired" as const,
+      cancelled_delivery_count: 2,
+      cancelled_queue_count: 3,
+      cancelled_pulse_count: 1,
+    };
+    const fetchMock = mockFetch(result);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(retireScope("ws:one", "pipeline one")).resolves.toEqual(result);
+    expect(fetchMock.mock.calls[0][0] as string).toContain("/workspaces/ws%3Aone/scopes/pipeline%20one/retire");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
   });
 
   it("deleteScope sends DELETE and handles 204", async () => {

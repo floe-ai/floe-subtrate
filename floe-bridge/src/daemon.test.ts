@@ -115,6 +115,54 @@ describe("BridgeDaemon shutdown", () => {
       made.cleanup();
     }
   });
+
+  it("interrupts the exact runtime delivery requested by the Bus", () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      const cancelDelivery = vi.fn(() => true);
+      (daemon as any).adapter = { name: "test-adapter", handleBundle: vi.fn(), cancelDelivery };
+
+      (daemon as any).handleEventStreamMessage({
+        type: "delivery_cancel_requested",
+        payload: { delivery_id: "delivery:active" },
+      });
+
+      expect(cancelDelivery).toHaveBeenCalledWith("delivery:active");
+      expect((daemon as any).cancelledDeliveries.has("delivery:active")).toBe(true);
+    } finally {
+      made.cleanup();
+    }
+  });
+
+  it("does not start a pushed delivery when cancellation overtakes execution", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      const handleBundle = vi.fn(async () => {});
+      const reportTurnEnd = vi.fn(async () => {});
+      (daemon as any).adapter = { name: "test-adapter", handleBundle, cancelDelivery: vi.fn(() => false) };
+      (daemon as any).bus = { reportTurnEnd };
+
+      (daemon as any).handleEventStreamMessage({
+        type: "delivery_cancel_requested",
+        payload: { delivery_id: "delivery:queued-locally" },
+      });
+      await (daemon as any).handleDelivery({
+        delivery_id: "delivery:queued-locally",
+        endpoint_id: "actor:test:worker",
+        workspace_id: "workspace:test",
+        events: [],
+      });
+
+      expect(handleBundle).not.toHaveBeenCalled();
+      expect(reportTurnEnd).toHaveBeenCalledWith("actor:test:worker");
+    } finally {
+      made.cleanup();
+    }
+  });
 });
 
 describe("BridgeDaemon Scope composition refresh", () => {
@@ -463,7 +511,7 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
         async emit(event: any) { emittedEvents.push(event); },
         async reportDeliveryStatus(...[, id, state, error]: [string, string, string, string?]) {
           deliveryStatusUpdates.push({ id, state, error: error ?? null });
-          return { state: state === "failed" ? "dead_lettered" : state, attempt_count: 3 };
+          return { state, attempt_count: 1 };
         },
         async recordRuntimeTurnResult(input: any) { turnResults.push(input); },
         async reportTurnEnd() {},
@@ -502,8 +550,9 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
         text: expect.stringContaining("HTTP 400")
       })]);
 
-      // Delivery must be marked failed (not acknowledged)
-      const failedUpdate = deliveryStatusUpdates.find((u) => u.state === "failed");
+      // An injected runtime turn may already have effects, so it is terminal
+      // and must not enter the automatic delivery retry loop.
+      const failedUpdate = deliveryStatusUpdates.find((u) => u.state === "dead_lettered");
       expect(failedUpdate).toBeDefined();
       expect(failedUpdate?.id).toBe("del-turn-fail-1");
 
@@ -1060,10 +1109,11 @@ describe("BridgeDaemon – command node delivery routing", () => {
     }
   });
 
-  it("reports a failed delivery status when a required input is missing", async () => {
+  it("emits a terminal command result when a required input is missing", async () => {
     withoutAdapterEnv();
     const made = makeConfig("fake");
     const statuses: Array<{ state: string; error: string | null }> = [];
+    const emitted: any[] = [];
     const adapterCalls: number[] = [];
 
     try {
@@ -1076,7 +1126,7 @@ describe("BridgeDaemon – command node delivery routing", () => {
         async reportDeliveryStatus(_bridgeId: string, _deliveryId: string, state: string, error?: string) {
           statuses.push({ state, error: error ?? null });
         },
-        async emit() {},
+        async emit(event: any) { emitted.push(event); },
         async reportTurnEnd() {},
         async updateEndpointStatus() {}
       };
@@ -1102,9 +1152,14 @@ describe("BridgeDaemon – command node delivery routing", () => {
       });
 
       expect(adapterCalls).toHaveLength(0);
-      const failed = statuses.find(s => s.state === "failed");
+      const failed = statuses.find(s => s.state === "dead_lettered");
       expect(failed).toBeDefined();
       expect(failed?.error).toContain("missing required input 'should_pass'");
+      expect(emitted).toEqual([expect.objectContaining({
+        type: "command.result",
+        destination: { kind: "context", context_id: "ctx_1" },
+        content: expect.objectContaining({ outcome: "failed", passed: false })
+      })]);
     } finally {
       made.cleanup();
     }

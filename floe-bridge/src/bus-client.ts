@@ -305,6 +305,7 @@ export class BusClient {
     input: {
       content?: Record<string, unknown>;
       correlation_id?: string | null;
+      idempotency_key?: string | null;
     } = {}
   ): Promise<{ events: EventEnvelope[] }> {
     return this.post(

@@ -47,7 +47,14 @@ export type ScopeGraphTriggerNode = {
   /** Event type stamped on the emission this node causes when fired. */
   event_type: string;
   /** Optional world ingress owned by this event node. */
-  source?: { kind: "folder"; path: string };
+  source?: {
+    kind: "folder";
+    path: string;
+    /** Optional case-insensitive file extensions accepted by this source. */
+    extensions?: string[];
+    /** Quiet period used to coalesce native filesystem notifications. */
+    settle_ms?: number;
+  };
 };
 
 export type ScopeGraphActorNode = {

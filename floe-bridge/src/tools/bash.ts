@@ -1,5 +1,5 @@
 /**
- * Floe workspace tool — bash
+ * Floe workspace tool — run_command
  *
  * Executes a shell command in the workspace directory.
  * Platform-aware: uses cmd.exe on Windows, /bin/bash on Unix.
@@ -115,18 +115,22 @@ function runShellCommand(input: {
 }
 
 export function createBashTool(ctx: ToolContext): AgentTool {
+  const isWindowsHost = platform() === "win32";
+  const shellLabel = isWindowsHost ? "Windows Command Prompt (cmd.exe)" : "Bash (/bin/bash)";
   return {
-    name: "bash",
+    name: "run_command",
     label: "Run Command",
     description:
-      "Execute a shell command in the workspace directory. " +
-      "Uses the platform shell (cmd on Windows, bash on Unix). " +
+      `Execute a command in the workspace directory using ${shellLabel}. ` +
+      (isWindowsHost
+        ? "This is not Bash: use Windows cmd.exe syntax and commands. "
+        : "Use Bash syntax and commands. ") +
       "Returns stdout+stderr and exit code. " +
       "Optional timeout in seconds (default 120, max 600). " +
       "Environment is sanitised — Floe auth tokens and API keys are stripped. " +
       "The command runs with the workspace root as the working directory.",
     parameters: Type.Object({
-      command: Type.String({ description: "Shell command to execute" }),
+      command: Type.String({ description: `Command to execute with ${shellLabel}` }),
       timeout: Type.Optional(
         Type.Number({ description: "Timeout in seconds (default 120, max 600)" })
       ),
@@ -137,7 +141,7 @@ export function createBashTool(ctx: ToolContext): AgentTool {
       const timeoutSec = params?.timeout != null ? Number(params.timeout) : undefined;
 
       if (!command.trim()) {
-        enrichToolActivity(ctx, toolCallId, "bash — no command provided", true, [], startTime);
+        enrichToolActivity(ctx, toolCallId, "run_command — no command provided", true, [], startTime);
         return { content: [{ type: "text", text: "Error: command is required." }], details: { ok: false } };
       }
 
@@ -146,7 +150,7 @@ export function createBashTool(ctx: ToolContext): AgentTool {
         : DEFAULT_TIMEOUT_MS;
 
       const env = sanitiseEnvironment();
-      const isWindows = platform() === "win32";
+      const isWindows = isWindowsHost;
       const shell = isWindows ? "cmd.exe" : "/bin/bash";
       const shellArgs = isWindows ? ["/c", command] : ["-c", command];
 
@@ -172,14 +176,14 @@ export function createBashTool(ctx: ToolContext): AgentTool {
         : proc.outputLimited
           ? "output limit"
           : exitCode === 0 ? "ok" : `exit ${exitCode}`;
-      const summary = `bash: ${commandPreview} (${statusLabel}, ${durationMs}ms)`;
+      const summary = `run_command [${shell}]: ${commandPreview} (${statusLabel}, ${durationMs}ms)`;
       enrichToolActivity(ctx, toolCallId, summary, exitCode !== 0 || timedOut || proc.outputLimited, [], startTime);
 
       const header = timedOut
-        ? `Command timed out after ${Math.round(timeoutMs / 1000)}s (exit code ${exitCode})`
+        ? `Shell: ${shell}\nCommand timed out after ${Math.round(timeoutMs / 1000)}s (exit code ${exitCode})`
         : proc.outputLimited
-          ? `Command exceeded the ${Math.round(MAX_CAPTURE_BYTES / 1024 / 1024)}MB output limit (exit code ${exitCode})`
-        : `Exit code: ${exitCode}`;
+          ? `Shell: ${shell}\nCommand exceeded the ${Math.round(MAX_CAPTURE_BYTES / 1024 / 1024)}MB output limit (exit code ${exitCode})`
+        : `Shell: ${shell}\nExit code: ${exitCode}`;
       const responseText = truncated.truncated
         ? `${header}\n[output truncated: ${truncated.original_lines} lines → ${truncated.text.split("\n").length} lines]\n\n${truncated.text}`
         : `${header}\n\n${truncated.text}`;
@@ -191,6 +195,7 @@ export function createBashTool(ctx: ToolContext): AgentTool {
           exit_code: exitCode,
           timed_out: timedOut,
           output_limited: proc.outputLimited,
+          shell,
           duration_ms: durationMs,
           truncated: truncated.truncated,
         },

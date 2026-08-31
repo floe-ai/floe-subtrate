@@ -118,6 +118,18 @@ describe("executeCommand", () => {
     const facts = await executeCommand(`node -e "console.log('hello-from-command')"`, process.cwd());
     expect(facts.stdout).toContain("hello-from-command");
   });
+
+  it("stops an exact command process when its delivery is cancelled", async () => {
+    const controller = new AbortController();
+    const pending = executeCommand(`node -e "setTimeout(() => {}, 30000)"`, process.cwd(), controller.signal);
+    controller.abort();
+
+    await expect(pending).resolves.toMatchObject({
+      passed: false,
+      exit_code: 130,
+      stderr: "Command stopped by operator",
+    });
+  });
 });
 
 describe("runCommandNode", () => {

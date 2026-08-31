@@ -4,8 +4,7 @@ import {
   createDirectContext,
   deleteContext,
   emit,
-  listContextEventHistoryPage,
-  listContextsByParticipant,
+  listContextsByParticipantPage,
   subscribeEvents,
 } from "../../bus-client/client.ts";
 import { ContextConversation } from "../../scope/ContextConversation.tsx";
@@ -118,6 +117,8 @@ export function OperatorConversations({
   const floe = useMemo(() => findFloeEndpoint(endpoints), [endpoints]);
   const [conversations, setConversations] = useState<OperatorConversation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [draftTargetId, setDraftTargetId] = useState<string | null>(null);
@@ -140,18 +141,21 @@ export function OperatorConversations({
     const sequence = ++loadSequence.current;
     setError(null);
     try {
-      const contexts = await listContextsByParticipant({
+      const page = await listContextsByParticipantPage({
         participant: operator.endpoint_id,
         workspace_id: workspaceId,
+        limit: 20,
       });
-      const summaries = await Promise.all(contexts.map(async context => {
-        const page = await listContextEventHistoryPage(context.context_id, { limit: 1, type: "message" })
-          .catch(() => ({ events: [], previous_cursor: null }));
-        return summarizeOperatorConversation(context, page.events, operator.endpoint_id, endpoints);
-      }));
+      const summaries = page.contexts.map(context => summarizeOperatorConversation(
+        context,
+        context.latest_message ? [context.latest_message] : [],
+        operator.endpoint_id,
+        endpoints,
+      ));
       if (sequence !== loadSequence.current) return;
       const sorted = summaries.sort((left, right) => right.activityAt.localeCompare(left.activityAt));
       setConversations(sorted);
+      setNextCursor(page.next_cursor);
 
       if (!initialConversationChosen.current) {
         initialConversationChosen.current = true;
@@ -168,6 +172,36 @@ export function OperatorConversations({
     }
   }, [endpoints, floe, onOpenContext, operator, workspaceId]);
 
+  const loadOlder = useCallback(async () => {
+    if (!operator || !nextCursor || loadingOlder) return;
+    setLoadingOlder(true);
+    setError(null);
+    try {
+      const page = await listContextsByParticipantPage({
+        participant: operator.endpoint_id,
+        workspace_id: workspaceId,
+        limit: 20,
+        before: nextCursor,
+      });
+      const older = page.contexts.map(context => summarizeOperatorConversation(
+        context,
+        context.latest_message ? [context.latest_message] : [],
+        operator.endpoint_id,
+        endpoints,
+      ));
+      setConversations(current => {
+        const byId = new Map(current.map(item => [item.context.context_id, item]));
+        for (const item of older) byId.set(item.context.context_id, item);
+        return [...byId.values()].sort((left, right) => right.activityAt.localeCompare(left.activityAt));
+      });
+      setNextCursor(page.next_cursor);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load older conversations");
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [endpoints, loadingOlder, nextCursor, operator, workspaceId]);
+
   useEffect(() => {
     if (initialWorkspace.current !== workspaceId) {
       initialWorkspace.current = workspaceId;
@@ -175,6 +209,7 @@ export function OperatorConversations({
       draftContextId.current = null;
       setDraftTargetId(null);
       setShowAll(false);
+      setNextCursor(null);
       setSelectedSurface("conversation");
       setSelectedScopeWorkId(null);
     }
@@ -428,16 +463,44 @@ export function OperatorConversations({
           />
         )}
 
-        {!loading && !error && recent.length > RECENT_LIMIT && (
+        {!loading && !error && !showAll && (recent.length > RECENT_LIMIT || nextCursor) && (
           <button
             type="button"
-            onClick={() => setShowAll(show => !show)}
+            onClick={() => setShowAll(true)}
             style={{
               marginTop: 12, background: "transparent", border: "none", color: tk.ink3,
               fontSize: 12.5, cursor: "pointer", padding: "6px 0",
             }}
           >
-            {showAll ? "Show fewer" : `Show ${recent.length - RECENT_LIMIT} more`}
+            Show more conversations
+          </button>
+        )}
+
+        {!loading && !error && showAll && nextCursor && (
+          <button
+            type="button"
+            onClick={() => void loadOlder()}
+            disabled={loadingOlder}
+            style={{
+              marginTop: 12, background: "transparent", border: "none", color: tk.ink3,
+              fontSize: 12.5, cursor: loadingOlder ? "default" : "pointer", padding: "6px 0",
+              opacity: loadingOlder ? 0.6 : 1,
+            }}
+          >
+            {loadingOlder ? "Loading older conversations…" : "Load older conversations"}
+          </button>
+        )}
+
+        {!loading && !error && showAll && !nextCursor && recent.length > RECENT_LIMIT && (
+          <button
+            type="button"
+            onClick={() => setShowAll(false)}
+            style={{
+              marginTop: 12, background: "transparent", border: "none", color: tk.ink3,
+              fontSize: 12.5, cursor: "pointer", padding: "6px 0",
+            }}
+          >
+            Show fewer
           </button>
         )}
       </section>

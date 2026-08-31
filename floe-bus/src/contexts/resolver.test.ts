@@ -13,7 +13,7 @@ function reader(participants: Record<string, string[]>): ContextStoreReader {
     getContext: (context_id) => participants[context_id] ? { context_id, workspace_id: WS, scope_id: null, parent_context_id: null, created_by_endpoint_id: E1, created_at: "2026-01-01T00:00:00Z", title: null } : null,
     getContextParticipants: (context_id) => participants[context_id] ?? [],
     isParticipant: (context_id, endpoint_id) => (participants[context_id] ?? []).includes(endpoint_id),
-    listContextsForParticipant: (endpoint_id) => Object.entries(participants).filter(([, ps]) => ps.includes(endpoint_id)).map(([context_id, ps]) => ({ context_id, workspace_id: WS, scope_id: null, parent_context_id: null, created_by_endpoint_id: E1, created_at: "2026-01-01T00:00:00Z", last_event_at: null, topic: null, title: null, participants: ps }))
+    listContextsForParticipant: (endpoint_id) => Object.entries(participants).filter(([, ps]) => ps.includes(endpoint_id)).map(([context_id, ps]) => ({ context_id, workspace_id: WS, scope_id: null, parent_context_id: null, created_by_endpoint_id: E1, created_at: "2026-01-01T00:00:00Z", last_event_at: null, activity_at: "2026-01-01T00:00:00Z", topic: null, title: null, participants: ps }))
   };
 }
 function resolve(overrides: Partial<Parameters<typeof resolveContext>[0]> = {}) {

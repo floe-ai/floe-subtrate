@@ -54,6 +54,8 @@ export class BridgeDaemon {
   private workspaceRelays = new Map<string, { server: Server; exitHandler: () => void }>();
   private attaching = false;
   private processingEndpoints = new Set<string>();
+  private cancelledDeliveries = new Set<string>();
+  private activeCommandControllers = new Map<string, AbortController>();
   private reportedAttachments = new Map<string, string>();
   private firedWebhookEvents = new Set<string>();
   // D1: reconnect state
@@ -92,6 +94,8 @@ export class BridgeDaemon {
       this.streamSocket = null;
     }
     this.firedWebhookEvents.clear();
+    for (const controller of this.activeCommandControllers.values()) controller.abort();
+    this.activeCommandControllers.clear();
     // Close all relay servers so ports are released on daemon shutdown
     for (const [, relay] of this.workspaceRelays) {
       process.off("exit", relay.exitHandler);
@@ -188,6 +192,12 @@ export class BridgeDaemon {
   }
 
   private handleEventStreamMessage(message: any): void {
+    if (message.type === "delivery_cancel_requested" && message.payload?.delivery_id) {
+      const deliveryId = String(message.payload.delivery_id);
+      this.cancelledDeliveries.add(deliveryId);
+      this.activeCommandControllers.get(deliveryId)?.abort();
+      void this.adapter.cancelDelivery?.(deliveryId);
+    }
     if (
       message.type === "workspace_registered" ||
       message.type === "workspace_selected" ||
@@ -478,7 +488,14 @@ export class BridgeDaemon {
       for (const stop of this.workspaceWatchers.get(workspace.workspace_id) ?? []) stop();
       const watcherStops: Array<() => void> = [];
       const startedWatchers = new Set<string>();
-      const startWatcher = (watcherDef: { id: string; graph_id: string; node_id: string; path: string }): void => {
+      const startWatcher = (watcherDef: {
+        id: string;
+        graph_id: string;
+        node_id: string;
+        path: string;
+        extensions?: string[];
+        settle_ms?: number;
+      }): void => {
         const watchPath = resolve(locator, watcherDef.path);
         const workspaceRelative = relative(locator, watchPath);
         const watcherKey = `${watcherDef.graph_id}:${watcherDef.node_id}:${watchPath}`;
@@ -502,10 +519,15 @@ export class BridgeDaemon {
               locator: arrival.file_path,
               observed_at: arrival.observed_at,
               raw_reference: arrival.file_path,
+              arrival_id: arrival.arrival_id,
             },
+            idempotency_key: `folder-arrival:${watcherDef.graph_id}:${watcherDef.node_id}:${arrival.arrival_id}`,
           }).catch(error => {
             console.error("[bridge] watcher trigger fire failed", { watcher_id: watcherDef.id, error });
           });
+        }, {
+          extensions: watcherDef.extensions,
+          settle_ms: watcherDef.settle_ms
         });
         watcherStops.push(stop);
       };
@@ -521,6 +543,8 @@ export class BridgeDaemon {
             graph_id: graph.graph_id,
             node_id: node.node_id,
             path: node.source.path,
+            extensions: node.source.extensions,
+            settle_ms: node.source.settle_ms,
           });
         }
       }
@@ -784,6 +808,18 @@ export class BridgeDaemon {
   }
 
   private async handleDelivery(delivery: DeliveryBundle): Promise<void> {
+    // A cancellation can overtake a delivery that was already pushed to this
+    // bridge but has not started executing yet. Do not let that stale in-memory
+    // bundle enter either a command process or a model runtime.
+    if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
+      console.log("[bridge] cancelled delivery skipped before execution", {
+        delivery_id: delivery.delivery_id,
+        endpoint_id: delivery.endpoint_id,
+      });
+      await this.reportTurnEndSafely(delivery.endpoint_id);
+      return;
+    }
+
     console.log("[bridge] delivery claimed", {
       delivery_id: delivery.delivery_id,
       endpoint_id: delivery.endpoint_id,
@@ -838,11 +874,20 @@ export class BridgeDaemon {
         extensions: agentExtensions,
         hooks: hookRegistry
       }, delivery, effectiveRuntime);
+      if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
+        await this.reportTurnEndSafely(delivery.endpoint_id);
+        return;
+      }
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
       console.log("[bridge] delivery acknowledged", { delivery_id: delivery.delivery_id });
       await this.reportTurnEndSafely(delivery.endpoint_id);
     } catch (error) {
       console.error("[bridge] adapter failed", error);
+      if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
+        console.log("[bridge] cancelled delivery stopped", { delivery_id: delivery.delivery_id });
+        await this.reportTurnEndSafely(delivery.endpoint_id);
+        return;
+      }
       const deferCodes = [
         "runtime_profile_required",
         "provider_auth_missing",
@@ -867,10 +912,10 @@ export class BridgeDaemon {
         return;
       }
 
-      // Runtime failures keep the existing bounded delivery retry. On the final
-      // failed attempt, record a local failed turn result; if this delivery came
-      // from request(), the bus resolves that exact dependency and resumes the
-      // requester with the failure through the same causal return path.
+      // Once a turn has entered the runtime it may already have produced file,
+      // command, or event effects. Runtime failure is therefore terminal for
+      // this invocation; automatic replay would be unsafe. A fresh operator or
+      // actor event can deliberately retry after inspecting the recorded work.
       if (error instanceof TurnFailedError) {
         console.log("[bridge] turn failed", {
           delivery_id: error.delivery_id,
@@ -882,24 +927,23 @@ export class BridgeDaemon {
           `Runtime turn failed for model '${error.model_id}' (provider: ${error.provider})` +
           (error.http_status ? `, HTTP ${error.http_status}` : "") +
           `: ${error.message}`;
-        const failedDelivery = await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", error.message);
-        if (failedDelivery.state === "dead_lettered") {
-          try {
-            await this.bus.recordRuntimeTurnResult({
-              delivery_id: delivery.delivery_id,
-              outcome: "failed",
-              text: errorSummary,
-              metadata: {
-                runtime: "pi-agent-core",
-                origin: "turn_failed",
-                model: error.model_id,
-                provider: error.provider,
-                http_status: error.http_status
-              }
-            });
-          } catch (recordErr) {
-            console.error("[bridge] failed to record terminal turn failure", recordErr);
-          }
+        await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "dead_lettered", error.message);
+        try {
+          await this.bus.recordRuntimeTurnResult({
+            delivery_id: delivery.delivery_id,
+            outcome: "failed",
+            text: errorSummary,
+            metadata: {
+              runtime: "pi-agent-core",
+              origin: "turn_failed",
+              model: error.model_id,
+              provider: error.provider,
+              http_status: error.http_status,
+              safe_to_retry_automatically: false
+            }
+          });
+        } catch (recordErr) {
+          console.error("[bridge] failed to record terminal turn failure", recordErr);
         }
         await this.reportTurnEndSafely(delivery.endpoint_id);
         return;
@@ -909,8 +953,22 @@ export class BridgeDaemon {
         delivery_id: delivery.delivery_id,
         error: (error as Error).message
       });
-      await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", (error as Error).message);
-      await this.updateEndpointStatusSafely(delivery.endpoint_id, "error");
+      const message = error instanceof Error ? error.message : String(error);
+      await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "dead_lettered", message);
+      try {
+        await this.bus.recordRuntimeTurnResult({
+          delivery_id: delivery.delivery_id,
+          outcome: "failed",
+          text: `Runtime turn stopped before it could report a durable completion: ${message}`,
+          metadata: {
+            origin: "runtime_error",
+            safe_to_retry_automatically: false
+          }
+        });
+      } catch (recordErr) {
+        console.error("[bridge] failed to record terminal runtime error", recordErr);
+      }
+      await this.reportTurnEndSafely(delivery.endpoint_id);
     }
   }
 
@@ -941,10 +999,16 @@ export class BridgeDaemon {
    * so subscribed actors wake exactly as they would for any other message.
    */
   private async handleCommandDelivery(delivery: DeliveryBundle, config: CommandNodeConfig): Promise<void> {
+    const controller = new AbortController();
+    this.activeCommandControllers.set(delivery.delivery_id, controller);
     try {
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "injected_to_runtime");
       const triggerContent = delivery.events[delivery.events.length - 1]?.content ?? {};
-      const resultContent = await runCommandNode(config, triggerContent);
+      const resultContent = await runCommandNode(config, triggerContent, controller.signal);
+      if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
+        await this.reportTurnEndSafely(delivery.endpoint_id);
+        return;
+      }
       await this.bus.emit({
         type: config.result_event_type,
         workspace_id: delivery.workspace_id,
@@ -958,12 +1022,41 @@ export class BridgeDaemon {
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
       await this.reportTurnEndSafely(delivery.endpoint_id);
     } catch (error) {
+      if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
+        await this.reportTurnEndSafely(delivery.endpoint_id);
+        return;
+      }
       const message = error instanceof CommandInputMissingError
         ? error.message
         : `command node execution failed: ${(error as Error).message}`;
       console.error("[bridge] command node delivery failed", { delivery_id: delivery.delivery_id, node_id: config.node_id, error: message });
-      await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "failed", message);
-      await this.updateEndpointStatusSafely(delivery.endpoint_id, "error");
+      await this.bus.emit({
+        type: config.result_event_type,
+        workspace_id: delivery.workspace_id,
+        source_endpoint_id: config.endpoint_id,
+        destination: { kind: "context", context_id: config.context_id },
+        context_id: config.context_id,
+        thread_id: config.context_id,
+        content: {
+          command: config.command,
+          passed: false,
+          outcome: "failed",
+          error: message
+        },
+        metadata: {
+          command_node: true,
+          graph_id: config.graph_id,
+          node_id: config.node_id,
+          outcome: "failed",
+          cause_event_id: delivery.trigger_event_id,
+          delivery_id: delivery.delivery_id
+        },
+        idempotency_key: `command-result:${delivery.endpoint_id}:${delivery.trigger_event_id}`
+      });
+      await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "dead_lettered", message);
+      await this.reportTurnEndSafely(delivery.endpoint_id);
+    } finally {
+      this.activeCommandControllers.delete(delivery.delivery_id);
     }
   }
 

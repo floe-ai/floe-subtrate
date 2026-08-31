@@ -13,7 +13,6 @@ import { z } from "zod";
 import {
   ScopeRemovalBlockedError,
   ScopeRetiredError,
-  ScopeRetirementBlockedError,
   type BusStore,
 } from "./store.js";
 import {
@@ -132,6 +131,17 @@ const scopeComposeInputSchema: JsonSchema = {
                 type: "string",
                 minLength: 1,
                 description: "Existing workspace-relative folder to observe.",
+              },
+              extensions: {
+                type: "array",
+                items: { type: "string", minLength: 1 },
+                description: "Optional case-insensitive file extensions accepted by this source, for example ['png', 'jpg'].",
+              },
+              settle_ms: {
+                type: "integer",
+                minimum: 0,
+                maximum: 60000,
+                description: "Optional quiet period used to coalesce native filesystem notifications. Defaults to 250ms.",
               },
             },
           },
@@ -280,13 +290,69 @@ function inspectScopes(context: ActorCapabilityContext, input: Record<string, un
   }
   const compositions = selected.map((scope) => {
     const composition = context.store.getScopeGraphForScope(context.workspaceId, scope.scope_id);
+    const deliveries = composition ? context.store.db.prepare(`
+      SELECT d.delivery_id, d.endpoint_id, d.trigger_event_id, d.state, d.last_error, d.created_at
+      FROM delivery_bundles d
+      JOIN events e ON e.event_id = d.trigger_event_id
+      WHERE e.context_id = ?
+      ORDER BY d.created_at ASC
+    `).all(composition.context_id) as Array<{
+      delivery_id: string;
+      endpoint_id: string;
+      trigger_event_id: string;
+      state: string;
+      last_error: string | null;
+      created_at: string;
+    }> : [];
+    const latestByInvocation = new Map<string, typeof deliveries[number]>();
+    for (const delivery of deliveries) {
+      latestByInvocation.set(`${delivery.endpoint_id}:${delivery.trigger_event_id}`, delivery);
+    }
+    const latestDeliveries = [...latestByInvocation.values()];
+    const active = latestDeliveries.filter(delivery =>
+      ["reserved", "delivered_to_bridge", "injected_to_runtime"].includes(delivery.state)
+    );
+    const attention = latestDeliveries.filter(delivery =>
+      ["failed", "dead_lettered", "deferred"].includes(delivery.state)
+    );
+    const queuedEventCount = composition ? Number((context.store.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM event_queue q
+      JOIN events e ON e.event_id = q.event_id
+      WHERE e.context_id = ? AND q.state = 'queued'
+    `).get(composition.context_id) as { count: number }).count) : 0;
+    const latestEvents = composition ? context.store.db.prepare(`
+      SELECT event_id, type, created_at
+      FROM events
+      WHERE context_id = ?
+      ORDER BY created_at DESC
+      LIMIT 5
+    `).all(composition.context_id) : [];
+    const operationState = active.length > 0
+      ? "working"
+      : queuedEventCount > 0
+        ? "queued"
+        : attention.length > 0
+          ? "attention"
+          : "settled";
     return {
     ...scope,
       composition: composition ? {
+        graph_id: composition.graph_id,
         context_id: composition.context_id,
         nodes: composition.nodes,
         created_at: composition.created_at,
         updated_at: composition.updated_at,
+        operation: {
+          state: operationState,
+          active_deliveries: active,
+          queued_event_count: queuedEventCount,
+          attention_deliveries: attention,
+          latest_events: latestEvents,
+          completion_note: operationState === "settled"
+            ? "No work is currently active or queued. Confirm the expected terminal event or artifact before claiming the outcome is complete."
+            : null,
+        },
       } : null,
     };
   });
@@ -420,6 +486,7 @@ function composeScope(context: ActorCapabilityContext, input: Record<string, unk
       summary: `${existingComposition ? "Updated" : "Composed"} Scope '${scopeId}' with ${graph.nodes.length} current nodes${existingComposition ? "; its existing Context history was preserved" : ""}.`,
       data: {
         scope_id: scopeId,
+        graph_id: graph.graph_id,
         context_id: graph.context_id,
         nodes: graph.nodes,
       },
@@ -484,18 +551,10 @@ function retireScope(context: ActorCapabilityContext, input: Record<string, unkn
   try {
     const result = context.store.retireScope(context.workspaceId, scopeId, context.broadcast);
     return {
-      summary: `Retired Scope '${scopeId}'. Its routing is inert and its Context and Event history remain available.`,
+      summary: `Stopped and retired Scope '${scopeId}'. Its queued work, active turns, folder sources, and Pulses were cancelled; its Context and Event history remain available.`,
       data: result,
     };
   } catch (error) {
-    if (error instanceof ScopeRetirementBlockedError) {
-      throw new ActorCapabilityError(
-        "scope_retirement_blocked",
-        error.message,
-        409,
-        { scope_id: scopeId, active_work_count: error.active_work_count },
-      );
-    }
     throw error;
   }
 }
@@ -535,7 +594,7 @@ const definitions: ActorCapabilityDefinition[] = [
     category: "organisation",
     title: "Inspect connected organisation",
     description:
-      "Inspect the workspace's durable Scopes and their Event, Actor, and deterministic Command nodes before creating or describing connected operation.",
+      "Inspect the workspace's durable Scopes, current graph handles, Event/Actor/Command nodes, and live operation state before creating, describing, or claiming completion of connected work.",
     effect: "read",
     input_schema: scopeInspectInputSchema,
     invoke: inspectScopes,
@@ -563,9 +622,9 @@ const definitions: ActorCapabilityDefinition[] = [
   {
     capability_id: "scope.retire",
     category: "organisation",
-    title: "Retire connected organisation",
+    title: "Stop connected work",
     description:
-      "Make an obsolete Scope inert without deleting its durable Context or Event history. Retired Scopes cannot route new work and are excluded from the normal operator work surface.",
+      "Stop a Scope and make it inert without deleting its durable Context or Event history. This cancels queued and active deliveries, scheduled Pulses, and folder sources; active runtimes are interrupted and are never resumed automatically. Retired Scopes cannot route new work and are excluded from the normal operator work surface.",
     effect: "write",
     input_schema: scopeRetireInputSchema,
     invoke: retireScope,

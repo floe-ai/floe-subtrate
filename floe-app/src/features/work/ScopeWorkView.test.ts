@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DeliveryRow, EventEnvelope, ScopeCompositionNode } from "../../bus-client/types.ts";
-import { buildScopeWorkLinks, executionsForScopeNode } from "./ScopeWorkView.tsx";
+import { buildScopeWorkLinks, executionsForScopeNode, scopeOperationState } from "./ScopeWorkView.tsx";
 
 describe("Scope work projection", () => {
   it("derives visible routing only from Event subscriptions and Command results", () => {
@@ -81,5 +81,30 @@ describe("Scope work projection", () => {
         summary: "Slice one completed.",
       }),
     ]);
+
+    expect(scopeOperationState("context-1", [trigger, result], [delivery])).toEqual({
+      state: "settled",
+      activeCount: 0,
+      attentionCount: 0,
+    });
+
+    expect(scopeOperationState("context-1", [trigger], [{
+      ...delivery,
+      state: "injected_to_runtime",
+    }])).toEqual({
+      state: "working",
+      activeCount: 1,
+      attentionCount: 0,
+    });
+
+    expect(scopeOperationState("context-1", [trigger], [{
+      ...delivery,
+      state: "dead_lettered",
+      last_error: "runtime ownership lost",
+    }])).toEqual({
+      state: "attention",
+      activeCount: 0,
+      attentionCount: 1,
+    });
   });
 });

@@ -6,7 +6,7 @@
 An intentional substrate organising boundary inside a Workspace for connected, event-driven, or operational work.
 
 An unused Scope may be removed together with its authored composition and empty Contexts. Once Events or Pulse records exist, cleanup must preserve them; destructive Scope removal is refused rather than treating history as disposable configuration.
-A retired Scope preserves its durable identity, Contexts, and Events but has no active subscriptions or world sources and cannot route new work. It remains available to developer/history inspection and is excluded from the normal operator work surface.
+A retired Scope preserves its durable identity, Contexts, and Events but has no active subscriptions or world sources and cannot route new work. Retiring it is the durable stop boundary: queued deliveries are cancelled, active runtime and command deliveries are interrupted, scoped Pulses are cancelled, and late acknowledgements cannot restart the work. It remains available to developer/history inspection and is excluded from the normal operator work surface.
 _Avoid_: Field, canvas, block, thread, context, pulse scope, universal fallback bucket.
 
 ### Workspace-level Context
@@ -90,6 +90,12 @@ The universal substrate publish operation. Endpoints use emit when they delibera
 
 ### Delivery
 An Event made available to a specific Endpoint for processing. Context subscribers do not create deliveries.
+
+Once a Delivery enters a runtime it may already have produced effects. Runtime
+telemetry renews its single-shot ownership lease while the turn is alive. If
+ownership is lost, the Delivery becomes a terminal unknown-outcome failure and
+is not replayed automatically. An operator-cancelled Delivery is terminal and
+ignores late runtime callbacks.
 
 ### Event Cursor
 An opaque, ordered position in a Workspace's Event stream, keyed by `(created_at, event_id)`. It is the unit the `since` and backward-history `before` parameters on Event queries speak, and what an Endpoint Watermark stores. The `event_id` tie-break makes Events sharing a `created_at` safe to page past without skipping or repeating.

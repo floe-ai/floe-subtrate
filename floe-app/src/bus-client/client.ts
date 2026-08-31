@@ -263,6 +263,19 @@ export async function updateScope(
   return data.scope;
 }
 
+/** Stop a Scope without deleting its durable Context or Event history. */
+export async function retireScope(ws: string, scope: string): Promise<{
+  status: "retired";
+  cancelled_delivery_count: number;
+  cancelled_queue_count: number;
+  cancelled_pulse_count: number;
+}> {
+  return post(
+    `/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}/retire`,
+    {},
+  );
+}
+
 /** Structured error thrown when deleteScope fails because scope is non-empty */
 export class ScopeNotEmptyError extends Error {
   readonly context_count: number;
@@ -299,10 +312,12 @@ export async function deleteScope(ws: string, scope: string): Promise<void> {
 export async function listContexts(ws: string, options?: {
   scope?: "all" | "scoped" | "unscoped";
   limit?: number;
+  before?: string;
 }): Promise<ContextRef[]> {
   const params = new URLSearchParams();
   if (options?.scope) params.set("scope", options.scope);
   if (options?.limit != null) params.set("limit", String(options.limit));
+  if (options?.before) params.set("before", options.before);
   const qs = params.toString();
   const data = await get<{ contexts: ContextRef[] }>(
     `/v1/workspaces/${encodeURIComponent(ws)}/contexts${qs ? `?${qs}` : ""}`
@@ -310,21 +325,62 @@ export async function listContexts(ws: string, options?: {
   return data.contexts;
 }
 
+export async function listContextsPage(ws: string, options?: {
+  scope?: "all" | "scoped" | "unscoped";
+  limit?: number;
+  before?: string;
+}): Promise<{ contexts: ContextRef[]; next_cursor: string | null }> {
+  const params = new URLSearchParams();
+  if (options?.scope) params.set("scope", options.scope);
+  if (options?.limit != null) params.set("limit", String(options.limit));
+  if (options?.before) params.set("before", options.before);
+  const qs = params.toString();
+  return get<{ contexts: ContextRef[]; next_cursor: string | null }>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/contexts${qs ? `?${qs}` : ""}`
+  );
+}
+
 /** GET /v1/contexts?participant=...&workspace_id=...&scope_id=... — list contexts by participant */
 export async function listContextsByParticipant(q: {
   participant: string;
   workspace_id?: string;
   scope_id?: string;
+  limit?: number;
+  before?: string;
 }): Promise<ContextRef[]> {
   const params = new URLSearchParams({ participant: q.participant });
   if (q.workspace_id) params.set("workspace_id", q.workspace_id);
   if (q.scope_id) params.set("scope_id", q.scope_id);
+  if (q.limit != null) params.set("limit", String(q.limit));
+  if (q.before) params.set("before", q.before);
   const data = await get<{ contexts: ContextRef[] }>(`/v1/contexts?${params.toString()}`);
   return data.contexts;
 }
 
+export async function listContextsByParticipantPage(q: {
+  participant: string;
+  workspace_id?: string;
+  scope_id?: string;
+  limit?: number;
+  before?: string;
+}): Promise<{ contexts: ContextRef[]; next_cursor: string | null }> {
+  const params = new URLSearchParams({ participant: q.participant });
+  if (q.workspace_id) params.set("workspace_id", q.workspace_id);
+  if (q.scope_id) params.set("scope_id", q.scope_id);
+  if (q.limit != null) params.set("limit", String(q.limit));
+  if (q.before) params.set("before", q.before);
+  return get<{ contexts: ContextRef[]; next_cursor: string | null }>(`/v1/contexts?${params.toString()}`);
+}
+
 export async function getContext(id: string): Promise<ContextRef> {
   return get<ContextRef>(`/v1/contexts/${encodeURIComponent(id)}`);
+}
+
+export async function listContextTree(id: string, limit = 200): Promise<{
+  contexts: ContextRef[];
+  truncated: boolean;
+}> {
+  return get(`/v1/contexts/${encodeURIComponent(id)}/tree?limit=${encodeURIComponent(String(limit))}`);
 }
 
 /** POST /v1/contexts/:id/participants — idempotently add an endpoint as participant */

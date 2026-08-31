@@ -25,6 +25,7 @@ const createdServers: Array<{ close: ReturnType<typeof vi.fn> }> = [];
 const createdWatchers: Array<{
   path: string;
   onArrival: (arrival: Record<string, unknown>) => void;
+  options?: Record<string, unknown>;
   stop: ReturnType<typeof vi.fn>;
 }> = [];
 
@@ -59,9 +60,9 @@ vi.mock("./extension-loader.js", () => ({
 }));
 
 vi.mock("./folder-watcher.js", () => ({
-  watchFolder: vi.fn((path: string, onArrival: (arrival: Record<string, unknown>) => void) => {
+  watchFolder: vi.fn((path: string, onArrival: (arrival: Record<string, unknown>) => void, options?: Record<string, unknown>) => {
     const stop = vi.fn();
-    createdWatchers.push({ path, onArrival, stop });
+    createdWatchers.push({ path, onArrival, options, stop });
     return stop;
   }),
 }));
@@ -229,7 +230,7 @@ describe("BridgeDaemon relay lifecycle (Fix 2)", () => {
         node_id: "folder-arrival",
         kind: "trigger",
         event_type: "concept.image.arrived",
-        source: { kind: "folder", path: "concepts" },
+        source: { kind: "folder", path: "concepts", extensions: ["png", "jpg"], settle_ms: 500 },
       }],
     }]);
     (daemon as any).bus = bus;
@@ -244,7 +245,9 @@ describe("BridgeDaemon relay lifecycle (Fix 2)", () => {
 
     expect(createdWatchers).toHaveLength(1);
     expect(createdWatchers[0].path).toBe(resolve(workspacePath, "concepts"));
+    expect(createdWatchers[0].options).toEqual({ extensions: ["png", "jpg"], settle_ms: 500 });
     createdWatchers[0].onArrival({
+      arrival_id: "arrival-1",
       file_name: "scene.png",
       file_path: join(workspacePath, "concepts", "scene.png"),
       observed_at: "2026-01-01T00:00:00Z",
@@ -255,6 +258,9 @@ describe("BridgeDaemon relay lifecycle (Fix 2)", () => {
       "graph-images",
       "folder-arrival",
     ]);
+    expect(bus.fired[0]?.[3]).toEqual(expect.objectContaining({
+      idempotency_key: "folder-arrival:graph-images:folder-arrival:arrival-1"
+    }));
 
     await daemon.stop();
   });

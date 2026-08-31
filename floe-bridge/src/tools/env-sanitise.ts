@@ -2,7 +2,7 @@
  * Environment sanitisation — strips Floe-managed secrets from spawned
  * process environments.
  *
- * Used by the bash tool to prevent leaking auth tokens, API keys, and
+ * Used by the platform command tool to prevent leaking auth tokens, API keys, and
  * provider credentials into child processes.
  *
  * Policy:
