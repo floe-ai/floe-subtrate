@@ -2,14 +2,29 @@
 
 **Getting from nothing installed to a working Floe: start local services, connect a provider, choose a workspace, and talk to Floe.**
 
-## Prerequisites
+## Packaged Windows installation
 
-- Node.js, to run `floe` and its services.
-- Rust and `cargo`, only if you want the desktop window (`floe desktop`). The browser UI at `http://localhost:5379` needs neither.
+The Windows installer includes Floe's desktop application, Node runtime, Bus,
+and Pi bridge. A packaged user does not need Node.js, Rust, `cargo`, or the Floe
+CLI.
 
-`floe desktop` checks for `cargo` on `PATH` before doing anything else. If it's missing, it fails fast with a link to `https://rustup.rs/` instead of trying to install Rust for you (`floe-cli/src/desktop.ts`, `checkCargoAvailable`).
+Run the `.msi` installer and launch Floe from the installed shortcut. The MSI is
+a per-machine installation, so Windows requests administrator approval when
+installing or upgrading it. An upgrade replaces the application binaries in
+place; Floe's workspaces, history, provider profiles, and credentials remain in
+the user's `~/.floe/` data directory rather than the installation directory.
 
-## Install
+## Developing from source
+
+Source development requires Node.js. Rust and `cargo` are additionally required
+for the native desktop window; the browser UI at `http://localhost:5379` does
+not require Rust.
+
+`floe desktop` checks for `cargo` on `PATH` before doing anything else. If it's
+missing, it fails fast with a link to `https://rustup.rs/` instead of trying to
+install Rust for you (`floe-cli/src/desktop.ts`, `checkCargoAvailable`).
+
+Install the source dependencies with:
 
 ```bash
 npm install
