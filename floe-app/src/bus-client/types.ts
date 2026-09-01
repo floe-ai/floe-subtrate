@@ -228,6 +228,67 @@ export type TelemetryRow = {
 };
 
 // ---------------------------------------------------------------------------
+// Support diagnostics
+// ---------------------------------------------------------------------------
+
+export type ContextDiagnosticEvidence = {
+  schema: "floe.context-diagnostic.v1";
+  generated_at: string;
+  source: {
+    component: "floe-bus";
+    release_version: string | null;
+    build_sha: string | null;
+  };
+  workspace: { workspace_id: string };
+  context: {
+    context_id: string;
+    workspace_id: string;
+    scope_id: string | null;
+    parent_context_id: string | null;
+    created_by_endpoint_id: string | null;
+    created_at: string;
+    title: string | null;
+    participants: string[];
+    endpoints: Array<Pick<EndpointRef, "endpoint_id" | "name" | "agent_id" | "bridge_id" | "status">>;
+  };
+  events: EventEnvelope[];
+  deliveries: Array<{
+    delivery_id: string;
+    endpoint_id: string;
+    trigger_event_id: string;
+    state: string;
+    lease_expires_at: string | null;
+    attempt_count: number;
+    last_error: string | null;
+    created_at: string;
+    claimed_at: string | null;
+  }>;
+  telemetry: Array<{
+    telemetry_id: string;
+    endpoint_id: string;
+    delivery_id: string | null;
+    kind: string;
+    payload: Record<string, unknown>;
+    created_at: string;
+  }>;
+  runtime: RuntimeStatus;
+  capabilities: Array<{
+    capability_id: string;
+    category: string;
+    title: string;
+    effect: "read" | "write";
+  }>;
+  limits: {
+    events: number;
+    deliveries: number;
+    telemetry: number;
+    events_truncated: boolean;
+    deliveries_truncated: boolean;
+    telemetry_truncated: boolean;
+  };
+};
+
+// ---------------------------------------------------------------------------
 // Runtime bindings
 // ---------------------------------------------------------------------------
 
@@ -301,6 +362,8 @@ export type RuntimeStatus = {
   bridge: {
     online: boolean;
     runtime_adapter: string | null;
+    release_version?: string | null;
+    build_sha?: string | null;
   };
 };
 

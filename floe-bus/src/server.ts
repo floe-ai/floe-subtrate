@@ -32,6 +32,7 @@ import { browseDir } from "./fs/browseDir.js";
 import { listAgentFiles } from "./fs/agentFiles.js";
 import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs/resolveWithinRoot.js";
 import { registerActorCapabilityRoutes } from "./actor-capabilities.js";
+import { registerContextDiagnosticRoutes } from "./context-diagnostics.js";
 
 const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const BRIDGE_LIVENESS_MS = 90_000;
@@ -153,6 +154,35 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   const timer = setInterval(() => undefined, 60_000);
 
+  const getRuntimeStatus = () => {
+    // D4: liveness is determined by socket presence, not a time-window check.
+    // A bridge is online if and only if its WS socket is currently connected.
+    const onlineBridges = store.listBridges().filter((bridge) => {
+      const socket = bridgeSockets.get(bridge.bridge_id);
+      return socket !== undefined && socket.readyState === 1;
+    });
+    const runtimeAdapter = onlineBridges
+      .flatMap((bridge) => {
+        const adapters = Array.isArray(bridge.capabilities.runtime_adapters)
+          ? bridge.capabilities.runtime_adapters
+          : [];
+        return adapters.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+      })[0] ?? null;
+    const reportingBridge = onlineBridges[0] ?? null;
+    return {
+      bridge: {
+        online: onlineBridges.length > 0,
+        runtime_adapter: runtimeAdapter,
+        release_version: typeof reportingBridge?.capabilities.release_version === "string"
+          ? reportingBridge.capabilities.release_version
+          : null,
+        build_sha: typeof reportingBridge?.capabilities.build_sha === "string"
+          ? reportingBridge.capabilities.build_sha
+          : null,
+      },
+    };
+  };
+
   app.get("/health", async () => ({
     ok: true,
     service: "floe-bus",
@@ -168,27 +198,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     bridge: config.bridge
   }));
 
-  app.get("/v1/runtime/status", async () => {
-    // D4: liveness is determined by socket presence, not a time-window check.
-    // A bridge is online if and only if its WS socket is currently connected.
-    const onlineBridges = store.listBridges().filter((bridge) => {
-      const s = bridgeSockets.get(bridge.bridge_id);
-      return s !== undefined && s.readyState === 1;
-    });
-    const runtimeAdapter = onlineBridges
-      .flatMap((bridge) => {
-        const adapters = Array.isArray(bridge.capabilities.runtime_adapters)
-          ? bridge.capabilities.runtime_adapters
-          : [];
-        return adapters.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-      })[0] ?? null;
-    return {
-      bridge: {
-        online: onlineBridges.length > 0,
-        runtime_adapter: runtimeAdapter
-      }
-    };
-  });
+  app.get("/v1/runtime/status", async () => getRuntimeStatus());
 
   app.get("/v1/events/stream", { websocket: true }, (socket) => {
     const client = socket as unknown as SocketLike;
@@ -236,6 +246,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   }));
 
   registerActorCapabilityRoutes(app, store, broadcast);
+  registerContextDiagnosticRoutes(app, store, getRuntimeStatus);
 
   app.get("/v1/workspaces/:workspace_id/scopes", async (request, reply) => {
     const params = z.object({ workspace_id: z.string() }).parse(request.params);

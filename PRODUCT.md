@@ -120,6 +120,8 @@ More detail should become available when the operator asks, follows a reference,
 
 Deep substrate telemetry belongs behind deliberate inspection, not in the normal product path.
 
+When real use exposes a problem, the operator should be able to create a local support report from the affected conversation. Floe may contribute a tentative semantic explanation, while system facts come from authoritative supported APIs. The operator sees the exact redacted report before saving or sharing it; Floe does not transmit the report automatically. Reproduction should begin in an isolated workspace when replay could create persistent unwanted state, external effects, or material token use.
+
 ## Product development
 
 Product needs are discovered from real use.

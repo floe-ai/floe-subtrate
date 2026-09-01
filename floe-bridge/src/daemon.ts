@@ -75,7 +75,9 @@ export class BridgeDaemon {
     await this.bus.registerBridge(this.bridgeId, {
       runtime_adapters: [this.adapter.name],
       workspace_access: this.config.bridge.workspace_access,
-      capabilities: ["workspace_attach", "project_template_init", "agent_endpoint_registration", "delivery_claim"]
+      capabilities: ["workspace_attach", "project_template_init", "agent_endpoint_registration", "delivery_claim"],
+      release_version: process.env.FLOE_RELEASE_VERSION ?? null,
+      build_sha: process.env.FLOE_BUILD_SHA ?? null,
     });
     this.openEventStream();
     await this.attachKnownWorkspaces();

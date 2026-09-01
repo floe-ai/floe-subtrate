@@ -745,6 +745,7 @@ export type ContextConversationProps = {
     onNewConversation?: () => void;
     onDeleteConversation?: () => void;
     onOpenWork?: () => void;
+    onReportProblem?: () => void;
     conversationActionsDisabled?: boolean;
     conversationActionError?: string | null;
   };
@@ -1111,7 +1112,7 @@ export function ContextConversation({
           }}>
             {operatorEntry ? operatorConversationName : label}
           </h2>
-          {operatorEntry && (operatorEntry.onOpenWork || operatorEntry.onNewConversation || operatorEntry.onDeleteConversation) && (
+          {operatorEntry && (operatorEntry.onOpenWork || operatorEntry.onReportProblem || operatorEntry.onNewConversation || operatorEntry.onDeleteConversation) && (
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               {operatorEntry.onOpenWork && (
                 <button
@@ -1123,6 +1124,18 @@ export function ContextConversation({
                   }}
                 >
                   Work
+                </button>
+              )}
+              {operatorEntry.onReportProblem && (
+                <button
+                  type="button"
+                  onClick={operatorEntry.onReportProblem}
+                  style={{
+                    background: "transparent", color: tk.ink2, border: `1px solid ${tk.border}`,
+                    borderRadius: tk.r2, padding: "6px 10px", fontSize: 12, cursor: "pointer",
+                  }}
+                >
+                  Report a problem
                 </button>
               )}
               {operatorEntry.onNewConversation && (

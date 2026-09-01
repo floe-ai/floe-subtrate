@@ -1,7 +1,28 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const appRoot = dirname(fileURLToPath(import.meta.url));
+const appPackage = JSON.parse(readFileSync(resolve(appRoot, "package.json"), "utf8")) as { version: string };
+let buildSha: string | null = null;
+try {
+  buildSha = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
+    cwd: appRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim() || null;
+} catch {
+  buildSha = null;
+}
 
 export default defineConfig({
+  define: {
+    __FLOE_RELEASE_VERSION__: JSON.stringify(appPackage.version),
+    __FLOE_BUILD_SHA__: JSON.stringify(buildSha),
+  },
   plugins: [
     react(),
     {

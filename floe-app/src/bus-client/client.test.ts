@@ -15,6 +15,7 @@ import {
   resolveRuntimeBinding,
   listDeliveries,
   getRuntimeStatus,
+  getContextDiagnosticEvidence,
   listConfigs,
   emit,
 } from "./client.ts";
@@ -152,6 +153,22 @@ describe("bus-client — writes", () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
     await pending;
+  });
+
+  it("loads bounded Context diagnostics from the Bus-owned projection", async () => {
+    const evidence = { schema: "floe.context-diagnostic.v1", events: [] };
+    const fetchMock = mockFetch(evidence);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getContextDiagnosticEvidence("workspace:one", "ctx:one", {
+      event_limit: 20,
+      telemetry_limit: 40,
+    })).resolves.toEqual(evidence);
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("/v1/workspaces/workspace%3Aone/diagnostics/contexts/ctx%3Aone");
+    expect(url).toContain("event_limit=20");
+    expect(url).toContain("telemetry_limit=40");
   });
 
   it("pages through an entire Context history without dropping newer messages", async () => {

@@ -15,6 +15,7 @@ import { ScopeWorkView } from "../work/ScopeWorkView.tsx";
 import type { RuntimeHealth } from "../../runtime/health.ts";
 import { conversationAttachments, stageConversationAttachments } from "../../fs/conversationAttachments.ts";
 import { appendAttachmentFiles, AttachmentPicker, pastedFiles } from "./AttachmentPicker.tsx";
+import { ProblemReportDialog } from "../feedback/ProblemReportDialog.tsx";
 
 const RECENT_LIMIT = 6;
 
@@ -127,8 +128,13 @@ export function OperatorConversations({
   const [conversationActionPending, setConversationActionPending] = useState(false);
   const [selectedSurface, setSelectedSurface] = useState<"conversation" | "work">("conversation");
   const [selectedScopeWorkId, setSelectedScopeWorkId] = useState<string | null>(null);
+  const [reportingContextId, setReportingContextId] = useState<string | null>(null);
   const loadSequence = useRef(0);
   const initialWorkspace = useRef<string | null>(null);
+
+  useEffect(() => {
+    setReportingContextId(null);
+  }, [selectedContextId, workspaceId]);
   const initialConversationChosen = useRef(false);
   const draftContextId = useRef<string | null>(null);
 
@@ -374,25 +380,41 @@ export function OperatorConversations({
       );
     }
     return (
-      <ContextConversation
-        key={selectedContextId}
-        contextId={selectedContextId}
-        workspaceId={workspaceId}
-        workspaceLocator={workspaceLocator}
-        endpoints={endpoints}
-        runtimeHealth={runtimeHealth}
-        operatorEntry={{
-          speakingAsEndpointId: operator.endpoint_id,
-          showContextIdentity: true,
-          onOpenSettings,
-          onBackToConversations: onCloseContext,
-          onOpenWork: () => setSelectedSurface("work"),
-          onNewConversation: selectedTargetId ? () => startNewWith(selectedTargetId) : undefined,
-          onDeleteConversation: deleteCurrentConversation,
-          conversationActionsDisabled: conversationActionPending,
-          conversationActionError: error,
-        }}
-      />
+      <>
+        <ContextConversation
+          key={selectedContextId}
+          contextId={selectedContextId}
+          workspaceId={workspaceId}
+          workspaceLocator={workspaceLocator}
+          endpoints={endpoints}
+          runtimeHealth={runtimeHealth}
+          operatorEntry={{
+            speakingAsEndpointId: operator.endpoint_id,
+            showContextIdentity: true,
+            onOpenSettings,
+            onBackToConversations: onCloseContext,
+            onOpenWork: () => setSelectedSurface("work"),
+            onReportProblem: workspaceLocator ? () => setReportingContextId(selectedContextId) : undefined,
+            onNewConversation: selectedTargetId ? () => startNewWith(selectedTargetId) : undefined,
+            onDeleteConversation: deleteCurrentConversation,
+            conversationActionsDisabled: conversationActionPending,
+            conversationActionError: error,
+          }}
+        />
+        {reportingContextId && workspaceLocator && (
+          <ProblemReportDialog
+            workspace={{ workspace_id: workspaceId, locator: workspaceLocator }}
+            contextId={reportingContextId}
+            operatorEndpointId={operator.endpoint_id}
+            runtimeHealth={runtimeHealth ?? {
+              state: "degraded",
+              label: "Runtime status unavailable",
+              detail: "The app did not have a current runtime health snapshot.",
+            }}
+            onClose={() => setReportingContextId(null)}
+          />
+        )}
+      </>
     );
   }
 

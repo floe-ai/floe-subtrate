@@ -850,7 +850,9 @@ describe("Runtime config truth and auth registry routes", () => {
     expect(res.json()).toEqual({
       bridge: {
         online: true,
-        runtime_adapter: "pi-agent-core"
+        runtime_adapter: "pi-agent-core",
+        release_version: null,
+        build_sha: null
       }
     });
     expect(lifecycleMessages).toEqual(expect.arrayContaining([

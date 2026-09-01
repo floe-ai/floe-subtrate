@@ -23,6 +23,7 @@ import type {
   DeliveryRow,
   DeliveryBundle,
   TelemetryRow,
+  ContextDiagnosticEvidence,
   RuntimeBindingRecord,
   RuntimeBindingScope,
   RuntimeBindingResolution,
@@ -758,6 +759,26 @@ export async function listRuntimeTelemetry(q?: {
   const qs = params.toString();
   const data = await get<{ records: TelemetryRow[] }>(`/v1/runtime/telemetry${qs ? `?${qs}` : ""}`);
   return data.records;
+}
+
+/**
+ * GET a bounded, read-only evidence envelope for one Context. The Bus owns the
+ * joins between Context Events, deliveries, runtime telemetry, and capability
+ * metadata so the app never reads or reconstructs internal storage.
+ */
+export async function getContextDiagnosticEvidence(
+  workspaceId: string,
+  contextId: string,
+  options: { event_limit?: number; delivery_limit?: number; telemetry_limit?: number } = {},
+): Promise<ContextDiagnosticEvidence> {
+  const params = new URLSearchParams();
+  if (options.event_limit != null) params.set("event_limit", String(options.event_limit));
+  if (options.delivery_limit != null) params.set("delivery_limit", String(options.delivery_limit));
+  if (options.telemetry_limit != null) params.set("telemetry_limit", String(options.telemetry_limit));
+  const query = params.toString();
+  return get(
+    `/v1/workspaces/${encodeURIComponent(workspaceId)}/diagnostics/contexts/${encodeURIComponent(contextId)}${query ? `?${query}` : ""}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

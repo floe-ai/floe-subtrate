@@ -34,12 +34,14 @@ vi.mock("../../scope/ContextConversation.tsx", () => ({
       onNewConversation?: () => void;
       onDeleteConversation?: () => void;
       onOpenWork?: () => void;
+      onReportProblem?: () => void;
     };
   }) => (
     <div data-testid="conversation">
       <span>{contextId}:{String(operatorEntry?.showContextIdentity)}</span>
       <button type="button" onClick={operatorEntry?.onBackToConversations}>Conversations</button>
       {operatorEntry?.onOpenWork && <button type="button" onClick={operatorEntry.onOpenWork}>Work</button>}
+      {operatorEntry?.onReportProblem && <button type="button" onClick={operatorEntry.onReportProblem}>Report a problem</button>}
       {operatorEntry?.onNewConversation && (
         <button type="button" onClick={operatorEntry.onNewConversation}>New conversation</button>
       )}

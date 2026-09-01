@@ -26,6 +26,14 @@ A "`<actor> is working…`" indicator appears while an actor has a live [[Delive
 
 The bottom of the main navigation shows the health of Floe's local services and model runtime. Green means both are connected, amber means the app is reconnecting or waiting for the model runtime, and red means work cannot continue. Open the status for the failure detail and, for a stopped packaged runtime, a **Restart local services** action. If the runtime stops during a visible turn, the conversation replaces the stale working indicator with an explicit interruption notice; it does not imply that work is still progressing in the dark.
 
+## Reporting a Floe problem
+
+Every normal operator conversation has **Report a problem**. The report asks for expected behaviour, actual behaviour, impact, a tentative classification, and the safe boundary for reproducing the problem. Floe's latest reply is offered as an editable tentative interpretation; it is not treated as a system fact.
+
+The app then requests one bounded diagnostic envelope from the Bus for that Context: public recent Events, related delivery state and safe operational runtime telemetry, sanitized participant identities, runtime liveness, and current capability identifiers. The Bus omits tool arguments, tool output, visible-output duplication, and scratch reasoning at the diagnostic API boundary. The app then redacts sensitive keys, credential patterns, user-home paths, URL credentials, and email addresses before showing the exact Markdown and versioned JSON export.
+
+Nothing is sent automatically. After exact preview and explicit approval, the app writes `report.md` and `report.json` beneath `.floe/state/feedback/REPORT_ID/`, which is ignored workspace state, and offers the local folder path for a developer agent. If replay could create durable unwanted state or material token use, the report directs verification through an isolated workspace first.
+
 ## Creating a new context
 
 In normal Conversations, **New conversation** starts another Context with the currently selected collaborator; **New with Floe** starts one from the list. No Context is created until the operator submits the first outcome. Developer tools can also create contexts from a scope or actor view. A created context can optionally belong to a [[Scope]]; one with no scope still exists. If the operator is a participant, it is reachable from normal Conversations; otherwise it remains available through Developer tools.

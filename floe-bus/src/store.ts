@@ -2376,6 +2376,46 @@ export class BusStore {
     return (this.db.prepare(sql).all(...params)).reverse();
   }
 
+  /**
+   * Read-only diagnostic projection for the runtime work caused by Events in
+   * one Context. Keeping this join in the Bus avoids making clients reverse
+   * engineer delivery ownership from raw JSON bundles.
+   */
+  listContextDeliveries(filters: {
+    workspace_id: string;
+    context_id: string;
+    limit?: number;
+  }): unknown[] {
+    const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
+    return (this.db.prepare(`
+      SELECT db.*
+      FROM delivery_bundles db
+      JOIN events trigger_event ON trigger_event.event_id = db.trigger_event_id
+      WHERE db.workspace_id = ? AND trigger_event.context_id = ?
+      ORDER BY db.created_at DESC, db.delivery_id DESC
+      LIMIT ?
+    `).all(filters.workspace_id, filters.context_id, limit) as unknown[]).reverse();
+  }
+
+  /** Return bounded telemetry for a known set of deliveries, chronologically. */
+  listDeliveryTelemetry(filters: {
+    workspace_id: string;
+    delivery_ids: string[];
+    limit?: number;
+  }): unknown[] {
+    const deliveryIds = Array.from(new Set(filters.delivery_ids.filter(Boolean)));
+    if (deliveryIds.length === 0) return [];
+    const limit = Math.min(Math.max(filters.limit ?? 200, 1), 500);
+    const placeholders = deliveryIds.map(() => "?").join(", ");
+    return (this.db.prepare(`
+      SELECT *
+      FROM runtime_telemetry
+      WHERE workspace_id = ? AND delivery_id IN (${placeholders})
+      ORDER BY created_at DESC, telemetry_id DESC
+      LIMIT ?
+    `).all(filters.workspace_id, ...deliveryIds, limit) as unknown[]).reverse();
+  }
+
   getEvent(eventId: string): EventEnvelope | null {
     const row = this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(eventId) as any;
     return row ? this.rowToEvent(row) : null;

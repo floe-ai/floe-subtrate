@@ -4,6 +4,17 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const appVersion = JSON.parse(readFileSync(resolve(appRoot, "package.json"), "utf8")).version;
+let buildSha = null;
+try {
+  buildSha = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
+    cwd: appRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim() || null;
+} catch {
+  buildSha = null;
+}
 const rustInfo = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
 const host = /^host:\s+(\S+)$/m.exec(rustInfo)?.[1];
 const target = process.env.TAURI_ENV_TARGET_TRIPLE || host;
@@ -23,7 +34,17 @@ for (const name of ["default-floe-agent.md", "substrate-build-skill.md", "substr
 }
 execFileSync(
   "bun",
-  ["build", resolve(appRoot, "src-desktop-sidecar", "index.ts"), "--target=node", "--outfile", scriptOutput],
+  [
+    "build",
+    resolve(appRoot, "src-desktop-sidecar", "index.ts"),
+    "--target=node",
+    "--outfile",
+    scriptOutput,
+    "--define",
+    `process.env.FLOE_RELEASE_VERSION=${JSON.stringify(appVersion)}`,
+    "--define",
+    `process.env.FLOE_BUILD_SHA=${JSON.stringify(buildSha)}`,
+  ],
   { cwd: appRoot, stdio: "inherit" },
 );
 
