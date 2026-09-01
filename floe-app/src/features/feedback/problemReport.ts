@@ -1,6 +1,6 @@
-import type { ContextDiagnosticEvidence } from "../../bus-client/types.ts";
+import type { ContextDiagnosticEvidence, EventEnvelope } from "../../bus-client/types.ts";
 import type { WorkspaceFsRef } from "../../fs/workspaceFs.ts";
-import { writeWorkspaceFile } from "../../fs/workspaceFs.ts";
+import { readWorkspaceFile, writeWorkspaceFile } from "../../fs/workspaceFs.ts";
 import type { RuntimeHealth } from "../../runtime/health.ts";
 
 export type ProblemClassification =
@@ -20,6 +20,57 @@ export type ProblemReportDraft = {
   floeInterpretation: string;
   reproductionSafety: ReproductionSafety;
   includeConversation: boolean;
+};
+
+const PROBLEM_CLASSIFICATIONS = new Set<ProblemClassification>([
+  "not-sure",
+  "workspace-or-configuration",
+  "missing-capability",
+  "possible-substrate-defect",
+  "product-usability",
+]);
+const REPRODUCTION_SAFETY = new Set<ReproductionSafety>([
+  "not-sure",
+  "safe-in-originating-workspace",
+  "isolated-workspace-first",
+]);
+
+/** A Floe-authored semantic draft. Diagnostics remain app-owned and operator-reviewed. */
+export function problemReportDraftFromEvent(event: EventEnvelope): Partial<ProblemReportDraft> | null {
+  const data = event.content?.["data"];
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const candidate = (data as Record<string, unknown>)["problem_report"];
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (value["schema"] !== "floe.problem-report-draft.v1") return null;
+  const expected = typeof value["expected"] === "string" ? value["expected"].trim() : "";
+  const actual = typeof value["actual"] === "string" ? value["actual"].trim() : "";
+  if (!expected || !actual) return null;
+  const classification = String(value["tentative_classification"] ?? "not-sure") as ProblemClassification;
+  const safety = String(value["reproduction_safety"] ?? "isolated-workspace-first") as ReproductionSafety;
+  return {
+    expected,
+    actual,
+    impact: typeof value["impact"] === "string" ? value["impact"].trim() : "",
+    tentativeClassification: PROBLEM_CLASSIFICATIONS.has(classification) ? classification : "not-sure",
+    floeInterpretation: typeof value["interpretation"] === "string" ? value["interpretation"].trim() : "",
+    reproductionSafety: REPRODUCTION_SAFETY.has(safety) ? safety : "isolated-workspace-first",
+    includeConversation: true,
+  };
+}
+
+export type ProblemReportReceipt = {
+  report_id: string;
+  created_at: string;
+  expected: string;
+  markdown_path: string;
+  json_path: string;
+  status: "saved-locally";
+};
+
+type ProblemReportIndex = {
+  schema: "floe.problem-report-index.v1";
+  reports: ProblemReportReceipt[];
 };
 
 export type ClientBuildIdentity = {
@@ -151,6 +202,22 @@ function eventText(event: ContextDiagnosticEvidence["events"][number]): string {
   return `[${event.type} Event; no text content]`;
 }
 
+function telemetrySummary(report: FloeProblemReport): string[] {
+  const records = report.evidence.bus.telemetry;
+  if (records.length === 0) return ["_No related telemetry was found in the bounded evidence._"];
+  const byKind = new Map<string, { count: number; latest: string }>();
+  for (const record of records) {
+    const current = byKind.get(record.kind);
+    byKind.set(record.kind, {
+      count: (current?.count ?? 0) + 1,
+      latest: current && current.latest > record.created_at ? current.latest : record.created_at,
+    });
+  }
+  return [...byKind.entries()]
+    .sort((left, right) => right[1].count - left[1].count || left[0].localeCompare(right[0]))
+    .map(([kind, value]) => `- \`${kind}\`: ${value.count}; latest ${value.latest}`);
+}
+
 export function renderProblemReportMarkdown(report: FloeProblemReport): string {
   const bus = report.evidence.bus;
   const lines = [
@@ -202,9 +269,7 @@ export function renderProblemReportMarkdown(report: FloeProblemReport): string {
     "",
     "### Runtime telemetry",
     "",
-    ...(bus.telemetry.length > 0
-      ? bus.telemetry.map((record) => `- ${record.created_at} — \`${record.kind}\` — delivery \`${record.delivery_id ?? "none"}\``)
-      : ["_No related telemetry was found in the bounded evidence._"]),
+    ...telemetrySummary(report),
     "",
     "### Conversation excerpts",
     "",
@@ -243,7 +308,7 @@ export function problemReportPaths(reportId: string): { markdown: string; json: 
 export async function saveProblemReport(
   workspace: WorkspaceFsRef,
   report: FloeProblemReport,
-): Promise<{ markdown: string; json: string }> {
+): Promise<{ markdown: string; json: string; receipt: ProblemReportReceipt }> {
   const paths = problemReportPaths(report.report_id);
   const markdown = renderProblemReportMarkdown(report);
   const json = `${JSON.stringify(report, null, 2)}\n`;
@@ -251,7 +316,92 @@ export async function saveProblemReport(
     writeWorkspaceFile(workspace, paths.markdown, markdown),
     writeWorkspaceFile(workspace, paths.json, json),
   ]);
-  return paths;
+  const receipt: ProblemReportReceipt = {
+    report_id: report.report_id,
+    created_at: report.created_at,
+    expected: report.problem.expected,
+    markdown_path: paths.markdown,
+    json_path: paths.json,
+    status: "saved-locally",
+  };
+  const current = await listProblemReports(workspace);
+  const index: ProblemReportIndex = {
+    schema: "floe.problem-report-index.v1",
+    reports: [receipt, ...current.filter((candidate) => candidate.report_id !== receipt.report_id)]
+      .sort((left, right) => right.created_at.localeCompare(left.created_at)),
+  };
+  await writeWorkspaceFile(workspace, ".floe/state/feedback/index.json", `${JSON.stringify(index, null, 2)}\n`);
+  return { ...paths, receipt };
+}
+
+export async function listProblemReports(workspace: WorkspaceFsRef): Promise<ProblemReportReceipt[]> {
+  try {
+    const raw = await readWorkspaceFile(workspace, ".floe/state/feedback/index.json");
+    const parsed = JSON.parse(raw) as Partial<ProblemReportIndex>;
+    if (parsed.schema !== "floe.problem-report-index.v1" || !Array.isArray(parsed.reports)) {
+      return discoverUnindexedProblemReports(workspace);
+    }
+    return parsed.reports.filter((candidate): candidate is ProblemReportReceipt =>
+      !!candidate
+      && typeof candidate.report_id === "string"
+      && typeof candidate.created_at === "string"
+      && typeof candidate.expected === "string"
+      && typeof candidate.markdown_path === "string"
+      && typeof candidate.json_path === "string"
+      && candidate.status === "saved-locally"
+    );
+  } catch {
+    return discoverUnindexedProblemReports(workspace);
+  }
+}
+
+function normalizedHostPath(value: string): string {
+  return value.replace(/\//g, "\\").replace(/[\\]+$/, "").toLowerCase();
+}
+
+async function discoverUnindexedProblemReports(workspace: WorkspaceFsRef): Promise<ProblemReportReceipt[]> {
+  try {
+    const separator = /^[A-Za-z]:[\\/]/.test(workspace.locator) || workspace.locator.includes("\\") ? "\\" : "/";
+    const reportRoot = `${workspace.locator.replace(/[\\/]+$/, "")}${separator}.floe${separator}state${separator}feedback`;
+    const { busBrowseDir } = await import("../../bus-client/client.ts");
+    const listing = await busBrowseDir(reportRoot);
+    if (normalizedHostPath(listing.path) !== normalizedHostPath(reportRoot)) return [];
+    const reportDirs = listing.entries
+      .filter((entry) => entry.is_dir && /^problem-[a-zA-Z0-9._-]+$/.test(entry.name))
+      .slice(0, 50);
+    const reports = await Promise.all(reportDirs.map(async (entry): Promise<ProblemReportReceipt | null> => {
+      try {
+        const jsonPath = `.floe/state/feedback/${entry.name}/report.json`;
+        const raw = await readWorkspaceFile(workspace, jsonPath);
+        const report = JSON.parse(raw) as Partial<FloeProblemReport>;
+        if (report.schema !== "floe.problem-report.v1"
+          || typeof report.report_id !== "string"
+          || typeof report.created_at !== "string"
+          || typeof report.problem?.expected !== "string") return null;
+        return {
+          report_id: report.report_id,
+          created_at: report.created_at,
+          expected: report.problem.expected,
+          markdown_path: `.floe/state/feedback/${entry.name}/report.md`,
+          json_path: jsonPath,
+          status: "saved-locally",
+        };
+      } catch {
+        return null;
+      }
+    }));
+    return reports
+      .filter((report): report is ProblemReportReceipt => !!report)
+      .sort((left, right) => right.created_at.localeCompare(left.created_at));
+  } catch {
+    return [];
+  }
+}
+
+export function developerHandoffText(workspace: WorkspaceFsRef, receipt: ProblemReportReceipt): string {
+  const separator = /^[A-Za-z]:[\\/]/.test(workspace.locator) || workspace.locator.includes("\\") ? "\\" : "/";
+  const absolute = `${workspace.locator.replace(/[\\/]+$/, "")}${separator}${receipt.markdown_path.replace(/[\\/]/g, separator)}`;
+  return `Review this saved Floe problem report and resolve the demonstrated issue: ${absolute}`;
 }
 
 export function newProblemReportId(createdAt = new Date().toISOString()): string {

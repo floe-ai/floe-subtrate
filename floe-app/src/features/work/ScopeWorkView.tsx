@@ -17,6 +17,8 @@ import {
 } from "../../bus-client/client.ts";
 import { ContextConversation } from "../../scope/ContextConversation.tsx";
 import { tk } from "../../theme.ts";
+import type { WorkspaceFsRef } from "../../fs/workspaceFs.ts";
+import { ArtifactLineageView, findArtifactGraphPath } from "./ArtifactLineageView.tsx";
 
 export type ScopeWorkLink = {
   source: string;
@@ -322,12 +324,14 @@ function ScopeNodeInspector({
 
 export function ScopeWorkView({
   workspaceId,
+  workspace,
   scope,
   endpoints,
   operatorEndpointId,
   onBack,
 }: {
   workspaceId: string;
+  workspace?: WorkspaceFsRef;
   scope: ScopeRef;
   endpoints: EndpointRef[];
   operatorEndpointId: string;
@@ -338,6 +342,7 @@ export function ScopeWorkView({
   const [deliveries, setDeliveries] = useState<DeliveryRow[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showContext, setShowContext] = useState(false);
+  const [showArtifacts, setShowArtifacts] = useState(false);
   const [loading, setLoading] = useState(true);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -414,6 +419,7 @@ export function ScopeWorkView({
     : operation?.state === "attention"
       ? { label: "Needs attention", color: "#d18a82", background: "rgba(184,90,90,0.12)" }
       : { label: "Settled", color: tk.ink3, background: tk.surfaceHov };
+  const artifactGraphPath = useMemo(() => findArtifactGraphPath(events), [events]);
   const stopWork = useCallback(async () => {
     if (stopping) return;
     if (!window.confirm(`Stop ${scope.title || scope.scope_id}? Active turns, queued work, folder monitoring, and scheduled pulses will stop. History will be kept.`)) return;
@@ -461,11 +467,26 @@ export function ScopeWorkView({
               </button>
               <button
                 type="button"
-                onClick={() => setShowContext((value) => !value)}
+                onClick={() => {
+                  setShowContext((value) => !value);
+                  setShowArtifacts(false);
+                }}
                 style={{ padding: "7px 10px", color: showContext ? tk.ink : tk.accentHov, background: showContext ? tk.surfaceHov : "transparent", border: `1px solid ${tk.border}`, borderRadius: tk.r2, cursor: "pointer", fontSize: 12 }}
               >
                 {showContext ? "Back to plan" : "Context history"}
               </button>
+              {workspace && artifactGraphPath && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowArtifacts((value) => !value);
+                    setShowContext(false);
+                  }}
+                  style={{ padding: "7px 10px", color: showArtifacts ? tk.ink : tk.accentHov, background: showArtifacts ? tk.surfaceHov : "transparent", border: `1px solid ${tk.border}`, borderRadius: tk.r2, cursor: "pointer", fontSize: 12 }}
+                >
+                  {showArtifacts ? "Back to plan" : "Artifacts"}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -485,6 +506,13 @@ export function ScopeWorkView({
           alignRightEndpointId={operatorEndpointId}
           showWorkEvents
           readOnly
+        />
+      ) : showArtifacts && workspace && artifactGraphPath ? (
+        <ArtifactLineageView
+          workspace={workspace}
+          graphPath={artifactGraphPath}
+          endpoints={endpoints}
+          operatorEndpointId={operatorEndpointId}
         />
       ) : (
         <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>

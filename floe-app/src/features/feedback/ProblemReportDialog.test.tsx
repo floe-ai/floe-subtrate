@@ -6,6 +6,7 @@ import { ProblemReportDialog } from "./ProblemReportDialog.tsx";
 
 const mocks = vi.hoisted(() => ({
   getEvidence: vi.fn(),
+  readFile: vi.fn(),
   writeFile: vi.fn(),
 }));
 
@@ -15,6 +16,7 @@ vi.mock("../../bus-client/client.ts", () => ({
 
 vi.mock("../../fs/workspaceFs.ts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../fs/workspaceFs.ts")>()),
+  readWorkspaceFile: mocks.readFile,
   writeWorkspaceFile: mocks.writeFile,
 }));
 
@@ -70,6 +72,7 @@ describe("ProblemReportDialog", () => {
   beforeEach(() => {
     mocks.getEvidence.mockReset().mockResolvedValue(evidence);
     mocks.writeFile.mockReset().mockResolvedValue(undefined);
+    mocks.readFile.mockReset().mockRejectedValue(new Error("no report index yet"));
   });
 
   it("requires semantic context, previews exact redacted formats, and saves only after approval", async () => {
@@ -104,11 +107,26 @@ describe("ProblemReportDialog", () => {
     expect(json.textContent).not.toContain("C:\\Users\\alice");
 
     fireEvent.click(screen.getByRole("button", { name: "Save report locally" }));
-    await waitFor(() => expect(mocks.writeFile).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.writeFile).toHaveBeenCalledTimes(3));
     expect(mocks.writeFile.mock.calls.map((call) => call[1])).toEqual(expect.arrayContaining([
       expect.stringMatching(/^\.floe\/state\/feedback\/.+\/report\.md$/),
       expect.stringMatching(/^\.floe\/state\/feedback\/.+\/report\.json$/),
     ]));
-    expect(await screen.findByText("The report has not been shared.")).not.toBeNull();
+    expect(await screen.findByText("Ready for developer handoff")).not.toBeNull();
+  });
+
+  it("starts from a Floe-authored semantic draft", async () => {
+    render(
+      <ProblemReportDialog
+        workspace={{ workspace_id: "workspace:test", locator: "C:\\Development\\workspace" }}
+        contextId="ctx:test"
+        operatorEndpointId="actor:operator"
+        runtimeHealth={{ state: "healthy", label: "Ready", detail: "Ready" }}
+        initialDraft={{ expected: "Expected from Floe", actual: "Actual from Floe" }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect((await screen.findByLabelText("What did you expect?") as HTMLTextAreaElement).value).toBe("Expected from Floe");
+    expect((screen.getByLabelText("What happened instead?") as HTMLTextAreaElement).value).toBe("Actual from Floe");
   });
 });

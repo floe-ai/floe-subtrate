@@ -4,6 +4,7 @@ import {
   createDirectContext,
   deleteContext,
   emit,
+  listEvents,
   listContextsByParticipantPage,
   subscribeEvents,
 } from "../../bus-client/client.ts";
@@ -16,6 +17,13 @@ import type { RuntimeHealth } from "../../runtime/health.ts";
 import { conversationAttachments, stageConversationAttachments } from "../../fs/conversationAttachments.ts";
 import { appendAttachmentFiles, AttachmentPicker, pastedFiles } from "./AttachmentPicker.tsx";
 import { ProblemReportDialog } from "../feedback/ProblemReportDialog.tsx";
+import {
+  developerHandoffText,
+  listProblemReports,
+  type ProblemReportDraft,
+  type ProblemReportReceipt,
+} from "../feedback/problemReport.ts";
+import { ArtifactLineageView, findArtifactGraphPath } from "../work/ArtifactLineageView.tsx";
 
 const RECENT_LIMIT = 6;
 
@@ -128,12 +136,19 @@ export function OperatorConversations({
   const [conversationActionPending, setConversationActionPending] = useState(false);
   const [selectedSurface, setSelectedSurface] = useState<"conversation" | "work">("conversation");
   const [selectedScopeWorkId, setSelectedScopeWorkId] = useState<string | null>(null);
+  const [selectedArtifactGraphPath, setSelectedArtifactGraphPath] = useState<string | null>(null);
+  const [artifactGraphPaths, setArtifactGraphPaths] = useState<string[]>([]);
   const [reportingContextId, setReportingContextId] = useState<string | null>(null);
+  const [reportDraft, setReportDraft] = useState<Partial<ProblemReportDraft> | undefined>();
+  const [problemReports, setProblemReports] = useState<ProblemReportReceipt[]>([]);
+  const [reportCopyNotice, setReportCopyNotice] = useState<string | null>(null);
   const loadSequence = useRef(0);
+  const artifactLoadSequence = useRef(0);
   const initialWorkspace = useRef<string | null>(null);
 
   useEffect(() => {
     setReportingContextId(null);
+    setReportDraft(undefined);
   }, [selectedContextId, workspaceId]);
   const initialConversationChosen = useRef(false);
   const draftContextId = useRef<string | null>(null);
@@ -178,6 +193,25 @@ export function OperatorConversations({
     }
   }, [endpoints, floe, onOpenContext, operator, workspaceId]);
 
+  const loadArtifactPaths = useCallback(async () => {
+    const sequence = ++artifactLoadSequence.current;
+    try {
+      const pages = await Promise.all([
+        listEvents({ workspace_id: workspaceId, type: "lineage.updated", direction: "backward", limit: 100 }),
+        listEvents({ workspace_id: workspaceId, type: "artifact.lineage.updated", direction: "backward", limit: 100 }),
+      ]);
+      const paths = pages
+        .flatMap((page) => page.events)
+        .flatMap((event) => findArtifactGraphPath([event]) ?? [])
+        .filter((path, index, all) => all.indexOf(path) === index);
+      if (sequence !== artifactLoadSequence.current) return;
+      setArtifactGraphPaths(paths);
+    } catch {
+      if (sequence !== artifactLoadSequence.current) return;
+      setArtifactGraphPaths([]);
+    }
+  }, [workspaceId]);
+
   const loadOlder = useCallback(async () => {
     if (!operator || !nextCursor || loadingOlder) return;
     setLoadingOlder(true);
@@ -218,16 +252,33 @@ export function OperatorConversations({
       setNextCursor(null);
       setSelectedSurface("conversation");
       setSelectedScopeWorkId(null);
+      setSelectedArtifactGraphPath(null);
+      setArtifactGraphPaths([]);
     }
     setLoading(true);
     void load();
-  }, [load, workspaceId]);
+    void loadArtifactPaths();
+  }, [load, loadArtifactPaths, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceLocator) {
+      setProblemReports([]);
+      return;
+    }
+    let cancelled = false;
+    void listProblemReports({ workspace_id: workspaceId, locator: workspaceLocator })
+      .then((reports) => { if (!cancelled) setProblemReports(reports); });
+    return () => { cancelled = true; };
+  }, [workspaceId, workspaceLocator]);
 
   useEffect(() => {
     const unsubscribe = subscribeEvents(message => {
       if (message.type === "event_submitted") {
-        const event = (message.payload as { event?: { workspace_id?: string } }).event;
-        if (event?.workspace_id === workspaceId) void load();
+        const event = (message.payload as { event?: { workspace_id?: string; type?: string } }).event;
+        if (event?.workspace_id === workspaceId) {
+          void load();
+          if (event.type === "lineage.updated" || event.type === "artifact.lineage.updated") void loadArtifactPaths();
+        }
       }
       if (message.type === "context_created" || message.type === "context_deleted") {
         const context = (message.payload as { context?: { workspace_id?: string }; workspace_id?: string }).context;
@@ -237,7 +288,7 @@ export function OperatorConversations({
       }
     });
     return unsubscribe;
-  }, [load, workspaceId]);
+  }, [load, loadArtifactPaths, workspaceId]);
 
   function openConversation(contextId: string) {
     setSelectedScopeWorkId(null);
@@ -334,10 +385,31 @@ export function OperatorConversations({
     if (selectedScopeWork?.status === "retired") setSelectedScopeWorkId(null);
   }, [selectedScopeWork]);
 
+  if (selectedArtifactGraphPath && workspaceLocator && operator) {
+    return (
+      <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden", fontFamily: tk.fontUi }}>
+        <div style={{ padding: "12px 20px", borderBottom: `1px solid ${tk.border}`, background: tk.surface }}>
+          <button type="button" onClick={() => setSelectedArtifactGraphPath(null)} style={{ border: "none", background: "transparent", color: tk.ink3, padding: 0, cursor: "pointer", fontSize: 12.5 }}>
+            ← Workspace
+          </button>
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <ArtifactLineageView
+            workspace={{ workspace_id: workspaceId, locator: workspaceLocator }}
+            graphPath={selectedArtifactGraphPath}
+            endpoints={endpoints}
+            operatorEndpointId={operator.endpoint_id}
+          />
+        </div>
+      </div>
+    );
+  }
+
   if (selectedScopeWork?.status !== "retired" && selectedScopeWork && operator) {
     return (
       <ScopeWorkView
         workspaceId={workspaceId}
+        workspace={workspaceLocator ? { workspace_id: workspaceId, locator: workspaceLocator } : undefined}
         scope={selectedScopeWork}
         endpoints={endpoints}
         operatorEndpointId={operator.endpoint_id}
@@ -394,7 +466,14 @@ export function OperatorConversations({
             onOpenSettings,
             onBackToConversations: onCloseContext,
             onOpenWork: () => setSelectedSurface("work"),
-            onReportProblem: workspaceLocator ? () => setReportingContextId(selectedContextId) : undefined,
+            onReportProblem: workspaceLocator ? () => {
+              setReportDraft(undefined);
+              setReportingContextId(selectedContextId);
+            } : undefined,
+            onReviewProblemReport: workspaceLocator ? (draft) => {
+              setReportDraft(draft);
+              setReportingContextId(selectedContextId);
+            } : undefined,
             onNewConversation: selectedTargetId ? () => startNewWith(selectedTargetId) : undefined,
             onDeleteConversation: deleteCurrentConversation,
             conversationActionsDisabled: conversationActionPending,
@@ -411,6 +490,11 @@ export function OperatorConversations({
               label: "Runtime status unavailable",
               detail: "The app did not have a current runtime health snapshot.",
             }}
+            initialDraft={reportDraft}
+            onSaved={(receipt) => setProblemReports((current) => [
+              receipt,
+              ...current.filter((candidate) => candidate.report_id !== receipt.report_id),
+            ])}
             onClose={() => setReportingContextId(null)}
           />
         )}
@@ -466,6 +550,28 @@ export function OperatorConversations({
 
         {!loading && !error && operator && activeScopes.length > 0 && (
           <ScopeSection scopes={activeScopes} onOpen={setSelectedScopeWorkId} />
+        )}
+
+        {!loading && !error && workspaceLocator && artifactGraphPaths.length > 0 && (
+          <ArtifactSection paths={artifactGraphPaths} onOpen={setSelectedArtifactGraphPath} />
+        )}
+
+        {!loading && !error && workspaceLocator && problemReports.length > 0 && (
+          <ProblemReportsSection
+            reports={problemReports}
+            copyNotice={reportCopyNotice}
+            onCopy={async (receipt) => {
+              try {
+                await navigator.clipboard.writeText(developerHandoffText(
+                  { workspace_id: workspaceId, locator: workspaceLocator },
+                  receipt,
+                ));
+                setReportCopyNotice("Developer handoff copied.");
+              } catch {
+                setReportCopyNotice("Could not copy the developer handoff.");
+              }
+            }}
+          />
         )}
 
         {!loading && !error && needsYou.length > 0 && (
@@ -527,6 +633,76 @@ export function OperatorConversations({
         )}
       </section>
     </div>
+  );
+}
+
+function ProblemReportsSection({
+  reports,
+  copyNotice,
+  onCopy,
+}: {
+  reports: ProblemReportReceipt[];
+  copyNotice: string | null;
+  onCopy: (receipt: ProblemReportReceipt) => Promise<void>;
+}): React.ReactElement {
+  return (
+    <section style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 8, color: tk.ink3, fontSize: 10.5, fontWeight: 590, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+        Floe reports
+      </div>
+      <div role="list" aria-label="Floe reports" style={{ border: `1px solid ${tk.border}`, borderRadius: tk.r3, overflow: "hidden", background: tk.surface }}>
+        {reports.slice(0, 3).map((report, index) => (
+          <div key={report.report_id} role="listitem" style={{
+            display: "grid", gridTemplateColumns: "1fr auto", gap: 16, alignItems: "center",
+            padding: "12px 16px", borderTop: index > 0 ? `1px solid ${tk.border2}` : "none",
+          }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ color: tk.ink, fontSize: 13.5, fontWeight: 550, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {report.expected}
+                </span>
+                <span style={{ color: "#c9a14a", background: "rgba(201,161,74,0.10)", borderRadius: 999, padding: "2px 7px", fontSize: 10.5, whiteSpace: "nowrap" }}>
+                  Not shared
+                </span>
+              </div>
+              <div style={{ color: tk.ink4, fontSize: 11.5 }}>Saved locally · {formatActivityTime(report.created_at)}</div>
+            </div>
+            <button type="button" onClick={() => void onCopy(report)} style={{
+              border: `1px solid ${tk.border}`, borderRadius: tk.r2, background: "transparent",
+              color: tk.ink2, padding: "6px 9px", fontSize: 11.5, cursor: "pointer",
+            }}>
+              Copy handoff
+            </button>
+          </div>
+        ))}
+      </div>
+      {copyNotice && <div role="status" style={{ marginTop: 7, color: tk.ink3, fontSize: 11.5 }}>{copyNotice}</div>}
+    </section>
+  );
+}
+
+function ArtifactSection({ paths, onOpen }: { paths: string[]; onOpen: (path: string) => void }): React.ReactElement {
+  return (
+    <section style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 8, color: tk.ink3, fontSize: 10.5, fontWeight: 590, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+        Artifacts
+      </div>
+      <div role="list" aria-label="Artifacts" style={{ border: `1px solid ${tk.border}`, borderRadius: tk.r3, overflow: "hidden", background: tk.surface }}>
+        {paths.map((path, index) => (
+          <button key={path} type="button" role="listitem" onClick={() => onOpen(path)} style={{
+            width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: 16,
+            padding: "13px 16px", textAlign: "left", background: "transparent", color: tk.ink,
+            border: "none", borderTop: index > 0 ? `1px solid ${tk.border2}` : "none", cursor: "pointer",
+          }}>
+            <span>
+              <span style={{ display: "block", marginBottom: 4, fontSize: 13.5, fontWeight: 550 }}>Artifact lineage</span>
+              <span style={{ display: "block", color: tk.ink3, fontSize: 11.5 }}>{path}</span>
+            </span>
+            <span style={{ alignSelf: "center", color: tk.ink4, fontSize: 11.5 }}>Explore →</span>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 

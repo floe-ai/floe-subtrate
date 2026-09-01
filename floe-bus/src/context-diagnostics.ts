@@ -133,6 +133,7 @@ export function registerContextDiagnosticRoutes(
     const telemetryPage = store.listDeliveryTelemetry({
       workspace_id: params.workspace_id,
       delivery_ids: deliveries.map((delivery) => delivery.delivery_id),
+      exclude_kinds: ["visible_output"],
       limit: query.telemetry_limit + 1,
     }) as TelemetryRow[];
     const participants = store.contextStore.getContextParticipants(params.context_id);

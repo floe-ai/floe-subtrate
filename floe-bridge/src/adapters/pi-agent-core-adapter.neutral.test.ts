@@ -256,6 +256,7 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
           type: "message",
           destination: "operator",
           text: "Hello via neutral ref",
+          data: { report: { schema: "example.v1" } },
           response_expected: false,
         });
         for (const l of this.listeners) await l({
@@ -300,6 +301,10 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     expect(emittedEvents).toHaveLength(1);
     expect(emittedEvents[0].destination.endpoint_id).toBe("actor:workspace:test:operator");
     expect(emittedEvents[0].content.text).toBe("Hello via neutral ref");
+    expect(emittedEvents[0].content.data).toMatchObject({
+      report: { schema: "example.v1" },
+      origin: "pi_emit_tool",
+    });
 
     // Description neutralised
     expect(emitTool.description).not.toContain("agent:floe");

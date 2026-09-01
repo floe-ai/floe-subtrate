@@ -127,7 +127,8 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
     expect(content).not.toContain("compose_scope");
     expect(content).toContain("Do not describe a convention-only controller or file-backed state machine as substrate execution");
     expect(content).toContain("verify that every downstream capability needed to complete the outcome is actually available");
-    expect(content).toContain("The operator app collects authoritative diagnostic evidence separately");
+    expect(content).toContain("floe.problem-report-draft.v1");
+    expect(content).toContain("The operator app turns this Event into a **Report ready — Review** action");
     expect(content).not.toContain("runtime-backed endpoint");
     expect(content).not.toContain("source endpoint");
   });

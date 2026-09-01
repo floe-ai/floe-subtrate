@@ -3,6 +3,7 @@ import type { ContextDiagnosticEvidence } from "../../bus-client/types.ts";
 import {
   buildProblemReport,
   problemReportPaths,
+  problemReportDraftFromEvent,
   redactDiagnosticValue,
   renderProblemReportMarkdown,
 } from "./problemReport.ts";
@@ -149,5 +150,31 @@ describe("problem report export", () => {
     });
     expect(report.evidence.conversation_included).toBe(false);
     expect(report.evidence.bus.events).toEqual([]);
+  });
+
+  it("accepts a complete Floe semantic draft without trusting it as diagnostics", () => {
+    const draft = problemReportDraftFromEvent({
+      ...evidence.events[0]!,
+      content: {
+        text: "Report ready",
+        data: {
+          problem_report: {
+            schema: "floe.problem-report-draft.v1",
+            expected: "The work should stop",
+            actual: "It kept running",
+            impact: "Token use continued",
+            tentative_classification: "possible-substrate-defect",
+            interpretation: "A delivery may still be active",
+            reproduction_safety: "isolated-workspace-first",
+          },
+        },
+      },
+    });
+    expect(draft).toMatchObject({
+      expected: "The work should stop",
+      actual: "It kept running",
+      tentativeClassification: "possible-substrate-defect",
+      includeConversation: true,
+    });
   });
 });

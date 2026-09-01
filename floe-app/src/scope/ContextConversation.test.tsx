@@ -273,6 +273,46 @@ describe("ContextConversation — participant gate", () => {
     expect(client.listContextEventHistoryPage).toHaveBeenCalledWith("ctx-1", { limit: 50, type: "message" });
   });
 
+  it("turns a Floe semantic report draft into a review action", async () => {
+    const onReviewProblemReport = vi.fn();
+    vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({
+      events: [conversationEvent("event-report", NON_PARTICIPANT_EP, "message", {
+        text: "I prepared the problem report.",
+        data: {
+          problem_report: {
+            schema: "floe.problem-report-draft.v1",
+            expected: "The operation should stop",
+            actual: "It continued running",
+            impact: "Token use continued",
+            tentative_classification: "possible-substrate-defect",
+            interpretation: "A delivery may remain active",
+            reproduction_safety: "isolated-workspace-first",
+          },
+        },
+      }) as any],
+      previous_cursor: null,
+    });
+    vi.mocked(client.getContext).mockResolvedValue({
+      ...mockContext,
+      participants: [PARTICIPANT_EP, NON_PARTICIPANT_EP],
+    } as any);
+
+    render(
+      <ContextConversation
+        contextId="ctx-1"
+        workspaceId="ws-1"
+        endpoints={endpoints}
+        operatorEntry={{ speakingAsEndpointId: PARTICIPANT_EP, onReviewProblemReport }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Report ready — Review" }));
+    expect(onReviewProblemReport).toHaveBeenCalledWith(expect.objectContaining({
+      expected: "The operation should stop",
+      actual: "It continued running",
+    }));
+  });
+
   it("keeps durable messages visible when supplementary delivery status cannot load", async () => {
     vi.mocked(client.listContextEventHistoryPage).mockResolvedValue({
       events: [conversationEvent("event-safe", PARTICIPANT_EP, "message", { text: "The durable message remains visible." })] as any,

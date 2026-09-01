@@ -2401,19 +2401,26 @@ export class BusStore {
   listDeliveryTelemetry(filters: {
     workspace_id: string;
     delivery_ids: string[];
+    exclude_kinds?: string[];
     limit?: number;
   }): unknown[] {
     const deliveryIds = Array.from(new Set(filters.delivery_ids.filter(Boolean)));
     if (deliveryIds.length === 0) return [];
+    const excludedKinds = Array.from(new Set((filters.exclude_kinds ?? []).filter(Boolean)));
     const limit = Math.min(Math.max(filters.limit ?? 200, 1), 500);
     const placeholders = deliveryIds.map(() => "?").join(", ");
+    const excludedPlaceholders = excludedKinds.map(() => "?").join(", ");
+    const excludedClause = excludedKinds.length > 0
+      ? `AND kind NOT IN (${excludedPlaceholders})`
+      : "";
     return (this.db.prepare(`
       SELECT *
       FROM runtime_telemetry
       WHERE workspace_id = ? AND delivery_id IN (${placeholders})
+        ${excludedClause}
       ORDER BY created_at DESC, telemetry_id DESC
       LIMIT ?
-    `).all(filters.workspace_id, ...deliveryIds, limit) as unknown[]).reverse();
+    `).all(filters.workspace_id, ...deliveryIds, ...excludedKinds, limit) as unknown[]).reverse();
   }
 
   getEvent(eventId: string): EventEnvelope | null {

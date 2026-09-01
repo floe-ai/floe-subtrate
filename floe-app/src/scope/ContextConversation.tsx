@@ -53,6 +53,10 @@ import {
   AttachmentPicker,
   pastedFiles,
 } from "../features/conversations/AttachmentPicker.tsx";
+import {
+  problemReportDraftFromEvent,
+  type ProblemReportDraft,
+} from "../features/feedback/problemReport.ts";
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk)
@@ -340,15 +344,18 @@ function MessageRow({
   endpoints,
   alignRightEndpointId,
   showEventType,
+  onReviewProblemReport,
 }: {
   event: EventEnvelope;
   endpoints: EndpointRef[];
   alignRightEndpointId?: string;
   showEventType?: boolean;
+  onReviewProblemReport?: (draft: Partial<ProblemReportDraft>) => void;
 }): React.ReactElement {
   const author = endpointName(event.source_endpoint_id, endpoints);
   const alignedRight = !!alignRightEndpointId && event.source_endpoint_id === alignRightEndpointId;
   const attachments = conversationAttachments(event.content);
+  const problemReportDraft = problemReportDraftFromEvent(event);
   return (
     <div
       data-message-side={alignedRight ? "right" : "left"}
@@ -378,6 +385,19 @@ function MessageRow({
         <div style={{ fontSize: 13.5, color: tk.ink2, lineHeight: 1.5, overflowWrap: "anywhere" }}>
           <MiniMarkdown source={showEventType ? workEventText(event) : messageText(event)} />
           {attachments.length > 0 && <AttachmentRefs attachments={attachments} />}
+          {problemReportDraft && onReviewProblemReport && (
+            <button
+              type="button"
+              onClick={() => onReviewProblemReport(problemReportDraft)}
+              style={{
+                marginTop: 10, border: `1px solid rgba(138,168,156,0.32)`, borderRadius: tk.r2,
+                background: tk.accentSoft2, color: tk.accentHov, padding: "7px 10px",
+                fontSize: 12, fontWeight: 590, cursor: "pointer",
+              }}
+            >
+              Report ready — Review
+            </button>
+          )}
         </div>
       </article>
     </div>
@@ -746,6 +766,7 @@ export type ContextConversationProps = {
     onDeleteConversation?: () => void;
     onOpenWork?: () => void;
     onReportProblem?: () => void;
+    onReviewProblemReport?: (draft: Partial<ProblemReportDraft>) => void;
     conversationActionsDisabled?: boolean;
     conversationActionError?: string | null;
   };
@@ -1240,6 +1261,7 @@ export function ContextConversation({
                 endpoints={endpoints}
                 alignRightEndpointId={alignRightEndpointId ?? operatorEntry?.speakingAsEndpointId}
                 showEventType={showWorkEvents}
+                onReviewProblemReport={operatorEntry?.onReviewProblemReport}
               />
             ))
           )}

@@ -7,12 +7,14 @@ import type { RuntimeHealth } from "../../runtime/health.ts";
 import { tk } from "../../theme.ts";
 import {
   buildProblemReport,
+  developerHandoffText,
   newProblemReportId,
   renderProblemReportMarkdown,
   saveProblemReport,
   type FloeProblemReport,
   type ProblemClassification,
   type ProblemReportDraft,
+  type ProblemReportReceipt,
   type ReproductionSafety,
 } from "./problemReport.ts";
 
@@ -21,6 +23,8 @@ type Props = {
   contextId: string;
   operatorEndpointId: string;
   runtimeHealth: RuntimeHealth;
+  initialDraft?: Partial<ProblemReportDraft>;
+  onSaved?: (receipt: ProblemReportReceipt) => void;
   onClose: () => void;
 };
 
@@ -57,6 +61,8 @@ export function ProblemReportDialog({
   contextId,
   operatorEndpointId,
   runtimeHealth,
+  initialDraft,
+  onSaved,
   onClose,
 }: Props): React.ReactElement {
   const [evidence, setEvidence] = useState<ContextDiagnosticEvidence | null>(null);
@@ -65,25 +71,29 @@ export function ProblemReportDialog({
   const [previewTab, setPreviewTab] = useState<"markdown" | "json">("markdown");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [savedPaths, setSavedPaths] = useState<{ markdown: string; json: string } | null>(null);
+  const [savedPaths, setSavedPaths] = useState<{
+    markdown: string;
+    json: string;
+    receipt: ProblemReportReceipt;
+  } | null>(null);
   const [copyNotice, setCopyNotice] = useState<string | null>(null);
   const [createdAt] = useState(() => new Date().toISOString());
   const [reportId] = useState(() => newProblemReportId(createdAt));
   const [draft, setDraft] = useState<ProblemReportDraft>({
-    expected: "",
-    actual: "",
-    impact: "",
-    tentativeClassification: "not-sure",
-    floeInterpretation: "",
-    reproductionSafety: "isolated-workspace-first",
-    includeConversation: true,
+    expected: initialDraft?.expected ?? "",
+    actual: initialDraft?.actual ?? "",
+    impact: initialDraft?.impact ?? "",
+    tentativeClassification: initialDraft?.tentativeClassification ?? "not-sure",
+    floeInterpretation: initialDraft?.floeInterpretation ?? "",
+    reproductionSafety: initialDraft?.reproductionSafety ?? "isolated-workspace-first",
+    includeConversation: initialDraft?.includeConversation ?? true,
   });
 
   useEffect(() => {
     let cancelled = false;
     setLoadingError(null);
     void getContextDiagnosticEvidence(workspace.workspace_id, contextId, {
-      event_limit: 30,
+      event_limit: 12,
       delivery_limit: 30,
       telemetry_limit: 100,
     }).then((result) => {
@@ -121,6 +131,7 @@ export function ProblemReportDialog({
       const paths = await saveProblemReport(workspace, report);
       setSavedPaths(paths);
       setStage("saved");
+      onSaved?.(paths.receipt);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -136,6 +147,16 @@ export function ProblemReportDialog({
       setCopyNotice("Folder path copied.");
     } catch {
       setCopyNotice("Could not copy the path. Select it below instead.");
+    }
+  }
+
+  async function copyDeveloperHandoff(): Promise<void> {
+    if (!savedPaths) return;
+    try {
+      await navigator.clipboard.writeText(developerHandoffText(workspace, savedPaths.receipt));
+      setCopyNotice("Developer handoff copied.");
+    } catch {
+      setCopyNotice("Could not copy the developer handoff. Copy the report path below instead.");
     }
   }
 
@@ -266,7 +287,7 @@ export function ProblemReportDialog({
                   onChange={(event) => setDraft({ ...draft, includeConversation: event.target.checked })}
                   style={{ marginTop: 2 }}
                 />
-                Include the latest {evidence.events.length} public conversation Events. Tool arguments, tool output, and scratch reasoning are never included.
+                Include the latest {evidence.events.length} public conversation Events. Tool arguments, tool output, visible-output telemetry, and scratch reasoning are never included.
               </label>
               <div style={{
                 border: `1px solid ${tk.border}`, borderRadius: tk.r2, padding: "11px 12px",
@@ -327,9 +348,9 @@ export function ProblemReportDialog({
           {stage === "saved" && savedPaths && (
             <div>
               <div style={{ color: tk.ok, fontSize: 12, fontWeight: 590, marginBottom: 7 }}>Saved locally</div>
-              <h3 style={{ margin: "0 0 8px", color: tk.ink, fontSize: 18, fontWeight: 520 }}>The report has not been shared.</h3>
+              <h3 style={{ margin: "0 0 8px", color: tk.ink, fontSize: 18, fontWeight: 520 }}>Ready for developer handoff</h3>
               <p style={{ margin: "0 0 16px", color: tk.ink3, fontSize: 12.5, lineHeight: 1.5 }}>
-                Give this folder to the local developer agent only when you are satisfied with the preview.
+                The report is now visible in this workspace. It has not been shared because no development connection is configured.
               </p>
               <div style={{ border: `1px solid ${tk.border}`, borderRadius: tk.r2, background: tk.surfaceSunk, padding: 12 }}>
                 <code style={{ color: tk.ink2, wordBreak: "break-all" }}>
@@ -342,6 +363,10 @@ export function ProblemReportDialog({
                   border: `1px solid ${tk.border}`, borderRadius: tk.r2, background: "transparent",
                   color: tk.ink2, padding: "8px 12px", fontSize: 12.5,
                 }}>Copy folder path</button>
+                <button type="button" onClick={() => void copyDeveloperHandoff()} style={{
+                  border: `1px solid ${tk.border}`, borderRadius: tk.r2, background: "transparent",
+                  color: tk.ink2, padding: "8px 12px", fontSize: 12.5,
+                }}>Copy developer handoff</button>
                 <button type="button" onClick={onClose} style={{
                   border: "none", borderRadius: tk.r2, background: tk.accent, color: "#0c1714",
                   padding: "8px 13px", fontSize: 12.5, fontWeight: 590,

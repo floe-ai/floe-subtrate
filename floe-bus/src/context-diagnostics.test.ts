@@ -94,6 +94,13 @@ describe("context diagnostic projection", () => {
       workspace_id: workspaceId,
       endpoint_id: floeId,
       delivery_id: relatedDeliveries.at(-1)!.delivery_id,
+      kind: "visible_output",
+      payload: { text: "full model prose must not consume diagnostic limits" },
+    }, handle.broadcast);
+    handle.store.appendRuntimeTelemetry({
+      workspace_id: workspaceId,
+      endpoint_id: floeId,
+      delivery_id: relatedDeliveries.at(-1)!.delivery_id,
       kind: "BeforeToolUse",
       payload: {
         toolCallId: "call-private",
@@ -137,6 +144,7 @@ describe("context diagnostic projection", () => {
     expect(JSON.stringify(body.telemetry)).not.toContain("should-never-leave-the-bus");
     expect(JSON.stringify(body.telemetry)).not.toContain("call-private");
     expect(JSON.stringify(body.telemetry)).not.toContain("should-be-redacted-by-client");
+    expect(body.telemetry.some((record: any) => record.kind === "visible_output")).toBe(false);
     expect(body.context.endpoints[0]).not.toHaveProperty("metadata_json");
     expect(JSON.stringify(body.context.endpoints)).not.toContain("must-not-leave-endpoint-storage");
     expect(body.capabilities).toEqual(expect.arrayContaining([

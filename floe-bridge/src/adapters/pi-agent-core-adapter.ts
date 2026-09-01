@@ -542,7 +542,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       parameters: Type.Object({
         type: Type.String(),
         destination: Type.String({ description: "A neutral actor ref from list_endpoints, or 'current_context'." }),
-        text: Type.String()
+        text: Type.String(),
+        data: Type.Optional(Type.Record(Type.String(), Type.Unknown({
+          description: "Optional structured Event data. Use only when a client or extension contract requires it."
+        })))
       }),
       execute: async (_toolCallId, params: any) => {
         const turn = session.activeTurn;
@@ -590,6 +593,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           content: {
             text: String(params?.text ?? ""),
             data: {
+              ...(params?.data && typeof params.data === "object" && !Array.isArray(params.data)
+                ? params.data as Record<string, unknown>
+                : {}),
               origin: "pi_emit_tool",
               runtime_turn_id: turn.runtime_turn_id,
               delivery_id: turn.delivery_id,
