@@ -91,6 +91,142 @@ describe("actor-safe capability discovery and invocation", () => {
     ]));
   });
 
+  it("lets an actor inspect and deliberately delete a settled unscoped conversation", async () => {
+    const contextId = handle.store.contextStore.createContext({
+      workspace_id: workspaceId,
+      created_by_endpoint_id: floeEndpointId,
+      participants: [floeEndpointId, builderEndpointId],
+      title: "Obsolete side conversation",
+    });
+
+    const discovered = await handle.app.inject({
+      method: "GET",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities?query=remove%20old%20conversation`,
+    });
+    expect(discovered.json().capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ capability_id: "context.inspect", category: "communication" }),
+      expect.objectContaining({ capability_id: "context.delete", effect: "write" }),
+    ]));
+
+    const inspect = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/context.inspect/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { context_id: contextId },
+      },
+    });
+    expect(inspect.statusCode).toBe(200);
+    expect(inspect.json().result.data.contexts).toEqual([
+      expect.objectContaining({
+        context_id: contextId,
+        scope_id: null,
+        title: "Obsolete side conversation",
+        event_count: 0,
+        queued_or_active_delivery_count: 0,
+      }),
+    ]);
+
+    const unconfirmed = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/context.delete/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { context_id: contextId },
+      },
+    });
+    expect(unconfirmed.statusCode).toBe(400);
+    expect(handle.store.contextStore.getContext(contextId)).not.toBeNull();
+
+    const deleted = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/context.delete/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { context_id: contextId, delete_history: true },
+      },
+    });
+    expect(deleted.statusCode).toBe(201);
+    expect(deleted.json().result).toMatchObject({
+      summary: `Deleted unscoped Context '${contextId}' and its Event history.`,
+      data: { context_id: contextId, workspace_id: workspaceId },
+    });
+    expect(handle.store.contextStore.getContext(contextId)).toBeNull();
+  });
+
+  it("refuses actor deletion of scoped or still-working Contexts", async () => {
+    const scoped = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/scope.compose/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: {
+          scope_id: "preserved-work",
+          title: "Preserved work",
+          event_nodes: [{ node_id: "start", event_type: "work.requested" }],
+          actor_nodes: [{ node_id: "builder", actor: "builder", event_types: ["work.requested"] }],
+        },
+      },
+    });
+    const scopedContextId = scoped.json().result.data.context_id as string;
+    const scopedDelete = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/context.delete/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { context_id: scopedContextId, delete_history: true },
+      },
+    });
+    expect(scopedDelete.statusCode).toBe(409);
+    expect(scopedDelete.json()).toMatchObject({
+      error: "context_deletion_blocked",
+      context_id: scopedContextId,
+      scope_id: "preserved-work",
+    });
+
+    const workingContextId = handle.store.contextStore.createContext({
+      workspace_id: workspaceId,
+      created_by_endpoint_id: floeEndpointId,
+      participants: [floeEndpointId, builderEndpointId],
+    });
+    const bridgeId = "bridge:context-delete-test";
+    handle.store.registerBridge({ bridge_id: bridgeId }, handle.broadcast);
+    handle.store.registerEndpoint({
+      endpoint_id: builderEndpointId,
+      workspace_id: workspaceId,
+      name: "Builder",
+      bridge_id: bridgeId,
+      status: "idle",
+    }, handle.broadcast);
+    handle.store.submitEvent({
+      type: "message",
+      workspace_id: workspaceId,
+      source_endpoint_id: floeEndpointId,
+      destination: { kind: "endpoint", endpoint_id: builderEndpointId },
+      thread_id: "",
+      correlation_id: null,
+      content: { text: "Still working" },
+      metadata: {},
+      idempotency_key: null,
+      context_id: workingContextId,
+    }, handle.broadcast);
+    const workingDelete = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities/context.delete/invoke`,
+      payload: {
+        caller_endpoint_id: floeEndpointId,
+        input: { context_id: workingContextId, delete_history: true },
+      },
+    });
+    expect(workingDelete.statusCode).toBe(409);
+    expect(workingDelete.json()).toMatchObject({
+      error: "context_deletion_blocked",
+      context_id: workingContextId,
+      queued_or_active_delivery_count: 1,
+    });
+    expect(handle.store.contextStore.getContext(workingContextId)).not.toBeNull();
+  });
+
   it("composes, inspects, and starts real Scope work through the generic endpoint", async () => {
     const compose = await handle.app.inject({
       method: "POST",

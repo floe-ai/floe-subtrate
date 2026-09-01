@@ -57,6 +57,13 @@ it:
 - **Clear-history** — delete all events, keeping the context, its participants
   and its subscriptions intact. Cannot run while a delivery is active.
 
+An obsolete unscoped conversation may instead be deleted together with its
+history. Runtime actors discover this operation through the Bus-owned
+capability surface. Actor invocation requires an explicit history-deletion
+acknowledgement and refuses scoped Contexts or Contexts with queued, active, or
+dependent work. Scoped operational history is handled through Scope retirement
+or safe removal at the organising boundary.
+
 ## Participants change dynamically
 
 Participants aren't fixed at creation. They're added and removed as work
@@ -78,6 +85,7 @@ context it came from as its parent.
 - `floe-bus/src/server.ts` — `POST /v1/contexts/:id/subscriptions`, `DELETE /v1/contexts/:id/subscriptions/:endpoint_id`, `GET /v1/contexts/:id/subscriptions`
 - `floe-bus/src/server.ts` — `POST /v1/contexts/:id/subscriptions:batch` — participants + subscriptions applied atomically
 - `floe-bus/src/server.ts` — `POST /v1/contexts/:id/compact`, `POST /v1/contexts/:id/clear-history`
+- `floe-bus/src/actor-capabilities.ts` — discoverable Context inspection and safe unscoped-conversation deletion
 - `floe-bus/src/server.ts` — `GET /v1/contexts/:id/children`, `GET /v1/contexts/:id`, `GET /v1/contexts/:id/events`
 - `floe-bus/src/contexts/participants.test.ts`, `subscriptions.test.ts`, `compaction.test.ts`, `batch-subscriptions.test.ts` — behaviour tests for the above
 

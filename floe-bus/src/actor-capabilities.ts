@@ -281,6 +281,137 @@ const scopeRemoveInputSchema: JsonSchema = {
   },
 };
 
+const contextInspectInputSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    context_id: {
+      type: "string",
+      minLength: 1,
+      description: "Optional Context id to inspect; omit it to inspect recent Contexts in this workspace.",
+    },
+    limit: {
+      type: "integer",
+      minimum: 1,
+      maximum: 100,
+      description: "Maximum recent Contexts to return when context_id is omitted. Defaults to 50.",
+    },
+  },
+};
+
+const contextDeleteInputSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["context_id", "delete_history"],
+  properties: {
+    context_id: {
+      type: "string",
+      minLength: 1,
+      description: "Unscoped conversation Context id returned by Context inspection.",
+    },
+    delete_history: {
+      const: true,
+      description: "Must be true to acknowledge that the Context and its Event history will be permanently deleted.",
+    },
+  },
+};
+
+function countQueuedOrActiveContextDeliveries(context: ActorCapabilityContext, contextId: string): number {
+  return Number((context.store.db.prepare(`
+    SELECT COUNT(DISTINCT q.delivery_id) AS count
+    FROM event_queue q
+    JOIN events e ON e.event_id = q.event_id
+    WHERE e.context_id = ?
+      AND q.state IN ('queued', 'reserved', 'delivered_to_bridge', 'injected_to_runtime')
+  `).get(contextId) as { count: number }).count);
+}
+
+function inspectContexts(context: ActorCapabilityContext, input: Record<string, unknown>): ActorCapabilityResult {
+  const requested = typeof input.context_id === "string" ? input.context_id.trim() : "";
+  const requestedContext = requested ? context.store.contextStore.getContext(requested) : null;
+  if (requested && requestedContext?.workspace_id !== context.workspaceId) {
+    throw new ActorCapabilityError(
+      "context_not_found",
+      `Context '${requested}' does not exist in this workspace.`,
+      404,
+      { context_id: requested },
+    );
+  }
+  const contexts = requestedContext
+    ? [requestedContext]
+    : context.store.contextStore.listContextsForWorkspace(context.workspaceId, {
+      scope: "all",
+      limit: typeof input.limit === "number" ? input.limit : 50,
+    });
+  const inspected = contexts.map((item) => {
+    const contextId = item.context_id;
+    const eventCount = Number((context.store.db.prepare(
+      "SELECT COUNT(*) AS count FROM events WHERE context_id = ?",
+    ).get(contextId) as { count: number }).count);
+    return {
+      ...item,
+      participants: context.store.contextStore.getContextParticipants(contextId),
+      event_count: eventCount,
+      queued_or_active_delivery_count: countQueuedOrActiveContextDeliveries(context, contextId),
+      latest_message_preview: context.store.contextStore.getLatestMessagePreview(contextId),
+    };
+  });
+  return {
+    summary: inspected.length === 0
+      ? "No Contexts exist in this workspace."
+      : `Found ${inspected.length} recent Context${inspected.length === 1 ? "" : "s"}.`,
+    data: { contexts: inspected },
+  };
+}
+
+function deleteContext(context: ActorCapabilityContext, input: Record<string, unknown>): ActorCapabilityResult {
+  const contextId = String(input.context_id);
+  const target = context.store.contextStore.getContext(contextId);
+  if (!target || target.workspace_id !== context.workspaceId) {
+    throw new ActorCapabilityError(
+      "context_not_found",
+      `Context '${contextId}' does not exist in this workspace.`,
+      404,
+      { context_id: contextId },
+    );
+  }
+  if (target.scope_id) {
+    throw new ActorCapabilityError(
+      "context_deletion_blocked",
+      `Context '${contextId}' belongs to Scope '${target.scope_id}'. Retire or remove the Scope so operational history is handled at its organising boundary.`,
+      409,
+      { context_id: contextId, scope_id: target.scope_id },
+    );
+  }
+  const queuedOrActiveDeliveryCount = countQueuedOrActiveContextDeliveries(context, contextId);
+  const pendingResponseCount = Number((context.store.db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM pending_responses pr
+    JOIN events e ON e.event_id = pr.source_event_id
+    WHERE e.context_id = ?
+  `).get(contextId) as { count: number }).count);
+  if (queuedOrActiveDeliveryCount > 0 || pendingResponseCount > 0) {
+    throw new ActorCapabilityError(
+      "context_deletion_blocked",
+      `Context '${contextId}' still has queued, active, or dependent work. Wait for it to settle before deleting it.`,
+      409,
+      {
+        context_id: contextId,
+        queued_or_active_delivery_count: queuedOrActiveDeliveryCount,
+        pending_response_count: pendingResponseCount,
+      },
+    );
+  }
+  const deleted = context.store.deleteContext(contextId, context.broadcast);
+  if (!deleted) {
+    throw new ActorCapabilityError("context_not_found", `Context '${contextId}' no longer exists.`, 404, { context_id: contextId });
+  }
+  return {
+    summary: `Deleted unscoped Context '${contextId}' and its Event history.`,
+    data: deleted,
+  };
+}
+
 function inspectScopes(context: ActorCapabilityContext, input: Record<string, unknown>): ActorCapabilityResult {
   const requested = typeof input.scope_id === "string" ? input.scope_id.trim() : "";
   const scopes = context.store.listScopes(context.workspaceId);
@@ -589,6 +720,26 @@ function removeUnusedScope(context: ActorCapabilityContext, input: Record<string
 }
 
 const definitions: ActorCapabilityDefinition[] = [
+  {
+    capability_id: "context.inspect",
+    category: "communication",
+    title: "Inspect workspace Contexts",
+    description:
+      "Inspect recent Contexts, participants, Scope anchors, history size, latest message, and queued or active work before deciding whether an obsolete conversation can be deleted.",
+    effect: "read",
+    input_schema: contextInspectInputSchema,
+    invoke: inspectContexts,
+  },
+  {
+    capability_id: "context.delete",
+    category: "communication",
+    title: "Delete an obsolete conversation",
+    description:
+      "Permanently delete one unscoped conversation Context and its Event history after explicit confirmation. The operation refuses scoped Contexts and Contexts with queued, active, or dependent work. Use Scope retirement or removal for organised operational history.",
+    effect: "write",
+    input_schema: contextDeleteInputSchema,
+    invoke: deleteContext,
+  },
   {
     capability_id: "scope.inspect",
     category: "organisation",

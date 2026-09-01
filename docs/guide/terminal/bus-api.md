@@ -96,8 +96,9 @@ The Bus exposes a bounded semantic surface for runtime actors. It is not raw acc
 | POST | `/v1/workspaces/:workspace_id/capabilities/:capability_id/invoke` | `{ input, caller_endpoint_id? }` | Invokes an allow-listed capability. The exact schema returned by discovery validates `input`. |
 
 Runtime actors use the stable `discover_capabilities` and `use_capability` tools over this surface. The
-Bridge does not carry capability-specific descriptions or schemas. Scope inspection, composition,
-manual Event activation, in-place correction, safe removal of unused organisation, and history-preserving Scope retirement are registered operations; their live contracts come from discovery,
+Bridge does not carry capability-specific descriptions or schemas. Context inspection and guarded
+unscoped-conversation deletion, Scope inspection, composition, manual Event activation, in-place
+correction, safe removal of unused organisation, and history-preserving Scope retirement are registered operations; their live contracts come from discovery,
 not from this guide. See ADR-0009.
 
 ## Endpoints (actors)
