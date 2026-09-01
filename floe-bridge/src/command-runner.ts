@@ -10,6 +10,9 @@ const EXECUTION_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 const OUTPUT_TRUNCATE_CHARS = 4000;
 
+/** Background substrate work must never flash a console window in the desktop app. */
+export const HIDDEN_WINDOWS_CHILD_PROCESS = { windowsHide: true } as const;
+
 /** Local mirror of the bus's ScopeGraphCommandInput shape — the bridge does not import floe-bus types directly. */
 export type CommandNodeInput = {
   name: string;
@@ -92,7 +95,12 @@ export function executeCommand(resolvedCommand: string, cwd: string, signal?: Ab
     let settled = false;
     const child = exec(
       resolvedCommand,
-      { cwd, timeout: EXECUTION_TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES },
+      {
+        cwd,
+        timeout: EXECUTION_TIMEOUT_MS,
+        maxBuffer: MAX_BUFFER_BYTES,
+        ...HIDDEN_WINDOWS_CHILD_PROCESS,
+      },
       (error, stdout, stderr) => {
         if (settled) return;
         settled = true;
@@ -113,7 +121,12 @@ export function executeCommand(resolvedCommand: string, cwd: string, signal?: Ab
       if (settled) return;
       settled = true;
       if (process.platform === "win32" && child.pid) {
-        execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], () => {});
+        execFile(
+          "taskkill",
+          ["/PID", String(child.pid), "/T", "/F"],
+          HIDDEN_WINDOWS_CHILD_PROCESS,
+          () => {},
+        );
       } else {
         child.kill("SIGTERM");
       }

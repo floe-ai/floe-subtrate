@@ -7,6 +7,7 @@ import {
   executeCommand,
   runCommandNode,
   CommandInputMissingError,
+  HIDDEN_WINDOWS_CHILD_PROCESS,
   type CommandNodeConfig
 } from "./command-runner.js";
 
@@ -102,6 +103,10 @@ describe("buildCommandResultContent", () => {
 });
 
 describe("executeCommand", () => {
+  it("keeps deterministic command and cancellation helpers hidden from desktop users", () => {
+    expect(HIDDEN_WINDOWS_CHILD_PROCESS).toEqual({ windowsHide: true });
+  });
+
   it("reports passed: true and exit_code: 0 on success", async () => {
     const facts = await executeCommand(`node -e "process.exit(0)"`, process.cwd());
     expect(facts.passed).toBe(true);
