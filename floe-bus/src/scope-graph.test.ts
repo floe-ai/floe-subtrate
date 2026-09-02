@@ -146,6 +146,7 @@ describe("Scope Graph API", () => {
     });
     expect(duplicate.statusCode).toBe(201);
     expect(duplicate.json().events[0].event_id).toBe(events[0].event_id);
+    expect(duplicate.json().events[0].metadata.trigger_fire_id).toBe(events[0].metadata.trigger_fire_id);
     expect((handle.store.db.prepare("SELECT COUNT(*) AS count FROM events").get() as { count: number }).count).toBe(1);
 
     // The graph persists as read afterward — it did not vanish on firing.
@@ -155,6 +156,50 @@ describe("Scope Graph API", () => {
     });
     expect(reread.statusCode).toBe(200);
     expect(reread.json().graph.graph_id).toBe(graph.graph_id);
+  });
+
+  it("identifies one trigger firing across every subscribed endpoint", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp);
+    const planner = `actor:${workspaceId}:planner`;
+    const builder = `actor:${workspaceId}:builder`;
+    registerEndpoint(handle, workspaceId, planner);
+    registerEndpoint(handle, workspaceId, builder);
+    await createScope(handle, workspaceId, "pipeline");
+
+    const created = await handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/scopes/pipeline/graphs`,
+      payload: {
+        nodes: [
+          { node_id: "work-arrived", kind: "trigger", event_type: "work.arrived" },
+          { node_id: "planner", kind: "actor", endpoint_id: planner, event_types: ["work.arrived"] },
+          { node_id: "builder", kind: "actor", endpoint_id: builder, event_types: ["work.arrived"] },
+        ],
+      },
+    });
+    const graph = created.json().graph;
+    const fire = (idempotencyKey: string) => handle.app.inject({
+      method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/work-arrived/fire`,
+      payload: { content: { work_id: "work-1" }, idempotency_key: idempotencyKey },
+    });
+
+    const first = await fire("work-arrived:1");
+    const firstEvents = first.json().events;
+    expect(firstEvents).toHaveLength(2);
+    expect(new Set(firstEvents.map((event: any) => event.metadata.trigger_fire_id)).size).toBe(1);
+    expect(firstEvents[0].metadata.trigger_fire_id).toMatch(/^trigger_fire_[a-f0-9]{32}$/);
+
+    const retry = await fire("work-arrived:1");
+    expect(retry.json().events.map((event: any) => event.event_id)).toEqual(
+      firstEvents.map((event: any) => event.event_id),
+    );
+    expect(retry.json().events.map((event: any) => event.metadata.trigger_fire_id)).toEqual(
+      firstEvents.map((event: any) => event.metadata.trigger_fire_id),
+    );
+
+    const separate = await fire("work-arrived:2");
+    expect(separate.json().events[0].metadata.trigger_fire_id).not.toBe(firstEvents[0].metadata.trigger_fire_id);
   });
 
   it("does not wake an actor whose Context subscription does not match the trigger's event type", async () => {

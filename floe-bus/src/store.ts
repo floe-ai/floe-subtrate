@@ -1233,6 +1233,9 @@ export class BusStore {
 
     const subscriptions = this.contextStore.getContextSubscriptions(graph.context_id)
       .filter((subscription) => subscription.event_types.includes("*") || subscription.event_types.includes(node.event_type));
+    const triggerFireId = input.idempotency_key
+      ? `trigger_fire_${stableHash(input.idempotency_key).slice(0, 32)}`
+      : `trigger_fire_${randomUUID()}`;
 
     return subscriptions.map((subscription) =>
       this.emitTriggerEvent(
@@ -1246,7 +1249,8 @@ export class BusStore {
           metadata: {
             trigger_kind: "scope_graph",
             graph_id: input.graph_id,
-            node_id: input.node_id
+            node_id: input.node_id,
+            trigger_fire_id: triggerFireId
           },
           idempotency_key: input.idempotency_key
             ? `${input.idempotency_key}:${subscription.endpoint_id}`
