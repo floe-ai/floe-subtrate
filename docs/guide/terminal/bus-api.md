@@ -52,6 +52,7 @@ Gated on `bridge.workspace_access.local_paths` in config; returns 403 `fs_disabl
 | GET | `/v1/fs/browse?path=` | — | Directory listing. |
 | GET | `/v1/workspaces/:workspace_id/fs/agents` | — | Lists agent files under the workspace. |
 | GET | `/v1/workspaces/:workspace_id/fs/file?path=` | — | Reads a file (path must resolve within the workspace root). |
+| GET | `/v1/workspaces/:workspace_id/fs/media?path=` | — | Streams a workspace-contained PNG, JPEG, WebP, or GIF for safe client preview; 20 MB limit and no caching. |
 | PUT | `/v1/workspaces/:workspace_id/fs/file` | `{ path, contents }` | Writes a file, creating parent dirs. |
 
 ## Scopes

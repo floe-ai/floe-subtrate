@@ -13,8 +13,20 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use base64::Engine;
 
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+const MAX_PREVIEW_BYTES: usize = 20 * 1024 * 1024;
+
+fn preview_media_type(path: &str) -> Option<&'static str> {
+    match Path::new(path).extension()?.to_string_lossy().to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
 
 #[derive(Debug, serde::Serialize)]
 pub struct StagedAttachment {
@@ -209,6 +221,21 @@ fn collect_md_files(dir: &Path, canonical_root: &Path, out: &mut Vec<String>) ->
 pub fn read_file(workspace_root: String, rel_path: String) -> Result<String, String> {
     let resolved = resolve_within_root(&workspace_root, &rel_path).map_err(|e| e.to_string())?;
     fs::read_to_string(&resolved).map_err(|e| e.to_string())
+}
+
+/// Read a workspace-contained raster image as a browser-safe data URL.
+#[tauri::command]
+pub fn read_media_file(workspace_root: String, rel_path: String) -> Result<String, String> {
+    let media_type = preview_media_type(&rel_path)
+        .ok_or_else(|| "Only raster image previews are supported.".to_string())?;
+    let resolved = resolve_within_root(&workspace_root, &rel_path).map_err(|e| e.to_string())?;
+    let size = fs::metadata(&resolved).map_err(|e| e.to_string())?.len();
+    if size > MAX_PREVIEW_BYTES as u64 {
+        return Err("The image exceeds the 20MB preview limit.".to_string());
+    }
+    let bytes = fs::read(&resolved).map_err(|e| e.to_string())?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{media_type};base64,{encoded}"))
 }
 
 /// Write `contents` to `rel_path` under `workspace_root`, creating parent
@@ -458,6 +485,29 @@ mod tests {
             "pwned".to_string(),
         );
         assert!(result.is_err());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reads_workspace_image_as_data_url() {
+        let root = temp_workspace();
+        fs::write(root.join("preview.png"), b"png bytes").unwrap();
+        let preview = read_media_file(
+            root.to_str().unwrap().to_string(),
+            "preview.png".to_string(),
+        )
+        .unwrap();
+        assert_eq!(preview, "data:image/png;base64,cG5nIGJ5dGVz");
+        assert!(read_media_file(
+            root.to_str().unwrap().to_string(),
+            "../outside.png".to_string(),
+        )
+        .is_err());
+        assert!(read_media_file(
+            root.to_str().unwrap().to_string(),
+            "notes.md".to_string(),
+        )
+        .is_err());
         fs::remove_dir_all(&root).ok();
     }
 

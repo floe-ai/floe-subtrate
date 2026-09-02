@@ -36,7 +36,7 @@ import type {
 } from "./types.ts";
 import { subscribeEvents as _subscribeEvents } from "./stream.ts";
 
-const BUS_BASE = "http://127.0.0.1:5377";
+const BUS_BASE = import.meta.env.VITE_FLOE_BUS_BASE ?? "http://127.0.0.1:5377";
 const BUS_MUTATION_TIMEOUT_MS = 5_000;
 
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -198,6 +198,11 @@ export async function busReadFile(workspaceId: string, relPath: string): Promise
     `/v1/workspaces/${encodeURIComponent(workspaceId)}/fs/file?path=${encodeURIComponent(relPath)}`
   );
   return data.contents;
+}
+
+/** Workspace-contained raster preview URL for a plain-browser console. */
+export function busWorkspaceMediaUrl(workspaceId: string, relPath: string): string {
+  return `${BUS_BASE}/v1/workspaces/${encodeURIComponent(workspaceId)}/fs/media?path=${encodeURIComponent(relPath)}`;
 }
 
 /** PUT /v1/workspaces/:id/fs/file — write a file under the workspace root, creating parent dirs as needed. */

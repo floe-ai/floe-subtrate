@@ -6,8 +6,8 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, extname, resolve } from "node:path";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { parseListen } from "./config.js";
@@ -36,6 +36,18 @@ import { registerContextDiagnosticRoutes } from "./context-diagnostics.js";
 
 const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const BRIDGE_LIVENESS_MS = 90_000;
+const MAX_WORKSPACE_MEDIA_BYTES = 20 * 1024 * 1024;
+
+function workspaceMediaType(path: string): string | null {
+  switch (extname(path).toLowerCase()) {
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".webp": return "image/webp";
+    case ".gif": return "image/gif";
+    default: return null;
+  }
+}
 
 const EventCommandSchema = z.object({
   type: z.string().min(1),
@@ -764,6 +776,28 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       const resolved = resolveWithinRoot(locator, query.path);
       const contents = readFileSync(resolved, "utf8");
       return { contents };
+    } catch (err) {
+      return reply.send(mapFsError(err, reply));
+    }
+  });
+
+  app.get("/v1/workspaces/:workspace_id/fs/media", async (request, reply) => {
+    if (!fsAccessEnabled()) return sendFsDisabled(reply);
+    const params = z.object({ workspace_id: z.string() }).parse(request.params);
+    const query = z.object({ path: z.string().min(1) }).parse(request.query);
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    const mediaType = workspaceMediaType(query.path);
+    if (!mediaType) {
+      return reply.code(415).send({ error: "unsupported_media", message: "Only raster image previews are supported." });
+    }
+    try {
+      const resolved = resolveWithinRoot(locator, query.path);
+      if (statSync(resolved).size > MAX_WORKSPACE_MEDIA_BYTES) {
+        return reply.code(413).send({ error: "media_too_large", message: "The image exceeds the 20MB preview limit." });
+      }
+      reply.header("cache-control", "no-store");
+      return reply.type(mediaType).send(readFileSync(resolved));
     } catch (err) {
       return reply.send(mapFsError(err, reply));
     }

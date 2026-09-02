@@ -1,7 +1,7 @@
 /**
  * HTTP-level tests for the workspace filesystem surface added to server.ts
  * (/v1/fs/capability, /v1/fs/browse, /v1/workspaces/:id/fs/agents,
- * /v1/workspaces/:id/fs/file). These are additive routes consumed by
+ * /v1/workspaces/:id/fs/file, /v1/workspaces/:id/fs/media). These are additive routes consumed by
  * floe-app when the console is remote from the box running the bus.
  */
 import { describe, expect, it } from "vitest";
@@ -285,6 +285,49 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
         url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent(".floe/agents/deeply/nested/agent.md")}`
       });
       expect(getRes.json().contents).toBe("nested");
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("GET /v1/workspaces/:workspace_id/fs/media", () => {
+  it("serves a workspace-contained raster image without caching stale bytes", async () => {
+    const { handle, cleanup, workspaceDir } = await makeServer();
+    try {
+      const wsId = await registerWorkspace(handle, workspaceDir);
+      const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      writeFileSync(join(workspaceDir, "preview.png"), bytes);
+      const res = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("preview.png")}`
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("image/png");
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.rawPayload).toEqual(bytes);
+    } finally {
+      await cleanup();
+    }
+  }, 15_000);
+
+  it("rejects non-image files and paths outside the workspace", async () => {
+    const { handle, cleanup, workspaceDir } = await makeServer();
+    try {
+      const wsId = await registerWorkspace(handle, workspaceDir);
+      writeFileSync(join(workspaceDir, "notes.md"), "notes");
+      const unsupported = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("notes.md")}`
+      });
+      expect(unsupported.statusCode).toBe(415);
+
+      const escaped = await handle.app.inject({
+        method: "GET",
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("../outside.png")}`
+      });
+      expect(escaped.statusCode).toBe(400);
+      expect(escaped.json().error).toBe("path_escapes_root");
     } finally {
       await cleanup();
     }

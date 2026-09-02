@@ -5,6 +5,8 @@ import {
   findArtifactGraphPath,
   parseArtifactLineageGraph,
 } from "./ArtifactLineageView.tsx";
+import { artifactFileKind } from "./ArtifactPreview.tsx";
+import { artifactGraphNeighborhood } from "./ArtifactRelationshipGraph.tsx";
 
 function event(type: string, text: string): EventEnvelope {
   return {
@@ -60,5 +62,17 @@ describe("artifact lineage projection", () => {
       expect.objectContaining({ relation: "analyzed_into", node: expect.objectContaining({ id: "source:r1" }) }),
     ]);
     expect(graph.nodes[1]?.contextRefs).toEqual(["ctx:manifest"]);
+    expect(artifactGraphNeighborhood(graph, "source:r1").nodes.map(item => item.artifact.id)).toEqual([
+      "source:r1",
+      "manifest:r1",
+    ]);
+  });
+
+  it("selects an appropriate preview for common artifact file types", () => {
+    expect(artifactFileKind("concept.png")).toBe("image");
+    expect(artifactFileKind("contact-sheet.JPG")).toBe("image");
+    expect(artifactFileKind("registry.json")).toBe("json");
+    expect(artifactFileKind("review.md")).toBe("markdown");
+    expect(artifactFileKind("output/reference-set")).toBe("folder");
   });
 });

@@ -25,7 +25,7 @@ If no Floe conversation exists, the app asks what outcome the operator wants. Su
 
 The list contains only Contexts where the ordinary workspace operator is already a participant; actor-to-actor operational traffic is not promoted into this view. Floe is the default collaborator and new-outcome target, not a separate navigation hierarchy.
 
-Active Scopes appear under **Organised work** on the same index. Opening one shows the current Actor and Command responsibilities plus planned “Event → participant” routes derived from subscriptions. Selecting any planned node reveals the executions that reached it; **Context history** exposes the complete shared scoped Context separately. When public workspace Events reference an extension-owned artifact-lineage document, **Artifacts** remains on the Workspace index even after the originating Scope stops. It navigates from a source artifact to its immediate upstream and downstream artifacts and opens related Context history. The app reads the existing lineage document; it does not store another graph or decide invalidation policy. Retired Scopes remain available under Developer tools for history/debugging and do not appear as active organisation.
+Active Scopes appear under **Organised work** on the same index. Opening one shows the current Actor and Command responsibilities plus planned “Event → participant” routes derived from subscriptions. Selecting any planned node reveals the executions that reached it; **Context history** exposes the complete shared scoped Context separately. When public workspace Events reference an extension-owned artifact-lineage document, **Artifacts** remains on the Workspace index even after the originating Scope stops. **Visual trail** shows the selected artifact between its immediate upstream and downstream artifacts. **Relationship graph** shows the same nearby relationships as an interactive graph. Raster images appear directly; selected JSON and Markdown files show a readable preview. Related Context history remains accessible from either view. The app reads the existing lineage document and safe workspace-contained files; it does not store another graph or decide invalidation policy. Retired Scopes remain available under Developer tools for history/debugging and do not appear as active organisation.
 
 An incoming message addressed to the operator with a response expected appears under **Needs you**. Once the operator replies, the conversation returns to **Recent**. This is an interpretation of existing Event response metadata, not separate task or notification state.
 
@@ -72,7 +72,7 @@ See [[Glossary]].
 - `floe-app/src/hooks/useNavigation.ts` — navigation state machine
 - `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator entry, conversation lifecycle, list, and attention projection
 - `floe-app/src/features/work/ScopeWorkView.tsx` — read-only Scope plan, per-node executions, scoped Context history, and extension-owned artifact-lineage entry
-- `floe-app/src/features/work/ArtifactLineageView.tsx` — bounded artifact lineage projection with related Context history
+- `floe-app/src/features/work/ArtifactLineageView.tsx` — visual trail and relationship-graph projections with related Context history
 - `floe-app/src/workspace/FloeModelControl.tsx` — inline workspace model selection and readiness gate
 - `floe-app/src/features/home/HomeView.tsx` — scope grid
 - `floe-app/src/scope/ScopeDetail.tsx` — Contexts/Ops/extension tabs

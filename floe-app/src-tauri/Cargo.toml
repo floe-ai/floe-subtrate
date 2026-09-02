@@ -1,6 +1,6 @@
 [package]
 name = "floe-console"
-version = "0.1.30"
+version = "0.1.31"
 description = "Floe substrate console (Tauri shell)"
 authors = ["floe"]
 license = ""
@@ -26,3 +26,4 @@ tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 thiserror = "2"
 serde_yaml = "0.9"
+base64 = "0.22"

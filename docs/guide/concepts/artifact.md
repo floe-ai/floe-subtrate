@@ -38,6 +38,6 @@ steps — nothing implicit sits behind it.
 
 - `floe-bus/src/scope-graphs.ts` — `ScopeGraphCommandOutput`, `buildCommandResultContent` in `floe-bridge/src/command-runner.ts` (outputs narrow, raw facts still available when none declared)
 - `floe-bus/src/fs/agentFiles.ts`, `floe-bus/src/fs/browseDir.ts` — the file carrier's storage
-- `floe-bus/src/server.ts` — `GET`/`PUT /v1/workspaces/:workspace_id/fs/file` — reading and writing a file artifact
+- `floe-bus/src/server.ts` — `GET`/`PUT /v1/workspaces/:workspace_id/fs/file` for reading and writing a file artifact, plus `GET /v1/workspaces/:workspace_id/fs/media` for safe raster preview
 
 See [[Glossary]].

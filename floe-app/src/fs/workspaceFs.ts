@@ -98,6 +98,18 @@ export async function readWorkspaceFile(
   return busReadFile(workspace.workspace_id, relPath);
 }
 
+/** Resolve a workspace-contained raster image for an <img> preview. */
+export async function workspaceMediaSource(
+  workspace: WorkspaceFsRef,
+  relPath: string,
+): Promise<string> {
+  if (isTauri()) {
+    return invokeTauri<string>("read_media_file", { workspaceRoot: workspace.locator, relPath });
+  }
+  const { busWorkspaceMediaUrl } = await import("../bus-client/client.ts");
+  return busWorkspaceMediaUrl(workspace.workspace_id, relPath);
+}
+
 /**
  * Write `contents` to `relPath` under `workspace`, creating parent
  * directories as needed.

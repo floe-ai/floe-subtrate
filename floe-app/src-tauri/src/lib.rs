@@ -209,6 +209,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       fs_commands::list_agent_files,
       fs_commands::read_file,
+      fs_commands::read_media_file,
       fs_commands::write_file,
       fs_commands::stage_attachment,
       substrate_commands::get_substrate_auth_profiles,
