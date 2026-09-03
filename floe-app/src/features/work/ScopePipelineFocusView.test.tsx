@@ -379,6 +379,88 @@ describe("Scope pipeline focus projection", () => {
     expect(projection.nodes.find((item) => item.node.node_id === "registry-duplicate")?.executions).toEqual([]);
     expect(projection.routes.some((route) => route.kind === "actor-emission" && route.sourceNodeId.startsWith("registry"))).toBe(false);
   });
+
+  it("joins an exact command result to its Event node and current Artifact", () => {
+    const commandResult = {
+      ...event("event:command-result", "contact-sheet.ready", "context:concept", SCOPE, {
+        command_node: true,
+        graph_id: "graph:current",
+        node_id: "contact-sheet-command",
+        cause_event_id: "event:found-command",
+        delivery_id: "delivery:command",
+      }),
+      source_endpoint_id: COMMAND,
+    };
+    const graph: ArtifactLineageGraph = {
+      ...artifactGraph,
+      nodes: [
+        ...artifactGraph.nodes,
+        {
+          id: "artifact:contact-sheet",
+          type: "contact-sheet",
+          path: "output/contact-sheet.png",
+          status: "current",
+          revision: 1,
+          conceptName: "overgrown-courtyard",
+          contextRefs: ["context:concept"],
+          raw: { display_name: "Current contact sheet", event_refs: ["event:command-result"] },
+        },
+      ],
+    };
+
+    const projection = buildScopePipelineFocusProjection({
+      composition,
+      contexts,
+      events: [...events, commandResult],
+      deliveries,
+      artifactGraph: graph,
+    });
+    const command = projection.nodes.find((item) => item.node.node_id === "contact-sheet-command");
+    const ready = projection.nodes.find((item) => item.node.node_id === "contact-sheet-ready");
+
+    expect(command?.executions[0]?.producedArtifacts.map((artifact) => artifact.id)).toEqual(["artifact:contact-sheet"]);
+    expect(ready?.executions.map((execution) => execution.executionId)).toEqual([
+      "contact-sheet-ready:event:event:command-result",
+    ]);
+    expect(projection.routes).toContainEqual({
+      sourceNodeId: "contact-sheet-command",
+      targetNodeId: "contact-sheet-ready",
+      kind: "command-result",
+      eventType: "contact-sheet.ready",
+      sourceExecutionId: "delivery:command",
+      targetExecutionId: "event:command-result",
+    });
+  });
+
+  it("recognises a 0.1.32 command result from its exact graph and node references", () => {
+    const legacyCommandResult = {
+      ...event("event:legacy-command-result", "contact-sheet.ready", "context:concept", SCOPE, {
+        command_node: true,
+        graph_id: "graph:current",
+        node_id: "contact-sheet-command",
+      }),
+      source_endpoint_id: COMMAND,
+    };
+
+    const projection = buildScopePipelineFocusProjection({
+      composition,
+      contexts,
+      events: [...events, legacyCommandResult],
+      deliveries,
+      artifactGraph,
+    });
+
+    expect(projection.nodes.find((item) => item.node.node_id === "contact-sheet-ready")?.executions)
+      .toHaveLength(1);
+    expect(projection.routes).toContainEqual({
+      sourceNodeId: "contact-sheet-command",
+      targetNodeId: "contact-sheet-ready",
+      kind: "command-result",
+      eventType: "contact-sheet.ready",
+      sourceExecutionId: null,
+      targetExecutionId: "event:legacy-command-result",
+    });
+  });
 });
 
 describe("ScopePipelineFocusView", () => {
@@ -631,5 +713,34 @@ describe("ScopePipelineFocusView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open Context" }));
     expect(onOpenContext).toHaveBeenCalledWith("context:concept");
+  });
+
+  it("shows an observed command result once instead of its duplicate planned route", () => {
+    const commandResult = {
+      ...event("event:command-result", "contact-sheet.ready", "context:concept", SCOPE, {
+        command_node: true,
+        graph_id: "graph:current",
+        node_id: "contact-sheet-command",
+        cause_event_id: "event:found-command",
+        delivery_id: "delivery:command",
+      }),
+      source_endpoint_id: COMMAND,
+    };
+    render(
+      <ScopePipelineFocusView
+        composition={composition}
+        contexts={contexts}
+        events={[...events, commandResult]}
+        deliveries={deliveries}
+        endpoints={endpoints}
+        artifactGraph={artifactGraph}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Follow Build contact sheets" }));
+
+    expect(screen.getByText("1 observed")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Follow Contact sheet ready" })).toHaveLength(1);
+    expect(screen.queryByText(/Other planned routes/)).toBeNull();
   });
 });

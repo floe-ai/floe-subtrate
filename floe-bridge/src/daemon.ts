@@ -1019,7 +1019,14 @@ export class BridgeDaemon {
         context_id: config.context_id,
         thread_id: config.context_id,
         content: resultContent,
-        metadata: { command_node: true, graph_id: config.graph_id, node_id: config.node_id }
+        metadata: {
+          command_node: true,
+          graph_id: config.graph_id,
+          node_id: config.node_id,
+          cause_event_id: delivery.trigger_event_id,
+          delivery_id: delivery.delivery_id
+        },
+        idempotency_key: `command-result:${delivery.endpoint_id}:${delivery.trigger_event_id}`
       });
       await this.bus.reportDeliveryStatus(this.bridgeId, delivery.delivery_id, "acknowledged");
       await this.reportTurnEndSafely(delivery.endpoint_id);

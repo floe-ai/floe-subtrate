@@ -198,13 +198,27 @@ export function buildScopePipelineFocusProjection({
   }
 
   for (const event of scopedEvents) {
+    if (event.metadata?.origin === "runtime_turn_result") continue;
     const deliveryId = stringMetadata(event.metadata?.delivery_id);
-    if (!deliveryId || event.metadata?.origin === "runtime_turn_result") continue;
-    const delivery = deliveriesById.get(deliveryId);
-    if (!delivery || delivery.endpoint_id !== event.source_endpoint_id) continue;
-    const sourceNodes = participantNodes.filter((node) =>
-      node.kind === "actor" && node.endpoint_id === delivery.endpoint_id
-    );
+    const delivery = deliveryId ? deliveriesById.get(deliveryId) : null;
+    if (deliveryId && (!delivery || delivery.endpoint_id !== event.source_endpoint_id)) continue;
+
+    const commandNodeId = event.metadata?.command_node === true
+      && event.metadata?.graph_id === composition.graph_id
+      ? stringMetadata(event.metadata?.node_id)
+      : null;
+    const sourceNodes = commandNodeId
+      ? participantNodes.filter((node) =>
+        node.kind === "command"
+        && node.node_id === commandNodeId
+        && node.endpoint_id === event.source_endpoint_id
+        && node.result_event_type === event.type
+      )
+      : delivery
+        ? participantNodes.filter((node) =>
+          node.kind === "actor" && node.endpoint_id === delivery.endpoint_id
+        )
+        : [];
     const targetNodeIds = eventNodeIdsByType.get(event.type) ?? [];
     if (sourceNodes.length !== 1 || targetNodeIds.length !== 1) continue;
     const sourceNode = sourceNodes[0]!;
@@ -213,9 +227,9 @@ export function buildScopePipelineFocusProjection({
     addRoute({
       sourceNodeId: sourceNode.node_id,
       targetNodeId,
-      kind: "actor-emission",
+      kind: sourceNode.kind === "command" ? "command-result" : "actor-emission",
       eventType: event.type,
-      sourceExecutionId: delivery.delivery_id,
+      sourceExecutionId: delivery?.delivery_id ?? null,
       targetExecutionId: event.event_id,
     });
   }
@@ -623,18 +637,35 @@ export function ScopePipelineFocusView({
     : previousEntry?.executionId ?? null;
   const previousExecution = previous?.executions.find((execution) => execution.executionId === previousExecutionId) ?? null;
 
-  const visibleRoutes = selected ? projection.routes.filter((route) => {
+  const candidateRoutes = selected ? projection.routes.filter((route) => {
     if (route.sourceNodeId !== selected.node.node_id) return false;
-    if (route.kind !== "actor-emission") return true;
-    return !!selectedExecution?.deliveryId && route.sourceExecutionId === selectedExecution.deliveryId;
+    if (route.kind === "actor-emission") {
+      return !!selectedExecution?.deliveryId && route.sourceExecutionId === selectedExecution.deliveryId;
+    }
+    if (route.kind === "command-result" && route.sourceExecutionId) {
+      return !!selectedExecution?.deliveryId && route.sourceExecutionId === selectedExecution.deliveryId;
+    }
+    return true;
   }) : [];
+  const observedRouteKeys = new Set(candidateRoutes
+    .filter((route) => route.targetExecutionId)
+    .map((route) => [route.sourceNodeId, route.targetNodeId, route.kind, route.eventType].join(":")));
+  const visibleRoutes = candidateRoutes.filter((route) =>
+    !!route.targetExecutionId
+    || !observedRouteKeys.has([route.sourceNodeId, route.targetNodeId, route.kind, route.eventType].join(":"))
+  );
   const downstream = visibleRoutes.flatMap((route) => {
     const target = projection.nodes.find((item) => item.node.node_id === route.targetNodeId);
     return target ? [{ route, target }] : [];
   });
 
   function preferredExecution(route: ScopePipelineRoute, target: ScopePipelineNode): string | null {
-    if (route.targetExecutionId) return route.targetExecutionId;
+    if (route.targetExecutionId) {
+      return target.executions.find((execution) =>
+        execution.executionId === route.targetExecutionId
+        || execution.eventIds.includes(route.targetExecutionId!)
+      )?.executionId ?? null;
+    }
     if (route.kind === "subscription" && selectedExecution?.eventIds.length) {
       return target.executions.find((execution) =>
         !!execution.triggerEventId && selectedExecution.eventIds.includes(execution.triggerEventId)

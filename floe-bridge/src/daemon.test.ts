@@ -1103,6 +1103,14 @@ describe("BridgeDaemon – command node delivery routing", () => {
       expect(emitted[0].destination).toEqual({ kind: "context", context_id: "ctx_1" });
       expect(emitted[0].source_endpoint_id).toBe("endpoint:check");
       expect(emitted[0].content).toEqual({ command: `node -e "process.exit(0)"`, passed: true });
+      expect(emitted[0].metadata).toEqual({
+        command_node: true,
+        graph_id: "graph_1",
+        node_id: "check_node",
+        cause_event_id: "evt:1",
+        delivery_id: "del-cmd-1"
+      });
+      expect(emitted[0].idempotency_key).toBe("command-result:endpoint:check:evt:1");
       expect(statuses).toEqual(["injected_to_runtime", "acknowledged"]);
     } finally {
       made.cleanup();
